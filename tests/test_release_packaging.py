@@ -1,8 +1,11 @@
 import importlib.util
+import runpy
+import sys
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from types import ModuleType
+from unittest.mock import Mock, call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPENDENCY_COLLECTION_PATH = (
@@ -23,6 +26,56 @@ class ReleasePackagingTest(unittest.TestCase):
             project["tool"]["setuptools"]["package-data"]["vntts"],
             ["icons/lucide/*.svg", "icons/lucide/LICENSE"],
         )
+
+    def test_bundled_x11_worker_dispatches_before_desktop_imports(self):
+        worker = ModuleType("vntts.x11_capture_worker")
+        worker.main = Mock(return_value=0)
+        with (
+            patch.dict(sys.modules, {"vntts.x11_capture_worker": worker}),
+            patch.object(
+                sys, "argv", ["VisualNovelTextToSpeech", "--x11-capture-worker"]
+            ),
+        ):
+            with self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(str(PROJECT_ROOT / "vntts/app.py"), run_name="__main__")
+        self.assertEqual(stopped.exception.code, 0)
+        worker.main.assert_called_once_with()
+
+    def test_native_capture_helpers_are_built_bundled_and_verified(self):
+        for platform, suffix in (("macos", "sh"), ("windows", "ps1")):
+            with self.subTest(platform=platform):
+                script = (
+                    PROJECT_ROOT / f"scripts/build-{platform}.{suffix}"
+                ).read_text()
+                spec = (PROJECT_ROOT / f"packaging/{platform}/vntts.spec").read_text()
+                self.assertIn(f"build-{platform}-capture.{suffix}", script)
+                self.assertIn("capture_worker,", spec)
+                self.assertIn('(str(capture_worker), "native-capture")', spec)
+        macos_spec = (PROJECT_ROOT / "packaging/macos/vntts.spec").read_text()
+        self.assertIn('"LSMinimumSystemVersion": "14.0"', macos_spec)
+        macos_build = (PROJECT_ROOT / "scripts/build-macos.sh").read_text()
+        self.assertIn('vntts-capture-worker" --self-test', macos_build)
+        windows_build = (PROJECT_ROOT / "scripts/build-windows.ps1").read_text()
+        self.assertIn(
+            "VisualNovelTextToSpeech\\_internal\\native-capture\\vntts-capture-worker.exe",
+            windows_build,
+        )
+        verifier = (PROJECT_ROOT / "scripts/verify-windows-bundle.ps1").read_text()
+        self.assertIn('"Bundled native capture worker"', verifier)
+        self.assertNotIn('"Import mss"', verifier)
+        project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+        self.assertFalse(
+            any(item.startswith("mss") for item in project["project"]["dependencies"])
+        )
+
+    def test_windows_qualification_accepts_windows_10_build_19041(self):
+        script = (PROJECT_ROOT / "scripts/run-windows-release-test.ps1").read_text()
+        self.assertIn("$BuildNumber -lt 19041", script)
+        self.assertIn("Windows (10|11)", script)
+        workflow = (
+            PROJECT_ROOT / ".github/workflows/windows-release-test.yml"
+        ).read_text()
+        self.assertNotIn("windows-11", workflow)
 
     def test_decoder_is_staged_with_native_libraries_and_licenses(self):
         for platform, suffix in (("macos", "sh"), ("windows", "ps1")):
@@ -222,6 +275,7 @@ class ReleasePackagingTest(unittest.TestCase):
                     "PYTHONHOME",
                     "PYTHONPATH",
                     "VIRTUAL_ENV",
+                    "VNTTS_CAPTURE_WORKER",
                     "VNTTS_POCKET_TTS_RUNTIME",
                     "VNTTS_CHATTERBOX_RUNTIME",
                     "VNTTS_MOSS_RUNTIME",

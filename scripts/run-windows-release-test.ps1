@@ -62,8 +62,8 @@ Remove-Item $SmokeEvidenceReport -Force -ErrorAction SilentlyContinue
 
 $OperatingSystem = Get-CimInstance Win32_OperatingSystem
 $BuildNumber = [int]$OperatingSystem.BuildNumber
-if ($OperatingSystem.Caption -notmatch "Windows 11" -or $BuildNumber -lt 22000) {
-    throw "Release qualification requires Windows 11, got $($OperatingSystem.Caption)."
+if ($OperatingSystem.Caption -notmatch "\bWindows (10|11)\b" -or $BuildNumber -lt 19041) {
+    throw "Release qualification requires Windows 10 build 19041 or newer, got $($OperatingSystem.Caption)."
 }
 
 $VideoControllers = @(Get-CimInstance Win32_VideoController)

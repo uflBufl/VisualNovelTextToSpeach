@@ -8,6 +8,8 @@ $CrateRoot = Join-Path $ProjectRoot "native\capture-worker\windows"
 $Manifest = Join-Path $CrateRoot "Cargo.toml"
 # Keep source-install discovery deterministic, including when CARGO_TARGET_DIR is set.
 $TargetDirectory = Join-Path $CrateRoot "target"
+& cargo test --locked --manifest-path $Manifest --target-dir $TargetDirectory
+if ($LASTEXITCODE -ne 0) { throw "Windows capture helper tests failed." }
 & cargo build --locked --release --target x86_64-pc-windows-msvc `
     --manifest-path $Manifest --target-dir $TargetDirectory
 if ($LASTEXITCODE -ne 0) { throw "Windows capture helper build failed." }

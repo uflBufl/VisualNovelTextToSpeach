@@ -48,6 +48,7 @@ $EnvironmentNames = @(
     "UV_PROJECT_ENVIRONMENT",
     "TESSDATA_PREFIX",
     "ESPEAK_DATA_PATH"
+    "VNTTS_CAPTURE_WORKER"
     "VNTTS_POCKET_TTS_RUNTIME"
     "VNTTS_CHATTERBOX_RUNTIME"
     "VNTTS_MOSS_RUNTIME"
@@ -75,6 +76,7 @@ try {
     $env:UV_PROJECT_ENVIRONMENT = $null
     $env:TESSDATA_PREFIX = $null
     $env:ESPEAK_DATA_PATH = $null
+    $env:VNTTS_CAPTURE_WORKER = $null
     $env:VNTTS_POCKET_TTS_RUNTIME = $null
     $env:VNTTS_CHATTERBOX_RUNTIME = $null
     $env:VNTTS_MOSS_RUNTIME = $null
@@ -136,13 +138,13 @@ $RequiredChecks = @(
     "Import PIL",
     "Import TTS.api",
     "Import TTS.tts.configs.xtts_config",
-    "Import mss",
     "Import pynput",
     "Import pytesseract",
     "Import sounddevice",
     "Import torch",
     "Import torchaudio",
     "Tesseract OCR",
+    "Bundled native capture worker",
     "Bundled Tesseract",
     "Bundled eSpeak-NG"
     "Bundled Pocket TTS runtime"

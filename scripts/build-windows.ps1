@@ -86,6 +86,8 @@ try {
         }
     }
 
+    & (Join-Path $PSScriptRoot "build-windows-capture.ps1")
+
     $env:VNTTS_TESSERACT_DIR = $TesseractDirectory
     $env:VNTTS_ESPEAK_DIR = $EspeakDirectory
     $WorkPath = Join-Path $ProjectRoot "build\windows\pyinstaller"
@@ -121,7 +123,10 @@ try {
     $Executable = Join-Path $DistPath `
         "VisualNovelTextToSpeech\VisualNovelTextToSpeech.exe"
     if ($Sign -or $RequireSignature) {
-        & (Join-Path $PSScriptRoot "sign-windows.ps1") -Files $Executable
+        & (Join-Path $PSScriptRoot "sign-windows.ps1") -Files @(
+            (Join-Path $DistPath "VisualNovelTextToSpeech\_internal\native-capture\vntts-capture-worker.exe"),
+            $Executable
+        )
     }
     $ReportPath = Join-Path $ProjectRoot "build\windows\package-self-test.json"
     $SelfTest = Start-Process -FilePath $Executable `

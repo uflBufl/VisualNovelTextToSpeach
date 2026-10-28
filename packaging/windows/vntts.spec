@@ -13,6 +13,9 @@ tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
 speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
 decoder_directory = Path(os.environ["VNTTS_VGMSTREAM_DIR"]).resolve()
+capture_worker = (
+    project_root / "native/capture-worker/windows/target/release/vntts-capture-worker.exe"
+)
 tesseract_executable = tesseract_directory / "tesseract.exe"
 english_language_data = tesseract_directory / "tessdata" / "eng.traineddata"
 
@@ -33,6 +36,7 @@ for required_path in (
     speech_runtimes_directory / "qwen-tts-runtime-manifest.json",
     decoder_directory / "vgmstream-cli.exe",
     decoder_directory / "licenses" / "COPYING",
+    capture_worker,
 ):
     if not required_path.is_file():
         raise SystemExit(f"Required speech runtime file is missing: {required_path}")
@@ -45,7 +49,10 @@ datas.extend(
     for source in espeak_directory.rglob("*")
     if source.is_file()
 )
-binaries = [(str(tesseract_executable), "tesseract")]
+binaries = [
+    (str(capture_worker), "native-capture"),
+    (str(tesseract_executable), "tesseract"),
+]
 binaries.extend(
     (str(source), "vgmstream") for source in decoder_directory.iterdir()
     if source.suffix.casefold() in {".exe", ".dll"}

@@ -78,6 +78,9 @@ export VNTTS_MACOS_TARGET_ARCH="$target_arch"
 export PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR=1
 export PYINSTALLER_VERIFY_BUNDLE_SIGNATURE=1
 
+scripts/build-macos-capture.sh
+"$project_root/native/capture-worker/macos/build/vntts-capture-worker" --self-test
+
 work_path="$project_root/build/macos/pyinstaller"
 dist_path="$project_root/dist/macos"
 speech_runtimes_path="$project_root/build/macos/speech-runtimes"

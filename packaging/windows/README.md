@@ -2,8 +2,10 @@
 
 PyInstaller one-folder mode is used because the application includes large
 Torch and Coqui libraries plus external OCR and phonemizer processes. Build it
-on 64-bit Windows with Python 3.14, uv, Tesseract 5 with English language data,
-and eSpeak-NG:
+on 64-bit Windows 10 version 2004 (build 19041) or newer with Python 3.14, uv,
+Rust/Cargo using the MSVC toolchain, Visual Studio C++ Build Tools and Windows
+SDK, Tesseract 5 with English language data, and eSpeak-NG. The build compiles
+and tests the native Windows Graphics Capture helper:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
@@ -25,8 +27,8 @@ Windows path, while relative artifact paths remain POSIX-separated on disk.
 The build discovers Tesseract from `PATH`, then the standard Program Files
 locations. Pass `-TesseractDirectory` to override discovery. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,
-all Python dependencies, Tesseract, English OCR data, and eSpeak-NG; speech
-models remain user-managed downloads.
+all Python dependencies, the capture helper, Tesseract, English OCR data, and
+eSpeak-NG; speech models remain user-managed downloads.
 
 On a clean Windows machine, unpack the archive and verify it with:
 
@@ -38,12 +40,12 @@ powershell -ExecutionPolicy Bypass -File scripts\verify-windows-bundle.ps1 `
 Windows is distributed as this portable bundle; no installer is required.
 Public builds must set `VNTTS_SIGNING_CERTIFICATE_PATH` and optionally
 `VNTTS_SIGNING_CERTIFICATE_PASSWORD` and `VNTTS_SIGNING_TIMESTAMP_URL`, then
-pass `-RequireSignature` to `scripts\build-windows.ps1`. The Windows build
-workflow accepts the certificate through the
+pass `-RequireSignature` to `scripts\build-windows.ps1`. Both the launcher and
+capture helper are signed. The Windows workflow accepts the certificate through the
 `WINDOWS_SIGNING_CERTIFICATE_BASE64` repository secret.
 
-Run every profile in `release-matrix.json` on an interactive Windows 11 machine
-with the required GPU, monitors, and DPI scaling. The release test opens a
+Run every profile in `release-matrix.json` on an interactive Windows 10 build
+19041+ machine with the required GPU, monitors, and DPI scaling. The release test opens a
 windowed or borderless visual-novel fixture at normal or elevated integrity,
 extracts the portable bundle, captures and recognizes its dialog, synthesizes
 and plays the recognized text, and writes a JSON evidence report:
@@ -61,7 +63,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run-windows-release-test.ps1 `
 ```
 
 The Windows release compatibility workflow runs the same check on an
-interactive, self-hosted Windows 11 runner and uploads the evidence report.
+interactive, self-hosted Windows runner (build 19041+) and uploads the evidence
+report.
 After collecting every required report, enforce the release gate with:
 
 ```powershell

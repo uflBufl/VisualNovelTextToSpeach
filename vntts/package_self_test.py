@@ -21,6 +21,7 @@ from vntts.game_audio_decoder import (
     probe_game_decoder,
 )
 from vntts.json_types import is_json_object
+from vntts.native_capture import worker_command
 from vntts.onboarding import probe_tesseract
 from vntts.release_runtime import runtime_probe_script, validate_runtime_provenance
 from vntts.runtime_paths import (
@@ -42,7 +43,6 @@ required_modules = (
     "PIL",
     "TTS.api",
     "TTS.tts.configs.xtts_config",
-    "mss",
     "pynput",
     "pytesseract",
     "sounddevice",
@@ -82,6 +82,47 @@ def _json_object(payload: str, description: str) -> ReportDocument:
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def probe_bundled_capture_worker(
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    bundle_root = get_bundle_root()
+    if bundle_root is None:
+        raise RuntimeError("Capture worker provenance requires a frozen bundle")
+    command = worker_command()
+    executable = Path(command[0]).resolve()
+    if sys.platform == "linux":
+        if command != [sys.executable, "--x11-capture-worker"]:
+            raise RuntimeError("X11 capture worker must use the frozen executable")
+    elif not executable.is_relative_to((bundle_root / "native-capture").resolve()):
+        raise RuntimeError("Capture worker is outside the frozen bundle")
+    # Rejecting an incompatible request exercises IPC without opening a capture source.
+    request = {
+        "version": 0,
+        "id": 1,
+        "op": "close",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+    }
+    completed = runner(
+        command,
+        input=json.dumps(request) + "\n",
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=15,
+    )
+    response = _json_object(completed.stdout, "Capture worker protocol response")
+    error = response.get("error")
+    if (
+        response.get("version") != 1
+        or response.get("ok") is not False
+        or response.get("payload_bytes") != 0
+        or not isinstance(error, dict)
+        or error.get("code") not in {"protocol_version", "unsupported_version"}
+    ):
+        raise RuntimeError("Capture worker did not reject the incompatible protocol")
+    return str(executable)
 
 
 def probe_espeak(executable: str | Path) -> str:
@@ -350,6 +391,7 @@ def run_package_self_test(
     speech_runtime_probe: Callable[[], ReportDocument] | None = None,
     speech_render_probe: Callable[[], ReportDocument] | None = None,
     game_decoder_probe: Callable[[], object] | None = None,
+    capture_worker_probe: Callable[[], object] | None = None,
 ) -> CLIReportResult:
     import_module = import_module or importlib.import_module
     tesseract_probe = tesseract_probe or probe_tesseract
@@ -357,6 +399,7 @@ def run_package_self_test(
     speech_runtime_probe = speech_runtime_probe or probe_bundled_pocket_runtime
     speech_render_probe = speech_render_probe or probe_bundled_pocket_render
     game_decoder_probe = game_decoder_probe or _probe_game_decoder
+    capture_worker_probe = capture_worker_probe or probe_bundled_capture_worker
     bundled_tesseract = configure_bundled_dependencies()
     bundled_espeak = find_bundled_espeak()
     checks: ReportChecks = []
@@ -364,6 +407,9 @@ def run_package_self_test(
     _append_probe_check(checks, "Tesseract OCR", tesseract_probe)
     frozen = bool(getattr(sys, "frozen", False))
     if frozen:
+        _append_probe_check(
+            checks, "Bundled native capture worker", capture_worker_probe
+        )
         _append_bundled_dependency_checks(
             checks,
             bundled_tesseract,

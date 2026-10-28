@@ -66,7 +66,7 @@ recreation. PMv2 physical DWM/client bounds are checked against native dimension
 a mismatch is an explicit unsupported-layout error, never a guessed crop.
 Closed items, changed process identity, minimize, invalid dimensions and device
 errors invalidate cached pixels. Device-loss HRESULT is retained; reopen the
-session after the error. Automatic device recovery is not implemented.
+session after the error. A first device-loss failure recreates the native source once; a second loss is explicit. Recovery clears cached pixels and preserves the session sequence, epoch and HRESULT/removal details on failure.
 
 Capture uses RGBA16F scRGB throughout the native pool and staging texture, then
 converts linear Rec.709 to SDR sRGB/BGRA8 with fixed global Reinhard peak mapping

@@ -98,12 +98,13 @@ def _profile_evidence_errors(
     checks = (
         (report.get("success") is True, "release test did not succeed"),
         (
-            isinstance(operating_system, str) and "Windows 11" in operating_system,
-            "test did not run on Windows 11",
+            isinstance(operating_system, str)
+            and re.search(r"\bWindows (?:10|11)\b", operating_system) is not None,
+            "test did not run on Windows 10 or newer",
         ),
         (
-            _report_integer(report.get("build_number")) >= 22000,
-            "Windows build is older than 22000",
+            _report_integer(report.get("build_number")) >= 19041,
+            "Windows build is older than 19041",
         ),
         (
             report.get("smoke_test_process_level") == profile["game_process_level"],

@@ -14,6 +14,7 @@ tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
 speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
 decoder_directory = Path(os.environ["VNTTS_VGMSTREAM_DIR"]).resolve()
+capture_worker = project_root / "native/capture-worker/macos/build/vntts-capture-worker"
 codesign_identity = os.environ.get("VNTTS_CODESIGN_IDENTITY") or None
 entitlements_file = (
     str(project_root / "packaging" / "macos" / "entitlements.plist")
@@ -36,6 +37,7 @@ for required_path in (
     speech_runtimes_directory / "runtime-manifest.json",
     decoder_directory / "vgmstream-cli",
     decoder_directory / "licenses" / "COPYING",
+    capture_worker,
 ):
     if not required_path.exists():
         raise SystemExit(f"Required macOS dependency is missing: {required_path}")
@@ -61,6 +63,7 @@ for source, destination in (
         datas.append((str(source), destination))
 
 binaries = [
+    (str(capture_worker), "native-capture"),
     (str(decoder_directory / "vgmstream-cli"), "vgmstream"),
     (str(tesseract_executable), "tesseract"),
     (str(espeak_executable), "espeak-ng"),
@@ -146,7 +149,7 @@ application = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "Visual Novel Text to Speech",
         "CFBundleName": "Visual Novel Text to Speech",
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": "14.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
     },

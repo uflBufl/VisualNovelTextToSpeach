@@ -166,7 +166,24 @@ class ReleaseMatrixTest(unittest.TestCase):
         )
         report["operating_system"] = {"caption": "Windows 11"}
         errors = validate_release_evidence([profile], [(Path("bad-os.json"), report)])
-        self.assertTrue(any("Windows 11" in error for error in errors))
+        self.assertTrue(any("Windows 10" in error for error in errors))
+
+    def test_windows_10_minimum_build_and_windows_11_are_supported(self):
+        profile = self.profiles[0]
+        for caption, build, accepted in (
+            ("Microsoft Windows 10 Pro", 19041, True),
+            ("Microsoft Windows 11 Pro", 22000, True),
+            ("Microsoft Windows 10 Pro", 19040, False),
+            ("Microsoft Windows 8.1 Pro", 19041, False),
+            ("GNU/Linux", 26100, False),
+        ):
+            with self.subTest(caption=caption, build=build):
+                report = self.evidence_for(profile)
+                report.update(operating_system=caption, build_number=build)
+                errors = validate_release_evidence(
+                    [profile], [(Path("os.json"), report)]
+                )
+                self.assertEqual(errors == [], accepted)
 
     def test_rejects_missing_mismatched_and_unsigned_evidence(self):
         report = self.evidence_for(self.profiles[0])

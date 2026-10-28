@@ -14,6 +14,7 @@ from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts import runtime_paths
 from vntts.package_self_test import (
+    probe_bundled_capture_worker,
     probe_bundled_pocket_render,
     probe_bundled_pocket_runtime,
     run_package_self_test,
@@ -292,6 +293,7 @@ class RuntimePathsTest(unittest.TestCase):
             ):
                 successful, _ = run_package_self_test(
                     report_path,
+                    capture_worker_probe=Mock(return_value="bundled capture worker"),
                     import_module=Mock(),
                     tesseract_probe=Mock(return_value="5.5.0"),
                     speech_runtime_probe=Mock(
@@ -352,6 +354,7 @@ class RuntimePathsTest(unittest.TestCase):
             ):
                 successful, _ = run_package_self_test(
                     report_path,
+                    capture_worker_probe=Mock(return_value="bundled capture worker"),
                     import_module=Mock(),
                     tesseract_probe=Mock(return_value="5.5.0"),
                     espeak_probe=espeak_probe,
@@ -526,6 +529,9 @@ class RuntimePathsTest(unittest.TestCase):
                 ):
                     result = run_package_self_test(
                         report_path,
+                        capture_worker_probe=Mock(
+                            return_value="bundled capture worker"
+                        ),
                         import_module=Mock(),
                         tesseract_probe=Mock(return_value="5.5.0"),
                         espeak_probe=Mock(return_value="1.52.0"),
@@ -578,6 +584,7 @@ class RuntimePathsTest(unittest.TestCase):
             ):
                 result = run_package_self_test(
                     report_path,
+                    capture_worker_probe=failed_probe,
                     import_module=failed_probe,
                     tesseract_probe=failed_probe,
                     espeak_probe=failed_probe,
@@ -600,6 +607,89 @@ class RuntimePathsTest(unittest.TestCase):
         self.assertEqual(
             report["checks"][-1]["name"], "Bundled Pocket TTS clean-cache render"
         )
+
+    def test_bundled_capture_probe_rejects_external_worker_before_launch(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner = Mock()
+            with (
+                patch("vntts.package_self_test.get_bundle_root", return_value=root),
+                patch(
+                    "vntts.package_self_test.worker_command",
+                    return_value=[str(root / "external")],
+                ),
+                patch("vntts.package_self_test.sys.platform", "darwin"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "outside the frozen bundle"):
+                    probe_bundled_capture_worker(runner)
+            runner.assert_not_called()
+
+    def test_bundled_capture_probe_checks_protocol_without_opening_capture(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = [str(root / "native-capture/vntts-capture-worker")]
+            for code in ("protocol_version", "unsupported_version"):
+                with (
+                    self.subTest(code=code),
+                    patch("vntts.package_self_test.get_bundle_root", return_value=root),
+                    patch(
+                        "vntts.package_self_test.worker_command", return_value=command
+                    ),
+                    patch("vntts.package_self_test.sys.platform", "darwin"),
+                ):
+                    response = {
+                        "version": 1,
+                        "ok": False,
+                        "payload_bytes": 0,
+                        "error": {"code": code},
+                    }
+                    runner = Mock(
+                        return_value=SimpleNamespace(stdout=json.dumps(response))
+                    )
+                    self.assertEqual(
+                        probe_bundled_capture_worker(runner),
+                        str(Path(command[0]).resolve()),
+                    )
+                    self.assertEqual(
+                        json.loads(runner.call_args.kwargs["input"])["op"], "close"
+                    )
+                    runner.assert_called_once()
+                    response["ok"] = True
+                    runner.return_value.stdout = json.dumps(response)
+                    with self.assertRaisesRegex(RuntimeError, "did not reject"):
+                        probe_bundled_capture_worker(runner)
+
+    def test_bundled_x11_capture_probe_uses_only_frozen_worker_command(self):
+        runner = Mock(
+            return_value=SimpleNamespace(
+                stdout=json.dumps(
+                    {
+                        "version": 1,
+                        "ok": False,
+                        "payload_bytes": 0,
+                        "error": {"code": "protocol_version"},
+                    }
+                )
+            )
+        )
+        with (
+            patch(
+                "vntts.package_self_test.get_bundle_root", return_value=Path("bundle")
+            ),
+            patch("vntts.package_self_test.sys.platform", "linux"),
+            patch(
+                "vntts.package_self_test.worker_command",
+                return_value=[sys.executable, "--x11-capture-worker"],
+            ) as command,
+        ):
+            probe_bundled_capture_worker(runner)
+            self.assertEqual(
+                runner.call_args.args[0], [sys.executable, "--x11-capture-worker"]
+            )
+            command.return_value = [sys.executable, "-m", "vntts.x11_capture_worker"]
+            with self.assertRaisesRegex(RuntimeError, "must use the frozen executable"):
+                probe_bundled_capture_worker(runner)
+        self.assertEqual(runner.call_count, 1)
 
     def test_package_self_test_writes_machine_readable_report(self):
         with TemporaryDirectory() as temporary_directory:

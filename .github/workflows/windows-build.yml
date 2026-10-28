@@ -22,6 +22,10 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Prepare capture helper toolchain
+        shell: powershell
+        run: rustup target add x86_64-pc-windows-msvc
+
       - name: Install Tesseract
         shell: powershell
         run: |

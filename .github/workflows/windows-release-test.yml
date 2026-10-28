@@ -35,7 +35,7 @@ on:
 jobs:
   qualify:
     # Node 24 actions require Actions Runner 2.327.1 or newer.
-    runs-on: [self-hosted, windows-11, interactive]
+    runs-on: [self-hosted, windows, interactive]
     timeout-minutes: 120
 
     steps:

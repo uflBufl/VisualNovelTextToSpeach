@@ -52,7 +52,7 @@ If controls remain unavailable, use **Check readiness** for the required fix.
 
 - Python 3.14 or newer
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- [Rust and Cargo](https://doc.rust-lang.org/book/ch01-01-installation.html) to build the required audio worker when running from source
+- [Rust and Cargo](https://doc.rust-lang.org/book/ch01-01-installation.html) to build the required audio worker and Windows capture helper when running from source
 - [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) with its shared library and the configured language data
 - [eSpeak-NG](https://github.com/espeak-ng/espeak-ng/blob/master/docs/guide.md)
 - A working audio output device
@@ -73,7 +73,7 @@ launching the command-line tool for every frame.
 Install the external tools on macOS with:
 
 ```sh
-xcode-select --install  # compiler/linker for the Rust audio worker
+xcode-select --install  # Swift capture helper and Rust audio worker toolchains
 brew install tesseract espeak-ng
 ```
 
@@ -95,8 +95,9 @@ optional; TTS runs on the CPU when CUDA is unavailable.
 
 ## Platform support and permissions
 
-The application targets Windows 11 first and also supports running from source
-on macOS. Linux support is limited to X11.
+The application supports Windows 10 version 2004 (build 19041) or newer and
+macOS 14 or newer. Capture uses Windows Graphics Capture and ScreenCaptureKit
+respectively. Linux X11 capture is best effort.
 
 - macOS: grant the terminal or packaged application access under **Privacy &
   Security -> [Screen & System Audio Recording](https://support.apple.com/guide/mac-help/mchld6aa7d23/mac)**,
@@ -110,23 +111,43 @@ on macOS. Linux support is limited to X11.
   source** and use borderless-windowed mode; minimized and exclusive-fullscreen
   windows cannot be captured reliably.
 - Linux: run under an X11 desktop session with `DISPLAY` set. Screen-region and
-  selected-window capture are supported. Native Wayland, headless, and SSH
-  sessions are rejected because reliable global capture and hotkeys are not
+  selected-window capture use the existing python-xlib dependency. Native
+  Wayland, headless, and SSH sessions are rejected because reliable global capture and hotkeys are not
   available. CI runs the complete source unit suite on an offscreen Linux/X11
-  dependency environment in addition to the macOS and Windows jobs; real
-  display, hotkey and audio-device acceptance remains a hardware gate.
+  dependency environment in addition to the macOS and Windows jobs.
 
 ### Run from source
 
-From the project directory, install Python dependencies **and build the audio worker**:
+From the project directory, install Python dependencies and build the audio worker:
 
 ```sh
 uv sync --no-dev
 cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml
+```
+
+Build the capture helper for your platform before starting the app:
+
+```sh
+# macOS 14+ (Xcode command line tools / Swift required)
+scripts/build-macos-capture.sh
+```
+
+```powershell
+# Windows 10 build 19041+ (Rust MSVC toolchain and Windows SDK required)
+powershell -File scripts/build-windows-capture.ps1
+```
+
+Linux X11 uses python-xlib and needs no separate capture build. Then launch:
+
+```sh
 uv run vntts-app
 ```
 
-`uv sync` does not build the Rust worker. Without it, voice previews and reading
+`uv sync` does not build either native worker. Rebuild the capture helper after
+updating its source or protocol. `VNTTS_CAPTURE_WORKER` can select a separately
+built capture executable on macOS or Windows; packaged builds include it.
+
+Without the Rust audio worker, voice previews and reading
 cannot play audio. Build it on the machine where you run VNTTS, and repeat the
 Cargo command after updating the worker or its protocol. VNTTS starts and stops
 the worker automatically; you do not need to launch a separate audio process.
