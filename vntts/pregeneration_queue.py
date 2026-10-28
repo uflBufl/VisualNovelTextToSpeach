@@ -133,6 +133,10 @@ class PregenerationInput:
     source_audio_semantic_evidence: Path | None = None
 
     @property
+    def progress_items(self) -> int:
+        return self.ready_items + len(self.audio_event_omission_queue_ids)
+
+    @property
     def output_directory(self) -> Path:
         return Path(self.directory).parent / f"generation-output-{self.identity[:16]}"
 

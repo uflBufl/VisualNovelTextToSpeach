@@ -1181,7 +1181,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 ).generate(generation_input, plan)
 
         popen.assert_not_called()
-        self.assertEqual(result.total, generation_input.ready_items)
+        self.assertEqual(result.total, generation_input.progress_items)
 
     def test_omitted_audio_event_does_not_hide_unfinished_dialogue(self):
         with TemporaryDirectory() as directory:

@@ -1545,6 +1545,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
 
         self.assertEqual(result.queue_items, 6)
         self.assertEqual(result.ready_items, 5)
+        self.assertEqual(result.progress_items, 6)
         self.assertEqual(
             result.audio_event_projection_queue_ids,
             (queue_by_line["mixed-event"],),

@@ -2153,7 +2153,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
         preview_service = Mock()
         preview_service.generate.return_value = generated_preview(root)
         input_store = Mock()
-        input_store.materialize.return_value = Mock(ready_items=1)
+        input_store.materialize.return_value = Mock(ready_items=1, progress_items=1)
         pool = ManualThreadPool()
         dialog = OfflineAudioPreparationDialog(
             AppSettings(),

@@ -982,7 +982,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Stories:", plain_label_text(dialog.story_context))
             dialog._set_import_controls(False)
             dialog.selection_panel.hide()
-            dialog._generation_input = Mock(ready_items=2)
+            dialog._generation_input = Mock(ready_items=2, progress_items=2)
             dialog.generating = True
             dialog._start_generation_progress()
             dialog.progress_timer.stop()

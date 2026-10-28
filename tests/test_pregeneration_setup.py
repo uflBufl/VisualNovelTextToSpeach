@@ -3173,11 +3173,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(
                 all("Preparing" in dialog.stories.item(row).text(1) for row in range(2))
             )
-            dialog._generation_input = SimpleNamespace(ready_items=3)
+            dialog._generation_input = SimpleNamespace(progress_items=3)
             dialog._render_generation_progress(
                 OfflineGenerationProgress(generated=1, failed=1)
             )
-            self.assertIn("2 of 3 new speech lines processed", updates[-1])
+            self.assertIn("2 of 3 lines processed", updates[-1])
             self.assertIn("Failed: 1", updates[-1])
             self.assertEqual(dialog.progress_story_readiness.topLevelItemCount(), 2)
             self.assertEqual(
@@ -3207,7 +3207,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog._job = dialog.job_store.create_or_resume(content, ("main-1",))
-            dialog._generation_input = SimpleNamespace(ready_items=2)
+            dialog._generation_input = SimpleNamespace(progress_items=2)
             dialog._progress_snapshot = OfflineGenerationProgress(
                 ready_line_ids=("reverse1999:2",)
             )
@@ -3249,7 +3249,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             selected = tuple(chapter.selection_id for chapter in content.selections)
             first, second = content.selections
             dialog._job = dialog.job_store.create_or_resume(content, selected)
-            dialog._generation_input = SimpleNamespace(ready_items=3)
+            dialog._generation_input = SimpleNamespace(progress_items=3)
             dialog.generating = True
             dialog._show_phase(
                 "Generating offline audio", "", "Finished lines are saved."
@@ -3320,7 +3320,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._generation_input = Mock(ready_items=3)
+            dialog._generation_input = Mock(progress_items=3)
             dialog.generating = True
             dialog._start_generation_progress()
             dialog.progress_timer.stop()
@@ -3892,7 +3892,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 generator=generator,
                 thread_pool=pool,
             )
-            dialog._generation_input = Mock(ready_items=4)
+            dialog._generation_input = Mock(progress_items=4)
             dialog.generating = True
             reading = Mock()
             dialog.readingRequested.connect(reading)
@@ -3955,7 +3955,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator=Mock(),
         )
         self.addCleanup(dialog.deleteLater)
-        dialog._generation_input = SimpleNamespace(ready_items=32)
+        dialog._generation_input = SimpleNamespace(progress_items=32)
         dialog.generating = True
         dialog._start_generation_progress()
         dialog.progress_timer.stop()
@@ -4009,7 +4009,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self.assertIn("37 GPU layers", dialog.progress_runtime.toolTip())
         dialog._stop_generation_progress()
         self.assertFalse(dialog.progress_runtime.text())
-        dialog._generation_input = SimpleNamespace(ready_items=4)
+        dialog._generation_input = SimpleNamespace(progress_items=4)
         dialog._start_generation_progress()
         dialog.progress_timer.stop()
         report()
@@ -4047,7 +4047,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, tuple(s.selection_id for s in selections)
             )
-            dialog._generation_input = SimpleNamespace(ready_items=80)
+            dialog._generation_input = SimpleNamespace(progress_items=80)
             dialog.generating = True
             dialog._start_generation_progress()
             dialog.progress_timer.stop()
@@ -4104,7 +4104,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 generator=Mock(),
             )
             self.addCleanup(dialog.deleteLater)
-            dialog._generation_input = SimpleNamespace(ready_items=4)
+            dialog._generation_input = SimpleNamespace(progress_items=4)
             dialog.generating = True
             dialog._start_generation_progress()
             dialog.progress_timer.stop()
@@ -4139,7 +4139,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 AppSettings(), discovery=lambda: ContentDiscovery(()), thread_pool=pool
             )
             self.addCleanup(dialog.deleteLater)
-            dialog._generation_input = Mock(ready_items=3)
+            dialog._generation_input = Mock(progress_items=3)
             dialog.generating = True
             result = OfflineGenerationResult(
                 root / "output", root / "state.json", root / "manifest.json", 2, 1, 0
@@ -4155,7 +4155,18 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.progress_bar.maximum(), 0)
             self.assertEqual(dialog.progress_bar.format(), "")
+            self.assertIn("3 of 3 lines processed", dialog.progress_counts.text())
             self.assertIn("Failed: 1", dialog.progress_counts.text())
+            self.assertNotIn("final checks", plain_label_text(dialog.progress_timing))
+
+            dialog._progress_finished(OfflineGenerationProgress(generated=3), None)
+
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertEqual(dialog.progress_bar.format(), "")
+            self.assertEqual(
+                plain_label_text(dialog.progress_counts), "3 of 3 lines processed"
+            )
+            self.assertNotIn("final checks", plain_label_text(dialog.progress_timing))
             dialog.recovering = False
             dialog.close()
 
@@ -4178,7 +4189,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._generation_input = Mock(ready_items=3)
+            dialog._generation_input = Mock(progress_items=3)
             dialog._generation_configuration = dialog._narrator_configuration_values()
             dialog._progress_snapshot = OfflineGenerationProgress(
                 generated=3, ready_line_ids=("reverse1999:1",)
@@ -4313,7 +4324,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 generator=generator,
                 thread_pool=pool,
             )
-            dialog._generation_input = Mock(ready_items=60)
+            dialog._generation_input = Mock(progress_items=60)
             dialog.generating = True
             dialog._start_generation_progress()
             self.run_next_task(pool)
@@ -4348,6 +4359,95 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress_bar.value(), 52)
             self.assertEqual(plain_label_text(dialog.progress_timing), "")
             dialog.deleteLater()
+
+    def test_reused_lines_keep_one_overall_counter_and_eta_starts_at_first_poll(self):
+        with patch("vntts.pregeneration_ui.monotonic") as clock:
+            clock.return_value = 0
+            pool = ManualThreadPool()
+            generator = Mock()
+            generator.inspect_progress.side_effect = (
+                OfflineGenerationProgress(generated=192),
+                OfflineGenerationProgress(generated=290),
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                generator=generator,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._generation_input = SimpleNamespace(progress_items=497)
+            dialog.generating = True
+            dialog._start_generation_progress()
+            dialog.progress_timer.stop()
+
+            clock.return_value = 120
+            self.run_next_task(pool)
+
+            self.assertEqual(dialog.progress_bar.maximum(), 497)
+            self.assertEqual(dialog.progress_bar.value(), 192)
+            self.assertEqual(
+                plain_label_text(dialog.progress_counts), "192 of 497 lines processed"
+            )
+            self.assertNotIn("reused", plain_label_text(dialog.progress_counts).lower())
+            self.assertNotIn("About", plain_label_text(dialog.progress_timing))
+
+            clock.return_value = 180
+            dialog._poll_generation_progress()
+            self.run_next_task(pool)
+
+            self.assertEqual(dialog.progress_bar.value(), 290)
+            self.assertEqual(
+                plain_label_text(dialog.progress_counts), "290 of 497 lines processed"
+            )
+            self.assertIn(
+                "About 2 min of generation left",
+                plain_label_text(dialog.progress_timing),
+            )
+            dialog.generating = False
+            dialog._stop_generation_progress()
+            dialog.close()
+
+    def test_processed_omission_does_not_hide_pending_speech_in_overall_progress(self):
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery(()),
+            thread_pool=ManualThreadPool(),
+            generator=Mock(),
+        )
+        self.addCleanup(dialog.deleteLater)
+        dialog._generation_input = SimpleNamespace(ready_items=3, progress_items=4)
+        dialog.generating = True
+        dialog._start_generation_progress()
+        dialog.progress_timer.stop()
+
+        dialog._progress_finished(
+            OfflineGenerationProgress(generated=2, other_terminal=1), None
+        )
+
+        self.assertEqual(dialog.progress_bar.maximum(), 4)
+        self.assertEqual(dialog.progress_bar.value(), 3)
+        self.assertIn(
+            "3 of 4 lines processed", plain_label_text(dialog.progress_counts)
+        )
+        self.assertNotIn("100%", dialog.progress_bar.text())
+        self.assertNotIn("final checks", plain_label_text(dialog.progress_timing))
+
+        dialog._progress_finished(
+            OfflineGenerationProgress(generated=3, other_terminal=1), None
+        )
+
+        self.assertEqual(dialog.progress_bar.value(), 4)
+        self.assertIn(
+            "4 of 4 lines processed", plain_label_text(dialog.progress_counts)
+        )
+        self.assertIn(
+            "Live fallback or omitted: 1", plain_label_text(dialog.progress_counts)
+        )
+        self.assertIn("final checks", plain_label_text(dialog.progress_timing))
+        dialog.generating = False
+        dialog._stop_generation_progress()
+        dialog.close()
 
     def test_reopening_restores_the_last_story_selection(self):
         with TemporaryDirectory() as temporary_directory:
@@ -4482,7 +4582,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._generation_input = Mock(ready_items=3)
+            dialog._generation_input = Mock(ready_items=3, progress_items=3)
             dialog.recovering = True
             dialog._start_generation_progress()
             dialog._progress_finished(

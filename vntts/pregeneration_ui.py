@@ -807,10 +807,10 @@ class OfflineAudioPreparationDialog(QDialog):
             "Copy locked generation configuration"
         )
         self.progress_bar = QProgressBar()
-        self.progress_bar.setAccessibleName("Durably completed generation items")
+        self.progress_bar.setAccessibleName("Audio preparation progress")
         self.progress_bar.setTextVisible(True)
         self.progress_counts = QLabel()
-        self.progress_counts.setAccessibleName("Offline generation durable counts")
+        self.progress_counts.setAccessibleName("Processed lines")
         self.progress_counts.setWordWrap(True)
         self.progress_counts.setStyleSheet("font-weight: 600;")
         self.progress_timing = QLabel()
@@ -3343,7 +3343,7 @@ class OfflineAudioPreparationDialog(QDialog):
         failed: int = 0,
         other: int = 0,
     ) -> None:
-        text = f"{completed} of {total} new speech lines processed"
+        text = f"{completed} of {total} lines processed"
         if failed or other:
             outcomes = [f"Prepared: {generated}"]
             if failed:
@@ -3467,7 +3467,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if not self.recovering and self._progress_baseline is not None:
             started, baseline = self._progress_baseline
             completed = progress.completed - baseline
-            remaining = max(0, self._generation_input.ready_items - progress.completed)
+            remaining = max(
+                0, self._generation_input.progress_items - progress.completed
+            )
             if remaining == 0:
                 estimate = "Generation processed; final checks may still be needed."
             elif completed >= 2:
@@ -3505,9 +3507,9 @@ class OfflineAudioPreparationDialog(QDialog):
             ):
                 self.failures_panel.set_input(self._generation_input)
                 self.failures_panel.refresh()
-        total = self._generation_input.ready_items
-        self.progress_bar.setAccessibleName("Durably completed generation items")
-        self.progress_counts.setAccessibleName("Offline generation durable counts")
+        total = self._generation_input.progress_items
+        self.progress_bar.setAccessibleName("Audio preparation progress")
+        self.progress_counts.setAccessibleName("Processed lines")
         completed = min(progress.completed, total)
         if self.generating:
             durable_phase = (
