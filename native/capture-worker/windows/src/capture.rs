@@ -53,7 +53,11 @@ use windows::{
 impl From<windows::core::Error> for Failure {
     fn from(error: windows::core::Error) -> Self {
         Self::new(
-            "native_error",
+            if device_loss_hresult(error.code().0 as u32) {
+                "device_lost"
+            } else {
+                "native_error"
+            },
             format!(
                 "{} (HRESULT 0x{:08X})",
                 error.message(),
@@ -61,6 +65,12 @@ impl From<windows::core::Error> for Failure {
             ),
         )
     }
+}
+fn device_loss_hresult(code: u32) -> bool {
+    matches!(code, 0x887A0005 | 0x887A0006 | 0x887A0007 | 0x887A0020)
+}
+fn can_recover_device(error: &Failure, recovered: bool) -> bool {
+    error.code == "device_lost" && !recovered
 }
 fn clock() -> Result<f64, Failure> {
     unsafe {
@@ -329,7 +339,7 @@ unsafe fn run_source(
         return Err(error);
     }
     let _apartment = Apartment;
-    let mut native = match Native::open(target, shared.clone(), closed) {
+    let mut native = match Native::open(target.clone(), shared.clone(), closed.clone()) {
         Ok(native) => native,
         Err(error) => {
             let _ = ready.send(Err(error.clone()));
@@ -341,116 +351,167 @@ unsafe fn run_source(
     let mut layout = None;
     let mut valid_after = clock()?;
     let mut next_copy = Instant::now();
-    while !stop.load(Ordering::Acquire) {
-        if native.closed.load(Ordering::Acquire) {
-            return Err(Failure::new("target_closed", "GraphicsCaptureItem closed"));
-        }
-        match native.geometry() {
-            Ok(current) => {
-                if layout.as_ref() != Some(&current) {
-                    epoch += 1;
-                    valid_after = clock()?;
-                    let mut state = shared.0.lock().unwrap();
-                    state.replace_live(None, None, &native.closed, stop)?;
-                    layout = Some(current);
+    let process_created = native.process_created;
+    let mut recovered_device = false;
+    loop {
+        let outcome = (|| -> Result<(), Failure> {
+            while !stop.load(Ordering::Acquire) {
+                if native.closed.load(Ordering::Acquire) {
+                    return Err(Failure::new("target_closed", "GraphicsCaptureItem closed"));
                 }
-            }
-            Err(error) if error.code == "minimized" => {
-                layout = None;
-                valid_after = clock()?;
-                let mut state = shared.0.lock().unwrap();
-                state.replace_live(None, Some(error), &native.closed, stop)?;
-                shared.1.notify_all();
-                drop(state);
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-            Err(error) => return Err(error),
-        }
-        // Drain at most the bounded pool capacity. Never retain a native frame after Close.
-        let mut latest: Option<Direct3D11CaptureFrame> = None;
-        for _ in 0..2 {
-            let frame = match native.pool.TryGetNextFrame() {
-                Ok(frame) => frame,
-                Err(error) if error.code().0 as u32 == 0x80004003 => break,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(previous) = latest.replace(frame) {
-                let _ = previous.Close();
-            }
-        }
-        if let Some(frame) = latest {
-            let size = frame.ContentSize()?;
-            pixels::dimensions(size.Width, size.Height)?;
-            if size != native.size {
-                frame.Close()?;
-                shared.0.lock().unwrap().latest = None;
-                epoch += 1;
-                valid_after = clock()?;
-                native.pool.Recreate(
-                    &native.winrt_device,
-                    DirectXPixelFormat::R16G16B16A16Float,
-                    2,
-                    size,
-                )?;
-                native.size = size;
-                continue;
-            }
-            let source_time = frame.SystemRelativeTime()?.Duration as f64 / 10_000_000.0;
-            if source_time >= valid_after && Instant::now() >= next_copy {
-                let before = native.geometry()?;
-                let result = native.copy(&frame);
-                let close_result = frame.Close();
-                let bytes = result?;
-                close_result?;
-                let after = native.geometry()?;
-                if before != after || native.closed.load(Ordering::Acquire) {
-                    shared.0.lock().unwrap().latest = None;
-                    layout = None;
-                    continue;
-                }
-                let (surface, client) = before;
-                if surface[2] != size.Width || surface[3] != size.Height {
-                    return Err(Failure::new("unsupported_layout", "WGC extent does not match physical DWM/monitor bounds; crop mapping is unverified"));
-                }
-                let content = pixels::client_rect(surface, client, size.Width, size.Height)?;
-                sequence += 1;
-                let (scope, window_id, pid) = match native.target {
-                    Target::Window { window_id, pid } => {
-                        ("selected_window", Some(window_id), Some(pid))
+                match native.geometry() {
+                    Ok(current) => {
+                        if layout.as_ref() != Some(&current) {
+                            epoch += 1;
+                            valid_after = clock()?;
+                            let mut state = shared.0.lock().unwrap();
+                            state.replace_live(None, None, &native.closed, stop)?;
+                            layout = Some(current);
+                        }
                     }
-                    Target::Display { .. } => ("display", None, None),
-                };
-                let metadata = json!({"backend":"windows_graphics_capture","scope":scope,"session_id":id,"window_id":window_id,"pid":pid,"width":size.Width,"height":size.Height,"row_stride":size.Width*4,"pixel_format":"BGRA8","content_rect":content,"desktop_bounds":surface,"frame_sequence":sequence,"source_time":source_time,"acquired_at":clock()?,"layout_epoch":epoch});
-                let mut state = shared.0.lock().unwrap();
-                state.replace_live(
-                    Some(Frame {
-                        metadata,
-                        pixels: Arc::new(bytes),
-                    }),
-                    None,
-                    &native.closed,
-                    stop,
-                )?;
-                shared.1.notify_all();
-                next_copy = Instant::now() + Duration::from_secs_f64(1.0 / fps as f64);
-            } else {
-                frame.Close()?;
+                    Err(error) if error.code == "minimized" => {
+                        layout = None;
+                        valid_after = clock()?;
+                        let mut state = shared.0.lock().unwrap();
+                        state.replace_live(None, Some(error), &native.closed, stop)?;
+                        shared.1.notify_all();
+                        drop(state);
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+                // Drain at most the bounded pool capacity. Never retain a native frame after Close.
+                let mut latest: Option<Direct3D11CaptureFrame> = None;
+                for _ in 0..2 {
+                    let frame = match native.pool.TryGetNextFrame() {
+                        Ok(frame) => frame,
+                        Err(error) if error.code().0 as u32 == 0x80004003 => break,
+                        Err(error) => return Err(error.into()),
+                    };
+                    if let Some(previous) = latest.replace(frame) {
+                        let _ = previous.Close();
+                    }
+                }
+                if let Some(frame) = latest {
+                    let size = frame.ContentSize()?;
+                    pixels::dimensions(size.Width, size.Height)?;
+                    if size != native.size {
+                        frame.Close()?;
+                        shared.0.lock().unwrap().latest = None;
+                        epoch += 1;
+                        valid_after = clock()?;
+                        native.pool.Recreate(
+                            &native.winrt_device,
+                            DirectXPixelFormat::R16G16B16A16Float,
+                            2,
+                            size,
+                        )?;
+                        native.size = size;
+                        continue;
+                    }
+                    let source_time = frame.SystemRelativeTime()?.Duration as f64 / 10_000_000.0;
+                    if source_time >= valid_after && Instant::now() >= next_copy {
+                        let before = native.geometry()?;
+                        let result = native.copy(&frame);
+                        let close_result = frame.Close();
+                        let bytes = result?;
+                        close_result?;
+                        let after = native.geometry()?;
+                        if before != after || native.closed.load(Ordering::Acquire) {
+                            shared.0.lock().unwrap().latest = None;
+                            layout = None;
+                            continue;
+                        }
+                        let (surface, client) = before;
+                        if surface[2] != size.Width || surface[3] != size.Height {
+                            return Err(Failure::new("unsupported_layout", "WGC extent does not match physical DWM/monitor bounds; crop mapping is unverified"));
+                        }
+                        let content =
+                            pixels::client_rect(surface, client, size.Width, size.Height)?;
+                        sequence += 1;
+                        let (scope, window_id, pid) = match native.target {
+                            Target::Window { window_id, pid } => {
+                                ("selected_window", Some(window_id), Some(pid))
+                            }
+                            Target::Display { .. } => ("display", None, None),
+                        };
+                        let metadata = json!({"backend":"windows_graphics_capture","scope":scope,"session_id":id,"window_id":window_id,"pid":pid,"width":size.Width,"height":size.Height,"row_stride":size.Width*4,"pixel_format":"BGRA8","content_rect":content,"desktop_bounds":surface,"frame_sequence":sequence,"source_time":source_time,"acquired_at":clock()?,"layout_epoch":epoch});
+                        let mut state = shared.0.lock().unwrap();
+                        state.replace_live(
+                            Some(Frame {
+                                metadata,
+                                pixels: Arc::new(bytes),
+                            }),
+                            None,
+                            &native.closed,
+                            stop,
+                        )?;
+                        shared.1.notify_all();
+                        next_copy = Instant::now() + Duration::from_secs_f64(1.0 / fps as f64);
+                    } else {
+                        frame.Close()?;
+                    }
+                }
+                if let Err(error) = native.device.GetDeviceRemovedReason() {
+                    return Err(Failure::new(
+                        "device_lost",
+                        format!(
+                            "D3D11 device removed: {} (HRESULT 0x{:08X}); session invalidated",
+                            error.message(),
+                            error.code().0 as u32
+                        ),
+                    ));
+                }
+                thread::sleep(Duration::from_millis(5));
             }
-        }
-        if let Err(error) = native.device.GetDeviceRemovedReason() {
-            return Err(Failure::new(
+            Ok(())
+        })();
+        let Err(mut error) = outcome else {
+            return Ok(());
+        };
+        if let Err(removed) = native.device.GetDeviceRemovedReason() {
+            error = Failure::new(
                 "device_lost",
                 format!(
-                    "D3D11 device removed: {} (HRESULT 0x{:08X}); session invalidated",
-                    error.message(),
-                    error.code().0 as u32
+                    "{}; D3D11 removal: {} (HRESULT 0x{:08X})",
+                    error.message,
+                    removed.message(),
+                    removed.code().0 as u32
                 ),
+            );
+        }
+        if !can_recover_device(&error, recovered_device) {
+            return Err(error);
+        }
+        ensure_live(&closed, stop)?;
+        // Clear pixels before replacing the GPU source; sequence/epoch remain session-owned.
+        shared
+            .0
+            .lock()
+            .unwrap()
+            .replace_live(None, None, &closed, stop)?;
+        native.geometry()?;
+        recovered_device = true;
+        drop(native);
+        native =
+            Native::open(target.clone(), shared.clone(), closed.clone()).map_err(|reopen| {
+                Failure::new(
+                    reopen.code,
+                    format!("{}; recovery failed: {}", error.message, reopen.message),
+                )
+            })?;
+        if native.process_created != process_created {
+            return Err(Failure::new(
+                "identity_changed",
+                "Selected process changed during device recovery",
             ));
         }
-        thread::sleep(Duration::from_millis(5));
+        epoch += 1;
+        valid_after = clock()?;
+        layout = None;
+        next_copy = Instant::now();
     }
-    Ok(())
 }
 
 impl Native {
@@ -746,6 +807,20 @@ mod tests {
             closed: Arc::new(AtomicBool::new(false)),
             done,
         }
+    }
+    #[test]
+    fn device_recovery_is_specific_and_bounded() {
+        for code in [0x887A0005, 0x887A0006, 0x887A0007, 0x887A0020] {
+            assert!(device_loss_hresult(code));
+        }
+        assert!(!device_loss_hresult(0x80004005));
+        let removed = Failure::new("device_lost", "HRESULT details");
+        assert!(can_recover_device(&removed, false));
+        assert!(!can_recover_device(&removed, true));
+        assert!(!can_recover_device(
+            &Failure::new("target_closed", "closed"),
+            false
+        ));
     }
     #[test]
     fn close_invalidates_owned_pixels_before_source_shutdown() {

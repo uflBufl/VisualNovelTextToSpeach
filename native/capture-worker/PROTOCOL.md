@@ -33,8 +33,8 @@ Error header (no payload):
 {"version":1,"id":1,"ok":false,"payload_bytes":0,"error":{"code":"target_closed","message":"Target closed"}}
 ```
 
-`open` result contains `backend` (`macos_screencapturekit` or
-`windows_graphics_capture`), matching `session_id`, and `clock_now` in worker
+`open` result contains `backend` (`macos_screencapturekit`,
+`windows_graphics_capture`, or `linux_x11_composite`), matching `session_id`, and `clock_now` in worker
 monotonic seconds. No permission request or capture occurs in a protocol self-test.
 
 `capture` result contains:
@@ -47,7 +47,7 @@ monotonic seconds. No permission request or capture occurs in a protocol self-te
 | `width`, `height` | Positive integer output pixel dimensions, at most 32 MiPixels |
 | `row_stride` | Exactly `width * 4`; rows are packed |
 | `pixel_format` | `BGRA8` |
-| `content_rect` | Integer `[x,y,width,height]` canonical extent in output pixels: client area on Windows, whole window without shadows on macOS; contained in the output buffer |
+| `content_rect` | Integer `[x,y,width,height]` canonical extent in output pixels: client area on Windows, whole window without shadows on macOS, client area without border on X11; contained in the output buffer |
 | `desktop_bounds` | Integer `[x,y,width,height]` for diagnostics, in native desktop coordinates (rounded logical points on macOS); never used as a pixel crop |
 | `frame_sequence` | Positive native buffer sequence; can repeat when the source is unchanged, never regresses |
 | `source_time` | Native source time in worker monotonic seconds, or null if unavailable |
@@ -60,3 +60,17 @@ into an immutable frame before handing it to a consumer. Worker clock values are
 not Python clock values: a probe records Python request/response times separately.
 No part of this protocol establishes that protected, hidden, minimized, or offscreen
 content is capturable; native results and live qualification determine that.
+
+The Linux worker runs as `python -m vntts.x11_capture_worker` using the same
+protocol. It requires X11 Composite >=0.2 for window capture and RandR for
+explicit display capture. On X11, nonzero display IDs are RandR output IDs;
+zero selects the primary RandR output. It never substitutes the root drawable
+for a selected window. Its synchronous X11 requests run only inside the owned
+helper, which the parent terminates on its request deadline or cancellation.
+
+macOS native errors retain `native_domain` and `native_code` in the error
+object as well as in its message. Only application connection interruption
+allows one stream recreation per capture request under the original deadline.
+Windows allows one device-loss source recreation per session; subsequent loss
+fails explicitly. Both recreations invalidate cached pixels before replacing
+the source and preserve nondecreasing session epochs and frame sequences.

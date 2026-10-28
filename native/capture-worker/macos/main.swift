@@ -12,10 +12,21 @@ private let maximumRequestBytes = 65_536
 struct CaptureFailure: Error {
     let code: String
     let message: String
+    var nativeDomain: String? = nil
+    var nativeCode: Int? = nil
 }
 
 func fail(_ code: String, _ message: String) -> CaptureFailure {
     CaptureFailure(code: code, message: message)
+}
+
+func nativeFailure(_ error: Error) -> CaptureFailure {
+    if let failure = error as? CaptureFailure { return failure }
+    let native = error as NSError
+    let interrupted = native.domain == SCStreamErrorDomain && native.code == SCStreamError.Code.failedApplicationConnectionInterrupted.rawValue
+    return CaptureFailure(code: interrupted ? "connection_interrupted" : "native_error",
+                          message: "\(native.localizedDescription) (\(native.domain), code \(native.code))",
+                          nativeDomain: native.domain, nativeCode: native.code)
 }
 
 func clockNow() -> Double {
@@ -38,6 +49,28 @@ func retryLayoutChanges<T>(deadline: Double, acquire: () async throws -> T) asyn
         } catch let error as CaptureFailure where error.code == "layout_changed" {
             let remaining = try remainingTime(until: deadline)
             try await Task.sleep(nanoseconds: UInt64(min(0.025, remaining) * 1_000_000_000))
+        }
+    }
+}
+
+func retryCaptureChanges<T>(deadline: Double, recover: () async throws -> Void,
+                            acquire: () async throws -> T) async throws -> T {
+    var recoveredConnection = false
+    return try await retryLayoutChanges(deadline: deadline) {
+        while true {
+            do { return try await acquire() }
+            catch {
+                let failure = nativeFailure(error)
+                if failure.code == "layout_changed" {
+                    try await recover()
+                    throw failure
+                }
+                guard failure.code == "connection_interrupted", !recoveredConnection else { throw failure }
+                recoveredConnection = true
+                _ = try remainingTime(until: deadline)
+                try await recover()
+                _ = try remainingTime(until: deadline)
+            }
         }
     }
 }
@@ -129,7 +162,10 @@ func readRequest() throws -> Data? {
 func reply(_ id: Int, result: [String: Any] = [:], pixels: Data = Data(), error: CaptureFailure? = nil) throws {
     var value: [String: Any] = ["version": 1, "id": id, "ok": error == nil, "payload_bytes": pixels.count]
     if let error {
-        value["error"] = ["code": error.code, "message": error.message]
+        var details: [String: Any] = ["code": error.code, "message": error.message]
+        if let domain = error.nativeDomain { details["native_domain"] = domain }
+        if let code = error.nativeCode { details["native_code"] = code }
+        value["error"] = details
     } else {
         value["result"] = result
     }
@@ -163,6 +199,23 @@ struct Target {
             throw fail("invalid_request", "Unknown capture target kind")
         }
     }
+}
+
+struct ProcessIdentity: Equatable {
+    let seconds: Int
+    let microseconds: Int
+}
+
+func processIdentity(_ pid: pid_t) throws -> ProcessIdentity {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var query = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&query, u_int(query.count), &info, &size, nil, 0) == 0,
+          size == MemoryLayout<kinfo_proc>.stride, info.kp_proc.p_starttime.tv_sec > 0 else {
+        throw fail("identity_changed", "Selected process lifetime is unavailable")
+    }
+    return ProcessIdentity(seconds: info.kp_proc.p_starttime.tv_sec,
+                           microseconds: Int(info.kp_proc.p_starttime.tv_usec))
 }
 
 struct Geometry: Equatable {
@@ -276,15 +329,39 @@ final class FrameStore {
     }
 }
 
+func canonicalRect(content: CGRect, contentScale: Double, scaleFactor: Double,
+                   width: Int, height: Int, expected: CGSize) throws -> CGRect {
+    guard contentScale.isFinite, scaleFactor.isFinite, contentScale > 0, scaleFactor > 0,
+          [content.minX, content.minY, content.width, content.height].allSatisfy({ $0.isFinite }) else {
+        throw fail("invalid_frame", "Invalid native content geometry")
+    }
+    let pixels = CGRect(x: content.minX * scaleFactor, y: content.minY * scaleFactor,
+                        width: content.width * scaleFactor, height: content.height * scaleFactor)
+    guard abs(contentScale - 1) < 0.001,
+          abs(pixels.width - expected.width) < 1, abs(pixels.height - expected.height) < 1 else {
+        throw fail("layout_changed", "Native content scale or extent changed")
+    }
+    let rounded = CGRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
+                         width: expected.width, height: expected.height)
+    guard rounded.minX >= 0, rounded.minY >= 0,
+          rounded.maxX <= CGFloat(width), rounded.maxY <= CGFloat(height) else {
+        throw fail("invalid_frame", "Native content lies outside the pixel buffer")
+    }
+    return rounded
+}
+
 @available(macOS 14.0, *)
 final class Output: NSObject, SCStreamOutput, SCStreamDelegate {
     let store: FrameStore
     let epoch: Int
+    let expected: CGSize
 
-    init(store: FrameStore, epoch: Int) { self.store = store; self.epoch = epoch }
+    init(store: FrameStore, epoch: Int, width: Int, height: Int) {
+        self.store = store; self.epoch = epoch; self.expected = CGSize(width: width, height: height)
+    }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        store.invalidate(fail("native_error", "ScreenCaptureKit stopped: \(error.localizedDescription)"), epoch: epoch)
+        store.invalidate(nativeFailure(error), epoch: epoch)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -317,9 +394,24 @@ final class Output: NSObject, SCStreamOutput, SCStreamDelegate {
                 guard let base = CVPixelBufferGetBaseAddress(buffer) else { throw fail("invalid_frame", "Native frame has no pixels") }
                 let width = CVPixelBufferGetWidth(buffer)
                 let height = CVPixelBufferGetHeight(buffer)
-                let pixels = try packedPixels(base, width: width, height: height, stride: CVPixelBufferGetBytesPerRow(buffer))
+                guard let info = attachments.first,
+                      let rawRect = info[.contentRect] as? [String: Any],
+                      let content = CGRect(dictionaryRepresentation: rawRect as CFDictionary),
+                      let contentScale = info[.contentScale] as? Double,
+                      let scaleFactor = info[.scaleFactor] as? Double else {
+                    throw fail("invalid_frame", "Native frame is missing content geometry")
+                }
+                let crop = try canonicalRect(content: content, contentScale: contentScale, scaleFactor: scaleFactor,
+                                             width: width, height: height, expected: expected)
+                let stride = CVPixelBufferGetBytesPerRow(buffer)
+                try checkedSize(width, height)
+                guard stride >= width * 4, stride <= maximumPixels * 4 / height else {
+                    throw fail("invalid_stride", "Invalid native pixel stride")
+                }
+                let pixels = try packedPixels(base.advanced(by: Int(crop.minY) * stride + Int(crop.minX) * 4),
+                                              width: Int(crop.width), height: Int(crop.height), stride: stride)
                 let presentation = sample.presentationTimeStamp.seconds
-                store.accept(pixels, width: width, height: height,
+                store.accept(pixels, width: Int(crop.width), height: Int(crop.height),
                              sourceTime: presentation.isFinite ? presentation : nil, epoch: epoch)
             } catch {
                 store.invalidate(error as? CaptureFailure ?? fail("invalid_frame", "Unable to copy native pixels"), epoch: epoch)
@@ -338,13 +430,24 @@ final class CaptureSession {
     private var output: Output?
     private var layout: Geometry?
     private var scale: Double?
+    private var processLaunch: ProcessIdentity?
     private let queue = DispatchQueue(label: "vntts.window-capture.frames", qos: .userInitiated)
 
     init(target: Target, sessionID: String, maxFPS: Double) {
         self.target = target; self.sessionID = sessionID; self.maxFPS = maxFPS
     }
 
+    private func validateProcess() throws {
+        guard let pid = target.pid else { return }
+        let launch = try processIdentity(pid)
+        if let processLaunch, processLaunch != launch {
+            throw fail("identity_changed", "Selected process lifetime changed")
+        }
+        processLaunch = launch
+    }
+
     func open() async throws {
+        try validateProcess()
         guard CGPreflightScreenCaptureAccess() else {
             throw fail("permission_denied", "Allow Screen Recording access for the application, then start capture again")
         }
@@ -378,7 +481,7 @@ final class CaptureSession {
         config.ignoreShadowsSingleWindow = true
         config.shouldBeOpaque = true
         if #available(macOS 15.0, *) { config.captureDynamicRange = .SDR }
-        let nextOutput = Output(store: store, epoch: store.reset(width: width, height: height))
+        let nextOutput = Output(store: store, epoch: store.reset(width: width, height: height), width: width, height: height)
         let next = SCStream(filter: filter, configuration: config, delegate: nextOutput)
         try next.addStreamOutput(nextOutput, type: .screen, sampleHandlerQueue: queue)
         stream = next; output = nextOutput; layout = snapshot; scale = displayScale(snapshot.displayID)
@@ -394,16 +497,17 @@ final class CaptureSession {
 
     func capture(timeout: Double) async throws -> (Frame, [String: Any]) {
         let deadline = clockNow() + timeout
-        return try await retryLayoutChanges(deadline: deadline) {
-            do { return try await self.captureStable(deadline: deadline) }
-            catch let error as CaptureFailure where error.code == "layout_changed" {
-                await self.close()
-                throw error
-            }
+        return try await retryCaptureChanges(deadline: deadline, recover: {
+            await self.close()
+            try self.validateProcess()
+            _ = try geometry(self.target)
+        }) {
+            try await self.captureStable(deadline: deadline)
         }
     }
 
     private func captureStable(deadline: Double) async throws -> (Frame, [String: Any]) {
+        try validateProcess()
         let before: Geometry
         do { before = try geometry(target) }
         catch { store.invalidate(fail("target_unavailable", "Selected capture target is unavailable")); throw error }
@@ -413,6 +517,7 @@ final class CaptureSession {
             try await open()
         }
         let frame = try store.capture(deadline: deadline)
+        try validateProcess()
         let after: Geometry
         do { after = try geometry(target) }
         catch { store.invalidate(fail("target_unavailable", "Selected capture target is unavailable")); throw error }
@@ -509,6 +614,44 @@ func selfTest() async throws {
         _ = try store.capture(deadline: clockNow() - 1)
         throw fail("self_test", "Expired frame deadline returned pixels")
     } catch let error as CaptureFailure where error.code == "frame_timeout" {}
+    guard try processIdentity(getpid()) == processIdentity(getpid()) else {
+        throw fail("self_test", "Process identity changed within one lifetime")
+    }
+    let interrupted = NSError(domain: SCStreamErrorDomain,
+                              code: SCStreamError.Code.failedApplicationConnectionInterrupted.rawValue)
+    let preserved = nativeFailure(interrupted)
+    guard preserved.code == "connection_interrupted", preserved.nativeDomain == interrupted.domain,
+          preserved.nativeCode == interrupted.code else { throw fail("self_test", "Native error details lost") }
+    var recoveries = 0
+    attempts = 0
+    do {
+        let _: Int = try await retryCaptureChanges(deadline: clockNow() + 1, recover: { recoveries += 1 }) {
+            attempts += 1
+            throw interrupted
+        }
+        throw fail("self_test", "Second connection interruption recovered")
+    } catch let error as CaptureFailure where error.code == "connection_interrupted" {}
+    guard attempts == 2, recoveries == 1 else { throw fail("self_test", "Connection recovery was not bounded") }
+    for code in ["permission_denied", "target_lost", "native_error"] {
+        recoveries = 0
+        do {
+            let _: Int = try await retryCaptureChanges(deadline: clockNow() + 1, recover: { recoveries += 1 }) {
+                throw fail(code, "terminal")
+            }
+            throw fail("self_test", "Terminal failure recovered")
+        } catch let error as CaptureFailure where error.code == code {}
+        guard recoveries == 0 else { throw fail("self_test", "Recovered terminal failure") }
+    }
+    let crop = try canonicalRect(content: CGRect(x: 2, y: 1, width: 2, height: 1), contentScale: 1,
+                                 scaleFactor: 2, width: 10, height: 4, expected: CGSize(width: 4, height: 2))
+    guard crop == CGRect(x: 4, y: 2, width: 4, height: 2) else { throw fail("self_test", "Content padding crop failed") }
+    for scale in [0.5, 2.0] {
+        do {
+            _ = try canonicalRect(content: CGRect(x: 0, y: 0, width: 2, height: 1), contentScale: scale,
+                                  scaleFactor: 2, width: 4, height: 2, expected: CGSize(width: 4, height: 2))
+            throw fail("self_test", "Rescaled frame accepted as canonical")
+        } catch let error as CaptureFailure where error.code == "layout_changed" {}
+    }
     print("macOS capture protocol, stride, frame ownership and layout recovery self-tests passed")
 }
 
@@ -555,7 +698,7 @@ struct Main {
                         try reply(identifier, result: metadata, pixels: frame.pixels)
                     }
                 } catch {
-                    let failure = error as? CaptureFailure ?? fail("native_error", error.localizedDescription)
+                    let failure = nativeFailure(error)
                     try reply(identifier, error: failure)
                 }
             }
