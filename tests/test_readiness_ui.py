@@ -10,7 +10,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
-from vntts.onboarding import DiagnosticResult  # noqa: E402
+from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.readiness_ui import ReadinessDialog  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
@@ -40,6 +40,48 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertNotIn("cargo build", dialog.remediation_reason.text())
         self.assertIn("automatically", dialog.remediation_reason.text())
         self.assertNotIn("Connect", dialog.remediation_reason.text())
+
+    def test_macos_hotkey_warning_points_to_controls_without_retry_or_fix(self):
+        with patch("vntts.onboarding.sys.platform", "darwin"):
+            result = OnboardingDiagnostics()._check_hotkeys(AppSettings())
+        diagnostics = Mock()
+        diagnostics.run.return_value = (result,)
+        pool = ManualThreadPool()
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.select_check("Hotkeys")
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.status, "warning")
+        self.assertIsNone(result.remediation)
+        self.assertIn(
+            "control window or compact controls", dialog.remediation_reason.text()
+        )
+        self.assertNotIn("run checks again", dialog.remediation_reason.text().lower())
+        self.assertTrue(dialog.remediation_button.isHidden())
+        dialog.close()
+
+    def test_invalid_non_macos_hotkey_still_offers_settings(self):
+        settings = AppSettings(read_hotkey="<ctrl>+<alt>+<delete>")
+        with (
+            patch("vntts.onboarding.sys.platform", "win32"),
+            self.assertLogs("vntts.onboarding", level="ERROR"),
+        ):
+            result = OnboardingDiagnostics()._check_hotkeys(settings)
+        diagnostics = Mock()
+        diagnostics.run.return_value = (result,)
+        pool = ManualThreadPool()
+        dialog = ReadinessDialog(settings, diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.select_check("Hotkeys")
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.remediation, "settings")
+        self.assertEqual(dialog.remediation_button.text(), "Open Settings")
+        self.assertTrue(dialog.remediation_button.isEnabled())
+        dialog.close()
 
     def test_requested_audio_check_opens_full_copyable_details(self):
         for pending in (True, False):

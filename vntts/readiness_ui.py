@@ -441,8 +441,12 @@ class ReadinessDialog(QDialog):
         action = actions.get(remediation) if remediation is not None else None
         if action is None:
             self.remediation_reason.setText(
-                f"No automatic fix for {result.name}. Review the full details, "
-                "then run checks again; copy the report if you need support."
+                result.message
+                if result.status == "warning" and remediation is None
+                else (
+                    f"No automatic fix for {result.name}. Review the full details, "
+                    "then run checks again; copy the report if you need support."
+                )
             )
             return
         label, icon = action

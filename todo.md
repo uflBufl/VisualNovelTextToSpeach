@@ -60,11 +60,6 @@
       once. Correlate cancellation and actual PCM, including speaker announcements;
       confirm no replacement after audio admission and no duplicate after
       repeated OCR or Stop/Pause. Keep this gate separate from the audio timeout.
-- [ ] **UX-27-02: readiness suggests rerunning an unsupported hotkey check.**
-      The warning correctly says global hotkeys are unavailable on macOS and
-      recommends visible controls, but the selected-check footer says to review
-      details and run checks again. Use guidance appropriate to a permanent
-      platform limitation instead of implying a check retry can resolve it.
 - [ ] **UX-27-03: verify dirty state after voice auditions.** Opening Voices ->
       Edit voices shows the saved Narrator/Centurion reference with Save disabled.
       After only Original and Preview clicks on that selection, Save is enabled
