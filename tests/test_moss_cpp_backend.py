@@ -97,6 +97,11 @@ if startup_log.exists(): print(startup_log.read_text(), flush=True)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
+        if (root / 'info-error').exists():
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write((root / 'info-error').read_bytes())
+            return
         self.send_response(200)
         self.end_headers()
         info = dict(
@@ -144,7 +149,8 @@ class Handler(BaseHTTPRequestHandler):
         if body['text'] == 'Fail.':
             self.send_response(500)
             self.end_headers()
-            self.wfile.write(b'failed generation')
+            failure = root / 'failure-response'
+            self.wfile.write(failure.read_bytes() if failure.exists() else b'failed generation')
             return
         audio = io.BytesIO()
         with wave.open(audio, 'wb') as wav:
@@ -867,7 +873,8 @@ class MossCppBackendTest(unittest.TestCase):
 
     def test_generation_cleanup_keeps_real_http_failure(self):
         backend = self.backend()
-        primary = TTSSynthesisError("MOSS C++ generation failed (HTTP 500)")
+        message = "MOSS C++ generation failed (HTTP 500): failed generation"
+        primary = TTSSynthesisError(message)
         log, directory = backend.server_log, backend.server_directory
         original_close, original_cleanup = log.close, directory.cleanup
 
@@ -888,7 +895,7 @@ class MossCppBackendTest(unittest.TestCase):
             self.assertRaises(TTSSynthesisError) as raised,
         ):
             backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
-        error.assert_called_once_with("MOSS C++ generation failed (HTTP 500)")
+        error.assert_called_once_with(message)
         self.assertIs(raised.exception, primary)
         self.assertEqual(
             primary.__notes__,
@@ -904,6 +911,38 @@ class MossCppBackendTest(unittest.TestCase):
             SynthesisCompletion.COMPLETE,
         )
         self.assertEqual(len(self.children), 2)
+
+    def test_http_error_detail_handles_empty_unreadable_and_long_responses(self):
+        backend = self.backend()
+        prefix = "MOSS C++ generation failed (HTTP 500)"
+        for response, expected in (
+            (b"", prefix),
+            (b" \n\t ", prefix),
+            (b"\xff\xfe", prefix),
+            (b"\x00\x01", prefix),
+            (
+                "  Не удалось\n загрузить модель.\t".encode("utf-8"),
+                f"{prefix}: Не удалось загрузить модель.",
+            ),
+            (b"x" * 2048, f"{prefix}: " + "x" * 2048),
+            (b"x" * 3000, f"{prefix}: " + "x" * 2048 + "..."),
+        ):
+            with self.subTest(response=response[:40]):
+                (self.root / "failure-response").write_bytes(response)
+                with self.assertRaises(TTSSynthesisError) as raised:
+                    backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
+                self.assertEqual(str(raised.exception), expected)
+                self.assertIsNotNone(self.children[-1].poll())
+
+    def test_startup_http_error_preserves_reason_and_stops_server(self):
+        (self.root / "info-error").write_text("model initialization failed\n")
+        with self.assertRaises(TTSConfigurationError) as raised:
+            self.backend()
+        self.assertEqual(
+            str(raised.exception),
+            "MOSS C++ server /info failed (HTTP 500): model initialization failed",
+        )
+        self.assertIsNotNone(self.children[-1].poll())
 
     def test_generation_cleanup_keeps_fatal_interruption(self):
         backend = self.backend()

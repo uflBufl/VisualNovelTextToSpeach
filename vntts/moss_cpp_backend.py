@@ -68,6 +68,18 @@ _THREAD_SUSPEND_RESUME = 0x0002
 _PROCESS_ASSIGN_JOB = 0x0101
 
 
+def _http_failure_message(message: str, status: int, data: bytes) -> str:
+    message = f"{message} (HTTP {status})"
+    try:
+        detail = " ".join(data.decode("utf-8").split())
+    except UnicodeDecodeError:
+        return message
+    if not detail or not detail.isprintable():
+        return message
+    suffix = "..." if len(detail) > 2048 else ""
+    return f"{message}: {detail[:2048]}{suffix}"
+
+
 class _CancellationSignal(Protocol):
     def is_set(self) -> bool: ...
 
@@ -1369,7 +1381,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 pause.wait(0.1)
                 continue
             if status != 200:
-                raise TTSConfigurationError("MOSS C++ server /info failed")
+                raise TTSConfigurationError(
+                    _http_failure_message("MOSS C++ server /info failed", status, data)
+                )
             info = json.loads(data)
             if not isinstance(info, dict) or any(
                 (
@@ -1772,7 +1786,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             http_status = status
             if status != 200:
                 reason = "http-error"
-                raise TTSSynthesisError(f"MOSS C++ generation failed (HTTP {status})")
+                raise TTSSynthesisError(
+                    _http_failure_message("MOSS C++ generation failed", status, data)
+                )
             stage = "decode-response"
             response_started = monotonic()
             headers = {key.lower(): value for key, value in headers.items()}

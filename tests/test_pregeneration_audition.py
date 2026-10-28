@@ -36,6 +36,7 @@ from vntts.pregeneration_audition import (
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import VoiceCandidate, VoicePlanStore
+from vntts.services.tts_engine import TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -1487,6 +1488,29 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             self.assertIsNone(preview.seed)
             self.assertIsNone(backend.requests[0].seed)
+
+    def test_native_backend_failure_reason_reaches_preview_caller(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kwargs: backend
+            )
+            self.addCleanup(service.close)
+            failure = TTSSynthesisError(
+                "MOSS C++ generation failed (HTTP 500): failed generation"
+            )
+            with (
+                patch.object(backend, "render", side_effect=failure),
+                self.assertRaises(VoiceAuditionError) as raised,
+            ):
+                service.generate(plan, group, group.candidates[0].source_id)
+            self.assertEqual(
+                str(raised.exception),
+                f"Unable to generate the voice preview: {failure}",
+            )
+            self.assertIs(raised.exception.__cause__, failure)
 
     def test_rejects_incomplete_provider_result_without_publishing_wav(self):
         with TemporaryDirectory() as temporary_directory:

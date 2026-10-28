@@ -1476,12 +1476,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
 
-- [ ] **P2 - Preserve native MOSS generation error details.** The C++ runtime's
-      non-200 /tts branch discards the response body and exposes only HTTP status.
-      Preserve bounded nonempty text detail and retain a useful empty-body fallback;
-      verify the shared backend and preview propagation with the existing fake
-      server. This is separate from the default Apple Silicon MLX worker path.
-
 ## MCP Unicode text input
 
 - [ ] Fix the PySide6 MCP `type_text` input path for Unicode. Native macOS reproduction: focus a QPlainTextEdit and call `type_text` with Cyrillic; QtTest aborts the application at `testlib/qasciikey.cpp:192` (`ASSERT: "false"`). Use Unicode-capable Qt text/input events for non-ASCII instead of ASCII-only simulated keys, preserving cursor/selection and textChanged behavior. Gate: Cyrillic, accented Latin and mixed text append/replace correctly without aborting; ordinary ASCII shortcuts still work. Isolated UI fixtures only; this failure is in MCP input simulation, not evidence of normal keyboard input failing.
