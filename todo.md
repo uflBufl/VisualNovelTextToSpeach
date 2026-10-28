@@ -1480,10 +1480,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] **P2 - Clarify copied diagnostics.** Check that copied diagnostics include the actual inner foreground preview failure as well as source discovery and background preparation failures. Gate: saved/candidate voices can be identified and auditioned without opening diagnostics; refresh/import remain discoverable with clear side effects and cancellation behavior.
 
-## Saved voice reference metadata
-
-- [ ] Preserve source transcripts/excerpts when saving game references into VoiceLibrary and recover them for old bindings only when the exact audio/source can be verified. A real saved Narrator/Centurion binding has audio bytes and donor provenance but no transcript: the editor can play it, while original text is unavailable and Use game phrase is disabled. Gate: saved references keep their original phrase after reopen, missing historical text stays explicit, no guessed transcript or assignment changes.
-
 ## MCP Unicode text input
 
 - [ ] Fix the PySide6 MCP `type_text` input path for Unicode. Native macOS reproduction: focus a QPlainTextEdit and call `type_text` with Cyrillic; QtTest aborts the application at `testlib/qasciikey.cpp:192` (`ASSERT: "false"`). Use Unicode-capable Qt text/input events for non-ASCII instead of ASCII-only simulated keys, preserving cursor/selection and textChanged behavior. Gate: Cyrillic, accented Latin and mixed text append/replace correctly without aborting; ordinary ASCII shortcuts still work. Isolated UI fixtures only; this failure is in MCP input simulation, not evidence of normal keyboard input failing.
