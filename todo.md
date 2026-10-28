@@ -1476,8 +1476,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
 
-- [ ] **P2 - Make saved assignment changes recoverable.** Label saving with the target character and global scope, and provide an undo path for an already saved choice. Gate: undo restores that character's previous binding without changing other characters or prepared audio; deliberate keyboard save and cancellation remain accessible. Use copied data for verification.
-
 - [ ] **P2 - Clarify copied diagnostics.** Check that copied diagnostics include the actual inner foreground preview failure as well as source discovery and background preparation failures. Gate: saved/candidate voices can be identified and auditioned without opening diagnostics; refresh/import remain discoverable with clear side effects and cancellation behavior.
 
 ## MCP Unicode text input
