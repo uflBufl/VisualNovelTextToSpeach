@@ -1472,9 +1472,16 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
 
-## Voices tab - remaining fixes from the October 24 native UI audit
+## Voice picker - explain unavailable Save
 
-- [ ] **P2 - Qualify selective regeneration for partly generated stories.** Change one character in a partly prepared story and verify that other characters' ready recordings survive, missing lines are completed, and the Stories preparation UI reports the exact reuse/new-work scope across chapters.
+- [ ] After choosing a different, unheard voice, explain why Save is disabled.
+      Native reproduction: change a character from one built-in preset to another;
+      the current/new voice cards appear, Save is disabled, and neither status nor
+      tooltip explains that a sample must be played first. Keep the audition gate;
+      show a brief hint to play Preview (or Original when available). Preserve
+      playback/error messages and the disabled unchanged-selection behavior.
+      Verify that successful playback enables Save for the changed choice and
+      the hint clears without hiding a failure reason.
 
 ## MCP Unicode text input
 
