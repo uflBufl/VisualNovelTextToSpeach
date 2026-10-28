@@ -386,6 +386,7 @@ class GameNarratorDialog(QDialog):
                 and self.voice_panel.reference_model.rowCount() > 0
             )
             if self.voice_panel.isHidden():
+                self.voice_panel.status.clear()
                 self.voice_panel.current_voice_box.show()
         return super().eventFilter(watched, event)
 
@@ -405,6 +406,8 @@ class GameNarratorDialog(QDialog):
         actions.addWidget(self.voice_panel.a_use)
         panel_layout = self.voice_panel.layout()
         assert panel_layout is not None
+        panel_layout.removeWidget(self.voice_panel.messages)
+        content.addWidget(self.voice_panel.messages)
         panel_layout.removeItem(self.voice_panel.outcome_actions)
         content.addLayout(actions)
 

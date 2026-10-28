@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -207,6 +208,112 @@ class GameNarratorTest(unittest.TestCase):
                     button.y(), scroll.mapTo(dialog, scroll.rect().bottomLeft()).y()
                 )
 
+    def test_preview_failures_stay_visible_and_independent_above_footer(self):
+        self.bind_narrator()
+        bindings = self.library.bindings()
+        cause = "The voice model could not be loaded: model.safetensors is missing."
+        for font_scale in (1, 2):
+            with self.subTest(font_scale=font_scale):
+                dialog = self.editor()
+                self.select(dialog, "catalog", source="character:centurion")
+                panel = dialog.voice_panel
+                panel.preview_text.setPlainText(
+                    f"Compare voices at font scale {font_scale}."
+                )
+                font = dialog.font()
+                font.setPointSizeF(font.pointSizeF() * font_scale)
+                dialog.setFont(font)
+                dialog.resize(900, 650)
+                dialog.show()
+                self.application.processEvents()
+                self.assertTrue(panel.messages.isHidden())
+                with (
+                    patch.object(
+                        self.service, "generate", side_effect=RuntimeError(cause)
+                    ),
+                    patch("vntts.support.record_game_import"),
+                ):
+                    panel.a_play.click()
+                    self.drain()
+                    candidate_message = panel.status.toPlainText()
+                    self.assertIn("Centurion", candidate_message)
+                    self.assertIn(cause, candidate_message)
+                    self.assertIn("retry", candidate_message)
+                    self.assertTrue(panel.current_status.isHidden())
+                    panel.current_play.click()
+                    self.drain()
+                current_message = panel.current_status.toPlainText()
+                self.assertIn("Rhiannon", current_message)
+                self.assertIn(cause, current_message)
+                self.assertEqual(panel.status.toPlainText(), candidate_message)
+                self.assertFalse(panel.a_use.isEnabled())
+                scroll = dialog.content_scroll
+                for position in (0, scroll.verticalScrollBar().maximum()):
+                    scroll.verticalScrollBar().setValue(position)
+                    panel._refresh_runtime()
+                    self.application.processEvents()
+                    self.assertIs(panel.messages.parentWidget(), dialog)
+                    for field in (panel.status, panel.current_status):
+                        self.assertTrue(field.isVisible())
+                        self.assertEqual(field.visibleRegion(), QRegion(field.rect()))
+                        self.assertLessEqual(
+                            field.height(), field.fontMetrics().lineSpacing() * 2 + 12
+                        )
+                        self.assertGreater(
+                            field.mapTo(dialog, field.rect().topLeft()).y(),
+                            dialog.editor_splitter.geometry().bottom(),
+                        )
+                        self.assertLess(
+                            field.mapTo(dialog, field.rect().bottomLeft()).y(),
+                            dialog.cancel_button.y(),
+                        )
+                panel.current_play.click()
+                self.drain()
+                self.assertNotIn(cause, panel.current_status.toPlainText())
+                self.assertEqual(panel.status.toPlainText(), candidate_message)
+                self.assertFalse(panel.a_use.isEnabled())
+                panel.a_play.click()
+                self.drain()
+                self.assertNotIn(cause, panel.status.toPlainText())
+                self.assertTrue(panel.a_use.isEnabled())
+                self.assertEqual(self.library.bindings(), bindings)
+                dialog.hide()
+
+    def test_candidate_failure_does_not_remain_after_source_becomes_unavailable(self):
+        dialog = self.editor()
+        dialog.resize(900, 650)
+        dialog.show()
+        self.select(dialog, "catalog", source="character:centurion")
+        panel = dialog.voice_panel
+        with (
+            patch.object(
+                self.service, "generate", side_effect=RuntimeError("engine unavailable")
+            ),
+            patch("vntts.support.record_game_import"),
+        ):
+            panel.a_play.click()
+            self.drain()
+        self.assertIn("Centurion", panel.status.toPlainText())
+        self.select(dialog, "catalog", source="character:rhiannon")
+        self.assertTrue(panel.status.isHidden())
+        self.assertNotIn("Centurion", panel.status.toPlainText())
+        self.select(dialog, "catalog", source="character:centurion")
+        with (
+            patch.object(
+                self.service, "generate", side_effect=RuntimeError("engine unavailable")
+            ),
+            patch("vntts.support.record_game_import"),
+        ):
+            panel.a_play.click()
+            self.drain()
+        self.assertIn("Centurion", panel.status.toPlainText())
+        dialog.catalog_choice.setCurrentIndex(-1)
+        self.drain()
+        panel._refresh_runtime()
+        self.assertTrue(panel.isHidden())
+        self.assertTrue(panel.status.isHidden())
+        self.assertNotIn("Centurion", panel.status.toPlainText())
+
     def test_saved_label_stays_separate_from_story_plan_and_current_audition(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "saved-story")
         self.library.select(group.character, route="voice", source_id="preset:alba")
@@ -254,7 +361,9 @@ class GameNarratorTest(unittest.TestCase):
         self.library.select("Narrator", route="voice", source_id="preset:alba")
         self.drain()
         self.player.play_bytes.assert_not_called()
-        self.assertIn("Current voice changed", dialog.voice_panel.current_status.text())
+        self.assertIn(
+            "Current voice changed", dialog.voice_panel.current_status.toPlainText()
+        )
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
 
     def test_current_narrator_fallback_uses_saved_bytes_without_assignment(self):

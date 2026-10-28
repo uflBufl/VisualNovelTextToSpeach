@@ -435,7 +435,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel.can_save_selection = allowed
                 if mode == "policy":
                     panel.start_policy(
-                        plan, group_id=group.group_id, choice_id="automatic", label="Auto"
+                        plan,
+                        group_id=group.group_id,
+                        choice_id="automatic",
+                        label="Auto",
                     )
                 else:
                     panel.start(plan, group_id=group.group_id)
@@ -1701,22 +1704,48 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=group.group_id)
             panel.show()
-            message = "Unable to prepare preview: " + "diagnostic detail " * 200
-            height = panel.status.height()
-            panel._set_status(message)
             self.application.processEvents()
-            self.assertEqual(panel.status.height(), height)
-            self.assertTrue(panel.status.isReadOnly())
-            self.assertGreater(panel.status.verticalScrollBar().maximum(), 0)
-            panel.status.selectAll()
-            panel.status.copy()
-            self.assertEqual(self.application.clipboard().text(), message)
+            self.assertTrue(panel.messages.isHidden())
+            self.assertTrue(panel.status.isHidden())
+            self.assertTrue(panel.current_status.isHidden())
+            messages = (
+                "Unable to prepare preview (Centurion): " + "candidate detail " * 200,
+                "Unable to prepare current voice preview (Rhiannon): "
+                + "current detail " * 200,
+            )
+            panel._set_status(messages[0])
+            panel._set_playback_status(messages[1], current_voice=True)
+            self.application.processEvents()
+            fields = (panel.status, panel.current_status)
+            heights = tuple(field.height() for field in fields)
+            self.assertFalse(panel.messages.isHidden())
+            for field, message in zip(fields, messages, strict=True):
+                self.assertIs(field.parentWidget(), panel.messages)
+                self.assertTrue(field.isReadOnly())
+                self.assertGreater(field.verticalScrollBar().maximum(), 0)
+                field.selectAll()
+                field.copy()
+                self.assertEqual(self.application.clipboard().text(), message)
+                field.verticalScrollBar().setValue(field.verticalScrollBar().maximum())
+                self.assertEqual(field.toPlainText(), message)
             font = panel.font()
             font.setPointSizeF(font.pointSizeF() * 2)
             panel.setFont(font)
             self.application.processEvents()
-            self.assertGreater(panel.status.height(), height)
-            self.assertEqual(panel.status.toPlainText(), message)
+            for field, message, height in zip(fields, messages, heights, strict=True):
+                self.assertGreater(field.height(), height)
+                self.assertLessEqual(
+                    field.height(), field.fontMetrics().lineSpacing() * 2 + 12
+                )
+                self.assertEqual(field.toPlainText(), message)
+            panel._set_status("")
+            self.assertTrue(panel.status.isHidden())
+            self.assertFalse(panel.current_status.isHidden())
+            self.assertFalse(panel.messages.isHidden())
+            self.assertEqual(panel.current_status.toPlainText(), messages[1])
+            panel._set_playback_status("", current_voice=True)
+            self.assertTrue(panel.current_status.isHidden())
+            self.assertTrue(panel.messages.isHidden())
 
     def test_original_buttons_play_exact_references_without_synthesis_and_recheck_files(
         self,

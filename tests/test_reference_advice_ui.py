@@ -395,6 +395,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(Path(directory))
             f.panel.start(f.plan, group_id=f.plan.groups[0].group_id)
             f.panel.resize(680, 700)
+            f.panel._set_status("Preparing preview...")
             self.application.processEvents()
             before = (
                 f.panel.sizeHint(),
@@ -609,6 +610,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f = self.fixture(Path(directory))
             f.panel.start(f.plan, group_id=f.group.group_id)
             self.assertTrue(f.panel.status.isHidden())
+            self.assertTrue(f.panel.messages.isHidden())
             first = f.candidates[0]
             failed = {first.source_id}
             f.service.preparation_state.side_effect = (
@@ -620,6 +622,8 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.panel._refresh_runtime()
             message = f.panel.status.toPlainText()
             self.assertFalse(f.panel.status.isHidden())
+            self.assertFalse(f.panel.messages.isHidden())
+            self.assertIn(first.source_character, message)
             self.assertIn("Model assets are missing", message)
             self.assertIn("retry", message)
             f.panel.status.selectAll()
@@ -627,6 +631,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertEqual(self.application.clipboard().text(), message)
             self.select_reference(f, 1)
             self.assertTrue(f.panel.status.isHidden())
+            self.assertTrue(f.panel.messages.isHidden())
             self.select_reference(f, 0)
             self.assertIn("Model assets are missing", f.panel.status.toPlainText())
             f.panel._set_status("Unable to save choices: disk full")
@@ -636,6 +641,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             failed.clear()
             f.panel._refresh_runtime()
             self.assertTrue(f.panel.status.isHidden())
+            self.assertTrue(f.panel.messages.isHidden())
             f.service.generate.assert_not_called()
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()

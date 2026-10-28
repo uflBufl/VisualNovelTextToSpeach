@@ -312,14 +312,16 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.panel.set_current_voice(plan, "Saved", playback_guard=guard)
         self.panel.play_current()
         self.run_tasks()
-        self.assertIn("Saved voice changed", self.panel.current_status.text())
+        self.assertIn("Saved voice changed", self.panel.current_status.toPlainText())
         self.assertEqual(self.panel._accepted_choice, accepted)
         self.assertTrue(self.panel.a_use.isEnabled())
         self.panel.set_current_voice(plan, "Saved")
         self.service.generate.return_value.audio_sha256 = "0" * 64
         self.panel.play_current()
         self.run_tasks()
-        self.assertIn("changed after validation", self.panel.current_status.text())
+        self.assertIn(
+            "changed after validation", self.panel.current_status.toPlainText()
+        )
         self.assertEqual(self.panel._accepted_choice, accepted)
         self.assertEqual(self.panel.player.play_bytes.call_count, 1)
 
