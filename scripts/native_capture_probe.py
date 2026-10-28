@@ -138,6 +138,12 @@ def fixture() -> int:
                 Qt.AlignmentFlag.AlignCenter,
                 f"VNTTS CAPTURE {self.stage}\nAa 0123 Ж文\nSYNTHETIC TARGET",
             )
+            painter.end()
+            self.setProperty("paintedStage", self.stage)
+            print(
+                json.dumps({"paint_complete": self.stage, "at": monotonic()}),
+                flush=True,
+            )
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     target = Target()

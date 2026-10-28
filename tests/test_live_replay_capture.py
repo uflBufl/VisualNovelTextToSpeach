@@ -94,7 +94,11 @@ class LiveReplayCaptureTest(unittest.TestCase):
             draw.rectangle((left, 60, left + 1, 61), fill="white")
         captured = CapturedDialogFrame(image, 0.0, regions)
         self.assertTrue(detect_standalone_ellipsis_frame(image))
-        profile = SimpleNamespace(dialog_region=region, ocr_regions=regions)
+        profile = SimpleNamespace(
+            dialog_region=region,
+            coordinate_space="normalized_capture_content_v1",
+            ocr_regions=regions,
+        )
         with TemporaryDirectory() as directory:
             output = Path(directory) / "capture"
             result = SimpleNamespace(

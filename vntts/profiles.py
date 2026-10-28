@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Self, TypeAlias
 from uuid import uuid4
 
-from vntts.ocr import DialogRegion, OCRRegions, get_dialog_region
+from vntts.ocr import (
+    CAPTURE_COORDINATE_SPACE,
+    DialogRegion,
+    OCRRegions,
+    get_dialog_region,
+)
 from vntts.settings import (
     AppSettings,
     audio_source_policies,
@@ -21,7 +26,7 @@ from vntts.versioned_json import (
     write_versioned_json_if_unchanged,
 )
 
-profiles_schema_version = 9
+profiles_schema_version = 10
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -48,6 +53,11 @@ class GameProfile:
     audio_source_policy: str
     force_live_narrator: bool
     ocr_regions: OCRRegions | None = None
+    coordinate_space: str = CAPTURE_COORDINATE_SPACE
+
+    @property
+    def needs_recalibration(self) -> bool:
+        return self.coordinate_space != CAPTURE_COORDINATE_SPACE
 
     @classmethod
     def from_settings(
@@ -135,6 +145,9 @@ class GameProfile:
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
             force_live_narrator=force_live_narrator,
             ocr_regions=ocr_regions,
+            coordinate_space=str(
+                values.get("coordinate_space", CAPTURE_COORDINATE_SPACE)
+            ),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -172,12 +185,17 @@ class GameProfile:
         selected_layout = self.ocr_regions if ocr_regions is None else ocr_regions
         if region is not None and region != self.dialog_region and ocr_regions is None:
             selected_layout = None
-        return self.from_settings(
+        updated = self.from_settings(
             self.name,
             settings,
             region=selected_region,
             profile_id=self.id,
             ocr_regions=selected_layout,
+        )
+        return (
+            updated
+            if region is not None
+            else replace(updated, coordinate_space=self.coordinate_space)
         )
 
 
@@ -323,7 +341,10 @@ class GameProfileStore:
 
     def update_region(self, profile_id: str, region: DialogRegion) -> GameProfile:
         profile = replace(
-            self._required(profile_id), dialog_region=region, ocr_regions=None
+            self._required(profile_id),
+            dialog_region=region,
+            ocr_regions=None,
+            coordinate_space=CAPTURE_COORDINATE_SPACE,
         )
         self._commit_profiles(self._replaced(profile))
         return profile
@@ -335,7 +356,10 @@ class GameProfileStore:
         ocr_regions: OCRRegions,
     ) -> GameProfile:
         profile = replace(
-            self._required(profile_id), dialog_region=region, ocr_regions=ocr_regions
+            self._required(profile_id),
+            dialog_region=region,
+            ocr_regions=ocr_regions,
+            coordinate_space=CAPTURE_COORDINATE_SPACE,
         )
         self._commit_profiles(self._replaced(profile))
         return profile

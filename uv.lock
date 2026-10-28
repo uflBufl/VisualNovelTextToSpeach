@@ -2032,15 +2032,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mss"
-version = "10.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e5/5d/eee782a6d674f562c946ae6a026f4c595ea2b7b031f290bf9fbf60da09b5/mss-10.2.0.tar.gz", hash = "sha256:ab271860775545e62f29d7b11f82f279ac1048f5bbdd26cfad84830208dbd393", size = 200317, upload-time = "2026-04-23T10:44:57.305Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/c3/313e14f245c79b4c05bd0f3a84a4813aa26fa10f8993aebd91d04c5fad3f/mss-10.2.0-py3-none-any.whl", hash = "sha256:e79f428899280e7e64e38365b5bfed683851ebea807eeaeadaf06eb8e0d67197", size = 67106, upload-time = "2026-04-23T10:44:56.266Z" },
-]
-
-[[package]]
 name = "multidict"
 version = "6.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4325,7 +4316,6 @@ source = { editable = "." }
 dependencies = [
     { name = "coqui-tts", extra = ["codec"] },
     { name = "durable-file" },
-    { name = "mss" },
     { name = "numpy" },
     { name = "platformdirs" },
     { name = "psutil" },
@@ -4381,7 +4371,6 @@ notebook = [
 requires-dist = [
     { name = "coqui-tts", extras = ["codec"], specifier = ">=0.27.5,<0.28" },
     { name = "durable-file", git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=0e22c629dde9de070eb7f13c87609e5905277ab9" },
-    { name = "mss", specifier = ">=10.2,<11" },
     { name = "numpy", specifier = ">=2.5,<3" },
     { name = "onnxruntime", marker = "extra == 'rapidocr'", specifier = ">=1.29,<2" },
     { name = "platformdirs", specifier = ">=4.11,<5" },

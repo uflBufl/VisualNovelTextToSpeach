@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
 
+from tests.native_capture_fixtures import native_frame
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     OCRError,
@@ -19,6 +20,7 @@ from vntts.dialog_capture import (
     format_runtime_error,
     recognize_screenshot_result,
 )
+from vntts.native_capture import CaptureError
 from vntts.ocr import DialogRegion, OCRPreviewCancelled, OCRRegions, OCRResult
 from vntts.window_capture import (
     WindowCaptureError,
@@ -70,15 +72,17 @@ class CaptureProvenanceTest(unittest.TestCase):
         self.backend.get_window.return_value = self.window
         self.backend.get_client_geometry.return_value = WindowGeometry(40, 50, 200, 100)
         self.target = WindowCaptureTarget("Selected game", self.backend)
-        self.screen = Mock()
-        self.screen.monitors = [
-            None,
-            {"left": 0, "top": 0, "width": 200, "height": 100},
-        ]
-        self.screen.grab.return_value = Mock(size=(2, 1), bgra=b"\0\0\0\xff" * 2)
-        self.factory = patch("vntts.dialog_capture.mss.mss")
-        self.factory.start().return_value.__enter__.return_value = self.screen
-        self.addCleanup(self.factory.stop)
+        self.source = Mock(clock_offset=0.0, clock_uncertainty=0.001)
+        self.source.capture.return_value = native_frame()
+        factory = patch(
+            "vntts.window_capture.NativeCaptureSession", return_value=self.source
+        )
+        self.factory = factory.start()
+        self.addCleanup(factory.stop)
+        process = patch("vntts.window_capture.psutil.Process")
+        process.start().return_value.create_time.return_value = 10
+        self.addCleanup(process.stop)
+        self.addCleanup(self.target.close)
         self.region = DialogRegion(0, 0.5, 1, 0.5)
 
     def test_saved_capture_embeds_and_saves_truthful_scope_and_identity(self):
@@ -106,10 +110,13 @@ class CaptureProvenanceTest(unittest.TestCase):
             record.window_bounds, {"left": 40, "top": 50, "width": 200, "height": 100}
         )
         self.assertEqual(
-            record.capture_bounds, {"left": 40, "top": 100, "width": 200, "height": 50}
+            record.capture_bounds, {"left": 0, "top": 50, "width": 200, "height": 50}
         )
-        self.assertEqual(record.output_dimensions, (2, 1))
-        self.assertEqual((record.scope, record.mechanism), ("desktop_rectangle", "mss"))
+        self.assertEqual(record.output_dimensions, (200, 50))
+        self.assertEqual(
+            (record.scope, record.mechanism),
+            ("selected_window", "macos_screencapturekit"),
+        )
         self.assertTrue(record.success)
         self.assertGreaterEqual(record.completed_monotonic, record.started_monotonic)
         self.assertEqual(image.info["capture_provenance"], record.as_dict())
@@ -151,16 +158,22 @@ class CaptureProvenanceTest(unittest.TestCase):
                 self.assertFalse(records[0].success)
                 self.assertEqual(records[0].error_type, error_type)
                 self.assertEqual(records[0].requested_window_title, "Selected game")
-                self.screen.grab.assert_not_called()
+                self.source.capture.assert_not_called()
 
-    def test_handle_reuse_during_capture_fails_and_next_attempt_records_new_owner(self):
-        self.backend.get_window.return_value = WindowInfo(100, "Selected game", 84)
+    def test_handle_reuse_requires_explicit_new_selection(self):
+        capture_live_frame("unused", self.target)
+        replacement = WindowInfo(100, "Selected game", 84)
+        self.backend.get_window.return_value = replacement
+        self.backend.list_windows.return_value = [replacement]
         records = []
         with self.assertRaises(ScreenCaptureError):
             capture_live_frame("unused", self.target, provenance_handler=records.append)
         self.assertFalse(records[0].success)
         self.assertEqual(records[0].owner_pid, 42)
-        next_frame = capture_live_frame("unused", self.target)
+        self.source.capture.return_value = native_frame(pid=84)
+        selected = WindowCaptureTarget("Selected game", self.backend)
+        self.addCleanup(selected.close)
+        next_frame = capture_live_frame("unused", selected)
         self.assertTrue(next_frame.provenance.success)
         self.assertEqual(next_frame.provenance.owner_pid, 84)
 
@@ -243,16 +256,16 @@ class CaptureProvenanceTest(unittest.TestCase):
                 capture_live_frame("unused", self.target, provenance_handler=broken)
         self.assertIsInstance(caught.exception.__cause__, WindowNotFoundError)
 
-    def test_window_move_during_capture_records_failed_attempt(self):
-        self.backend.get_client_geometry.side_effect = [
-            WindowGeometry(40, 50, 200, 100),
-            WindowGeometry(42, 50, 200, 100),
-        ]
+    def test_native_layout_failure_records_failed_attempt(self):
+        self.source.capture.side_effect = CaptureError(
+            "Native layout changed", code="layout_changed"
+        )
         records = []
         with self.assertRaises(ScreenCaptureError):
             capture_live_frame("unused", self.target, provenance_handler=records.append)
         self.assertFalse(records[0].success)
-        self.assertEqual(records[0].error_type, "WindowCaptureError")
+        self.assertEqual(records[0].error_type, "CaptureError")
+        self.source.close.assert_called_once()
 
     def test_image_write_failure_is_reported_once_with_attempt_provenance(self):
         records = []

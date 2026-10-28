@@ -28,6 +28,9 @@ _IDENTITY_FIELDS = {
     "run_id",
     "playback_id",
     "capture_id",
+    "mechanism",
+    "scope",
+    "coordinate_space",
     "chunk_id",
     "line_id",
     "event_id",
@@ -145,7 +148,7 @@ ocr_confidence ocr_speaker_confidence ocr_dialogue_confidence minimum_confidence
 raw_character_length raw_text_length canonical_character_length canonical_text_length
 generation occurred_at monotonic_at clock_origin clock_elapsed_ms event_sequence run_started_at
 worker_progress_age_ms worker_frame_version latest_frame_version frame_version started_monotonic
-completed_monotonic window_id owner_pid success attempt underflowed generation_limited synthesis_ms
+completed_monotonic acquired_monotonic source_monotonic clock_uncertainty_ms frame_sequence layout_epoch window_id owner_pid success attempt underflowed generation_limited synthesis_ms
 frame_age_ms ocr_call_ms attempt_ms span_ms committed_characters latest_characters stable_characters
 transition_expected queue_wait_ms worker_call_ms resolver_ms
 playback_ms first_audio_ms chunk_ordinal chunk_characters occurrence_id next_event_count visible

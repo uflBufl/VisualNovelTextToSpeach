@@ -1376,14 +1376,18 @@ class CalibrationPage(QWizardPage):
         self._calibration_cancelled = False
         self._capture_cancelled = Event()
         self.flow.installEventFilter(self)
-        self._capture_visibility = CaptureWindowVisibility(
-            self,
-            may_restore=lambda window: (
-                window is not self.flow
-                or (isValid(self.flow) and not self._calibration_cancelled)
-            ),
+        self._capture_visibility = (
+            CaptureWindowVisibility(
+                self,
+                may_restore=lambda window: (
+                    window is not self.flow
+                    or (isValid(self.flow) and not self._calibration_cancelled)
+                ),
+            )
+            if settings.capture_mode == "screen"
+            else None
         )
-        self.capture_timer.start(200)
+        self.capture_timer.start(200 if settings.capture_mode == "screen" else 0)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (
@@ -1418,7 +1422,7 @@ class CalibrationPage(QWizardPage):
     ) -> tuple[WindowGeometry | None, Image.Image]:
         if cancelled.is_set():
             raise RuntimeError("Calibration capture cancelled")
-        return capture_calibration_preview(capture_target)
+        return capture_calibration_preview(capture_target, cancel=cancelled)
 
     def _capture_finished(self, preview: object, error: Exception | None) -> None:
         if self._calibration_cancelled:
@@ -1432,7 +1436,7 @@ class CalibrationPage(QWizardPage):
             self.restore_wizard()
             self.status.setText(
                 f"The game could not be captured: {error or 'no image returned'}. Check capture permission "
-                "and keep the game visible, then try again."
+                "and restore the game if minimized, then try again."
             )
             return
         geometry, background = preview
@@ -1447,7 +1451,7 @@ class CalibrationPage(QWizardPage):
             self.restore_wizard()
             self.status.setText(
                 f"The game could not be captured: {error}. Check capture permission "
-                "and keep the game visible, then try again."
+                "and restore the game if minimized, then try again."
             )
             return
         self.overlay = overlay

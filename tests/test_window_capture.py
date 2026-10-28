@@ -3,7 +3,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from vntts.ocr import DialogRegion
 from vntts.window_capture import (
     LinuxX11WindowBackend,
     MacOSWindowBackend,
@@ -63,6 +62,7 @@ class FakeX11Window:
         self.properties = properties or {}
         self.geometry = geometry or SimpleNamespace(width=1600, height=900)
         self.map_state = map_state
+        self.translations = []
 
     def get_full_property(self, atom, _property_type):
         value = self.properties.get(atom)
@@ -77,8 +77,11 @@ class FakeX11Window:
     def get_geometry(self):
         return self.geometry
 
-    def translate_coords(self, _root, _x, _y):
-        return SimpleNamespace(x=120, y=80)
+    def translate_coords(self, source, x, y):
+        self.translations.append((source.id, x, y))
+        return SimpleNamespace(
+            x=120 if self.id == 1 else -120, y=80 if self.id == 1 else -80
+        )
 
     def query_tree(self):
         return SimpleNamespace(children=[])
@@ -105,44 +108,32 @@ class FakeX11Display:
 
 
 class WindowCaptureTargetTest(unittest.TestCase):
-    def test_capture_region_follows_window_movement_and_resize(self):
+    def test_geometry_follows_window_movement_and_resize_for_keyboard_dispatch(self):
         window = WindowInfo(100, "Reverse: 1999", 42)
         backend = Mock()
         backend.list_windows.return_value = [window]
         backend.get_window.return_value = window
-        backend.get_client_geometry.side_effect = [
+        layouts = [
             WindowGeometry(100, 200, 1600, 900),
             WindowGeometry(300, 100, 1920, 1080),
         ]
+        backend.get_client_geometry.side_effect = layouts
         target = WindowCaptureTarget("Reverse: 1999", backend)
-        region = DialogRegion(0.1, 0.6, 0.8, 0.3)
+        self.assertEqual(target.get_geometry(), layouts[0])
+        self.assertEqual(target.get_geometry(), layouts[1])
 
-        first = target.capture_box(region)
-        second = target.capture_box(region)
-
-        self.assertEqual(
-            first,
-            {"left": 260, "top": 740, "width": 1280, "height": 270},
-        )
-        self.assertEqual(
-            second,
-            {"left": 492, "top": 748, "width": 1536, "height": 324},
-        )
-
-    def test_destroyed_window_handle_is_resolved_after_game_restart(self):
+    def test_destroyed_window_cannot_silently_bind_restarted_process(self):
         old_window = WindowInfo(100, "Reverse: 1999", 42)
         new_window = WindowInfo(200, "Reverse: 1999", 84)
         backend = Mock()
         backend.list_windows.side_effect = [[old_window], [new_window]]
-        backend.get_window.side_effect = [None]
+        backend.get_window.return_value = None
         backend.get_client_geometry.return_value = WindowGeometry(0, 0, 1920, 1080)
         target = WindowCaptureTarget("Reverse: 1999", backend)
-
         self.assertEqual(target.get_geometry().width, 1920)
-        self.assertEqual(target.get_geometry().width, 1920)
-
-        self.assertEqual(backend.get_client_geometry.call_args_list[0].args, (100,))
-        self.assertEqual(backend.get_client_geometry.call_args_list[1].args, (200,))
+        with self.assertRaisesRegex(WindowNotFoundError, "select it again"):
+            target.get_geometry()
+        backend.get_client_geometry.assert_called_once_with(100)
 
     def test_minimized_window_reports_recoverable_error(self):
         backend = Mock()
@@ -313,6 +304,8 @@ class LinuxWindowBackendTest(unittest.TestCase):
             backend.get_client_geometry(100),
             WindowGeometry(120, 80, 1600, 900),
         )
+        self.assertEqual(display.root.translations, [(game.id, 0, 0)])
+        self.assertEqual(game.translations, [])
 
     def test_x11_empty_pid_property_defaults_to_zero(self):
         game = FakeX11Window(

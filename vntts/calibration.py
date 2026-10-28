@@ -5,7 +5,6 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from threading import Event
 
-import mss
 from PIL import Image
 from PySide6.QtCore import (
     QEvent,
@@ -28,7 +27,6 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
-    QRegion,
     QResizeEvent,
     QShowEvent,
 )
@@ -54,8 +52,10 @@ from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.ocr import (
+    CaptureRegionNeedsCalibration,
     DialogRegion,
     OCRResult,
+    default_dialog_region,
     get_dialog_region,
     get_dialog_region_file,
     save_dialog_region,
@@ -64,6 +64,7 @@ from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.qt_images import pixmap_from_pil
 from vntts.ui_text import shortcut_tooltip
 from vntts.window_capture import (
+    DisplayCaptureTarget,
     WindowCaptureError,
     WindowCaptureTarget,
     WindowGeometry,
@@ -131,54 +132,35 @@ class CaptureWindowVisibility(QObject):
         self.deleteLater()
 
 
-def capture_calibration_background(
-    geometry: WindowGeometry | None = None,
-) -> Image.Image:
-    with mss.mss() as capture:
-        if geometry is None:
-            monitor = capture.monitors[1]
-        else:
-            uncovered = QRegion(
-                geometry.left, geometry.top, geometry.width, geometry.height
-            )
-            # The combined monitor bounds can include gaps with no display pixels.
-            for display in capture.monitors[1:]:
-                uncovered = uncovered.subtracted(
-                    QRegion(
-                        display["left"],
-                        display["top"],
-                        display["width"],
-                        display["height"],
-                    )
-                )
-            if geometry.width <= 0 or geometry.height <= 0 or not uncovered.isEmpty():
-                raise WindowCaptureError(
-                    "Show the entire selected game window on the connected screens, "
-                    "then retry calibration."
-                )
-            monitor = geometry.as_monitor()
-        screenshot = capture.grab(monitor)
-    return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-
-
 def capture_calibration_preview(
     capture_target: object | None = None,
+    *,
+    cancel: Event | None = None,
 ) -> tuple[WindowGeometry | None, Image.Image]:
-    if capture_target is not None and not isinstance(capture_target, WindowCaptureTarget):
+    if capture_target is not None and not isinstance(
+        capture_target, DisplayCaptureTarget
+    ):
         raise WindowCaptureError(
-            "This capture source does not support game-window calibration. "
+            "This capture source does not support native calibration. "
             "Select a game window and retry calibration."
         )
-    snapshot = (
-        capture_target.capture_snapshot(DialogRegion(0, 0, 1, 1))
-        if capture_target is not None
-        else None
-    )
-    geometry = snapshot.geometry if snapshot is not None else None
-    background = capture_calibration_background(geometry)
-    if snapshot is not None and capture_target is not None:
-        capture_target.validate_snapshot(snapshot)
-    return geometry, background
+    target = capture_target or DisplayCaptureTarget()
+    try:
+        frame = target.capture_native(cancel=cancel)
+        x, y, width, height = frame.content_rect
+        background = frame.to_image().crop((x, y, x + width, y + height))
+        geometry = None
+        if isinstance(target, WindowCaptureTarget):
+            left, top, full_width, full_height = frame.desktop_bounds
+            geometry = WindowGeometry(
+                left + round(x * full_width / frame.width),
+                top + round(y * full_height / frame.height),
+                round(width * full_width / frame.width),
+                round(height * full_height / frame.height),
+            )
+        return geometry, background
+    finally:
+        target.close()
 
 
 class CalibrationReviewDialog(QDialog):
@@ -435,7 +417,10 @@ class DialogRegionOverlay(QWidget):
         self._review: QDialog | None = None
         self._closed = False
         self.save_region = save_region or self.persist
-        self.capture_region = capture_region or get_dialog_region()
+        try:
+            self.capture_region = capture_region or get_dialog_region()
+        except CaptureRegionNeedsCalibration:
+            self.capture_region = default_dialog_region
         self.save_error: str | None = None
         self.setWindowTitle("Select the visual-novel dialog region")
         self.setWindowFlags(
@@ -832,6 +817,21 @@ class DialogRegionOverlay(QWidget):
         )
 
 
+def fit_calibration_preview(
+    desired: QRect, available: QRect, image_size: tuple[int, int]
+) -> QRect:
+    """Keep the complete frozen image selectable, including offscreen game windows."""
+    image_width, image_height = image_size
+    width = min(desired.width(), available.width())
+    height = round(width * image_height / image_width)
+    if height > available.height():
+        height = available.height()
+        width = round(height * image_width / image_height)
+    left = min(max(desired.left(), available.left()), available.right() - width + 1)
+    top = min(max(desired.top(), available.top()), available.bottom() - height + 1)
+    return QRect(left, top, width, height)
+
+
 def show_calibration_overlay(
     geometry: WindowGeometry | None = None,
     *,
@@ -840,7 +840,11 @@ def show_calibration_overlay(
     capture_region: DialogRegion | None = None,
 ) -> DialogRegionOverlay:
     if background is None:
-        background = capture_calibration_background(geometry)
+        if geometry is not None:
+            raise WindowCaptureError(
+                "Window calibration requires a captured native preview"
+            )
+        geometry, background = capture_calibration_preview()
     overlay = DialogRegionOverlay(
         background=background,
         save_region=save_region,
@@ -849,14 +853,17 @@ def show_calibration_overlay(
     if geometry is None:
         overlay.showFullScreen()
     else:
-        overlay.setGeometry(
-            QRect(
-                geometry.left,
-                geometry.top,
-                geometry.width,
-                geometry.height,
-            )
+        screens = QApplication.screens()
+        desired = QRect(geometry.left, geometry.top, geometry.width, geometry.height)
+        screen = next(
+            (item for item in screens if item.geometry().contains(desired.center())),
+            QApplication.primaryScreen(),
         )
+        if screen is not None:
+            desired = fit_calibration_preview(
+                desired, screen.availableGeometry(), background.size
+            )
+        overlay.setGeometry(desired)
         overlay.show()
         overlay.raise_()
     overlay.activateWindow()

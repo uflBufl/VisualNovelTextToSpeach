@@ -1,9 +1,19 @@
 import ctypes
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from threading import Event, Lock
 from typing import Protocol
+
+import psutil
+
+from vntts.native_capture import (
+    CaptureError,
+    NativeCaptureSession,
+    NativeFrame,
+    capture_cancelled,
+)
 
 
 class WindowCaptureError(RuntimeError):
@@ -44,13 +54,6 @@ class WindowGeometry:
             "width": self.width,
             "height": self.height,
         }
-
-
-@dataclass(frozen=True)
-class WindowCaptureSnapshot:
-    window: WindowInfo
-    geometry: WindowGeometry
-    capture_box: dict[str, int]
 
 
 class Win32WindowBackend:
@@ -457,7 +460,7 @@ class LinuxX11WindowBackend:
                 "window", int(handle)
             )
             geometry = getattr(window, "get_geometry")()
-            translated = getattr(window, "translate_coords")(self.root, 0, 0)
+            translated = getattr(self.root, "translate_coords")(window, 0, 0)
         except Exception as error:
             raise WindowNotFoundError(
                 "Selected X11 game window is no longer available"
@@ -526,10 +529,6 @@ class _WindowBackend(Protocol):
     def get_foreground_handle(self) -> int: ...
 
 
-class _CaptureRegion(Protocol):
-    def capture_box(self, monitor: dict[str, int]) -> dict[str, int]: ...
-
-
 def create_window_backend(
     *, platform: str | None = None, environment: Mapping[str, str] | None = None
 ) -> _WindowBackend:
@@ -548,10 +547,82 @@ def create_window_backend(
     )
 
 
-class WindowCaptureTarget:
+class DisplayCaptureTarget:
+    """Own one lazily opened native source; close can interrupt an active request."""
+
+    def __init__(self) -> None:
+        self._capture_lock = Lock()
+        self._source_lock = Lock()
+        self._source: NativeCaptureSession | None = None
+        self._source_target: dict[str, object] | None = None
+        self._capture_cancelled = Event()
+        self.clock_offset = 0.0
+        self.clock_uncertainty = 0.0
+
+    def _native_target(self) -> dict[str, object]:
+        return {"kind": "display", "display_id": 0}
+
+    def capture_native(
+        self, *, cancel: Event | Callable[[], bool] | None = None
+    ) -> NativeFrame:
+        with self._source_lock:
+            cancelled = self._capture_cancelled
+
+        def interrupted() -> bool:
+            return cancelled.is_set() or capture_cancelled(cancel)
+
+        with self._capture_lock:
+            try:
+                if interrupted():
+                    raise CaptureError("Capture cancelled", code="cancelled")
+                ensure_screen_capture_supported()
+                target = self._native_target()
+                with self._source_lock:
+                    source = self._source
+                if source is not None and target != self._source_target:
+                    source.close()
+                    source = None
+                if source is None:
+                    source = NativeCaptureSession(target, cancel=interrupted)
+                    with self._source_lock:
+                        if interrupted():
+                            source.close()
+                            raise CaptureError("Capture cancelled", code="cancelled")
+                        self._source = source
+                        self._source_target = target
+                frame = source.capture(cancel=interrupted)
+                self.clock_offset = source.clock_offset
+                self.clock_uncertainty = source.clock_uncertainty
+                return frame
+            except BaseException:
+                with self._source_lock:
+                    current = cancelled is self._capture_cancelled
+                if current:
+                    self.close()
+                raise
+
+    def close(self) -> None:
+        with self._source_lock:
+            self._capture_cancelled.set()
+            self._capture_cancelled = Event()
+            source, self._source = self._source, None
+            self._source_target = None
+        if source is not None:
+            source.close()
+
+    def get_geometry(self) -> WindowGeometry | None:
+        return None
+
+    def is_focused(self) -> bool:
+        return False
+
+
+class WindowCaptureTarget(DisplayCaptureTarget):
     def __init__(
         self, window_title: str | None, backend: _WindowBackend | None = None
     ) -> None:
+        super().__init__()
+        self._process_start: float | None = None
         self.window_title = (window_title or "").strip()
         self._backend = backend
         self._handle: int | None = None
@@ -574,36 +645,22 @@ class WindowCaptureTarget:
             )
         return self.backend.get_client_geometry(window.handle)
 
-    def capture_snapshot(self, region: _CaptureRegion) -> WindowCaptureSnapshot:
+    def _native_target(self) -> dict[str, object]:
         window = self._resolve_window()
         if window.minimized:
             raise WindowMinimizedError(
                 f"Selected game window {window.title!r} is minimized"
             )
-        geometry = self.backend.get_client_geometry(window.handle)
-        return WindowCaptureSnapshot(
-            window, geometry, region.capture_box(geometry.as_monitor())
-        )
-
-    def validate_snapshot(self, snapshot: WindowCaptureSnapshot) -> None:
-        window = self.backend.get_window(snapshot.window.handle)
-        if (
-            window is None
-            or window.process_id != snapshot.window.process_id
-            or window.title != snapshot.window.title
-            or window.minimized
-        ):
-            raise WindowNotFoundError("Selected game window changed during capture")
-        if (
-            self.backend.get_client_geometry(snapshot.window.handle)
-            != snapshot.geometry
-        ):
-            raise WindowCaptureError(
-                "Selected game window moved or resized during capture"
+        try:
+            started = psutil.Process(window.process_id).create_time()
+        except psutil.Error as error:
+            raise WindowNotFoundError("Selected game process is unavailable") from error
+        if self._process_start is not None and started != self._process_start:
+            raise WindowNotFoundError(
+                "Selected game process changed; select its window again"
             )
-
-    def capture_box(self, region: _CaptureRegion) -> dict[str, int]:
-        return self.capture_snapshot(region).capture_box
+        self._process_start = started
+        return {"kind": "window", "window_id": window.handle, "pid": window.process_id}
 
     def is_focused(self) -> bool:
         window = self._resolve_window()
@@ -622,26 +679,40 @@ class WindowCaptureTarget:
 
         if self._handle is not None:
             window = self.backend.get_window(self._handle)
-            if window is not None and self._title_matches(window.title):
+            if (
+                window is not None
+                and self._title_matches(window.title)
+                and (
+                    self.last_window is None
+                    or window.process_id == self.last_window.process_id
+                )
+            ):
                 self.last_window = window
                 return window
             self._handle = None
 
-        windows = self.backend.list_windows()
-        expected = self.window_title.casefold()
-        window = next(
-            (item for item in windows if item.title.casefold() == expected),
-            None,
-        )
-        if window is None:
-            window = next(
-                (item for item in windows if self._title_matches(item.title)),
-                None,
-            )
-        if window is None:
+        windows = [
+            item
+            for item in self.backend.list_windows()
+            if self._title_matches(item.title)
+        ]
+        if self.last_window is not None:
+            windows = [
+                item
+                for item in windows
+                if item.process_id == self.last_window.process_id
+            ]
+        exact = [
+            item
+            for item in windows
+            if item.title.casefold() == self.window_title.casefold()
+        ]
+        candidates = exact or windows
+        if len(candidates) != 1:
             raise WindowNotFoundError(
-                f"Game window {self.window_title!r} is not available"
+                f"Game window {self.window_title!r} is unavailable or ambiguous; select it again"
             )
+        window = candidates[0]
 
         self._handle = window.handle
         self.last_window = window

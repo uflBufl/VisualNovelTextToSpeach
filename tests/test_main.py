@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
+from tests.native_capture_fixtures import native_frame
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import PreparedLiveChunkRoutes, SequenceEventLease
 from vntts.controller_components import _is_live_voice_router, _is_xtts_voice_router
@@ -74,6 +75,7 @@ from vntts.main import (
     recognize_screenshot_result,
     speak_live_chunk,
 )
+from vntts.native_capture import CaptureError
 from vntts.ocr import DialogRegion, OCRResult
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import (
@@ -90,6 +92,7 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     registry_with_voice_library,
 )
+from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget, WindowInfo
 
 
 class StubTypedPlaybackBackend:
@@ -530,74 +533,67 @@ class MainTest(unittest.TestCase):
         voice_router.speak.assert_not_called()
 
     def test_capture_failure_identifies_screen_capture_stage(self):
-        with patch(
-            "vntts.dialog_capture.mss.mss",
-            side_effect=RuntimeError("display unavailable"),
+        with patch.object(
+            DisplayCaptureTarget,
+            "capture_native",
+            side_effect=CaptureError("display unavailable"),
         ):
             with self.assertRaisesRegex(ScreenCaptureError, "display unavailable"):
-                capture_dialog()
+                capture_dialog(save_screenshot=False)
 
     def test_capture_creates_configured_directory_and_saves_rgb_image(self):
-        screenshot = Mock(size=(1, 1), bgra=b"\x00\x00\x00\xff")
-        screen = Mock()
-        screen.monitors = [None, {"height": 100, "width": 100}]
-        screen.grab.return_value = screenshot
-
+        frame = native_frame(
+            Image.new("RGB", (100, 100), "navy"), window_id=None, pid=None
+        )
         with TemporaryDirectory() as temporary_directory:
             screenshot_directory = Path(temporary_directory) / "nested"
-            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
-                mss_factory.return_value.__enter__.return_value = screen
+            with patch.object(
+                DisplayCaptureTarget, "capture_native", return_value=frame
+            ) as capture:
                 image, output = capture_dialog(
-                    screenshot_directory,
-                    region=DialogRegion(0.1, 0.6, 0.8, 0.3),
+                    screenshot_directory, region=DialogRegion(0.1, 0.6, 0.8, 0.3)
                 )
-
             self.assertEqual(image.mode, "RGB")
+            self.assertEqual(image.size, (80, 30))
+            self.assertEqual(image.getpixel((0, 0)), (0, 0, 128))
             self.assertEqual(output.parent, screenshot_directory)
             self.assertTrue(output.is_file())
-            screen.grab.assert_called_once_with(
-                {"left": 10, "top": 60, "width": 80, "height": 30}
-            )
+            capture.assert_called_once_with()
 
-    def test_capture_uses_selected_window_geometry(self):
-        screenshot = Mock(size=(1, 1), bgra=b"\x00\x00\x00\xff")
-        screen = Mock()
-        screen.grab.return_value = screenshot
-        capture_target = Mock()
-        capture_target.capture_box.return_value = {
-            "left": 300,
-            "top": 700,
-            "width": 1200,
-            "height": 250,
-        }
-
-        with TemporaryDirectory() as temporary_directory:
-            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
-                mss_factory.return_value.__enter__.return_value = screen
-                capture_dialog(
-                    temporary_directory,
-                    capture_target=capture_target,
+    def test_capture_crops_selected_native_content_without_desktop_coordinates(self):
+        image = Image.new("RGB", (220, 120), "red")
+        image.paste("navy", (10, 10, 210, 110))
+        frame = native_frame(
+            image, content_rect=(10, 10, 200, 100), desktop_bounds=(-300, 700, 100, 50)
+        )
+        target = WindowCaptureTarget("Selected game", Mock())
+        target.last_window = WindowInfo(100, "Selected game", 42)
+        with TemporaryDirectory() as directory:
+            with patch.object(target, "capture_native", return_value=frame) as capture:
+                result, _output = capture_dialog(
+                    directory,
+                    capture_target=target,
+                    region=DialogRegion(0.1, 0.6, 0.8, 0.3),
                 )
-
-        capture_target.capture_box.assert_called_once()
-        screen.grab.assert_called_once_with(capture_target.capture_box.return_value)
+        self.assertEqual(result.size, (160, 30))
+        self.assertEqual(result.getcolors(), [(4800, (0, 0, 128))])
+        capture.assert_called_once_with()
+        target.backend.get_client_geometry.assert_not_called()
 
     def test_capture_without_saving_does_not_create_screenshot_directory(self):
-        screen = Mock()
-        screen.monitors = [None, {"height": 100, "width": 100}]
-        screen.grab.return_value = Mock(size=(1, 1), bgra=b"\x00\x00\x00\xff")
+        frame = native_frame(Image.new("RGB", (100, 100)), window_id=None, pid=None)
         with TemporaryDirectory() as temporary_directory:
             blocked = Path(temporary_directory) / "not-a-directory"
             blocked.write_text("existing file")
-            with patch("vntts.dialog_capture.mss.mss") as mss_factory:
-                mss_factory.return_value.__enter__.return_value = screen
+            with patch.object(
+                DisplayCaptureTarget, "capture_native", return_value=frame
+            ):
                 image, output = capture_dialog(
                     blocked / "screenshots",
                     save_screenshot=False,
                     region=DialogRegion(0.1, 0.6, 0.8, 0.3),
                 )
-
-            self.assertEqual(image.size, (1, 1))
+            self.assertEqual(image.size, (80, 30))
             self.assertIsNone(output)
             self.assertEqual(blocked.read_text(), "existing file")
 
@@ -1394,7 +1390,7 @@ class MainTest(unittest.TestCase):
             screenshot_directory,
             live_reader=live_reader,
             error_handler=controller.error_handler,
-            capture_target=None,
+            capture_target=controller.capture_target,
             speech_handler=controller._enqueue_dialog,
             shutdown_requested=controller.shutdown_requested,
             minimum_confidence=60,
@@ -2467,6 +2463,11 @@ class MainTest(unittest.TestCase):
                 self.subTest(interrupted=interrupted),
                 redirect_stdout(io.StringIO()),
                 redirect_stderr(errors),
+                (
+                    self.assertLogs("vntts.cleanup", level="ERROR")
+                    if interrupted
+                    else nullcontext()
+                ),
                 patch("vntts.main.load_app_settings", return_value=AppSettings()),
                 patch("vntts.main.AppController", return_value=controller),
                 patch("vntts.main.keyboard.GlobalHotKeys", return_value=listener),
@@ -5753,6 +5754,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
         controller.last_diagnostic = DiagnosticSnapshot(
             None, confidence=97.237, corrections=("Corrected OCR text",)
@@ -5810,6 +5812,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
         observed = canonical.replace("Dŵr", "DWr")
 
@@ -5857,6 +5860,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
 
         with patch(
@@ -5893,6 +5897,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
 
         with patch(
@@ -5942,6 +5947,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
 
         with patch(
@@ -6197,6 +6203,7 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
+        controller.settings = replace(controller.settings, capture_mode="window")
         controller.capture_target = Mock()
 
         with patch(

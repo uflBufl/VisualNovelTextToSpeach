@@ -103,6 +103,23 @@ class OCRPreprocessingTest(unittest.TestCase):
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_unknown_saved_space_blocks_reading_instead_of_silently_using_default(self):
+        from vntts.ocr import CaptureRegionNeedsCalibration, get_dialog_region
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "region.json"
+            value = {
+                **DialogRegion(0.1, 0.6, 0.8, 0.3).to_json(),
+                "coordinate_space": "unknown",
+            }
+            path.write_text(json.dumps(value))
+            with patch.dict(
+                os.environ, {"VNTTS_DIALOG_REGION_FILE": str(path)}, clear=True
+            ):
+                with self.assertRaises(CaptureRegionNeedsCalibration):
+                    get_dialog_region()
+            self.assertEqual(json.loads(path.read_text()), value)
+
     def test_mapping_uses_domain_coordinate_validation(self):
         values = {"left": 0, "top": 0.1, "width": 0.5, "height": 0.5}
         self.assertEqual(
@@ -221,7 +238,13 @@ class DialogRegionTest(unittest.TestCase):
             save_dialog_region(region, path)
 
             self.assertEqual(load_dialog_region(path), region)
-            self.assertEqual(json.loads(path.read_text()), region.to_json())
+            self.assertEqual(
+                json.loads(path.read_text()),
+                {
+                    **region.to_json(),
+                    "coordinate_space": "normalized_capture_content_v1",
+                },
+            )
 
 
 class RecognizedDialogTest(unittest.TestCase):

@@ -49,6 +49,66 @@ def granted_permissions():
 
 
 class OnboardingDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        self.window_target = self.enterContext(
+            patch("vntts.onboarding.WindowCaptureTarget")
+        )
+        self.display_target = self.enterContext(
+            patch("vntts.onboarding.DisplayCaptureTarget")
+        )
+
+    def test_capture_readiness_probes_native_source_and_always_closes(self):
+        for mode, factory in (
+            ("window", self.window_target),
+            ("screen", self.display_target),
+        ):
+            with self.subTest(mode=mode):
+                target = factory.return_value
+                for error in (
+                    None,
+                    RuntimeError("Screen Recording denied"),
+                    RuntimeError("Capture helper missing"),
+                ):
+                    target.reset_mock()
+                    target.capture_native.side_effect = error
+                    result = OnboardingDiagnostics()._check_capture_source(
+                        AppSettings(capture_mode=mode, game_window_title="Game")
+                    )
+                    self.assertEqual(result.status, "error" if error else "ok")
+                    target.capture_native.assert_called_once_with(cancel=None)
+                    target.close.assert_called_once_with()
+                    if error:
+                        self.assertEqual(result.message, str(error))
+                        self.assertEqual(result.remediation, "settings")
+
+    def test_capture_readiness_honors_cancellation_before_and_during_native_probe(self):
+        from vntts.runtime_preparation import RuntimePreparationCancelled
+
+        for kind in ("event", "callback"):
+            for phase in ("before", "during"):
+                with self.subTest(kind=kind, phase=phase):
+                    event = Event()
+                    cancellation = event if kind == "event" else event.is_set
+                    target = self.window_target.return_value
+                    target.reset_mock()
+                    target.capture_native.side_effect = lambda **_kwargs: event.set()
+                    if phase == "before":
+                        event.set()
+                    with self.assertRaises(RuntimePreparationCancelled):
+                        OnboardingDiagnostics()._check_capture_source(
+                            AppSettings(
+                                capture_mode="window", game_window_title="Game"
+                            ),
+                            cancellation=cancellation,
+                        )
+                    if phase == "before":
+                        target.capture_native.assert_not_called()
+                        target.close.assert_not_called()
+                    else:
+                        probe_cancel = target.capture_native.call_args.kwargs["cancel"]
+                        self.assertTrue(probe_cancel())
+                        target.close.assert_called_once_with()
+
     def test_hotkey_readiness_reports_runtime_platform_availability(self):
         diagnostics = OnboardingDiagnostics()
         for platform, status in (("darwin", "warning"), ("win32", "ok")):
@@ -1613,7 +1673,9 @@ class OnboardingWizardTest(unittest.TestCase):
             self.assertTrue(field.accessibleDescription())
         wizard.deleteLater()
 
-    def test_calibration_hides_wizard_before_frozen_overlay_capture(self):
+    def test_selected_window_calibration_keeps_controls_visible_for_native_capture(
+        self,
+    ):
         window = WindowInfo(17, "Reverse: 1999", 42)
         backend = Mock()
         backend.list_windows.return_value = [window]
@@ -1649,28 +1711,44 @@ class OnboardingWizardTest(unittest.TestCase):
                     "vntts.onboarding_ui.show_calibration_overlay",
                     side_effect=show_overlay,
                 ) as show,
-                patch(
-                    "vntts.calibration.capture_calibration_background",
-                    return_value=background,
+                patch.object(
+                    target,
+                    "capture_native",
+                    return_value=SimpleNamespace(
+                        width=800,
+                        height=500,
+                        desktop_bounds=(30, 40, 800, 500),
+                        content_rect=(0, 0, 800, 500),
+                        to_image=lambda: background,
+                    ),
                 ) as capture,
             ):
                 wizard.calibration_page.calibrate()
-                self.assertFalse(wizard.isVisible())
-                self.assertFalse(other.isVisible())
+                self.assertTrue(wizard.isVisible())
+                self.assertTrue(other.isVisible())
                 self.assertTrue(wizard.calibration_page.capture_timer.isActive())
                 backend.get_client_geometry.assert_not_called()
                 capture.assert_not_called()
-                backend.get_client_geometry.return_value = fresh_geometry
+                backend.get_client_geometry.return_value = WindowGeometry(
+                    999, 999, 1000, 600
+                )
                 wizard.calibration_page.open_overlay()
                 backend.get_client_geometry.assert_not_called()
                 pool.run_next()
                 self.application.processEvents()
-                capture.assert_called_once_with(fresh_geometry)
-                self.assertIs(show.call_args.args[0], fresh_geometry)
-                self.assertIs(show.call_args.kwargs["background"], background)
+                capture.assert_called_once()
+                self.assertEqual(show.call_args.args[0], fresh_geometry)
+                backend.get_client_geometry.assert_not_called()
+                self.assertIs(
+                    capture.call_args.kwargs["cancel"],
+                    wizard.calibration_page._capture_cancelled,
+                )
+                self.assertEqual(
+                    show.call_args.kwargs["background"].tobytes(), background.tobytes()
+                )
 
             self.assertTrue(overlay.isVisible())
-            self.assertFalse(wizard.isVisible())
+            self.assertTrue(wizard.isVisible())
 
             overlay.close()
             self.application.processEvents()
@@ -1684,7 +1762,7 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.close()
             wizard.deleteLater()
 
-    def test_calibration_rejects_moved_capture_then_retries_same_selected_window(self):
+    def test_native_calibration_failure_retries_same_selected_window(self):
         window = WindowInfo(17, "Game", 42)
         geometry = WindowGeometry(0, 0, 800, 500)
         moved_geometry = WindowGeometry(30, 40, 800, 500)
@@ -1707,17 +1785,24 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.show()
         other.show()
 
-        def capture_while_window_moves(_geometry):
-            self.assertFalse(wizard.isVisible())
-            self.assertFalse(other.isVisible())
+        def capture_after_window_moves(**_kwargs):
+            self.assertTrue(wizard.isVisible())
+            self.assertTrue(other.isVisible())
             backend.get_client_geometry.return_value = moved_geometry
-            return background
+            return SimpleNamespace(
+                width=800,
+                height=500,
+                desktop_bounds=(30, 40, 800, 500),
+                content_rect=(0, 0, 800, 500),
+                to_image=lambda: background,
+            )
 
         try:
             with (
-                patch(
-                    "vntts.calibration.capture_calibration_background",
-                    side_effect=capture_while_window_moves,
+                patch.object(
+                    target,
+                    "capture_native",
+                    side_effect=RuntimeError("Native target lost"),
                 ) as capture,
                 patch(
                     "vntts.onboarding_ui.show_calibration_overlay", return_value=overlay
@@ -1732,29 +1817,28 @@ class OnboardingWizardTest(unittest.TestCase):
                 self.assertTrue(wizard.isVisible())
                 self.assertTrue(other.isVisible())
                 self.assertFalse(page.isComplete())
-                self.assertIn("moved or resized", page.status.text())
+                self.assertIn("Native target lost", page.status.text())
                 self.assertIn("try again", page.status.text())
                 self.assertEqual(wizard.draft_settings.game_window_title, window.title)
 
-                capture.side_effect = None
-                capture.return_value = background
+                capture.side_effect = capture_after_window_moves
                 page.calibrate()
                 page.open_overlay()
                 pool.run_next()
                 self.application.processEvents()
 
-                show.assert_called_once_with(
-                    moved_geometry,
-                    background=background,
-                    save_region=None,
-                    capture_region=None,
+                show.assert_called_once()
+                self.assertEqual(show.call_args.args, (moved_geometry,))
+                self.assertEqual(
+                    show.call_args.kwargs["background"].tobytes(), background.tobytes()
                 )
+                self.assertEqual(capture.call_count, 2)
                 self.assertEqual(
                     factory.call_args_list, [call(window.title), call(window.title)]
                 )
                 self.assertIs(page.overlay, overlay)
-                self.assertFalse(wizard.isVisible())
-                self.assertFalse(other.isVisible())
+                self.assertTrue(wizard.isVisible())
+                self.assertTrue(other.isVisible())
                 overlay.closed.connect.call_args.args[0]()
                 self.assertTrue(wizard.isVisible())
                 self.assertTrue(other.isVisible())

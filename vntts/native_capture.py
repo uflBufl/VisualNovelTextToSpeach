@@ -11,6 +11,7 @@ import queue
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
@@ -24,7 +25,7 @@ from PIL import Image
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PIXELS = 32 * 1024 * 1024
 MAX_PAYLOAD_BYTES = MAX_PIXELS * 4
-BACKENDS = {"macos_screencapturekit", "windows_graphics_capture"}
+BACKENDS = {"macos_screencapturekit", "windows_graphics_capture", "linux_x11_composite"}
 
 
 class CaptureError(RuntimeError):
@@ -72,6 +73,23 @@ def worker_executable() -> Path:
             code="worker_unavailable",
         )
     return path
+
+
+def worker_command() -> list[str]:
+    if sys.platform.startswith("linux") and not os.environ.get("VNTTS_CAPTURE_WORKER"):
+        from vntts.window_capture import ensure_screen_capture_supported
+
+        ensure_screen_capture_supported()
+        return (
+            [sys.executable, "--x11-capture-worker"]
+            if getattr(sys, "frozen", False)
+            else [sys.executable, "-m", "vntts.x11_capture_worker"]
+        )
+    return [str(worker_executable())]
+
+
+def capture_cancelled(cancel: Event | Callable[[], bool] | None) -> bool:
+    return cancel.is_set() if isinstance(cancel, Event) else bool(cancel and cancel())
 
 
 def _integer(value: Any, minimum: int = 0) -> TypeGuard[int]:
@@ -133,6 +151,7 @@ class NativeCaptureSession:
         command: list[str] | None = None,
         max_fps: int = 10,
         startup_timeout: float = 10,
+        cancel: Event | Callable[[], bool] | None = None,
     ) -> None:
         target = dict(target)
         if target.get("kind") == "window":
@@ -162,7 +181,7 @@ class NativeCaptureSession:
         self._stderr = tempfile.TemporaryFile()
         try:
             self.process = subprocess.Popen(
-                command or [str(worker_executable())],
+                command or worker_command(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr,
@@ -176,8 +195,9 @@ class NativeCaptureSession:
         )
         self.reader.start()
         try:
+            opened_at = monotonic()
             result, payload = self._request(
-                "open", startup_timeout, target=target, max_fps=max_fps
+                "open", startup_timeout, cancel, target=target, max_fps=max_fps
             )
             if (
                 payload
@@ -186,8 +206,13 @@ class NativeCaptureSession:
                 or not _time(result.get("clock_now"))
             ):
                 raise CaptureError("Invalid native capture open response")
+            received_at = monotonic()
             self.backend = result["backend"]
             self.worker_clock_at_open = float(result["clock_now"])
+            self.clock_offset = (
+                opened_at + received_at
+            ) / 2 - self.worker_clock_at_open
+            self.clock_uncertainty = (received_at - opened_at) / 2
         except BaseException:
             self.close()
             raise
@@ -234,12 +259,16 @@ class NativeCaptureSession:
                     self.process.kill()
 
     def _request(
-        self, op: str, timeout: float, cancel: Event | None = None, **fields: Any
+        self,
+        op: str,
+        timeout: float,
+        cancel: Event | Callable[[], bool] | None = None,
+        **fields: Any,
     ) -> tuple[dict[str, Any], bytes]:
         with self._lock:
             if self._closed.is_set():
                 raise CaptureError("Native capture session is closed", code="closed")
-            if cancel is not None and cancel.is_set():
+            if capture_cancelled(cancel):
                 raise CaptureError("Native capture cancelled", code="cancelled")
             self._next_id += 1
             request = {
@@ -262,7 +291,7 @@ class NativeCaptureSession:
                         raise CaptureError(
                             "Native capture session is closed", code="closed"
                         )
-                    if cancel is not None and cancel.is_set():
+                    if capture_cancelled(cancel):
                         raise CaptureError("Native capture cancelled", code="cancelled")
                     remaining = deadline - monotonic()
                     if remaining <= 0:
@@ -278,7 +307,7 @@ class NativeCaptureSession:
                     raise CaptureError(
                         "Native capture session is closed", code="closed"
                     )
-                if cancel is not None and cancel.is_set():
+                if capture_cancelled(cancel):
                     raise CaptureError("Native capture cancelled", code="cancelled")
                 if isinstance(response, BaseException):
                     raise CaptureError(str(response)) from response
@@ -309,12 +338,17 @@ class NativeCaptureSession:
                 raise
 
     def capture(
-        self, *, timeout_ms: int = 2000, cancel: Event | None = None
+        self,
+        *,
+        timeout_ms: int = 2000,
+        cancel: Event | Callable[[], bool] | None = None,
     ) -> NativeFrame:
         with self._lock:
             return self._capture(timeout_ms=timeout_ms, cancel=cancel)
 
-    def _capture(self, *, timeout_ms: int, cancel: Event | None) -> NativeFrame:
+    def _capture(
+        self, *, timeout_ms: int, cancel: Event | Callable[[], bool] | None
+    ) -> NativeFrame:
         if not _integer(timeout_ms, 1) or timeout_ms > 10000:
             raise ValueError("timeout_ms must be 1..10000")
         result, payload = self._request(

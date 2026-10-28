@@ -617,11 +617,30 @@ def get_dialog_region_file() -> Path:
     )
 
 
+CAPTURE_COORDINATE_SPACE = "normalized_capture_content_v1"
+
+
+class CaptureRegionNeedsCalibration(ValueError):
+    pass
+
+
+def validate_capture_coordinate_space(value: object) -> None:
+    # Previous captures used the same client extent (full window without shadows on macOS).
+    if value not in (None, CAPTURE_COORDINATE_SPACE):
+        raise CaptureRegionNeedsCalibration(
+            "This saved capture area uses an unknown coordinate space. Recalibrate it before reading."
+        )
+
+
 def load_dialog_region(path: str | Path) -> DialogRegion:
     path = Path(path).expanduser()
     try:
         value = decode_json(read_regular_text(path, encoding="utf-8"))
+        if isinstance(value, Mapping):
+            validate_capture_coordinate_space(value.get("coordinate_space"))
         return DialogRegion.from_mapping(value)
+    except CaptureRegionNeedsCalibration:
+        raise
     except (OSError, KeyError, TypeError, ValueError) as error:
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 
@@ -631,6 +650,7 @@ def save_dialog_region(
 ) -> None:
     path = Path(path).expanduser()
     value: dict[str, object] = dict(region.to_json())
+    value["coordinate_space"] = CAPTURE_COORDINATE_SPACE
     if ocr_regions is not None:
         value["ocr_regions"] = ocr_regions.to_json()
     atomic_write_json(path, value)
@@ -660,7 +680,9 @@ def get_ocr_regions(
         return None
 
 
-def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegion:
+def get_dialog_region(
+    profile_region: DialogRegion | None = None, *, coordinate_space: str | None = None
+) -> DialogRegion:
     configured_region = os.environ.get("VNTTS_DIALOG_REGION")
     if configured_region:
         try:
@@ -669,12 +691,15 @@ def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegio
             print(f"Invalid VNTTS_DIALOG_REGION: {error}; using saved/default region")
 
     if profile_region is not None:
+        validate_capture_coordinate_space(coordinate_space)
         return profile_region
 
     region_file = get_dialog_region_file()
     if region_file.is_file():
         try:
             return load_dialog_region(region_file)
+        except CaptureRegionNeedsCalibration:
+            raise
         except ValueError as error:
             print(f"{error}; using default region")
     return default_dialog_region

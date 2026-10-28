@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, TypeGuard
 
 from vntts.auto_advance_policy import auto_advance_allowed
+from vntts.cleanup import cleanup_on_exit
 from vntts.hotkeys import (
     HotkeyValidationError,
     macos_hotkey_limitation,
@@ -25,6 +26,7 @@ from vntts.rust_audio import AudioRuntimeUnavailable
 from vntts.settings import AppSettings
 from vntts.speech_worker import resolve_speech_runtime_paths
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,27 @@ class OnboardingDiagnostics:
                 "No game window has been selected",
                 "settings",
             )
+        check_runtime_cancelled(cancellation)
+        target = (
+            WindowCaptureTarget(settings.game_window_title)
+            if settings.capture_mode == "window"
+            else DisplayCaptureTarget()
+        )
+        cancelled = (
+            cancellation.is_set
+            if isinstance(cancellation, CancellationToken)
+            else cancellation
+        )
+        try:
+            with cleanup_on_exit(target.close, description="Readiness capture cleanup"):
+                target.capture_native(cancel=cancelled)
+                check_runtime_cancelled(cancellation)
+        except Exception as error:
+            check_runtime_cancelled(cancellation)
+            logging.getLogger(__name__).exception(
+                "Readiness capture source probe failed"
+            )
+            return DiagnosticResult("Capture source", "error", str(error), "settings")
         description = (
             settings.game_window_title or ""
             if settings.capture_mode == "window"

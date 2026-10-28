@@ -14,6 +14,38 @@ from vntts.support import AudioLifecycleLog, RuntimeSupportLog, SupportBundleBui
 
 
 class SupportReadingDiagnosticsTest(unittest.TestCase):
+    def test_native_capture_identity_and_clock_mapping_survive_journal(self):
+        from vntts.support_timeline_acquisition import TimelineAcquisition
+
+        evidence = {
+            "stage": "capture",
+            "mechanism": "macos_screencapturekit",
+            "scope": "selected_window",
+            "coordinate_space": "canonical_content_pixels_v1",
+            "session_id": "source-1",
+            "frame_sequence": 7,
+            "layout_epoch": 2,
+            "acquired_monotonic": 100.25,
+            "source_monotonic": 100.1,
+            "clock_uncertainty_ms": 0.5,
+            "window_title": "PRIVATE",
+            "text": "PRIVATE",
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "runtime.jsonl"
+            journal = TimelineAcquisition(path)
+            journal.record(evidence)
+            journal.stop()
+            raw = path.read_text()
+            event = next(
+                json.loads(line)
+                for line in raw.splitlines()
+                if json.loads(line)["kind"] == "event"
+            )
+        for key in evidence.keys() - {"window_title", "text"}:
+            self.assertEqual(event[key], evidence[key])
+        self.assertNotIn("PRIVATE", raw)
+
     def test_native_timing_metrics_keep_submillisecond_precision_and_identities(self):
         log = AudioLifecycleLog()
         log.record(

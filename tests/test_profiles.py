@@ -12,7 +12,13 @@ from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
-from vntts.ocr import DialogRegion, OCRRegions  # noqa: E402
+from vntts.ocr import (  # noqa: E402
+    CAPTURE_COORDINATE_SPACE,
+    CaptureRegionNeedsCalibration,
+    DialogRegion,
+    OCRRegions,
+    get_dialog_region,
+)
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.profiles import (  # noqa: E402
     GameProfile,
@@ -25,6 +31,38 @@ from vntts.ui_text import plain_label_text  # noqa: E402
 
 
 class GameProfileStoreTest(unittest.TestCase):
+    def test_legacy_coordinates_preserved_and_unknown_coordinates_require_recalibration(
+        self,
+    ):
+        profile = GameProfile.from_settings("Game", AppSettings())
+        values = profile.to_mapping()
+        values.pop("coordinate_space")
+        legacy = GameProfile.from_mapping(values, source_schema=9)
+        self.assertEqual(legacy.dialog_region, profile.dialog_region)
+        self.assertEqual(legacy.coordinate_space, CAPTURE_COORDINATE_SPACE)
+        values["coordinate_space"] = "unrecognized-space"
+        unknown = GameProfile.from_mapping(values)
+        self.assertTrue(unknown.needs_recalibration)
+        self.assertEqual(unknown.dialog_region, profile.dialog_region)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(CaptureRegionNeedsCalibration):
+                get_dialog_region(
+                    unknown.dialog_region, coordinate_space=unknown.coordinate_space
+                )
+        unchanged = unknown.updated_from_settings(AppSettings())
+        self.assertTrue(unchanged.needs_recalibration)
+        recalibrated = unknown.updated_from_settings(
+            AppSettings(), region=unknown.dialog_region
+        )
+        self.assertFalse(recalibrated.needs_recalibration)
+        with patch.dict(os.environ, {"VNTTS_DIALOG_REGION": "0,0,1,1"}):
+            self.assertEqual(
+                get_dialog_region(
+                    unknown.dialog_region, coordinate_space=unknown.coordinate_space
+                ),
+                DialogRegion(0, 0, 1, 1),
+            )
+
     def test_profile_round_trips_optional_ocr_regions(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "profiles.json"

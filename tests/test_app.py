@@ -7,12 +7,13 @@ from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, get_ident
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from durable_file import atomic_write_bytes  # noqa: E402
+from PIL import Image  # noqa: E402
 from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
@@ -8082,12 +8083,15 @@ class TrayApplicationTest(unittest.TestCase):
         finally:
             tray.shutdown()
 
-    def test_offscreen_calibration_restores_controls_then_retries_same_target(self):
+    def test_offscreen_selected_window_calibration_uses_native_frame_without_hiding_controls(
+        self,
+    ):
         window = WindowInfo(123, "Selected game", 42)
+        geometry = WindowGeometry(799, 599, 400, 300)
         backend = Mock()
         backend.list_windows.return_value = [window]
         backend.get_window.return_value = window
-        backend.get_client_geometry.return_value = WindowGeometry(799, 599, 400, 300)
+        backend.get_client_geometry.return_value = geometry
         target = WindowCaptureTarget("Selected game", backend)
         controller = Mock(is_live_running=False, capture_target=target)
         tray = TrayApplication(
@@ -8099,40 +8103,47 @@ class TrayApplicationTest(unittest.TestCase):
         pool = ManualThreadPool()
         tray.calibration_capture_runner.thread_pool = pool
         tray.dashboard.show()
-        screen = Mock()
-        monitor = {"left": 0, "top": 0, "width": 800, "height": 600}
-        screen.monitors = [monitor, monitor]
-        screen.grab.return_value = Mock(size=(2, 1), bgra=b"\0\0\0\xff" * 2)
+        native_image = Image.new("RGB", (400, 300), "red")
+        frame = SimpleNamespace(
+            width=400,
+            height=300,
+            desktop_bounds=(799, 599, 400, 300),
+            content_rect=(20, 10, 360, 280),
+            to_image=lambda: native_image,
+        )
+
+        def capture(**_kwargs):
+            self.assertTrue(tray.dashboard.isVisible())
+            return frame
+
         with (
-            patch("vntts.calibration.mss.mss") as capture,
+            patch.object(
+                target, "capture_native", side_effect=capture
+            ) as capture_native,
+            patch.object(target, "close") as close,
             patch("vntts.app.QTimer.singleShot") as schedule,
             patch("vntts.app.show_calibration_overlay") as show,
             patch.object(tray, "show_error") as error,
         ):
-            capture.return_value.__enter__.return_value = screen
             tray.calibrate()
+            self.assertTrue(tray.dashboard.isVisible())
             backend.get_client_geometry.assert_not_called()
             schedule.call_args.args[-1]()
             pool.run_next()
             self.application.processEvents()
-            screen.grab.assert_not_called()
-            show.assert_not_called()
-            error.assert_called_once()
-            self.assertIn("entire selected game", error.call_args.args[0])
+            capture_native.assert_called_once()
+            close.assert_called_once_with()
+            error.assert_not_called()
+            show.assert_called_once()
+            self.assertEqual(show.call_args.args, (WindowGeometry(819, 609, 360, 280),))
+            backend.get_client_geometry.assert_not_called()
+            self.assertEqual(show.call_args.kwargs["background"].size, (360, 280))
+            self.assertEqual(
+                show.call_args.kwargs["background"].getpixel((0, 0)), (255, 0, 0)
+            )
+            self.assertIs(controller.capture_target, target)
             self.assertTrue(tray.dashboard.isVisible())
             self.assertFalse(tray._calibration_capture_pending)
-
-            tray.calibrate()
-            geometry = WindowGeometry(100, 100, 400, 300)
-            backend.get_client_geometry.return_value = geometry
-            schedule.call_args.args[-1]()
-            pool.run_next()
-            self.application.processEvents()
-            show.assert_called_once()
-            self.assertEqual(show.call_args.args, (geometry,))
-            self.assertEqual(show.call_args.kwargs["background"].size, (2, 1))
-            self.assertIs(controller.capture_target, target)
-            error.assert_called_once()
 
     def test_calibration_captures_without_any_visible_controls_and_restores_ownership(
         self,
@@ -8206,42 +8217,44 @@ class TrayApplicationTest(unittest.TestCase):
     def test_calibration_ignores_stale_settle_callbacks_and_pending_shutdown_results(
         self,
     ):
-        controller = Mock(is_live_running=False)
-        tray = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-        pool = ManualThreadPool()
-        tray.calibration_capture_runner.thread_pool = pool
-        visible = QWidget()
-        visible.show()
-        try:
-            with (
-                patch("vntts.app.QTimer.singleShot") as schedule,
-                patch("vntts.app.capture_calibration_preview") as capture,
-                patch("vntts.app.show_calibration_overlay") as show,
-            ):
-                tray.calibrate()
-                stale = schedule.call_args.args[-1]
-                tray._cancel_calibration()
-                self.assertTrue(visible.isVisible())
-                tray.calibrate()
-                current = schedule.call_args.args[-1]
-                stale()
-                self.assertEqual(pool.tasks, [])
-                current()
-                self.assertTrue(tray.calibration_capture_runner.active)
-                tray.shutdown()
-                pool.run_next()
-                self.application.processEvents()
-                capture.assert_not_called()
-                show.assert_not_called()
-                self.assertFalse(visible.isVisible())
-        finally:
-            tray.shutdown()
-            visible.close()
-            visible.deleteLater()
+        for mode in ("screen", "window"):
+            with self.subTest(mode=mode):
+                controller = Mock(is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(capture_mode=mode),
+                    controller_factory=Mock(return_value=controller),
+                )
+                pool = ManualThreadPool()
+                tray.calibration_capture_runner.thread_pool = pool
+                visible = QWidget()
+                visible.show()
+                try:
+                    with (
+                        patch("vntts.app.QTimer.singleShot") as schedule,
+                        patch("vntts.app.capture_calibration_preview") as capture,
+                        patch("vntts.app.show_calibration_overlay") as show,
+                    ):
+                        tray.calibrate()
+                        stale = schedule.call_args.args[-1]
+                        tray._cancel_calibration()
+                        self.assertTrue(visible.isVisible())
+                        tray.calibrate()
+                        current = schedule.call_args.args[-1]
+                        stale()
+                        self.assertEqual(pool.tasks, [])
+                        current()
+                        self.assertTrue(tray.calibration_capture_runner.active)
+                        tray.shutdown()
+                        pool.run_next()
+                        self.application.processEvents()
+                        capture.assert_not_called()
+                        show.assert_not_called()
+                        self.assertEqual(visible.isVisible(), mode == "window")
+                finally:
+                    tray.shutdown()
+                    visible.close()
+                    visible.deleteLater()
 
     def test_shutdown_closes_calibration_overlay_without_restoring_controls(self):
         tray = TrayApplication(
@@ -8419,7 +8432,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(dialog, "request_refresh") as refresh,
         ):
             dialog.calibrate_button.click()
-            self.assertFalse(dialog.isVisible())
+            self.assertTrue(dialog.isVisible())
             self.wait_until(lambda: show.called)
             show.assert_called_once_with(
                 geometry,

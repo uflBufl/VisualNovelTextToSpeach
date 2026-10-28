@@ -18,9 +18,15 @@ class CaptureProvenance:
     output_dimensions: tuple[int, int] | None
     success: bool
     error_type: str | None = None
-    mechanism: str = "mss"
-    # MSS reads desktop pixels at these coordinates, including overlapping windows.
-    scope: str = "desktop_rectangle"
+    mechanism: str = "native"
+    scope: str = "selected_window"
+    coordinate_space: str = "canonical_content_pixels_v1"
+    session_id: str | None = None
+    frame_sequence: int | None = None
+    layout_epoch: int | None = None
+    acquired_monotonic: float | None = None
+    source_monotonic: float | None = None
+    clock_uncertainty_ms: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)

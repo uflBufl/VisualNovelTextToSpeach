@@ -627,6 +627,7 @@ class RuntimeLifecycleComponent:
             return None if was_live else False
         controller._set_backend_live_mode(False)
         reader.stop()
+        controller._close_capture_source()
         cancel_pending_ocr()
         controller.wait_for_reading()
         return was_live
@@ -643,6 +644,7 @@ class RuntimeLifecycleComponent:
         controller._load_live_speaker_corpus()
         controller._configure_generated_audio_backend()
         controller.refresh_corrections()
+        controller._close_capture_source()
         controller.capture_target = controller._create_capture_target()
         controller.uncertain_frame_recorder = (
             controller._create_uncertain_frame_recorder()
@@ -761,6 +763,7 @@ class RuntimeLifecycleComponent:
         with ExitStack() as cleanup:
             for release, description in (
                 (close_ocr_worker, "OCR worker shutdown"),
+                (controller._close_capture_source, "Native capture shutdown"),
                 (stop_reader, "Reader shutdown"),
                 (
                     partial(controller._set_backend_live_mode, False),
@@ -965,7 +968,7 @@ class LiveSessionComponent:
                 or controller.chapter_voice_preloader is not preloader
             ):
                 return "target-changed"
-            if target is None:
+            if target is None or settings.capture_mode != "window":
                 return "capture-target-unavailable"
             focused = controller._is_game_focused()
             if window is not None and getattr(target, "last_window", None) != window:
@@ -1116,6 +1119,7 @@ class LiveSessionComponent:
         if reader is None:
             return False
         stopped = reader.stop()
+        controller._close_capture_source()
         cancel_pending_ocr()
         controller.narrator_fallback_speakers.clear()
         controller.narrator_fallback_names.clear()
@@ -1211,6 +1215,7 @@ class LiveSessionComponent:
         if reader is None:
             return cancelled_read
         stopped = reader.emergency_stop()
+        controller._close_capture_source()
         controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(False)
         controller.status_handler("Reading and speech stopped")

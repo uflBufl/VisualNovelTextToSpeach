@@ -14,7 +14,6 @@ from time import monotonic
 from typing import Protocol, TypeAlias
 from uuid import uuid4
 
-import mss
 import numpy as np
 from numpy.typing import NDArray
 from PIL import Image, ImageFilter
@@ -24,6 +23,7 @@ from scipy.ndimage import label, maximum_filter
 from vntts.capture_provenance import CaptureProvenance
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
+from vntts.native_capture import NativeFrame
 from vntts.ocr import (
     DialogRegion,
     OCRPreviewCancelled,
@@ -42,8 +42,8 @@ from vntts.ocr_worker import recognize_dialog_image_result
 from vntts.services.tts_engine import AudioPlaybackError, TTSError
 from vntts.voices import VoiceManifestError
 from vntts.window_capture import (
+    DisplayCaptureTarget,
     WindowCaptureError,
-    WindowCaptureSnapshot,
     WindowCaptureTarget,
     ensure_screen_capture_supported,
 )
@@ -120,17 +120,20 @@ def _capture_provenance(
     capture_id: str,
     run_id: str | None,
     started: float,
-    capture_target: object | None,
-    snapshot: WindowCaptureSnapshot | None,
+    capture_target: object,
+    frame: NativeFrame | None,
     dialog_box: dict[str, int] | None,
     image: Image.Image | None,
     error: BaseException | None = None,
 ) -> CaptureProvenance:
-    window = None
-    if snapshot is not None:
-        window = snapshot.window
-    elif isinstance(capture_target, WindowCaptureTarget):
-        window = capture_target.last_window
+    source = (
+        capture_target if isinstance(capture_target, DisplayCaptureTarget) else None
+    )
+    window = (
+        capture_target.last_window
+        if isinstance(capture_target, WindowCaptureTarget)
+        else None
+    )
     return CaptureProvenance(
         capture_id=capture_id,
         run_id=run_id,
@@ -145,12 +148,42 @@ def _capture_provenance(
         window_title=window.title if window is not None else None,
         owner_pid=window.process_id if window is not None else None,
         window_bounds=(
-            snapshot.geometry.as_monitor() if snapshot is not None else None
+            dict(
+                zip(
+                    ("left", "top", "width", "height"),
+                    frame.desktop_bounds,
+                    strict=True,
+                )
+            )
+            if frame
+            else None
         ),
         capture_bounds=dialog_box,
         output_dimensions=image.size if image is not None else None,
         success=error is None,
         error_type=type(error).__name__ if error is not None else None,
+        mechanism=frame.backend if frame else "native",
+        scope=frame.scope
+        if frame
+        else (
+            "selected_window"
+            if isinstance(capture_target, WindowCaptureTarget)
+            else "display"
+        ),
+        session_id=frame.session_id if frame else None,
+        frame_sequence=frame.frame_sequence if frame else None,
+        layout_epoch=frame.layout_epoch if frame else None,
+        acquired_monotonic=frame.acquired_at + source.clock_offset
+        if frame and source
+        else None,
+        source_monotonic=(
+            frame.source_time + source.clock_offset
+            if frame and source and frame.source_time is not None
+            else None
+        ),
+        clock_uncertainty_ms=source.clock_uncertainty * 1000
+        if frame and source
+        else None,
     )
 
 
@@ -165,7 +198,9 @@ def capture_dialog(
 ) -> tuple[Image.Image, Path | None]:
     capture_id = uuid4().hex
     started = monotonic()
-    snapshot = None
+    frame = None
+    owned = capture_target is None
+    target = DisplayCaptureTarget() if owned else capture_target
     dialog_box = None
     image = None
 
@@ -174,8 +209,8 @@ def capture_dialog(
             capture_id,
             run_id,
             started,
-            capture_target,
-            snapshot,
+            target,
+            frame,
             dialog_box,
             image,
             error,
@@ -189,23 +224,19 @@ def capture_dialog(
         if save_screenshot:
             screenshot_directory.mkdir(parents=True, exist_ok=True)
 
-        with mss.mss() as sct:
-            region = region or get_dialog_region()
-            if capture_target is None:
-                dialog_box = region.capture_box(sct.monitors[1])
-            elif isinstance(capture_target, WindowCaptureTarget):
-                snapshot = capture_target.capture_snapshot(region)
-                dialog_box = snapshot.capture_box
-            else:
-                dialog_box = getattr(capture_target, "capture_box")(region)
-            screenshot = sct.grab(dialog_box)
-            image = Image.frombytes(
-                "RGB", screenshot.size, screenshot.bgra, "raw", "BGRX"
-            )
-            if snapshot is not None and isinstance(capture_target, WindowCaptureTarget):
-                capture_target.validate_snapshot(snapshot)
+        if not isinstance(target, DisplayCaptureTarget):
+            raise WindowCaptureError("Unsupported native capture source")
+        frame = target.capture_native()
+        x, y, width, height = frame.content_rect
+        canonical = frame.to_image().crop((x, y, x + width, y + height))
+        region = region or get_dialog_region()
+        dialog_box = region.capture_box({"width": width, "height": height})
+        image = region.crop(canonical)
     except Exception as error:
         raise _capture_failure(error, provenance(error), provenance_handler) from error
+    finally:
+        if owned and isinstance(target, DisplayCaptureTarget):
+            target.close()
 
     record = provenance()
     image.info["capture_provenance"] = record.as_dict()

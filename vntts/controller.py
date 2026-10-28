@@ -140,7 +140,11 @@ from vntts.voices import (
     normalize_character_name,
     synthesis_character,
 )
-from vntts.window_capture import WindowCaptureTarget, WindowGeometry
+from vntts.window_capture import (
+    DisplayCaptureTarget,
+    WindowCaptureTarget,
+    WindowGeometry,
+)
 
 
 class _DialogReadFuture(Protocol):
@@ -193,7 +197,7 @@ class _VoiceRouter(Protocol):
 
 
 class _CaptureTarget(Protocol):
-    def get_geometry(self) -> WindowGeometry: ...
+    def get_geometry(self) -> WindowGeometry | None: ...
     def is_focused(self) -> bool: ...
 
 
@@ -750,6 +754,7 @@ class AppController:
 
     def request_shutdown(self) -> None:
         self.shutdown_requested.set()
+        self._close_capture_source()
 
     def apply_settings(
         self, settings: AppSettings, *, cancellation: _Cancellation | None = None
@@ -1108,8 +1113,12 @@ class AppController:
 
     def _create_capture_target(self) -> _CaptureTarget | None:
         if self.settings.capture_mode != "window":
-            return None
+            return DisplayCaptureTarget()
         return self.capture_target_factory(self.settings.game_window_title)
+
+    def _close_capture_source(self) -> None:
+        if isinstance(self.capture_target, DisplayCaptureTarget):
+            self.capture_target.close()
 
     def _capture_live_frame(self) -> object:
         return capture_live_frame(
@@ -1147,7 +1156,10 @@ class AppController:
 
     def _capture_region(self) -> DialogRegion:
         profile = self.profile_store.get(self.settings.active_profile_id)
-        return get_dialog_region(profile.dialog_region if profile is not None else None)
+        return get_dialog_region(
+            profile.dialog_region if profile is not None else None,
+            coordinate_space=profile.coordinate_space if profile is not None else None,
+        )
 
     def _capture_ocr_regions(self) -> OCRRegions | None:
         profile = self.profile_store.get(self.settings.active_profile_id)
@@ -3591,7 +3603,11 @@ class AppController:
         return str(resolve_voice_label(self.voice_router, character))
 
     def _is_game_focused(self) -> bool:
-        return self.capture_target is not None and self.capture_target.is_focused()
+        return (
+            self.settings.capture_mode == "window"
+            and self.capture_target is not None
+            and self.capture_target.is_focused()
+        )
 
     def _live_auto_advance_callback(self) -> Callable[[], object] | None:
         if not self.settings.auto_advance_enabled or not auto_advance_allowed(

@@ -17,6 +17,11 @@ from time import perf_counter
 if getattr(sys, "frozen", False):
     freeze_support()
 
+if __name__ == "__main__" and sys.argv[1:] == ["--x11-capture-worker"]:
+    from vntts.x11_capture_worker import main as x11_capture_worker_main
+
+    raise SystemExit(x11_capture_worker_main())
+
 from PIL import Image
 from pynput import keyboard
 from PySide6.QtCore import (
@@ -115,7 +120,9 @@ from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.model_assets import ModelDownloadCancelled
 from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr import (
+    CaptureRegionNeedsCalibration,
     DialogRegion,
+    default_dialog_region,
     get_dialog_region_file,
     save_dialog_region,
 )
@@ -2144,6 +2151,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
         self._calibration_visibility: CaptureWindowVisibility | None = None
+        self._calibration_capture_generation = 0
         self._calibration_capture_pending = False
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
@@ -3411,26 +3419,46 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._calibration_capture_pending = True
         self._cancel_diagnostics_refresh()
-        self._calibration_visibility = CaptureWindowVisibility(
-            self, may_restore=lambda _window: not self._shutting_down
+        self._calibration_visibility = (
+            CaptureWindowVisibility(
+                self, may_restore=lambda _window: not self._shutting_down
+            )
+            if self.settings.capture_mode == "screen"
+            else None
         )
         self.set_status("Capturing game window for calibration...")
         visibility = self._calibration_visibility
+        self._calibration_capture_generation += 1
+        generation = self._calibration_capture_generation
         QTimer.singleShot(
-            200, self, lambda: self._start_calibration_capture(visibility)
+            200 if visibility is not None else 0,
+            self,
+            lambda: (
+                self._start_calibration_capture(visibility)
+                if generation == self._calibration_capture_generation
+                else None
+            ),
         )
 
-    def _start_calibration_capture(self, visibility: CaptureWindowVisibility) -> None:
+    def _start_calibration_capture(
+        self, visibility: CaptureWindowVisibility | None
+    ) -> None:
         if (
             self._shutting_down
             or not self._calibration_capture_pending
             or self._calibration_visibility is not visibility
         ):
             return
+        generation = self._calibration_capture_generation
         self.calibration_capture_runner.start(
             lambda: (
                 self._capture_calibration_background()
-                if not visibility.finished.is_set()
+                if (
+                    not self._shutting_down
+                    and self._calibration_capture_pending
+                    and generation == self._calibration_capture_generation
+                    and (visibility is None or not visibility.finished.is_set())
+                )
                 else None
             )
         )
@@ -3458,11 +3486,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self, geometry: WindowGeometry | None, background: Image.Image
     ) -> None:
         try:
+            try:
+                region = self.controller._capture_region()
+            except CaptureRegionNeedsCalibration:
+                region = default_dialog_region
             overlay = show_calibration_overlay(
                 geometry,
                 background=background,
                 save_region=self._save_calibration_region,
-                capture_region=self.controller._capture_region(),
+                capture_region=region,
             )
         except Exception as error:
             self.restore_control_window()
@@ -3485,8 +3517,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.restore_control_window()
 
     def _cancel_calibration(self) -> None:
+        self._calibration_capture_generation += 1
         self._calibration_capture_pending = False
         self.calibration_capture_runner.cancel()
+        self.controller._close_capture_source()
         if self.calibration_overlay is not None:
             self.calibration_overlay.close()
         if self._calibration_visibility is not None:
@@ -3504,9 +3538,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def restore_control_window(self) -> None:
         visibility = self._calibration_visibility
         self._calibration_visibility = None
-        if visibility is None:
-            return
-        visibility.restore()
+        if visibility is not None:
+            visibility.restore()
         dialog = self.diagnostics_dialog
         if dialog is not None and isValid(dialog) and dialog.isVisible():
             dialog.request_refresh()
@@ -3549,12 +3582,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return
 
-        if self.diagnostics_dialog is not None:
+        screen_mode = self.settings.capture_mode == "screen"
+        if screen_mode and self.diagnostics_dialog is not None:
             self.diagnostics_dialog.conceal_for_capture()
 
         generation = self.diagnostics_refresh_generation
         QTimer.singleShot(
-            200,
+            200 if screen_mode else 0,
             self,
             lambda: self._capture_diagnostic_snapshot(generation),
         )
@@ -3574,6 +3608,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _cancel_diagnostics_refresh(self) -> None:
         self.diagnostics_refresh_generation += 1
+        if (
+            self.diagnostics_refresh_runner.active
+            and self.controller.is_live_running is not True
+        ):
+            self.controller._close_capture_source()
         self.diagnostics_refresh_runner.cancel()
 
     def _diagnostics_refresh_is_current(self, generation: int) -> bool:
@@ -3902,6 +3941,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or request.cancelled.is_set()
             or not self._lifecycle_is_current(request.generation)
         ):
+            request.ready.set()
+            return
+        if self.controller.settings.capture_mode == "window":
             request.ready.set()
             return
         request.wizard = self.onboarding_wizard

@@ -28,19 +28,21 @@ from PySide6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
+from tests.native_capture_fixtures import native_frame  # noqa: E402
 from tests.qt_task_fixtures import release_and_wait_for_pool  # noqa: E402
 from vntts.calibration import (  # noqa: E402
     CalibrationReviewDialog,
     CaptureWindowVisibility,
     DialogRegionOverlay,
-    capture_calibration_background,
     capture_calibration_preview,
     show_calibration_overlay,
 )
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
+from vntts.native_capture import CaptureError  # noqa: E402
 from vntts.ocr import DialogRegion, OCRResult  # noqa: E402
 from vntts.window_capture import (  # noqa: E402
+    DisplayCaptureTarget,
     WindowCaptureError,
     WindowCaptureTarget,
     WindowGeometry,
@@ -50,18 +52,6 @@ from vntts.window_capture import (  # noqa: E402
 
 class CalibrationCaptureTest(unittest.TestCase):
     def setUp(self):
-        self.screen = Mock()
-        self.screen.monitors = [
-            {"left": -800, "top": -600, "width": 1600, "height": 1200},
-            {"left": 0, "top": 0, "width": 800, "height": 600},
-            {"left": -800, "top": 0, "width": 800, "height": 600},
-            {"left": 0, "top": -600, "width": 800, "height": 600},
-            {"left": 0, "top": 0, "width": 800, "height": 600},
-        ]
-        self.screen.grab.return_value = Mock(size=(2, 1), bgra=b"\0\0\0\xff" * 2)
-        factory = patch("vntts.calibration.mss.mss")
-        factory.start().return_value.__enter__.return_value = self.screen
-        self.addCleanup(factory.stop)
         self.window = WindowInfo(123, "Selected game", 42)
         self.backend = Mock()
         self.backend.list_windows.return_value = [self.window]
@@ -69,82 +59,80 @@ class CalibrationCaptureTest(unittest.TestCase):
         self.geometry = WindowGeometry(100, 100, 400, 300)
         self.backend.get_client_geometry.return_value = self.geometry
         self.target = WindowCaptureTarget("Selected game", self.backend)
+        self.frame = native_frame(
+            Image.new("RGB", (800, 600), "navy"),
+            desktop_bounds=(100, 100, 400, 300),
+            window_id=123,
+        )
+        capture = patch.object(
+            DisplayCaptureTarget, "capture_native", return_value=self.frame
+        )
+        self.capture = capture.start()
+        self.addCleanup(capture.stop)
 
-    def test_complete_window_coverage_allows_negative_origins_and_adjacent_displays(self):
-        for geometry in (
-            WindowGeometry(0, 0, 800, 600),
-            WindowGeometry(-700, 50, 400, 300),
-            WindowGeometry(-100, 100, 200, 100),
-            WindowGeometry(100, -100, 200, 200),
+    def test_native_window_preview_accepts_negative_and_offscreen_desktop_bounds(self):
+        for bounds in (
+            (-700, 50, 400, 300),
+            (1600, 0, 400, 300),
+            (-100, -100, 400, 300),
         ):
-            with self.subTest(geometry=geometry):
-                image = capture_calibration_background(geometry)
-                self.screen.grab.assert_called_with(geometry.as_monitor())
-                self.assertEqual(image.size, (2, 1))
+            with self.subTest(bounds=bounds):
+                self.capture.return_value = native_frame(
+                    Image.new("RGB", (800, 600)), desktop_bounds=bounds
+                )
+                geometry, image = capture_calibration_preview(self.target)
+                self.assertEqual(geometry, WindowGeometry(*bounds))
+                self.assertEqual(image.size, (800, 600))
+        self.backend.get_client_geometry.assert_not_called()
 
-    def test_rejects_offscreen_edges_gaps_and_invalid_dimensions_before_grab(self):
-        for geometry in (
-            WindowGeometry(1600, 0, 400, 300),
-            WindowGeometry(799, 599, 400, 300),
-            WindowGeometry(0, 0, 801, 600),
-            WindowGeometry(-100, -100, 200, 200),
-            WindowGeometry(0, 0, 0, 100),
-            WindowGeometry(0, 0, 100, -1),
-        ):
-            with self.subTest(geometry=geometry):
-                with self.assertRaisesRegex(WindowCaptureError, "entire selected game"):
-                    capture_calibration_background(geometry)
-                self.screen.grab.assert_not_called()
-
-    def test_screen_mode_uses_primary_monitor_without_a_window(self):
+    def test_screen_mode_uses_explicit_native_display_source(self):
+        self.capture.return_value = native_frame(
+            Image.new("RGB", (800, 600)), window_id=None, pid=None
+        )
         geometry, image = capture_calibration_preview()
         self.assertIsNone(geometry)
-        self.assertEqual(image.size, (2, 1))
-        self.screen.grab.assert_called_once_with(self.screen.monitors[1])
+        self.assertEqual(image.size, (800, 600))
+        self.capture.assert_called_once_with(cancel=None)
 
     def test_unsupported_source_cannot_fall_back_to_desktop_capture(self):
         with self.assertRaisesRegex(WindowCaptureError, "Select a game window"):
             capture_calibration_preview(object())
-        self.screen.grab.assert_not_called()
+        self.capture.assert_not_called()
 
-    def test_preview_returns_exact_validated_geometry_and_keeps_scaled_pixels(self):
+    def test_preview_geometry_and_scaled_pixels_come_from_one_native_frame(self):
+        self.backend.get_client_geometry.return_value = WindowGeometry(
+            900, 900, 200, 150
+        )
         geometry, image = capture_calibration_preview(self.target)
         self.assertEqual(geometry, self.geometry)
-        self.assertEqual(image.size, (2, 1))
-        self.screen.grab.assert_called_once_with(self.geometry.as_monitor())
-        self.assertEqual(self.backend.get_client_geometry.call_count, 2)
+        self.assertEqual(image.size, (800, 600))
+        self.backend.get_client_geometry.assert_not_called()
 
-    def test_window_movement_during_grab_rejects_preview_and_allows_retry(self):
-        def move_window(_monitor):
-            self.backend.get_client_geometry.return_value = WindowGeometry(
-                150, 100, 400, 300
-            )
-            return self.screen.grab.return_value
+    def test_preview_removes_native_padding_before_region_selection(self):
+        image = Image.new("RGB", (6, 4), "red")
+        image.paste("navy", (1, 1, 5, 3))
+        self.capture.return_value = native_frame(image, content_rect=(1, 1, 4, 2))
+        _geometry, preview = capture_calibration_preview(self.target)
+        self.assertEqual(preview.size, (4, 2))
+        self.assertEqual(preview.getcolors(), [(8, (0, 0, 128))])
 
-        self.screen.grab.side_effect = move_window
-        with self.assertRaisesRegex(WindowCaptureError, "moved or resized"):
-            capture_calibration_preview(self.target)
-        self.screen.grab.side_effect = None
-        geometry, _image = capture_calibration_preview(self.target)
-        self.assertEqual(geometry, WindowGeometry(150, 100, 400, 300))
-
-    def test_closed_replaced_or_minimized_window_during_grab_rejects_preview(self):
-        for replacement in (
-            None,
-            WindowInfo(123, "Selected game", 43),
-            WindowInfo(123, "Another game", 42),
-            WindowInfo(123, "Selected game", 42, minimized=True),
+    def test_native_failures_preserve_cause_and_close_source_before_retry(self):
+        for code in (
+            "layout_changed",
+            "identity_changed",
+            "target_closed",
+            "target_unavailable",
         ):
-            with self.subTest(replacement=replacement):
-                self.backend.get_window.return_value = self.window
-
-                def change_window(_monitor):
-                    self.backend.get_window.return_value = replacement
-                    return self.screen.grab.return_value
-
-                self.screen.grab.side_effect = change_window
-                with self.assertRaisesRegex(WindowCaptureError, "changed during capture"):
+            failure = CaptureError("Native capture failed", code=code)
+            self.capture.side_effect = failure
+            with patch.object(self.target, "close") as close:
+                with self.assertRaises(CaptureError) as caught:
                     capture_calibration_preview(self.target)
+                self.assertIs(caught.exception, failure)
+                close.assert_called_once_with()
+        self.capture.side_effect = None
+        _geometry, image = capture_calibration_preview(self.target)
+        self.assertEqual(image.size, (800, 600))
 
 
 class _ReviewDecision(QDialog):

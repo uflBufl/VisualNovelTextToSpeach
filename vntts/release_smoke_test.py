@@ -112,6 +112,7 @@ def run_release_smoke_test(
     confidence = 0.0
     auto_advance_dispatched = False
     auto_advance_acknowledged = False
+    capture_target = WindowCaptureTarget(window_title) if window_title else None
     try:
         if (
             not isfinite(auto_advance_timeout_seconds)
@@ -140,9 +141,10 @@ def run_release_smoke_test(
                 from vntts.dialog_capture import capture_dialog
 
                 capture = capture_dialog
+            assert capture_target is not None
             image, _output = capture(
                 save_screenshot=False,
-                capture_target=WindowCaptureTarget(window_title),
+                capture_target=capture_target,
             )
         checks.append(
             {
@@ -217,6 +219,7 @@ def run_release_smoke_test(
         )
         if auto_advance_expected_text:
             assert window_title is not None
+            assert capture_target is not None
             assert capture is not None
             selected_auto_advance = auto_advance or (
                 lambda: _production_auto_advance(window_title)
@@ -230,7 +233,7 @@ def run_release_smoke_test(
             while monotonic() < deadline:
                 image, _output = capture(
                     save_screenshot=False,
-                    capture_target=WindowCaptureTarget(window_title),
+                    capture_target=capture_target,
                 )
                 advanced = recognize_frame(image)
                 speaker_matches = (
@@ -266,6 +269,10 @@ def run_release_smoke_test(
                 "message": str(error),
             }
         )
+
+    finally:
+        if capture_target is not None:
+            capture_target.close()
 
     successful = all(check["status"] == "ok" for check in checks)
     report = {

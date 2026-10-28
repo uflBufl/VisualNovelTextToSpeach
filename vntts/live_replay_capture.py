@@ -36,7 +36,7 @@ from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
 from vntts.profiles import GameProfileStore
 from vntts.settings import load_app_settings
-from vntts.window_capture import WindowCaptureTarget
+from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget
 
 LIVE_REPLAY_CAPTURE_VERSION = 1
 
@@ -776,7 +776,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LiveReplayCaptureError as error:
         return cli_error(error)
     profile = GameProfileStore.load().get(settings.active_profile_id)
-    region = get_dialog_region(profile.dialog_region if profile is not None else None)
+    region = get_dialog_region(
+        profile.dialog_region if profile is not None else None,
+        coordinate_space=profile.coordinate_space if profile is not None else None,
+    )
     ocr_regions = get_ocr_regions(
         region,
         profile.dialog_region if profile is not None else None,
@@ -810,7 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capture_target = (
             WindowCaptureTarget(settings.game_window_title)
             if settings.capture_mode == "window"
-            else None
+            else DisplayCaptureTarget()
         )
 
         def recognize(frame: CapturedImageFrame) -> tuple[str, str]:
@@ -855,12 +858,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 duration_seconds=arguments.duration_seconds,
                 focused=(
                     capture_target.is_focused
-                    if capture_target is not None
+                    if settings.capture_mode == "window"
                     else (lambda: True)
                 ),
             )
         except KeyboardInterrupt:
             result = session.finish()
+        finally:
+            capture_target.close()
     except (OSError, RuntimeError, ValueError) as error:
         return cli_error(error)
     return cli_messages(
