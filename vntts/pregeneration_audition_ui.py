@@ -902,9 +902,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
 
     def refresh_save_action(self) -> None:
-        self.a_use.setEnabled(
+        selection_can_be_saved = (
             self._save_actions_enabled
-            and self._accepted_choice is not None
             and not self._cancel_requested
             and not self._shutdown_requested
             and not self._terminal_emitted
@@ -912,6 +911,22 @@ class VoiceAuditionPanel(QGroupBox):
             and not self.decision_runner.active
             and (self.can_save_selection is None or self.can_save_selection())
         )
+        self.a_use.setEnabled(
+            selection_can_be_saved and self._accepted_choice is not None
+        )
+        hint = ""
+        if (
+            selection_can_be_saved
+            and self._accepted_choice is None
+            and self._candidate_entries
+            and (self.a_original.isEnabled() or self.a_play.isEnabled())
+        ):
+            hint = (
+                "Play Original or Preview to enable Save."
+                if self._current_entry()[0].reference_sha256s
+                else "Play Preview to enable Save."
+            )
+        self.a_use.setToolTip(hint)
 
     def use_a(self) -> None:
         self.refresh_save_action()

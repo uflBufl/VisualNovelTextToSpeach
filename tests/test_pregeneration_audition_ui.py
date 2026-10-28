@@ -442,12 +442,25 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     )
                 else:
                     panel.start(plan, group_id=group.group_id)
+                    self.assertEqual(panel.a_use.toolTip(), "")
+                    allowed.return_value = True
+                    panel.refresh_save_action()
+                    hint = "Play Original or Preview to enable Save."
+                    self.assertEqual(panel.a_use.toolTip(), hint)
+                    self.assertNotIn(hint, panel.status.toPlainText())
+                    self.assertNotIn(
+                        hint, [label.text() for label in panel.findChildren(QLabel)]
+                    )
+                    allowed.return_value = False
+                    panel.refresh_save_action()
+                    self.assertEqual(panel.a_use.toolTip(), "")
                     (panel.a_original if mode == "original" else panel.a_play).click()
                     if mode != "cached":
                         self.finish_task(pool.tasks.pop())
 
                 self.assertIsNotNone(panel._accepted_choice)
                 self.assertFalse(panel.a_use.isEnabled())
+                self.assertEqual(panel.a_use.toolTip(), "")
                 if mode in {"generated", "cached"}:
                     panel._show_current_candidate()
                     self.assertIsNotNone(panel._accepted_choice)
@@ -458,6 +471,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 allowed.return_value = True
                 panel.refresh_save_action()
                 self.assertTrue(panel.a_use.isEnabled())
+                self.assertEqual(panel.a_use.toolTip(), "")
                 panel._set_decision_actions(False)
                 panel.refresh_save_action()
                 self.assertFalse(panel.a_use.isEnabled())
@@ -477,8 +491,16 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.assertFalse(panel.a_use.isEnabled())
 
     def test_save_gate_cannot_restore_actions_after_cancel_or_shutdown(self):
-        for stop in ("cancel", "shutdown"):
-            with self.subTest(stop=stop), TemporaryDirectory() as directory:
+        for stop, policy in (
+            ("cancel", False),
+            ("shutdown", False),
+            ("cancel", True),
+            ("shutdown", True),
+        ):
+            with (
+                self.subTest(stop=stop, policy=policy),
+                TemporaryDirectory() as directory,
+            ):
                 plan, group, _manifest = ambiguous_fixture(Path(directory))
                 decisions = Mock()
                 panel = VoiceAuditionPanel(
@@ -487,16 +509,26 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.addCleanup(panel.deleteLater)
                 self.addCleanup(panel.shutdown)
                 panel.can_save_selection = lambda: True
-                panel.start_policy(
-                    plan, group_id=group.group_id, choice_id="automatic", label="Auto"
+                panel.start(plan, group_id=group.group_id)
+                self.assertEqual(
+                    panel.a_use.toolTip(), "Play Original or Preview to enable Save."
                 )
-                self.assertTrue(panel.a_use.isEnabled())
+                if policy:
+                    panel.start_policy(
+                        plan,
+                        group_id=group.group_id,
+                        choice_id="automatic",
+                        label="Auto",
+                    )
+                    self.assertTrue(panel.a_use.isEnabled())
+                    self.assertEqual(panel.a_use.toolTip(), "")
 
                 getattr(panel, stop)()
                 panel._set_decision_actions(True)
                 panel.use_a()
 
                 self.assertFalse(panel.a_use.isEnabled())
+                self.assertEqual(panel.a_use.toolTip(), "")
                 decisions.remember_many.assert_not_called()
 
     def test_icons_identify_the_active_playback_control(self):
@@ -1556,9 +1588,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=plan.groups[0].group_id)
             self.assertFalse(panel.a_use.isEnabled())
+            self.assertEqual(
+                panel.a_use.toolTip(), "Play Original or Preview to enable Save."
+            )
             panel.a_original.click()
             self.finish_task(pool.tasks.pop())
             self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
             panel.a_use.click()
             self.finish_task(pool.tasks.pop())
             service.generate.assert_not_called()
@@ -2024,6 +2060,14 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=plan.groups[0].group_id)
             select_reference(panel, 1)
+            self.assertEqual(panel.a_use.toolTip(), "Play Preview to enable Save.")
+            sample_text = panel.preview_text.toPlainText()
+            panel.preview_text.clear()
+            self.assertFalse(panel.a_original.isEnabled())
+            self.assertFalse(panel.a_play.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
+            panel.preview_text.setPlainText(sample_text)
+            self.assertEqual(panel.a_use.toolTip(), "Play Preview to enable Save.")
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -2033,6 +2077,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
             panel.a_use.click()
             pool.tasks.pop().run()
             self.application.processEvents()

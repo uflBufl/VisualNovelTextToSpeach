@@ -401,10 +401,12 @@ class GameNarratorTest(unittest.TestCase):
         panel = dialog.voice_panel
         changed = Mock()
         dialog.settingsChanged.connect(changed)
+        self.assertEqual(panel.a_use.toolTip(), "")
         for action in (panel.a_original, panel.a_play, panel.a_play):
             action.click()
             self.drain()
             self.assertFalse(panel.a_use.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
             self.assertFalse(dialog._settings_dirty)
             panel.use_a()
             self.drain()
@@ -412,10 +414,15 @@ class GameNarratorTest(unittest.TestCase):
         changed.assert_not_called()
         self.select(dialog, "catalog", source="character:centurion")
         self.assertTrue(dialog._settings_dirty)
+        self.assertEqual(
+            panel.a_use.toolTip(), "Play Original or Preview to enable Save."
+        )
         self.listen(dialog)
+        self.assertEqual(panel.a_use.toolTip(), "")
         self.select(dialog, "catalog", source="character:rhiannon")
         self.assertFalse(dialog._settings_dirty)
         self.assertFalse(panel.a_use.isEnabled())
+        self.assertEqual(panel.a_use.toolTip(), "")
         self.assertEqual(self.library.bindings(), before)
 
     def test_saved_voice_transcript_edit_and_restore_update_save(self):
