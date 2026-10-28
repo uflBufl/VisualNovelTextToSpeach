@@ -229,6 +229,18 @@ class _StoryTree(QTreeWidget):
     def setCurrentRow(self, row: int) -> None:
         self.setCurrentItem(self.item(row))
 
+    def reveal_checked_story(self) -> None:
+        for item in self._stories:
+            if item.checkState(0) != Qt.CheckState.Checked or item.isHidden():
+                continue
+            parent = item.parent()
+            while parent is not None:
+                parent.setExpanded(True)
+                parent = parent.parent()
+            self.setCurrentItem(item)
+            self.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+            return
+
     def current_story_item(self) -> QTreeWidgetItem | None:
         item = self.currentItem()
         return (
@@ -2909,6 +2921,12 @@ class OfflineAudioPreparationDialog(QDialog):
     def _apply_discovery(self, discovery: ContentDiscovery) -> None:
         previous = self.current_content()
         previous_sha = previous.story_index_sha256 if previous else None
+        preserve_navigation = previous_sha in self._story_selection_drafts
+        current_story = self.stories.current_story_item()
+        current_story_id = (
+            current_story.data(0, Qt.ItemDataRole.UserRole) if current_story else None
+        )
+        scroll_position = self.stories.verticalScrollBar().value()
         self._content = discovery.content
         self.source.blockSignals(True)
         self.source.clear()
@@ -2942,6 +2960,21 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.hide()
         self.selection_panel.show()
         self._selection_changed()
+        current = self.current_content()
+        if (
+            preserve_navigation
+            and current is not None
+            and current.story_index_sha256 == previous_sha
+        ):
+            if current_story_id is not None:
+                for row in range(self.stories.count()):
+                    item = self.stories.item(row)
+                    if item.data(0, Qt.ItemDataRole.UserRole) == current_story_id:
+                        if not item.isHidden():
+                            self.stories.setCurrentItem(item)
+                        break
+            self.stories.doItemsLayout()
+            self.stories.verticalScrollBar().setValue(scroll_position)
 
     def _update_import_options(self, _checked: bool | None = None) -> None:
         has_content = bool(self._content)
@@ -3656,7 +3689,14 @@ class OfflineAudioPreparationDialog(QDialog):
     def _source_changed(self, _index: int) -> None:
         self._cancel_story_audio_check()
         self.step.setText("Step 1 of 4 - Choose stories")
-        self._populate_stories(self.current_content())
+        content = self.current_content()
+        restoring_selection = (
+            content is not None
+            and content.story_index_sha256 not in self._story_selection_drafts
+        )
+        self._populate_stories(content)
+        if restoring_selection:
+            self.stories.reveal_checked_story()
 
     def _story_audio_changed(self, *_items: object) -> None:
         self.story_audio_status.setToolTip("")

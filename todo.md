@@ -23,6 +23,8 @@
       After preparation completes during reading, Stop and open Stories: the saved
       pack must remain inactive until Use prepared audio. During explicit
       activation, later navigation or hiding the window must survive completion.
+      At startup, confirm the restored chapter is visible; status updates and
+      refreshing the same source must preserve subsequent browsing position.
       Include moving text, static/black scenes and the fullscreen advance marker.
       Keep the separate dialogue-owner defects below open until that rerun.
 
@@ -58,11 +60,6 @@
       once. Correlate cancellation and actual PCM, including speaker announcements;
       confirm no replacement after audio admission and no duplicate after
       repeated OCR or Stop/Pause. Keep this gate separate from the audio timeout.
-- [ ] **UX-27-01: restored story selection is not visible at startup.** Stories
-      opens at the top of the tree with `1 selected` and enabled `Start reading`,
-      while the selected event stage is offscreen. The primary action does not
-      name the story. Assess whether restoring the selected row or displaying
-      its title near the action avoids searching to verify what will start.
 - [ ] **UX-27-02: readiness suggests rerunning an unsupported hotkey check.**
       The warning correctly says global hotkeys are unavailable on macOS and
       recommends visible controls, but the selected-check footer says to review

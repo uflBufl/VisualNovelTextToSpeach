@@ -1937,6 +1937,32 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
 
+    def test_refresh_does_not_restore_current_story_hidden_by_filter(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.story_filter.setCurrentIndex(
+                dialog.story_filter.findData("not_started")
+            )
+            dialog.stories.setCurrentItem(dialog.stories.item(0))
+            self.assertTrue(dialog.check_story_audio.isEnabled())
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+
+            dialog.refresh_button.click()
+
+            self.assertTrue(dialog.stories.item(0).isHidden())
+            self.assertIsNone(dialog.stories.current_story_item())
+            self.assertFalse(dialog.check_story_audio.isEnabled())
+            self.assertEqual(dialog.selected_story_ids(), ())
+
     def test_story_types_are_collapsible_selectable_groups(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2178,6 +2204,125 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.expand_stories_button.click()
             dialog._populate_stories(content)
             self.assertTrue(dialog.stories.topLevelItem(0).child(0).isExpanded())
+
+    def test_restored_stages_are_revealed_without_resetting_later_navigation(self):
+        for asynchronous, catalog_error in (
+            (False, False),
+            (True, False),
+            (False, True),
+        ):
+            with (
+                self.subTest(asynchronous=asynchronous, catalog_error=catalog_error),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                content = inspect_story_index(write_story_index(root / "content"))
+                stages = tuple(
+                    replace(
+                        content.selections[0],
+                        selection_id=f"story:stage:{index}",
+                        title=f"A Story - Episode {index}",
+                        kind="main_story",
+                        order=index,
+                        parent_story_id="story",
+                        parent_story_title="A Story",
+                    )
+                    for index in range(1, 31)
+                )
+                content = replace(content, selections=stages)
+                selected_ids = (stages[25].selection_id, stages[29].selection_id)
+                jobs = PregenerationJobStore(root / "jobs")
+                jobs.save_selection(content, selected_ids)
+                pool = ManualThreadPool()
+                with (
+                    patch(
+                        "vntts.pregeneration_ui.discover_game_content",
+                        return_value=ContentDiscovery((content,)),
+                    ),
+                    patch.object(
+                        jobs,
+                        "latest_for_content",
+                        wraps=jobs.latest_for_content,
+                        side_effect=OSError("Catalog temporarily unavailable")
+                        if catalog_error
+                        else None,
+                    ) as latest,
+                ):
+                    dialog = OfflineAudioPreparationDialog(
+                        AppSettings(),
+                        discovery=(
+                            None
+                            if asynchronous
+                            else lambda: ContentDiscovery((content,))
+                        ),
+                        job_store=jobs,
+                        thread_pool=pool,
+                    )
+                    self.addCleanup(dialog.deleteLater)
+                    dialog.resize(620, 440)
+                    dialog.show()
+                    self.application.processEvents()
+                    if asynchronous:
+                        self.run_next_task(pool)
+                    if catalog_error:
+                        self.assertIsInstance(
+                            dialog._preparation_catalog_error, OSError
+                        )
+                        self.assertEqual(dialog.selected_story_ids(), ())
+                        latest.side_effect = None
+                        dialog.refresh_button.click()
+                        self.application.processEvents()
+
+                tree = dialog.stories
+                category = tree.topLevelItem(0)
+                story = category.child(0)
+                selected = story.child(25)
+                self.assertEqual(dialog.selected_story_ids(), selected_ids)
+                self.assertIs(tree.currentItem(), selected)
+                self.assertTrue(category.isExpanded())
+                self.assertTrue(story.isExpanded())
+                rectangle = tree.visualItemRect(selected)
+                self.assertFalse(rectangle.isEmpty())
+                self.assertTrue(tree.viewport().rect().contains(rectangle))
+                self.assertGreater(tree.verticalScrollBar().value(), 0)
+
+                tree.verticalScrollBar().setValue(0)
+                dialog._refresh_story_statuses()
+                self.application.processEvents()
+                self.assertEqual(tree.verticalScrollBar().value(), 0)
+                self.assertTrue(story.isExpanded())
+
+                with patch(
+                    "vntts.pregeneration_ui.discover_game_content",
+                    return_value=ContentDiscovery((content,)),
+                ):
+                    for collapsed in (False, True):
+                        with self.subTest(collapsed=collapsed):
+                            if collapsed:
+                                story.setExpanded(False)
+                                dialog._refresh_story_statuses()
+                                self.assertFalse(story.isExpanded())
+                            else:
+                                tree.setCurrentItem(story.child(14))
+                                tree.verticalScrollBar().setValue(
+                                    tree.verticalScrollBar().maximum() // 2
+                                )
+                                self.assertGreater(tree.verticalScrollBar().value(), 0)
+                            scroll_position = tree.verticalScrollBar().value()
+                            dialog.refresh_button.click()
+                            if asynchronous:
+                                self.run_next_task(pool)
+                            else:
+                                self.application.processEvents()
+                            story = tree.topLevelItem(0).child(0)
+                            self.assertEqual(
+                                tree.verticalScrollBar().value(), scroll_position
+                            )
+                            self.assertEqual(story.isExpanded(), not collapsed)
+                            if not collapsed:
+                                self.assertIs(tree.currentItem(), story.child(14))
+                            self.assertEqual(dialog.selected_story_ids(), selected_ids)
+                dialog.close()
 
     def test_story_search_matches_visible_character_and_episode_title(self):
         with TemporaryDirectory() as temporary_directory:
