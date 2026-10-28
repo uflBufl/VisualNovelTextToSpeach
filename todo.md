@@ -39,13 +39,32 @@
       the new215-line package and returned to Reading, overriding the tab action.
       The plan had warned5recordings could be replaced; make the pending change
       and its activation timing clear, and preserve the chosen navigation.
-- [ ] **RUN-27-03: exact short line116 is blocked after automatic scene change.**
-      After completed49, Cornerstone/Ouch! remains fully visible for over60s.
-      OCR repeatedly resolves116 exactly, but tracker retains committed49 and
-      rejects it as committed-conflict; no generation, WAV or key dispatch.
-      This run demonstrates a persistent visible line, not only a fleeting
-      transition. Diagnose same-speaker automatic transitions; keep protections
-      against OCR regressions and duplicates. Record Stop/Read recovery separately.
+- [ ] **RUN-27-03: continue reading across automatic dialogue changes.**
+      Implementation plan pending approval; include persistent49 ->116 and
+      rapid changes that skip intermediate observations.
+      - Preserve resolved story identity independently of audio-source choice.
+        Admit an unambiguous complete exact line without a mandatory second OCR
+        pass; retain existing confidence, incomplete-text and ambiguity guards.
+        Keep stabilization for raw OCR and approximate matches.
+      - Track the visible occurrence separately from accepted speech. Permit
+        exact current-chapter reanchoring beyond immediate successors; never
+        fabricate speech for unseen intermediate lines or wait for them forever.
+        Keep approximate recovery bounded to context and manual choice controls.
+      - Retain accepted text/identity in FIFO order using existing synthesis and
+        playback workers and audio-job limits. Replace the single deferred slot
+        and cancellation-on-visible-generation-change; queued speech must keep
+        its occurrence authority after the screen changes. Prefer draining
+        accepted phrases, accepting possible audio lag over silent queue loss.
+      - Deduplicate queued/playing/completed occurrences, not all equal text.
+        Preserve explicit replay and lifecycle controls; old completion/failure
+        must neither move the visible cursor nor advance a newer game line.
+        Preserve original-game-audio priority without replaying expired waits.
+      - Replace superseded ownership checks across tracker, reader, controller
+        and sequence cursor. Verify A/B/C FIFO, unseen-B recovery, a one-frame
+        exact line, repeated/corrected OCR, distant exact reanchor, lifecycle,
+        source-audio timing and failure cleanup with deterministic tests first.
+        Run selected affected tests and static checks; defer native chapter
+        acceptance to the combined run, including Stop/Read recovery evidence.
 - [ ] **REC-27-01: qualify concurrent metadata updates in the next native run.**
       Under Reading and real background generation, verify continuous video and
       both process-audio recordings while session metadata is atomically replaced.
@@ -336,8 +355,8 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 1. **Repair the new native findings one at a time.** Diagnose initial clipped
    OCR/live routing and the separate audio-open failure (RUN-27-01), and the
-   persistent exact116 tracker conflict (RUN-27-03). Present each implementation
-   plan before changing behavior. Then
+   automatic-transition admission and queue ownership (RUN-27-03). Present each
+   implementation plan before changing behavior. Then
    address UX-27-01 through UX-27-07, distinguishing verified defects from the
    audition dirty-state doubt. Evidence and screen assessments are retained in
    the local native-trial investigation; do not rerun the full chapter per fix.
@@ -383,8 +402,8 @@ complete. Do not change recognition or playback policy on an unverified hypothes
    - **Repeated routing (RUN-25-10):** preserve no-duplicate behavior for102.
      Recheck native22/23 and false character I; distinguish cancellation before
      PCM from repeated speech. A changed chunk ID alone is not OCR-change evidence.
-   - **Short dialogue (R17 / RUN-27-03):** fix the persistent exact116
-     admission conflict while retaining original-game-voice priority. No duplicate
+   - **Short dialogue (R17 / RUN-27-03):** verify automatic-transition admission
+     and ordered speech while retaining original-game-voice priority. No duplicate
      game voice or arbitrary widening of the normal ROI.
    - **Sound/latency (RUN-25-05/R12/R6):** correlate exact WAVs with captured
      output; explain the1.949s outlier and ambiguous clips. Distinguish recorder
