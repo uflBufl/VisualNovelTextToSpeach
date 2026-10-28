@@ -40,7 +40,7 @@
       The plan had warned5recordings could be replaced; make the pending change
       and its activation timing clear, and preserve the chosen navigation.
 - [ ] **RUN-27-03: continue reading across automatic dialogue changes.**
-      Implementation plan pending approval; include persistent49 ->116 and
+      Approved implementation in progress; include persistent49 ->116 and
       rapid changes that skip intermediate observations.
       - Preserve resolved story identity independently of audio-source choice.
         Admit an unambiguous complete exact line without a mandatory second OCR

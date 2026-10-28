@@ -3,7 +3,7 @@
 import os
 from collections import deque
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
@@ -39,6 +39,8 @@ class SpeechChunk:
     run_id: str | None = field(default=None, compare=False)
     capture_id: str | None = field(default=None, compare=False)
     playback_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
+    sequence_event_id: str | None = field(default=None, compare=False)
+    sequence_occurrence_id: int | None = field(default=None, compare=False)
 
     @property
     def chunk_id(self) -> str | None:
@@ -88,10 +90,12 @@ class IncrementalDialogTracker:
         self.last_stable_change_at: float | None = None
         self.history: deque[str] = deque(maxlen=stability_frames)
         self.pending_character: str | None = None
+        self.pending_line_id: str | None = None
         self.pending_history: deque[str] = deque(maxlen=stability_frames)
         self.next_chunk_ordinal = 1
         self.silent_event_id: str | None = None
         self.canonical_line_id: str | None = None
+        self.accepted_line_ids: set[str] = set()
         self.admission_reason = "empty"
 
     @property
@@ -159,6 +163,12 @@ class IncrementalDialogTracker:
 
     def _observation_is_blocked(self, character: str, text: str) -> bool:
         if (
+            character == self.character
+            and self.committed_text
+            and not self._texts_are_related(self.committed_text, text)
+        ):
+            return False
+        if (
             self.canonical_line_id is not None
             and character == self.character
             and not self.transition_expected
@@ -200,6 +210,59 @@ class IncrementalDialogTracker:
         self.silent_event_id = event_id
         return True
 
+    def observe_identified(
+        self, character: str, text: str, line_id: str, *, exact: bool
+    ) -> list[SpeechChunk]:
+        if line_id in self.accepted_line_ids:
+            self._clear_pending_dialog()
+            self.admission_reason = "canonical-held"
+            return []
+        if not exact:
+            if self.pending_line_id != line_id or self.pending_character != character:
+                self._clear_pending_dialog()
+                self.pending_line_id = line_id
+                self.pending_character = character
+            self.pending_history.append(text)
+            if len(self.pending_history) < self.stability_frames:
+                self.admission_reason = "waiting-stability"
+                return []
+
+        if (
+            self.canonical_line_id is None
+            and not self.transition_expected
+            and character == self.character
+            and self.latest_text
+            and self._texts_are_related(self.committed_text or self.latest_text, text)
+        ):
+            # Recognition supplies identity for words already accepted from OCR.
+            self._clear_pending_dialog()
+            self.canonical_line_id = line_id
+            self.accepted_line_ids.add(line_id)
+            self.latest_text = text
+            self.stable_text = text
+            self.conflicting_observation = False
+            if self.committed_text and not text.startswith(self.committed_text):
+                self.committed_text = text
+                self.admission_reason = "canonical-held"
+                return []
+            chunks = self._emit(text, flush=True)
+            return [replace(chunk, line_id=line_id) for chunk in chunks]
+        return self.observe_canonical(character, text, line_id)
+
+    @classmethod
+    def _texts_are_related(cls, previous: str, text: str) -> bool:
+        previous_key = cls._comparison_key(previous)
+        text_key = cls._comparison_key(text)
+        return (
+            previous_key.startswith(text_key)
+            or text_key.startswith(previous_key)
+            or _related_ocr_text(
+                previous_key,
+                text_key,
+                len(os.path.commonprefix([previous_key, text_key])),
+            )
+        )
+
     def observe_canonical(
         self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
@@ -212,6 +275,7 @@ class IncrementalDialogTracker:
         self.stable_text = text
         self.next_chunk_ordinal = 2
         self.canonical_line_id = line_id
+        self.accepted_line_ids.add(line_id)
         self.admission_reason = "emitted"
         return [
             SpeechChunk(
@@ -288,9 +352,11 @@ class IncrementalDialogTracker:
     def _observe_new_dialog_candidate(
         self, character: str, text: str, now: float
     ) -> list[SpeechChunk]:
-        if not self._matches_pending_dialog(character, text):
+        if self.pending_line_id is not None or not self._matches_pending_dialog(
+            character, text
+        ):
+            self._clear_pending_dialog()
             self.pending_character = character
-            self.pending_history.clear()
         self.pending_history.append(text)
 
         if len(self.pending_history) < self.stability_frames:
@@ -316,6 +382,7 @@ class IncrementalDialogTracker:
 
     def _clear_pending_dialog(self) -> None:
         self.pending_character = None
+        self.pending_line_id = None
         self.pending_history.clear()
 
     @staticmethod
