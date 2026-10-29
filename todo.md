@@ -312,28 +312,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Remaining implementation order, pending user approval: UX-29-03, then REC-29-01
-before combined acceptance.
+Next implementation item, pending user approval: REC-29-01 before combined acceptance.
 UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
-
-- [ ] **UX-29-03 - Expanded generation details remain outside the visible panel.**
-      During native generation, `Show generation details` changes to `Hide`, but
-      compute/model details below the toggle remain below the viewport at the
-      default dashboard size. A scroll area exists (108px overflow), but no
-      scrollbar is visible and the view does not move to reveal the new content.
-      MCP scroll attempts did not move it; ordinary manual scrolling remains
-      unqualified. Make disclosure visible without losing
-      progress/Cancel controls. Screenshot:
-      `.codex/investigations/native-trial-20261029/generation-details-hidden.png`.
-      Proposed change: after expanding details and Qt layout completion, reveal
-      the new section in the existing `content_scroll`, using the deferred-scroll
-      pattern already used for selection options. Do not add a nested scroll area.
-      Keep Read/Cancel in the fixed action area and preserve keyboard access.
-      Gate: actual intersection with the viewport after expansion at compact size
-      and large font, repeated expand/collapse, and available fixed actions;
-      `isVisibleTo` alone is insufficient because offscreen children pass it.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
