@@ -462,6 +462,39 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                     self.assertIsNone(recording.ready_monotonic)
                     self.assertEqual(recording.report()["qualification"], "failed")
 
+    def test_overflow_measurements_survive_failed_capture_collection(self):
+        recording = self.recording()
+        self.run_fake(recording, failed=lambda name: name == "game-audio")
+        path = self.root / "game-audio" / "session.json"
+        metadata = json.loads(path.read_text())
+        diagnostics = {
+            "queue_high_water": {"blocks": 64, "frames": 32768, "pcm_bytes": 262144},
+            "overflow": {
+                "observed_ticks": 12345,
+                "queued_blocks": 64,
+                "queued_frames": 32768,
+                "queued_pcm_bytes": 262144,
+                "consumer_phase": "hal_identity",
+                "consumer_phase_snapshot_consistent": True,
+            },
+            "phases": {
+                "hal_identity": {"count": 4, "total_wall_s": 1.3, "max_wall_s": 1.2}
+            },
+        }
+        metadata.update(
+            errors=["Capture queue overflow"], capture_diagnostics=diagnostics
+        )
+        path.write_text(json.dumps(metadata))
+
+        report = recording.report()
+
+        self.assertEqual(report["qualification"], "failed")
+        self.assertEqual(report["captures"][0]["session"]["status"], "succeeded")
+        failed = report["captures"][1]["session"]
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["errors"], ["Capture queue overflow"])
+        self.assertEqual(failed["capture_diagnostics"], diagnostics)
+
     def test_failed_worker_keeps_independent_captures_and_new_worker_recording(self):
         snapshots = iter(
             (

@@ -312,7 +312,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next implementation item, pending user approval: REC-29-01 before combined acceptance.
+REC-29-01 needs measurements from the next agreed load run before selecting the
+actual stall correction; continuous capture remains a combined acceptance gate.
 UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
@@ -340,20 +341,17 @@ is still one final gate, not a per-fix test.
       Source callback timestamps are not consumer/write completion timestamps.
       The64 slots reserve about4MiB of PCM storage but hold only256KiB with these
       callbacks; evaluate a duration-based capacity only after measuring the stall.
-      First proposed code change: add bounded timing/high-water diagnostics to the
-      existing recorder: callback overflow tick, queued blocks/frames/bytes and
-      consumer phase at overflow; consumer wake delay, CAF write, timeline
-      serialization/write and HAL identity check counts/totals/maxima. Durations
-      include descheduling and must not alone be treated as proof of slow I/O.
-      No allocation, logging or blocking work in the real-time callback. Preserve
-      explicit failure and readable partial CAF when samples are lost.
-      These measurements are a diagnostic prerequisite, not the claimed overflow
-      fix. Existing evidence cannot choose between scheduling, disk and HAL stalls;
-      do not blindly increase SLOT_COUNT or claim a QoS change solves it. Select
-      and agree the measured write/scheduling fix before native acceptance.
-      Gate: bounded synthetic consumer stalls, truthful overflow/timeline metadata,
-      partial-file finalization and related diagnostic tests; sustained dual-tap
-      capture during real generation remains part of the combined native gate.
+      During the next agreed load run, collect `capture_diagnostics` from both
+      process-tap sessions and correlate overflow time with video/runtime events.
+      Inspect queue high-water, consumer lag and phase at overflow, and CAF,
+      JSON and HAL timing maxima. Durations include descheduling and must not
+      alone be treated as proof of slow I/O. Use these measurements to select
+      and agree the actual write/scheduling fix; do not blindly increase
+      SLOT_COUNT or claim a QoS change solves it. Preserve explicit failure and
+      readable partial CAF when samples are lost, and keep allocation, logging
+      and blocking work out of the real-time callback.
+      Gate: sustained dual-tap capture during real generation, with continuous
+      timelines and truthful failure metadata, in the combined native run.
 
 - [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
       Two usability questions, not confirmed defects: `Prepare again` beside
