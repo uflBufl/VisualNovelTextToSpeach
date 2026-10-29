@@ -565,7 +565,8 @@ class AssetManagerDialogTest(unittest.TestCase):
                         "confirmed-revision",
                     )
                     self.assertEqual(
-                        dialog.voice_manifest.text(), "managed/custom/manifest.json"
+                        dialog.voice_manifest.text(),
+                        str(Path("managed/custom/manifest.json")),
                     )
                     self.assertIsNone(dialog._voice_import_draft)
                 else:

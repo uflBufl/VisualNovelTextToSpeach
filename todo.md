@@ -6,6 +6,9 @@
       replacement-prompt keyboard default, calibration sizing and enlarged
       Settings layout in the next hosted Windows/Linux CI run. Local native-route
       and font/DPI checks do not establish those platform results.
+- [ ] Resolve the non-ignored OSV findings in the root and six backend lock files;
+      verify supported dependency compatibility and advisories without a fixed
+      release. Gate: `scripts/dependency_audit.py` passes without hiding findings.
 
 ## Native capture - remaining macOS qualification
 
