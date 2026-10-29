@@ -309,10 +309,44 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-REC-29-01 needs measurements from the next agreed load run before selecting the
-actual stall correction; continuous capture remains a combined acceptance gate.
-Each coherent fix gets its own commit and focused checks; the full native chapter
-is still one final gate, not a per-fix test.
+The combined run supplied new measurements, but older overflows and the new
+sample-clock failure still lack the boundary context needed for a causal repair.
+Each coherent change gets its own commit and focused checks; the full native
+chapter remains a final gate, not a per-fix test.
+
+Next code changes proposed for agreement (do not implement before approval):
+
+- [ ] **OCR-29-01 correction:** in `_resolve_story_ocr_result`, preserve the fast
+      owned-prefix path only for a nonempty, strictly shorter normalized prefix.
+      Equal full text must use the existing bounded complete matcher and its
+      ambiguity/completeness protections before the aggregate confidence gate.
+      Cover the real Duvalle full text with speaker0%/dialogue96%, genuine partial
+      text, duplicate speakers, low dialogue confidence and symbols. Keep existing
+      matching policy and early generated playback; do not add name guessing.
+- [ ] **RUN-29-02 rejection evidence:** split generic `ocr-not-current` into the
+      actual refused barriers (purpose/owner/run/epoch/focus/visibility/control,
+      failed frame comparison, or capture replaced during validation). Retain
+      compared/current capture identities and comparison duration in the existing
+      opt-in diagnostics. Exercise identical and genuinely changed glyph frames
+      arriving during comparison. Use a short saved-frame/native reproduction
+      to select the correction before replacing glyph segmentation. Do not
+      remove timestamp/ownership barriers, mask small punctuation as dust, or
+      treat elapsed time as permission to advance.
+- [ ] **AUDIO-29-01 recovery and evidence:** retire and clear the query worker
+      after send/receive/protocol failures, preserving the primary exception.
+      A valid unsupported-format reply remains ordinary format negotiation.
+      Retain bounded query operation/format/worker identity and send/native-entry/
+      native-call/reply boundaries before cleanup; extend support allowlists so
+      these fields survive. Real-pipe tests cover child exit, malformed response,
+      timeout then recovery and healthy unsupported-format responses. This fixes
+      a proven adjacent recovery defect; the historical format-check stall still
+      needs its native boundary before a root-cause correction is selected.
+- [ ] **REC-29-01/02 failure evidence:** retain both sides of the first sample/
+      host-clock violation, timestamp validity/rate flags, callback receipt and
+      file offset before raising. Add start/end context to phase maxima and the
+      phase preceding max consumer lag. Keep the real-time callback bounded,
+      preserve failed/partial CAF, and verify native selfcheck plus collection.
+      No larger queue, QoS or permissive clock epochs without causal evidence.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
@@ -386,9 +420,13 @@ is still one final gate, not a per-fix test.
       and match_result is owned-prefix. It eventually admitted43 by itself at
       407760.202, about102s after the game transition; no manual key caused that
       recovery. Retained native frame shows an unobscured
-      Duvalle nameplate and text. Inspect actual speaker crop/nameplate admission
-      and ownership against this evidence; do not lower confidence or invent a
-      narrator/speaker from a timeout. Gate:43 admits once with correct speaker
+      Duvalle nameplate and text. The cause is reproduced offline: the early
+      `_resolve_story_ocr_result` startswith branch also catches full equality,
+      returns raw speaker0% unchanged, and blocks the ordinary full matcher.
+      The same full observation through existing complete matching resolves
+      Duvalle at96%;206 owned-prefix observations were rejected as uncertain.
+      Apply the strict-prefix correction above, without lowering confidence or
+      inventing a narrator/speaker from a timeout. Gate:43 admits once with correct speaker
       without this long wait, preserving uncertainty guards elsewhere.
       Evidence: native-trial-20261029-followup/line42-wait/frame-001.png.
 
@@ -464,6 +502,14 @@ is still one final gate, not a per-fix test.
     101 and103 also wait41.466s and19.886s after PCM. Preserve paired frames and inspect
      ownership/visual readiness rather than lowering tolerances. New frame:
      `native-trial-20261029-followup/line100-wait/frame-001.png`.
+     Joined evidence:242/244 OCR attempts after full text are stale, including
+    168 exact text-only and60 normalized text-only resolutions. Generic
+     `ocr-not-current` does not distinguish failed glyph comparison from a new
+     capture arriving during validation. Existing comparison unions both name
+     regions; the saved narrator pair expands from25px to1470px of scenery.
+     A lossy reconstructed full/full pair also rejects, but does not isolate
+     the differing pixels or prove the final segmentation correction. Retain
+     dim punctuation, name changes and all control barriers when fixing this.
      Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
      visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
      `d8f1c1208ebf4d7fa10353e8b7145f6c`.
