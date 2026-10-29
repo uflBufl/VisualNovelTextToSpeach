@@ -312,14 +312,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-1. **Repair the new native findings one at a time.** Diagnose initial clipped
-   OCR/live routing and the separate audio-open failure (RUN-27-01), and the
-   automatic-transition admission and queue ownership (RUN-27-03). Present each
-   implementation plan before changing behavior. Then
-   address UX-27-01 through UX-27-07, distinguishing verified defects from the
-   audition dirty-state doubt. Evidence and screen assessments are retained in
-   the local native-trial investigation; do not rerun the full chapter per fix.
-2. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
+1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready
@@ -1475,10 +1468,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## MCP Unicode text input
 
 - [ ] Fix the PySide6 MCP `type_text` input path for Unicode. Native macOS reproduction: focus a QPlainTextEdit and call `type_text` with Cyrillic; QtTest aborts the application at `testlib/qasciikey.cpp:192` (`ASSERT: "false"`). Use Unicode-capable Qt text/input events for non-ASCII instead of ASCII-only simulated keys, preserving cursor/selection and textChanged behavior. Gate: Cyrillic, accented Latin and mixed text append/replace correctly without aborting; ordinary ASCII shortcuts still work. Isolated UI fixtures only; this failure is in MCP input simulation, not evidence of normal keyboard input failing.
-
-## Qualify game-phrase preview silence rejection
-
-- [ ] Reproduce the real MOSS local v1.5 MLX Centurion preview rejection: choose Narrator > Game character voice > Centurion, first 12.5 s reference beginning "Morning ... Huh?", then Use game phrase for "Ooh, it's you, Jefe? Wanna go on an adventure? There are over 261.6 places that have been rated as dangerous. Murder scenes or cliffs, it's your call." The generated WAV failed objective preflight with 1.60 s internal silence. Preserve model/text/reference/seed and inspect audio before deciding whether synthesis failed or the pause gate rejected an acceptable pause; do not loosen the gate from one example. Require a useful retry outcome and visible reason, with unchanged saved voice assignments.
 
 ## Remaining - Shared audio storage
 
