@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
@@ -679,8 +679,19 @@ class VoicePlanOverviewTest(unittest.TestCase):
             character="Another character with an equally long display name " * 3,
             routing_role="Another long story role",
             line_ids=("other-line",),
+            route="narrator",
+            resolution="automatic-narrator-fallback",
         )
         self.show_plan((first, second))
+        self.dialog.narrator_choice.setCurrentIndex(
+            self.dialog.narrator_choice.findData("character:centurion")
+        )
+        self.assertEqual(self.row_values(1)[1], "Narrator (Centurion)")
+        self.dialog._summary_preview_target = first.group_id
+        self.dialog._summary_preview_status_changed(
+            "Preview unavailable: the selected voice reference could not be loaded. "
+            * 3
+        )
         self.dialog.resize(620, 440)
         self.dialog.show()
         self.application.processEvents()
@@ -691,11 +702,36 @@ class VoicePlanOverviewTest(unittest.TestCase):
             for row in range(routes.count()):
                 item = routes.item(row)
                 card = routes.itemWidget(item)
-                required = card.layout().totalHeightForWidth(routes.viewport().width())
                 allocated = routes.visualItemRect(item).height()
-                self.assertGreaterEqual(allocated, required)
-                self.assertGreaterEqual(card.height(), required)
+                self.assertGreaterEqual(allocated, card.height())
+                labels = [
+                    label for label in card.findChildren(QLabel) if label.isVisible()
+                ]
+                button = card.findChild(QPushButton, "voice_preview_button")
+                self.assertIsNotNone(button)
+                bounds = []
+                for widget in (*labels, button):
+                    rect = widget.rect().translated(
+                        widget.mapTo(card, widget.rect().topLeft())
+                    )
+                    self.assertTrue(card.rect().contains(rect))
+                    self.assertTrue(
+                        widget.parentWidget().rect().contains(widget.geometry())
+                    )
+                    for other in bounds:
+                        self.assertFalse(rect.intersects(other))
+                    bounds.append(rect)
+                    if isinstance(widget, QLabel):
+                        self.assertGreaterEqual(
+                            widget.height(),
+                            widget.heightForWidth(widget.width()),
+                            widget.text(),
+                        )
                 heights.append(allocated)
+            for label in self.dialog.voice_routes_header.findChildren(QLabel):
+                self.assertGreaterEqual(
+                    label.height(), label.heightForWidth(label.width()), label.text()
+                )
             return heights
 
         fitted_row_heights()

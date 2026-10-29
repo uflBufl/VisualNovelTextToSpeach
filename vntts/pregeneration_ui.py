@@ -1108,9 +1108,9 @@ class OfflineAudioPreparationDialog(QDialog):
             font.setBold(True)
             label.setFont(font)
             label.setWordWrap(True)
-            label.setSizePolicy(
-                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-            )
+            policy = label.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            label.setSizePolicy(policy)
             if column == 3:
                 label.setWordWrap(False)
                 label.setSizePolicy(
@@ -2315,7 +2315,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 if narrator_missing
                 else source
                 if group.character == "Narrator"
-                else f"Narrator voice ({source})"
+                else f"Narrator ({source})"
             )
         else:
             route = group.source_character or group.source_speaker or "No voice"
@@ -2463,9 +2463,9 @@ class OfflineAudioPreparationDialog(QDialog):
             label = QLabel(value)
             label.setTextFormat(Qt.TextFormat.PlainText)
             label.setWordWrap(True)
-            label.setSizePolicy(
-                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-            )
+            policy = label.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            label.setSizePolicy(policy)
             if column == 3:
                 label.setAlignment(
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter

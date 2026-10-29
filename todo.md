@@ -312,26 +312,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Remaining implementation order, pending user approval: UX-29-01, UX-29-03,
-then REC-29-01 before combined acceptance.
+Remaining implementation order, pending user approval: UX-29-03, then REC-29-01
+before combined acceptance.
 UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
-
-- [ ] **UX-29-01 - Voice confirmation clips multiline voice names.**
-      Observed during the native chapter acceptance at the default window size:
-      Rossella's `Narrator voice (Centurion)` wraps onto two lines, but the second
-      line is cut off inside its row. Keep the full assigned voice readable and
-      Play aligned; verify narrator substitutions and long character names.
-      Evidence: `.codex/investigations/native-trial-20261029/voice-confirmation-clipped.png`.
-      Proposed change: preserve QLabel's height-for-width flag when setting the
-      four voice-card cells' horizontal size policy. `setWordWrap(True)` currently
-      enables it, then replacing QSizePolicy immediately clears it (confirmed by
-      an offscreen Qt probe). Keep the existing row resize/layout mechanism.
-      Gate: actual label height covers `heightForWidth(label.width())`, including
-      narrator substitution, long names, preview status, compact/large font and
-      widening again. Do not compute expected row height only with the same
-      layout method under test; that is why the existing regression missed it.
 
 - [ ] **UX-29-03 - Expanded generation details remain outside the visible panel.**
       During native generation, `Show generation details` changes to `Hide`, but
@@ -410,6 +395,9 @@ is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
+     and aligned Play buttons in the actual chapter at compact size and enlarged
+     font, including `Narrator (Centurion)` substitutions and preview messages.
    - **True Pause/Resume (RUN-29-01):** pause a prepared clip, streamed live
      synthesis and a speaker announcement mid-audio. Verify unchanged playback
      position during Pause, only remaining audio after Resume, one load/synthesis
