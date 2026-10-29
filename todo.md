@@ -354,9 +354,7 @@ is still one final gate, not a per-fix test.
       timelines and truthful failure metadata, in the combined native run.
 
 - [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
-      Two usability questions, not confirmed defects: `Prepare again` beside
-      `Continue preparation` makes the rebuild/reuse choice worth checking;
-      unchanged selected stories still pass through classification and voice
+      Unchanged selected stories still pass through classification and voice
       confirmation before generation resumes. Establish which steps are required,
       whether cached classification was reused, and whether existing labels are
       sufficient. Discuss findings before proposing UI changes.

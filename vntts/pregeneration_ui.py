@@ -1234,6 +1234,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self.play_ready_button, QDialogButtonBox.ButtonRole.ActionRole
         )
         self.play_ready_button.hide()
+        self.buttons.addButton(
+            self.prepare_again, QDialogButtonBox.ButtonRole.ActionRole
+        )
         cancel_button = self.buttons.addButton(
             "Cancel", QDialogButtonBox.ButtonRole.RejectRole
         )
@@ -1319,7 +1322,6 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addLayout(story_filters)
         selection_layout.addWidget(self.story_filter_status)
         selection_layout.addWidget(self.stories, 1)
-        selection_actions.addWidget(self.prepare_again)
         selection_layout.addLayout(selection_actions)
 
         content = QWidget()
@@ -2105,6 +2107,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.pocket_voice_cloning.setEnabled(True)
         self.selection_panel.hide()
         self._set_progress_visible(False)
+        self.prepare_again.hide()
         self.voice_confirmation.show()
         self.work_summary.setTextFormat(Qt.TextFormat.RichText)
         self.work_summary.setText(self.summary.text())
@@ -2914,6 +2917,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel.setEnabled(not loading)
         self.continue_button.show()
         if loading:
+            self.prepare_again.hide()
             self.continue_button.setEnabled(False)
         else:
             self._selection_changed()
@@ -3212,6 +3216,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _show_phase(self, phase: str, detail: str, cancel_consequence: str) -> None:
         self._clear_resume_error()
+        self.prepare_again.hide()
         self.voice_confirmation.hide()
         self.pocket_voice_cloning.hide()
         self.pocket_terms.hide()
@@ -3312,6 +3317,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._selection_changed()
         if self._generation_configuration is not None and not self.has_pending_work():
             self.selection_panel.hide()
+            self.prepare_again.hide()
             self.continue_button.setText("Continue preparation")
             set_action_icon(self.continue_button, "wand-sparkles")
             self.progress_change_selection.show()
@@ -4671,8 +4677,9 @@ class OfflineAudioPreparationDialog(QDialog):
         saved_manifest = self._saved_manifest_for_selection()
         self.prepare_again.setVisible(
             can_read
-            or saved_manifest is not None
-            or any(self._story_job_statuses.get(value) == "ready" for value in selected)
+            and not self.selection_panel.isHidden()
+            and self._pack_result is None
+            and not self._awaiting_voice_confirmation
         )
         self.prepare_again.setEnabled(
             bool(selected)
