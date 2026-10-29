@@ -1654,7 +1654,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(
                 speech_backend="pocket-tts",
                 offline_speech_backend="moss-tts",
-                offline_tts_model="selected-moss",
+                offline_tts_model="selected-moss.gguf",
             ),
             controller_factory=Mock(return_value=controller),
         )
@@ -1671,7 +1671,7 @@ class TrayApplicationTest(unittest.TestCase):
                 connected.args[0]()
         warmed = session.warmup.call_args.args[0]
         self.assertEqual(warmed.speech_backend, "moss-tts")
-        self.assertEqual(warmed.tts_model, "selected-moss")
+        self.assertEqual(warmed.tts_model, "selected-moss.gguf")
         self.assertEqual(tray.settings.speech_backend, "pocket-tts")
         tray.shutdown()
 

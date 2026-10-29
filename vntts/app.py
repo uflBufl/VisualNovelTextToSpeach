@@ -681,7 +681,7 @@ class SettingsDialog(QDialog):
         self.launch_at_login = QCheckBox("Launch at sign-in (macOS)")
         self.launch_at_login.setChecked(settings.launch_at_login)
         self.launch_at_login.setEnabled(sys.platform == "darwin")
-        self.keep_running_on_close = QCheckBox("Keep reading when Full controls closes")
+        self.keep_running_on_close = QCheckBox("Read with Full controls closed")
         self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)

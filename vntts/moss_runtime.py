@@ -277,9 +277,7 @@ class RetainedMossRuntime:
                 self._backend.load()
         return self._backend
 
-    def __call__(
-        self, registry: CharacterVoiceRegistry, **options: object
-    ) -> object:
+    def __call__(self, registry: CharacterVoiceRegistry, **options: object) -> object:
         return self.backend_for(registry, **options)
 
     def benchmark_backend(

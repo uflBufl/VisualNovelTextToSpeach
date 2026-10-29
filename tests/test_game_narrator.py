@@ -667,7 +667,11 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.result_settings.pocket_gated_model_accepted)
         self.importer.prepare_voice_roles.assert_not_called()
 
-    def test_clearing_qwen_transcript_persists_voice_only_binding(self):
+    @patch(
+        "vntts.game_narrator_ui.speech_backend_options",
+        return_value=(("Qwen", "qwen-tts", True),),
+    )
+    def test_clearing_qwen_transcript_persists_voice_only_binding(self, _options):
         document = json.loads(self.manifest.read_text())
         for voice in document["voices"]:
             voice["vntts.reference_transcript"] = "Existing reference words."
@@ -968,7 +972,7 @@ class GameNarratorTest(unittest.TestCase):
         self,
     ):
         plan, group, _manifest = ambiguous_fixture(self.root / "model-preview")
-        plan = replace(plan, synthesis_model="selected-preview-model")
+        plan = replace(plan, synthesis_model="selected-preview-model.gguf")
         dialog = self.editor(
             settings=self.settings.updated(speech_backend="pocket-tts")
         )
@@ -981,10 +985,10 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(panel.current_selection[0], plan)
         self.assertEqual(
             dialog.tts_model_label.text(),
-            "<b>TTS model:</b> selected-preview-model",
+            "<b>TTS model:</b> selected-preview-model.gguf",
         )
         self.assertIn(
-            "Model: selected-preview-model",
+            "Model: selected-preview-model.gguf",
             dialog.tts_model_label.toolTip(),
         )
         self.assertIs(dialog.tts_model_label.parentWidget(), panel.phrase_box)
@@ -1034,10 +1038,10 @@ class GameNarratorTest(unittest.TestCase):
             )
         )
         dialog.set_voice_context(
-            replace(plan, synthesis_model="story-model"), character=group.character
+            replace(plan, synthesis_model="story-model.gguf"), character=group.character
         )
         self.drain()
-        self.assertIn("story-model", dialog.tts_model_label.text())
+        self.assertIn("story-model.gguf", dialog.tts_model_label.text())
         self.select(dialog, "preset", role=group.character, source="preset:alba")
         selected_plan = dialog.voice_panel.current_selection[0]
         self.assertEqual(selected_plan.synthesis_backend, "pocket-tts")
@@ -1053,11 +1057,11 @@ class GameNarratorTest(unittest.TestCase):
         installation = self.root / "installed-game"
         self.importer.selected_installation_root.return_value = installation
         dialog = self.editor(
-            settings=self.settings.updated(tts_model="configured-model")
+            settings=self.settings.updated(tts_model="configured-model.gguf")
         )
         plan, group, _manifest = ambiguous_fixture(self.root / "loading-model")
         dialog.set_voice_context(
-            replace(plan, synthesis_model="story-model"), character=group.character
+            replace(plan, synthesis_model="story-model.gguf"), character=group.character
         )
         self.drain()
         dialog.show()
@@ -1066,7 +1070,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(dialog._installation_root, installation)
         self.assertTrue(dialog.voice_panel.isHidden())
         self.assertTrue(dialog.tts_model_label.isVisible())
-        self.assertIn("configured-model", dialog.tts_model_label.text())
+        self.assertIn("configured-model.gguf", dialog.tts_model_label.text())
         self.assertNotIn("story-model", dialog.tts_model_label.toolTip())
         self.assertFalse(dialog.characters.isEnabled())
         self.drain()

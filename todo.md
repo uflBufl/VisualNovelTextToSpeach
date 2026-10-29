@@ -1,5 +1,12 @@
 # TODO
 
+## Active - CI unit test repairs
+
+- [ ] Verify the repaired model identity, offline warmup, Qwen persistence,
+      replacement-prompt keyboard default, calibration sizing and enlarged
+      Settings layout in the next hosted Windows/Linux CI run. Local native-route
+      and font/DPI checks do not establish those platform results.
+
 ## Native capture - remaining macOS qualification
 
 - [ ] Qualify the final macOS release distribution without developer tools:
@@ -1522,7 +1529,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
       activation scheduling and fixture contract; preserve the real fresh-install
       preparation/restart path rather than weakening its assertion.
-- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py`, `vntts/authoring/workbench_ui.py`, optional remediation lookup in `vntts/onboarding_ui.py` and the preview backend factory contract in `vntts/app.py`; format the existing `vntts/moss_runtime.py` signature. Confirm the current baseline before each repair. Gate: the full configured mypy and Ruff format checks pass without suppressing diagnostics.
+- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py`, `vntts/authoring/workbench_ui.py`, optional remediation lookup in `vntts/onboarding_ui.py` and the preview backend factory contract in `vntts/app.py`. Confirm the current baseline before each repair. Gate: the full configured mypy check passes without suppressing diagnostics.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
 ## Qualify SQLite-only storage

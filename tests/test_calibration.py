@@ -14,6 +14,7 @@ from PySide6.QtCore import (  # noqa: E402
     QEvent,
     QPoint,
     QRect,
+    QSize,
     Qt,
     QThreadPool,
     QTimer,
@@ -697,7 +698,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
         dialog.show()
         self.application.processEvents()
         self.application.processEvents()
-        self.assertEqual(dialog.size().toTuple(), (620, 430))
+        self.assertEqual(
+            dialog.size(), QSize(620, 430).expandedTo(dialog.minimumSizeHint())
+        )
         self.assertLessEqual(dialog.preview.pixmap().width(), dialog.preview.width())
         self.assertLessEqual(dialog.preview.pixmap().height(), dialog.preview.height())
         for button in (dialog.save_button, dialog.retry_button, dialog.cancel_button):
