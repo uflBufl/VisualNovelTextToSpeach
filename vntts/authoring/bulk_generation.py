@@ -1155,7 +1155,7 @@ def _select_generation_candidates(
             item.queue_id
             for item in candidates
             if items.get(item.queue_id, {}).get("status")
-            in {"generated", "approved", "live_fallback"}
+            in {"generated", "approved", "live_fallback", "omitted"}
             and items[item.queue_id].get("review_status") != "pending_review"
         ]
         if protected:
@@ -1173,11 +1173,10 @@ def _skip_existing_generation_item(
     existing: JsonDocument,
 ) -> bool:
     queue_id = item.queue_id
-    if existing.get("status") == "live_fallback":
+    if existing.get("status") in {"live_fallback", "omitted"}:
         if run.regenerate_existing:
             raise BulkGenerationError(
-                "Regeneration cannot overwrite a terminal live fallback "
-                f"decision for {queue_id!r}"
+                f"Regeneration cannot overwrite a terminal decision for {queue_id!r}"
             )
         return True
     if existing.get("status") in {"generated", "approved"}:
@@ -3063,6 +3062,8 @@ def reconcile_generation_cancellation(
             if active.get("phase") != "retrying" and existing.get("status") not in {
                 "generated",
                 "approved",
+                "live_fallback",
+                "omitted",
             }:
                 voice = _generation_text(
                     active.get("synthesis_voice_character"), "Cancelled synthesis voice"
@@ -3161,7 +3162,11 @@ def _reconcile_interrupted_attempt(
         raise BulkGenerationError("Generation state items are malformed")
     existing_value = items.get(queue_id, {})
     existing = existing_value if _is_json_document(existing_value) else {}
-    if cancellation is not None and active.get("phase") == "retrying":
+    if (
+        cancellation is not None
+        and active.get("phase") == "retrying"
+        and existing.get("status") not in {"live_fallback", "omitted"}
+    ):
         if (
             generation_item_status(existing) != "failed"
             or existing.get("attempts") != active.get("total_attempts")
@@ -3182,7 +3187,12 @@ def _reconcile_interrupted_attempt(
         state["active"] = None
         write_generation_state(state_path, state)
         return
-    if existing.get("status") not in {"generated", "approved"}:
+    if existing.get("status") not in {
+        "generated",
+        "approved",
+        "live_fallback",
+        "omitted",
+    }:
         attempts = max(
             _nonnegative_int(existing.get("attempts", 0), "Attempts"),
             _nonnegative_int(active.get("total_attempts", 0), "Active attempts"),

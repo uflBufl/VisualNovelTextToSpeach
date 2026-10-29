@@ -1058,6 +1058,10 @@ def _validate_audio_event_omission(
         or not _has_exact_schema_version(decision, AUDIO_EVENT_OMISSION_VERSION)
         or decision.get("reason") != AUDIO_EVENT_OMISSION_REASON
         or decision.get("queue_id") != queue_id
+        or any(
+            result.get(field) != decision.get(field)
+            for field in ("line_id", "text_sha256", "speaker")
+        )
         or not isinstance(authority, dict)
         or set(authority) != authority_fields
     ):
@@ -1094,6 +1098,12 @@ def _validate_audio_event_omission(
         not isinstance(plan, dict)
         or not plan.get("requires_composition")
         or plan.get("spoken_text") != ""
+        or queue_item.action not in {"generate", "prefer_source_audio"}
+        or (
+            queue_item.action == "prefer_source_audio"
+            and queue_item.source_audio_status
+            not in {"configured_unavailable", "unavailable"}
+        )
         or decision.get("line_id") != queue_item.line_id
         or decision.get("text_sha256") != queue_item.text_sha256
         or decision.get("speaker") != queue_item.speaker

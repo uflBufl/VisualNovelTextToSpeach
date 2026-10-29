@@ -40,12 +40,21 @@ from vntts.audio_store import (
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
+from vntts.authoring.generation_manifest import (
+    RUNTIME_PROGRESS_MANIFEST_NAME,
+    write_generated_manifest_from_state,
+    write_runtime_progress_manifest_from_state,
+)
 from vntts.authoring.generation_state import (
+    AUDIO_EVENT_OMISSION_REASON,
+    AUDIO_EVENT_OMISSION_SCHEMA,
+    AUDIO_EVENT_OMISSION_VERSION,
     STATE_SCHEMA,
     STATE_VERSION,
     BulkGenerationError,
     generation_state_file,
     generation_state_items,
+    generation_state_snapshot,
     load_generation_state_from_snapshot,
     load_stable_generation_queue,
     write_generation_state,
@@ -63,6 +72,7 @@ from vntts.authoring.queue_builder import (
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.generation_database import (
     read_state,
+    require_registered_output,
     validate_database_path,
 )
 from vntts.generation_database import (
@@ -172,6 +182,7 @@ class PregenerationInputStore:
         if destination.is_dir():
             result = self._reused_input(destination, identity, effective)
             _reuse_completed_audio(result, plan, self.job_store)
+            initialize_audio_event_omissions(result, decided_at=job.created_at)
             return result
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
@@ -274,6 +285,7 @@ class PregenerationInputStore:
                 )
                 result = _load_existing(destination, identity, effective)
                 _reuse_completed_audio(result, plan, self.job_store)
+                initialize_audio_event_omissions(result, decided_at=job.created_at)
                 _record_input_phase(
                     "publish",
                     phase_started,
@@ -600,6 +612,166 @@ def _reuse_completed_audio(
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"
         ) from error
+
+
+def initialize_audio_event_omissions(
+    generation_input: PregenerationInput, *, decided_at: str
+) -> None:
+    """Persist exact silent decisions before any live playback or model startup."""
+    if not generation_input.audio_event_omission_queue_ids:
+        return
+    output = generation_input.output_directory
+    try:
+        require_registered_output(output)
+        queue, queue_sha256 = load_stable_generation_queue(generation_input.queue)
+        if queue_sha256 != generation_input.queue_sha256:
+            raise PregenerationQueueError("Generation queue changed before omission")
+        output.mkdir(parents=True, exist_ok=True)
+        with GenerationLease(
+            output, queue_sha256, process_checker=process_is_alive
+        ) as lease:
+            if sha256_file(generation_input.queue) != queue_sha256:
+                raise PregenerationQueueError(
+                    "Generation queue changed before omission"
+                )
+            state_path = generation_state_path(output)
+            if not state_path.exists():
+                write_generation_state(
+                    state_path,
+                    {
+                        "schema": STATE_SCHEMA,
+                        "schema_version": STATE_VERSION,
+                        "queue_sha256": queue_sha256,
+                        "game": queue.metadata.get("game"),
+                        "language": queue.metadata.get("language"),
+                        "items": {},
+                        "active": None,
+                        "synthesis_controls": {},
+                    },
+                )
+            state, state_sha256, _payload = generation_state_snapshot(state_path)
+            state = load_generation_state_from_snapshot(
+                state_path, queue, queue_sha256, state_document=state
+            )
+            items = generation_state_items(state)
+            changed = []
+            for record in _self_service_omission_decisions(
+                decided_at, generation_input, state_sha256, queue
+            ):
+                queue_id = record["queue_id"]
+                assert isinstance(queue_id, str)
+                existing = items.get(queue_id)
+                if existing is not None:
+                    if existing.get("status") != "omitted":
+                        raise PregenerationQueueError(
+                            f"Omission cannot replace an existing result: {queue_id!r}"
+                        )
+                    saved_decision = existing["audio_event_omission"]
+                    assert isinstance(saved_decision, dict)
+                    authority = saved_decision["authority"]
+                    assert isinstance(authority, dict)
+                    if (
+                        authority["queue_sha256"] != queue_sha256
+                        or authority["base_workspace_sha256"]
+                        != generation_input.identity
+                        or authority["base_workspace_id"]
+                        != f"self-service:{generation_input.identity}"
+                    ):
+                        raise PregenerationQueueError(
+                            "Saved audio-event omission authority changed"
+                        )
+                    continue
+                items[queue_id] = {
+                    "status": "omitted",
+                    "review_status": "omitted",
+                    "attempts": 0,
+                    "line_id": record["line_id"],
+                    "text_sha256": record["text_sha256"],
+                    "speaker": record["speaker"],
+                    "audio_event_omission": record,
+                    "updated_at": decided_at,
+                }
+                changed.append(queue_id)
+            lease.assert_owned()
+            if sha256_file(generation_input.queue) != queue_sha256:
+                raise PregenerationQueueError(
+                    "Generation queue changed before omission publication"
+                )
+            if changed:
+                write_generation_state(
+                    state_path,
+                    state,
+                    changed_items=tuple(changed),
+                    controls_unchanged=True,
+                )
+            write_generated_manifest_from_state(state, output, output / "manifest.json")
+            write_runtime_progress_manifest_from_state(
+                state, output, output / RUNTIME_PROGRESS_MANIFEST_NAME
+            )
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise PregenerationQueueError(
+            f"Unable to prepare audio-event omissions: {error}"
+        ) from error
+
+
+def _self_service_omission_decisions(
+    decided_at: str,
+    generation_input: PregenerationInput,
+    state_sha256: str,
+    queue: VoiceGenerationQueue,
+) -> list[dict[str, object]]:
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    queue_ids = tuple(sorted(generation_input.audio_event_omission_queue_ids))
+    batch_id = canonical_document_sha256(
+        {
+            "schema_version": 1,
+            "generation_input_identity": generation_input.identity,
+            "state_sha256": state_sha256,
+            "queue_sha256": generation_input.queue_sha256,
+            "queue_ids": list(queue_ids),
+        }
+    )
+    authority = {
+        "batch_id": batch_id,
+        "base_workspace_id": f"self-service:{generation_input.identity}",
+        "base_workspace_sha256": generation_input.identity,
+        "base_state_sha256": state_sha256,
+        "queue_sha256": generation_input.queue_sha256,
+    }
+    records: list[dict[str, object]] = []
+    for queue_id in queue_ids:
+        item = queue_by_id.get(queue_id)
+        plan = None if item is None else audio_event_plan_for_record(item)
+        if (
+            item is None
+            or item.action not in {"generate", "prefer_source_audio"}
+            or (
+                item.action == "prefer_source_audio"
+                and item.source_audio_status
+                not in {"configured_unavailable", "unavailable"}
+            )
+            or not isinstance(plan, dict)
+            or not plan.get("requires_composition")
+            or plan.get("spoken_text") != ""
+        ):
+            raise PregenerationQueueError(
+                f"Offline audio-event omission is invalid: {queue_id!r}"
+            )
+        decision = {
+            "schema": AUDIO_EVENT_OMISSION_SCHEMA,
+            "schema_version": AUDIO_EVENT_OMISSION_VERSION,
+            "reason": AUDIO_EVENT_OMISSION_REASON,
+            "queue_id": queue_id,
+            "line_id": item.line_id,
+            "text_sha256": item.text_sha256,
+            "speaker": item.speaker,
+            "plan_sha256": plan["plan_sha256"],
+            "spoken_text_sha256": plan["spoken_text_sha256"],
+            "decided_at": decided_at,
+            "authority": copy.deepcopy(authority),
+        }
+        records.append(decision)
+    return records
 
 
 def _voice_content_identity(registry: CharacterVoiceRegistry, character: str) -> object:
@@ -1176,4 +1348,5 @@ __all__ = [
     "PregenerationInputStore",
     "PregenerationQueueCancelled",
     "PregenerationQueueError",
+    "initialize_audio_event_omissions",
 ]

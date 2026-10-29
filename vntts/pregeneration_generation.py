@@ -120,7 +120,9 @@ class _IncrementalGenerationProgress:
             )
             if kind is not None:
                 self.counts[kind] += delta
-            if kind == "generated" and value.line_id is not None:
+            if (
+                kind == "generated" or value.status == "omitted"
+            ) and value.line_id is not None:
                 line_id = value.line_id
                 was_ready = self.ready[line_id] > 0
                 self.ready[line_id] += delta
@@ -980,9 +982,10 @@ def _durable_ready_line_ids(
         )
         candidates = set(progress.ready_line_ids)
         for record in story.records:
-            if (
-                record.line_id in candidates
-                and library.find(record.line_id, record.text_sha256) is not None
+            if record.line_id in candidates and (
+                library.find(record.line_id, record.text_sha256) is not None
+                or library.find_audio_event_omission(record.line_id, record.text_sha256)
+                is not None
             ):
                 ready.add(record.line_id)
     except OSError, StoryIndexError, TypeError, ValueError:

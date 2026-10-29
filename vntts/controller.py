@@ -4299,10 +4299,30 @@ class AppController:
     def _live_playback_guard(
         self, reader: LiveDialogReader, chunk: SpeechChunk, audio: object
     ) -> bool:
-        if not reader.wait_until_playable(chunk):
+        if isinstance(audio, PendingGeneratedAudioRoute):
+            if not reader.wait_until_playable(
+                chunk,
+                cancellation=lambda: (
+                    not self._live_visible_occurrence_current(reader, chunk)
+                ),
+            ):
+                return False
+        elif not reader.wait_until_playable(chunk):
             return False
-        if not isinstance(audio, (SourceAudioRoute, PreparedSourceAudioPassThrough)):
+        if not isinstance(
+            audio,
+            (
+                SourceAudioRoute,
+                PreparedSourceAudioPassThrough,
+                PendingGeneratedAudioRoute,
+            ),
+        ):
             return True
+        return self._live_visible_occurrence_current(reader, chunk)
+
+    def _live_visible_occurrence_current(
+        self, reader: LiveDialogReader, chunk: SpeechChunk
+    ) -> bool:
         if chunk.sequence_event_id is None or chunk.sequence_occurrence_id is None:
             return reader.active_generation == chunk.generation
         with self.story_cursor_lock:
@@ -4321,14 +4341,34 @@ class AppController:
         play_route = getattr(self.speech_backend, "play_route", None)
         play_prepared = getattr(self.speech_backend, "play_prepared", None)
         outcome = None
-        playback_guard = partial(self._live_playback_guard, reader, chunk, audio)
+        pending_dispatched = False
+
+        def playback_guard() -> bool:
+            if pending_dispatched:
+                return reader.wait_until_playable(chunk)
+            return self._live_playback_guard(reader, chunk, audio)
+
+        def pending_dispatch(_route: RouteDecision) -> bool:
+            nonlocal pending_dispatched
+            if not playback_guard():
+                return False
+            pending_dispatched = True
+            return True
+
         try:
             if isinstance(audio, RouteDecision):
                 if callable(play_route):
-                    outcome = play_route(
-                        audio,
-                        playback_guard=playback_guard,
-                    )
+                    if isinstance(audio, PendingGeneratedAudioRoute):
+                        outcome = play_route(
+                            audio,
+                            playback_guard=playback_guard,
+                            on_playback_dispatch=pending_dispatch,
+                        )
+                    else:
+                        outcome = play_route(
+                            audio,
+                            playback_guard=playback_guard,
+                        )
             if (
                 outcome is None
                 and callable(play_prepared)

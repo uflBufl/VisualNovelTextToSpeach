@@ -411,7 +411,7 @@ def read_progress(path: Path) -> GenerationProgress:
         ready = tuple(
             (line_id, text_sha256)
             for line_id, text_sha256 in connection.execute(
-                "SELECT line_id, text_sha256 FROM items WHERE status IN ('generated','approved') "
+                "SELECT line_id, text_sha256 FROM items WHERE status IN ('generated','approved','omitted') "
                 "AND line_id IS NOT NULL AND text_sha256 IS NOT NULL ORDER BY line_id, text_sha256"
             )
         )

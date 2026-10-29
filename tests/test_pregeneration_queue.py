@@ -1478,9 +1478,16 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 wraps=audio_event_plan_for_record,
             ) as parse_events:
                 result = PregenerationInputStore(jobs).materialize(job, plan)
-            self.assertEqual(parse_events.call_count, 2 * result.queue_items)
+            self.assertEqual(parse_events.call_count, 2 * result.queue_items + 1)
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
+            omission = load_generation_state(
+                generation_state_path(result.output_directory), result.queue
+            )["items"][queue_by_line["pure-event"]]
+            self.assertEqual(omission["status"], "omitted")
+            self.assertTrue(
+                (result.output_directory / "live-progress-manifest.json").is_file()
+            )
             original = jobs.catalog.input_document(result.directory)
             self.assertIsNotNone(original)
 

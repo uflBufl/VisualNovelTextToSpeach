@@ -42,16 +42,13 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.audio_store import SharedAudioStore, link_shared_audio
-from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
+    audio_event_omission_entries,
     contained_generation_path,
 )
 from vntts.authoring.generation_state import (
-    AUDIO_EVENT_OMISSION_REASON,
-    AUDIO_EVENT_OMISSION_SCHEMA,
-    AUDIO_EVENT_OMISSION_VERSION,
     generation_item_status,
     generation_state_file,
     generation_state_snapshot,
@@ -828,10 +825,8 @@ class OfflinePackPublisher:
             return result
         phase_started, cpu_started = perf_counter(), process_time()
         state, voice_document, voices, current_omissions = _load_terminal_generation(
-            job,
             generation_input,
             generation_result,
-            state_sha256,
             state_document=state_document,
         )
         _verify_prepared_inputs(generation_input)
@@ -1190,10 +1185,8 @@ def _existing_parent(path: str | Path) -> Path:
 
 
 def _load_terminal_generation(
-    job: PregenerationJob,
     generation_input: PregenerationInput,
     generation_result: OfflineGenerationResult,
-    state_sha256: str,
     *,
     state_document: GenerationState,
 ) -> tuple[
@@ -1216,12 +1209,11 @@ def _load_terminal_generation(
             generation_input.voice_manifest,
             allow_legacy=False,
         )
-        omissions = _self_service_omission_records(
-            job,
-            generation_input,
-            state_sha256,
-            queue,
-        )
+        omissions = audio_event_omission_entries(state)
+        if {value["queue_id"] for value in omissions} != set(
+            generation_input.audio_event_omission_queue_ids
+        ):
+            raise OfflinePackError("Offline audio-event omission state is incomplete")
         omission_queue_ids: set[str] = set()
         for value in omissions:
             queue_id = value.get("queue_id")
@@ -1274,16 +1266,18 @@ def _require_terminal_generation(
     items = _state_items(state)
     actual = set(items)
     omission_queue_ids = set(omission_queue_ids)
-    if actual != expected - omission_queue_ids:
+    if actual != expected | omission_queue_ids:
         raise OfflinePackError("Offline generation does not cover the selected queue")
-    for queue_id in sorted(expected - omission_queue_ids):
+    for queue_id in sorted(actual):
         item = items[queue_id]
         status = generation_item_status(item)
         review = item.get("review_status")
-        if (status, review) not in {
-            ("approved", "approved"),
-            ("live_fallback", "live_fallback"),
-        }:
+        allowed = (
+            {("omitted", "omitted")}
+            if queue_id in omission_queue_ids
+            else {("approved", "approved"), ("live_fallback", "live_fallback")}
+        )
+        if (status, review) not in allowed:
             raise OfflinePackError(
                 f"Offline generation item is not terminal: {queue_id!r}"
             )
@@ -1787,71 +1781,6 @@ def _document_records(
     if not isinstance(entries, list):
         raise OfflinePackError(f"Active pack {label} ledger is malformed")
     return copy.deepcopy(entries)
-
-
-def _self_service_omission_records(
-    job: PregenerationJob,
-    generation_input: PregenerationInput,
-    state_sha256: str,
-    queue: VoiceGenerationQueue,
-) -> JsonRecords:
-    queue_by_id = {item.queue_id: item for item in queue.items}
-    queue_ids = tuple(sorted(generation_input.audio_event_omission_queue_ids))
-    batch_id = canonical_document_sha256(
-        {
-            "schema_version": 1,
-            "generation_input_identity": generation_input.identity,
-            "state_sha256": state_sha256,
-            "queue_sha256": generation_input.queue_sha256,
-            "queue_ids": list(queue_ids),
-        }
-    )
-    authority = {
-        "batch_id": batch_id,
-        "base_workspace_id": f"self-service:{generation_input.identity}",
-        "base_workspace_sha256": generation_input.identity,
-        "base_state_sha256": state_sha256,
-        "queue_sha256": generation_input.queue_sha256,
-    }
-    records: JsonRecords = []
-    for queue_id in queue_ids:
-        item = queue_by_id.get(queue_id)
-        plan = None if item is None else audio_event_plan_for_record(item)
-        if (
-            item is None
-            or item.action not in {"generate", "prefer_source_audio"}
-            or (
-                item.action == "prefer_source_audio"
-                and item.source_audio_status
-                not in {"configured_unavailable", "unavailable"}
-            )
-            or not isinstance(plan, dict)
-            or not plan.get("requires_composition")
-            or plan.get("spoken_text") != ""
-        ):
-            raise OfflinePackError(
-                f"Offline audio-event omission is invalid: {queue_id!r}"
-            )
-        decision = {
-            "schema": AUDIO_EVENT_OMISSION_SCHEMA,
-            "schema_version": AUDIO_EVENT_OMISSION_VERSION,
-            "reason": AUDIO_EVENT_OMISSION_REASON,
-            "queue_id": queue_id,
-            "line_id": item.line_id,
-            "text_sha256": item.text_sha256,
-            "speaker": item.speaker,
-            "plan_sha256": plan["plan_sha256"],
-            "spoken_text_sha256": plan["spoken_text_sha256"],
-            "decided_at": job.created_at,
-            "authority": copy.deepcopy(authority),
-        }
-        records.append(
-            {
-                **decision,
-                "decision_sha256": canonical_document_sha256(decision),
-            }
-        )
-    return records
 
 
 def _live_fallback_records(state: GenerationState) -> JsonRecords:

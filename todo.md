@@ -312,38 +312,12 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Proposed implementation order, pending user approval: RUN-29-05, RUN-29-03,
+Remaining proposed implementation order, pending user approval: RUN-29-03,
 RUN-29-02, RUN-29-04, RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before
 combined acceptance. RUN-29-03's identity guard must precede faster visual
 completion. UX-29-02 remains a discussion item, not a confirmed defect or a
 mandatory redesign. Each coherent fix gets its own commit and focused checks;
 the full native chapter is still one final gate, not a per-fix test.
-
-- [ ] **RUN-29-05 - Preserve authorized audio-event omissions in live progress.**
-     314001:99 (`*sigh*`) waits indefinitely for generation although the saved
-      pack authorizes its silent omission and no WAV is scheduled for this pure
-      stage direction. Live-progress manifests omit the omission ledger; routing
-      consequently returns `waiting-for-generation`. Also check pending-route
-      resolution, which currently recognizes generated/live fallback only.
-      Proposed change: make the validated omission decision available when the
-      generation state is initialized/resumed, using the existing terminal
-      `omitted` representation and exact queue/line/text/plan authority. Reuse its
-      serialization for runtime and final manifests rather than creating the
-      policy only at final pack publication. Update all progress publication paths
-      (normal generation, fallback and cancellation/resume) through their shared
-      writer. Include validated omissions in both durable and in-memory readiness;
-      let `resolved_pending_route` return the existing `AudioEventOmissionRoute`.
-      Also cancel an unstarted pending route whose visible occurrence has changed,
-      including during Pause and immediately before resolved dispatch. Preserve
-      accepted ready-audio FIFO and background generation; do not clear the queue.
-      Gate: exact omission before reading and arriving during a wait, unchanged
-      WAVs on resume, wrong text/hash rejection, normal missing WAV still waits,
-      and pending99 -> admitted100 with publication/Pause races and no old advance.
-      Session `fa363219b30447bb88d112530fd69150`, start360232.269; waited over2min
-      before manual recovery. Manual Space reveals100, which OCR accepts exactly,
-      but stale99 preparation still blocks its playback: verify cancellation of an
-      unstarted pending route when a new canonical occurrence is admitted.
-      Frame: `.codex/investigations/native-trial-20261029/line99-wait/`.
 
 - [ ] **RUN-29-03 - Retain recognized unspoken dialogue across automatic transitions.**
       While314001:48 was still playing, OCR observed49, including `Hey! You can't
@@ -528,6 +502,9 @@ the full native chapter is still one final gate, not a per-fix test.
    First resolve the RUN/REC/UX-29 findings above with agreed implementation plans.
    The native attempt reached104 with manual recoveries; autonomous continuation
    and continuous audio evidence failed, so those gates remain open.
+   Include native confirmation that authorized silent events do not wait for a
+   WAV during generation/resume, and a newly accepted occurrence releases an
+   older unstarted wait without interrupting already dispatched speech.
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready

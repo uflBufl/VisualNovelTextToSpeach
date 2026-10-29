@@ -28,6 +28,7 @@ from vntts.audio_output import PcmAdmission, PcmAdmissionRejected, pcm_admission
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
+    AudioEventOmissionRoute,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
     GeneratedAudioRoute,
@@ -845,6 +846,115 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsInstance(dispatch.call_args.args[0], LiveFallbackRoute)
         backend.voice_override.assert_not_called()
         live.prepare_playback.assert_called_once_with("Narrator", "Hello.")
+
+    def publish_omission(self, manifest, *, line_id="game:1", text="Hello."):
+        decision = {
+            "schema": "vntts.authoring-audio-event-omission",
+            "schema_version": 1,
+            "reason": "no_validated_source_or_supported_generator",
+            "queue_id": "audio-event",
+            "line_id": line_id,
+            "text_sha256": text_sha256(text),
+            "speaker": "Ada",
+            "plan_sha256": "1" * 64,
+            "spoken_text_sha256": text_sha256(text),
+            "decided_at": "2026-01-01T00:00:00Z",
+            "authority": {
+                "batch_id": "2" * 64,
+                "base_workspace_id": "base",
+                "base_workspace_sha256": "3" * 64,
+                "base_state_sha256": "4" * 64,
+                "queue_sha256": "5" * 64,
+            },
+        }
+        decision["decision_sha256"] = canonical_document_sha256(decision)
+        write_generated_audio_manifest(
+            manifest,
+            {
+                "vntts.runtime.progress": True,
+                "vntts.authoring.audio_event_omission": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": [decision],
+                },
+            },
+            [],
+        )
+
+    def test_pending_runtime_progress_accepts_omission_published_during_wait(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            live = self.create_live_backend()
+            output = FakeAudioOutput()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                GeneratedAudioLibrary.load_optional(manifest),
+                self.create_resolver(),
+                audio_output=output,
+            )
+            pending = backend.prepare_route("Ada", "Hello.")
+            self.assertIsInstance(pending, PendingGeneratedAudioRoute)
+            self.assertIsNone(backend.resolved_pending_route(pending))
+
+            def publish(_timeout):
+                self.publish_omission(manifest)
+                return False
+
+            with patch.object(
+                backend.playback_owner.progress_wait_stop, "wait", side_effect=publish
+            ) as wait:
+                outcome = backend.play_route(pending, playback_guard=lambda: True)
+
+            self.assertIsInstance(
+                backend.resolved_pending_route(pending), AudioEventOmissionRoute
+            )
+        self.assertTrue(outcome.successful)
+        self.assertEqual(outcome.audio_source, "audio-event-omission")
+        wait.assert_called_once()
+        live.prepare_playback.assert_not_called()
+        live.play_prepared.assert_not_called()
+        self.assertEqual(output.plays, [])
+
+    def test_pending_runtime_progress_rejects_omission_for_other_identity(self):
+        for identity in ({"line_id": "other"}, {"text": "Changed."}):
+            with self.subTest(identity=identity), TemporaryDirectory() as directory:
+                manifest = Path(directory) / "generated-audio.json"
+                write_generated_audio_manifest(
+                    manifest, {"vntts.runtime.progress": True}, []
+                )
+                backend = GeneratedAudioFallbackBackend(
+                    self.create_live_backend(),
+                    GeneratedAudioLibrary.load_optional(manifest),
+                    self.create_resolver(),
+                    audio_output=FakeAudioOutput(),
+                )
+                pending = backend.prepare_route("Ada", "Hello.")
+                self.publish_omission(manifest, **identity)
+                self.assertIsNone(backend.resolved_pending_route(pending))
+
+    def test_pending_omission_rechecks_guard_after_publication(self):
+        with TemporaryDirectory() as directory:
+            manifest = Path(directory) / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                GeneratedAudioLibrary.load_optional(manifest),
+                self.create_resolver(),
+                audio_output=FakeAudioOutput(),
+            )
+            pending = backend.prepare_route("Ada", "Hello.")
+            self.publish_omission(manifest)
+            guard = Mock(side_effect=(True, False))
+
+            outcome = backend.play_route(pending, playback_guard=guard)
+
+        self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertEqual(guard.call_count, 2)
 
     def test_pending_fallback_backend_mismatch_uses_frozen_live_voice(self):
         with TemporaryDirectory() as directory:

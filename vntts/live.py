@@ -1254,29 +1254,41 @@ class LiveDialogReader:
             future.cancel()
         return chunks
 
-    def wait_until_playable(self, chunk: SpeechChunk) -> bool:
-        with self.pause_condition:
-            while (
-                self.paused
-                and not self.emergency_stopped
-                and not self.is_shutting_down
-                and self._owns_chunk(chunk)
-                and self.suppressed_generation != chunk.generation
-                and chunk.playback_id not in self.cancelled_chunk_ids
-            ):
-                self.pause_condition.wait()
-            return (
-                not self.emergency_stopped
-                and not self.is_shutting_down
-                and self._owns_chunk(chunk)
-                and (
-                    chunk.generation not in self.sealed_generations
-                    or self.current_chunk is chunk
-                    or chunk.explicit_replay
+    def wait_until_playable(
+        self,
+        chunk: SpeechChunk,
+        *,
+        cancellation: Callable[[], bool] | None = None,
+    ) -> bool:
+        while True:
+            if cancellation is not None and cancellation():
+                return False
+            with self.pause_condition:
+                if (
+                    self.paused
+                    and not self.emergency_stopped
+                    and not self.is_shutting_down
+                    and self._owns_chunk(chunk)
+                    and self.suppressed_generation != chunk.generation
+                    and chunk.playback_id not in self.cancelled_chunk_ids
+                ):
+                    if cancellation is None:
+                        self.pause_condition.wait()
+                    else:
+                        self.pause_condition.wait(0.1)
+                    continue
+                return (
+                    not self.emergency_stopped
+                    and not self.is_shutting_down
+                    and self._owns_chunk(chunk)
+                    and (
+                        chunk.generation not in self.sealed_generations
+                        or self.current_chunk is chunk
+                        or chunk.explicit_replay
+                    )
+                    and self.suppressed_generation != chunk.generation
+                    and chunk.playback_id not in self.cancelled_chunk_ids
                 )
-                and self.suppressed_generation != chunk.generation
-                and chunk.playback_id not in self.cancelled_chunk_ids
-            )
 
     def _owns_chunk(self, chunk: SpeechChunk) -> bool:
         return (

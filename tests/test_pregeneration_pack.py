@@ -1619,7 +1619,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
     def test_terminal_generation_uses_the_validated_queue_snapshot(self):
         with TemporaryDirectory() as directory:
-            job, generation_input, result, items = fixture(Path(directory))
+            _job, generation_input, result, items = fixture(Path(directory))
             original_load = VoiceGenerationQueue.load
 
             def replace_queue_after_parse(path):
@@ -1641,10 +1641,8 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 ) as state_loader,
             ):
                 _load_terminal_generation(
-                    job,
                     generation_input,
                     result,
-                    sha256_file(result.state),
                     state_document=read_state(result.state),
                 )
 
@@ -2036,7 +2034,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 OfflinePackError,
-                "Offline audio-event omission is invalid",
+                "Offline audio-event omission state is incomplete",
             ):
                 OfflinePackPublisher().publish(
                     job,

@@ -3835,6 +3835,9 @@ class LiveDialogReaderTest(unittest.TestCase):
                 live_backend.play_prepared.side_effect = announce
                 output.wait = playback
                 backend.progress_wait_status = lambda _status: advance_at("pending")
+                future = Future()
+                reader.playback_future = future
+                reader.speech_futures[future] = chunk
                 with patch.object(
                     backend.playback_owner.source_audio_completion_stop,
                     "wait",
@@ -3843,6 +3846,12 @@ class LiveDialogReaderTest(unittest.TestCase):
                     reader._play_current_chunk(
                         chunk, PreparedLiveChunkRoutes(route, announcement, "Alice")
                     )
+                if transition == "pending":
+                    self.assertEqual(live_backend.play_prepared.call_count, 1)
+                    self.assertNotIn(chunk.generation, reader.sealed_generations)
+                    self.assertTrue(reader.wait_until_playable(chunk))
+                future.set_result(None)
+                reader._speech_finished(future)
 
                 reader.report_error.assert_not_called()
                 self.assertEqual(
@@ -3850,6 +3859,7 @@ class LiveDialogReaderTest(unittest.TestCase):
                     int(transition not in {"pending", "live-fallback"}),
                 )
                 self.assertIsNone(reader.current_chunk)
+                self.assertIn(chunk.playback_id, reader.completed_playback_ids)
                 self.assertFalse(reader.wait_until_playable(chunk))
 
     def test_equal_text_does_not_make_a_different_chunk_current(self):

@@ -12,7 +12,11 @@ from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController, SequenceEventLease
 from vntts.dialog_capture import CapturedDialogFrame
-from vntts.generated_audio import AudioRouteTrace, SourceAudioRoute
+from vntts.generated_audio import (
+    AudioRouteTrace,
+    PendingGeneratedAudioRoute,
+    SourceAudioRoute,
+)
 from vntts.live import LiveDialogReader, RecognizedDialog, SpeechChunk
 from vntts.live_sequence import (
     LiveSequenceChapter,
@@ -257,6 +261,135 @@ class ControllerTransitionObservationTest(unittest.TestCase):
             controller._dispatch_live_playback(reader, chunk, route).status,
             PlaybackStatus.INTERRUPTED,
         )
+
+    def test_pending_wait_expires_without_dropping_accepted_ready_audio(self):
+        controller, lines = self.controller()
+        chunk = self.accept(controller, lines[0])
+        lease = controller._begin_sequence_playback(chunk)
+        reader = self.reader_harness(controller).reader
+        reader.active_generation = chunk.generation
+        reader.accepted_chunks[chunk.playback_id] = chunk
+        pending = PendingGeneratedAudioRoute(
+            chunk.line_id,
+            text_sha256(chunk.text),
+            chunk.text,
+            chunk.character,
+            AudioRouteTrace(
+                None, "preparing", "exact", None, None, chunk.line_id, "test"
+            ),
+        )
+        self.assertTrue(controller._live_playback_guard(reader, chunk, pending))
+
+        newer = self.accept(controller, lines[-1], 2)
+        reader.accepted_chunks[newer.playback_id] = newer
+        reader.active_generation = newer.generation
+        visible = controller.story_cursor.snapshot()
+
+        self.assertFalse(controller._live_playback_guard(reader, chunk, pending))
+        self.assertTrue(
+            controller._live_playback_guard(
+                reader, chunk, PreparedPlayback("ready", None, None, None, "live:test")
+            )
+        )
+        self.assertFalse(
+            controller._finish_sequence_playback(
+                lease, PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
+            )
+        )
+        self.assertEqual(controller.story_cursor.snapshot(), visible)
+        self.assertEqual(
+            reader.accepted_chunks, {chunk.playback_id: chunk, newer.playback_id: newer}
+        )
+        self.assertEqual(controller.sequence_event_terminal_routes, {})
+        self.assertFalse(reader.emergency_stopped)
+        self.assertEqual(reader.active_generation, newer.generation)
+
+    def test_paused_pending_wait_expires_when_visible_occurrence_changes(self):
+        controller, lines = self.controller()
+        chunk = self.accept(controller, lines[0])
+        reader = self.reader_harness(controller).reader
+        reader.active_generation = chunk.generation
+        reader.accepted_chunks[chunk.playback_id] = chunk
+        reader.paused = True
+        pending = PendingGeneratedAudioRoute(
+            chunk.line_id,
+            text_sha256(chunk.text),
+            chunk.text,
+            chunk.character,
+            AudioRouteTrace(
+                None, "preparing", "exact", None, None, chunk.line_id, "test"
+            ),
+        )
+        waiting = Event()
+        results = []
+        original_wait = reader.pause_condition.wait
+
+        def pause_wait(timeout=None):
+            waiting.set()
+            return original_wait(timeout)
+
+        worker = Thread(
+            target=lambda: results.append(
+                controller._live_playback_guard(reader, chunk, pending)
+            )
+        )
+        with patch.object(reader.pause_condition, "wait", side_effect=pause_wait):
+            worker.start()
+            try:
+                self.assertTrue(waiting.wait(timeout=1))
+                newer = self.accept(controller, lines[-1], 2)
+                reader.accepted_chunks[newer.playback_id] = newer
+                visible = controller.story_cursor.snapshot()
+                worker.join(timeout=1)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(results, [False])
+                self.assertTrue(reader.paused)
+                self.assertEqual(controller.story_cursor.snapshot(), visible)
+                self.assertIn(newer.playback_id, reader.accepted_chunks)
+            finally:
+                with reader.pause_condition:
+                    reader.paused = False
+                    reader.pause_condition.notify_all()
+                worker.join(timeout=1)
+
+    def test_pending_dispatch_checks_lease_then_preserves_ready_playback_ownership(
+        self,
+    ):
+        for change_before_dispatch in (True, False):
+            with self.subTest(change_before_dispatch=change_before_dispatch):
+                controller, lines = self.controller()
+                chunk = self.accept(controller, lines[0])
+                pending = PendingGeneratedAudioRoute(
+                    chunk.line_id,
+                    text_sha256(chunk.text),
+                    chunk.text,
+                    chunk.character,
+                    AudioRouteTrace(
+                        None, "preparing", "exact", None, None, chunk.line_id, "test"
+                    ),
+                )
+                reader = Mock(active_generation=1)
+                reader.wait_until_playable.return_value = True
+
+                def play(_route, *, playback_guard, on_playback_dispatch):
+                    self.assertTrue(playback_guard())
+                    if change_before_dispatch:
+                        self.accept(controller, lines[-1], 2)
+                    admitted = on_playback_dispatch(Mock())
+                    self.assertEqual(admitted, not change_before_dispatch)
+                    if not change_before_dispatch:
+                        self.accept(controller, lines[-1], 2)
+                    self.assertEqual(playback_guard(), admitted)
+                    return PlaybackOutcome(
+                        PlaybackStatus.COMPLETED
+                        if admitted
+                        else PlaybackStatus.INTERRUPTED,
+                        None,
+                    )
+
+                controller.speech_backend = SimpleNamespace(play_route=play)
+                outcome = controller._dispatch_live_playback(reader, chunk, pending)
+                self.assertEqual(outcome.successful, not change_before_dispatch)
 
     def test_live_backend_recognition_carries_canonical_identity_without_reservation(
         self,

@@ -38,7 +38,10 @@ from vntts.pregeneration_generation import (
     OfflineGenerationWorker,
     _Cancellation,
 )
-from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_queue import (
+    PregenerationInput,
+    initialize_audio_event_omissions,
+)
 from vntts.pregeneration_setup import (
     GameContent,
     PregenerationJob,
@@ -178,6 +181,10 @@ def fixture(
         audio_event_omission_queue_ids=omission_queue_ids,
     )
     output = generation_input.output_directory
+    if include_omission and omission_source_audio_status != "unknown":
+        initialize_audio_event_omissions(
+            generation_input, decided_at="2026-08-31T00:00:00+00:00"
+        )
     renderer = SyntheticRenderer(
         [SynthesisCompletion.COMPLETE, SynthesisCompletion.LIMITED]
     )
@@ -211,7 +218,7 @@ def fixture(
         generated.manifest,
         1,
         0,
-        1,
+        1 + int(include_omission and omission_source_audio_status != "unknown"),
     )
     selected_line_ids: list[str] = []
     for value in items:

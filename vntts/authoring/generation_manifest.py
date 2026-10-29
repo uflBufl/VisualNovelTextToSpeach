@@ -361,6 +361,24 @@ def _manifest_entries(
     return entries
 
 
+def audio_event_omission_entries(state: _GenerationState) -> list[dict[str, object]]:
+    """Project the same validated terminal decisions into every playback manifest."""
+    entries = []
+    for item in _generation_items(state).values():
+        if item.get("status") != "omitted":
+            continue
+        decision = item.get("audio_event_omission")
+        if not isinstance(decision, dict):
+            raise BulkGenerationError("Audio-event omission decision is malformed")
+        entries.append(
+            {
+                **copy.deepcopy(decision),
+                "decision_sha256": canonical_document_sha256(decision),
+            }
+        )
+    return sorted(entries, key=lambda entry: (entry["line_id"], entry["text_sha256"]))
+
+
 def write_generated_manifest_from_state(
     state: _GenerationState,
     output_directory: Path | str,
@@ -428,6 +446,11 @@ def _write_generated_manifest(
         "language": state.get("language"),
         "source_queue_sha256": state["queue_sha256"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "vntts.authoring.audio_event_omission": {
+            "schema_version": 1,
+            "mode": "explicit",
+            "entries": audio_event_omission_entries(state),
+        },
         **(metadata or {}),
     }
     try:
@@ -588,6 +611,7 @@ __all__ = [
     "RUNTIME_PROGRESS_MANIFEST_NAME",
     "AudioQuality",
     "approved_manifest_entries",
+    "audio_event_omission_entries",
     "contained_generation_path",
     "inspect_generated_wav",
     "inspect_generated_wav_with_samples",

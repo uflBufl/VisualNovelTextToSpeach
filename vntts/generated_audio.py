@@ -1156,9 +1156,28 @@ class GeneratedAudioFallbackBackend:
 
     def resolved_pending_route(
         self, route: PendingGeneratedAudioRoute
-    ) -> GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute | None:
+    ) -> (
+        GeneratedAudioRoute
+        | LiveFallbackRoute
+        | LiveTTSRoute
+        | AudioEventOmissionRoute
+        | None
+    ):
         if self.library is None:
             return None
+        omission = self.library.find_audio_event_omission(
+            route.line_id, route.text_sha256
+        )
+        if omission is not None:
+            return AudioEventOmissionRoute(
+                omission,
+                replace(
+                    route.trace,
+                    effective_source="audio-event-omission",
+                    fallback_reason=f"authorized:{omission.reason}",
+                    artifact_preflight_state="audio-event-omission-authorized",
+                ),
+            )
         prepared, _state = self.library.find_with_preflight(
             route.line_id, route.text_sha256
         )
@@ -1340,6 +1359,8 @@ class AudioRoutePlaybackOwner:
                         (
                             "Prepared audio is ready; continuing reading."
                             if isinstance(resolved, GeneratedAudioRoute)
+                            else "This line needs no audio; continuing reading."
+                            if isinstance(resolved, AudioEventOmissionRoute)
                             else "Live fallback is ready; continuing reading."
                         )
                     )
