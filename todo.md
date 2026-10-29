@@ -333,9 +333,18 @@ is still one final gate, not a per-fix test.
       Third session `fa363219b30447bb88d112530fd69150` also lost both taps together
       at360268.991 (~7m26s after restart), during the live wait on99. Keep video /
       log evidence, but do not claim continuous audio or full sound qualification.
+      Video recovered after coincident callback gaps of2.257s,1.891s and1.011s;
+      it was not timely throughout the audio failures. All saved audio callbacks
+      were512frames at44100Hz with continuous sample/file offsets. A common stall
+      is supported; generation activity alone does not establish its cause.
+      Source callback timestamps are not consumer/write completion timestamps.
+      The64 slots reserve about4MiB of PCM storage but hold only256KiB with these
+      callbacks; evaluate a duration-based capacity only after measuring the stall.
       First proposed code change: add bounded timing/high-water diagnostics to the
-      existing recorder: callback overflow tick and queued frames, consumer wake
-      delay, CAF write, timeline serialization/write and HAL identity check maxima.
+      existing recorder: callback overflow tick, queued blocks/frames/bytes and
+      consumer phase at overflow; consumer wake delay, CAF write, timeline
+      serialization/write and HAL identity check counts/totals/maxima. Durations
+      include descheduling and must not alone be treated as proof of slow I/O.
       No allocation, logging or blocking work in the real-time callback. Preserve
       explicit failure and readable partial CAF when samples are lost.
       These measurements are a diagnostic prerequisite, not the claimed overflow
