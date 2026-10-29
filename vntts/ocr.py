@@ -302,9 +302,21 @@ def _dialogue_divider(
     if not candidates.size:
         return None
     row = int(candidates[np.argmax(counts[candidates])])
-    # A panel border or several rules do not establish which one separates roles.
+    divider = row + 1
+    # Group one rule's contiguous rows before looking for competing rules.
+    band_top = divider
+    band_bottom = divider + 1
+    while band_top > 1 and counts[band_top - 2] >= counts[row] * 0.8:
+        band_top -= 1
+    while band_bottom < height - 1 and counts[band_bottom - 1] >= counts[row] * 0.8:
+        band_bottom += 1
+    if band_bottom - band_top > max(5, round(height * 0.02)):
+        return None
+    # Nearby antialiasing rows may have gaps; reject only separate rules.
     if any(
-        abs(int(other) - row) > 3 and counts[other] >= counts[row] * 0.9
+        abs(int(other) - row) > 3
+        and not band_top <= int(other) + 1 < band_bottom
+        and counts[other] >= counts[row] * 0.9
         for other in candidates
     ):
         return None
@@ -316,16 +328,6 @@ def _dialogue_divider(
     spans = [span for span in spans if span.stop - span.start >= (right - left) * 0.02]
     line_left = left + min(span.start for span in spans)
     line_right = left + max(span.stop for span in spans)
-    divider = row + 1
-    # Remove only the thin rule itself, without shaving nearby glyphs.
-    band_top = divider
-    band_bottom = divider + 1
-    while band_top > 1 and counts[band_top - 2] >= counts[row] * 0.8:
-        band_top -= 1
-    while band_bottom < height - 1 and counts[band_bottom - 1] >= counts[row] * 0.8:
-        band_bottom += 1
-    if band_bottom - band_top > max(5, round(height * 0.02)):
-        return None
     return line_left, line_right, band_top, band_bottom
 
 

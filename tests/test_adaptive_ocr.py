@@ -90,22 +90,56 @@ class AdaptiveOCRTest(unittest.TestCase):
         self.assertEqual((new_box[0], new_box[2]), (old_box[0], old_box[2]))
         self.assertEqual(new_box[3], old_box[3])
 
+    def test_contiguous_five_row_divider_is_one_rule_in_both_polarities(self):
+        for inverted in (False, True):
+            with self.subTest(inverted=inverted):
+                image, divider = self.frame(name="Cornerstone", text="A complete line.")
+                draw = ImageDraw.Draw(image)
+                # Three lit rows and their two edges form one five-row ridge.
+                for offset, intensity in enumerate((80, 110, 80)):
+                    draw.line(
+                        (10, divider + offset, 405, divider + offset),
+                        fill=(intensity,) * 3,
+                    )
+                if inverted:
+                    image = ImageOps.invert(image)
+
+                regions = resolve_ocr_regions(image)
+
+                self.assertIsNotNone(regions)
+                self.assertEqual(
+                    regions.dialogue._pixel_box(*image.size)[1], divider + 4
+                )
+                self.assertLess(regions.speaker._pixel_box(*image.size)[3], divider)
+                self.assertEqual(resolve_ocr_regions(image, regions), regions)
+
     def test_ambiguous_missing_thick_or_outside_divider_retains_calibration(self):
         configured = OCRRegions(
             DialogRegion(0.1, 0.1, 0.3, 0.2), DialogRegion(0.1, 0.4, 0.7, 0.5)
         )
-        for variant in ("missing", "two", "thick", "outside"):
+        for variant in ("missing", "two", "nearby", "thick", "wide-ridge", "outside"):
             image = Image.new("RGB", (420, 180), "black")
             draw = ImageDraw.Draw(image)
             if variant == "two":
                 for y in (50, 90):
                     draw.line((45, y, 330, y), fill="white")
+            elif variant in {"nearby", "wide-ridge"}:
+                profile = (
+                    (80, 110, 80) if variant == "nearby" else (80, 110, 80, 110, 80)
+                )
+                for offset, intensity in enumerate(profile):
+                    draw.line(
+                        (45, 50 + offset, 330, 50 + offset), fill=(intensity,) * 3
+                    )
+                if variant == "nearby":
+                    draw.line((45, 56, 330, 56), fill="white")
             elif variant == "thick":
                 draw.rectangle((45, 40, 330, 70), fill="white")
             elif variant == "outside":
                 draw.line((0, 60, 35, 60), fill="white")
             with self.subTest(variant=variant):
                 self.assertEqual(resolve_ocr_regions(image, configured), configured)
+                self.assertIsNone(resolve_ocr_regions(image))
 
     def test_name_crop_stops_at_distant_art_but_retains_spaces_within_name(self):
         image, divider = self.frame(name="Adar Llwch Gwin")

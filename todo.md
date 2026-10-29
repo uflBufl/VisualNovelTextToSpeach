@@ -312,49 +312,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Remaining proposed implementation order, pending user approval: RUN-29-02,
-RUN-29-04, RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before combined
-acceptance. UX-29-02 remains a discussion item, not a confirmed defect or a
-mandatory redesign. Each coherent fix gets its own commit and focused checks;
-the full native chapter is still one final gate, not a per-fix test.
-
-- [ ] **RUN-29-02 - Automatic advance stalls on fully read line39.**
-      Native314001:39 finished356328/356328 frames at359114.326. For more than
-      75 seconds afterwards the same fully visible text matches exactly, focus
-      and completion cue are true, and no speech is pending. Advance remains
-      withheld as `owned-frame-not-visible-and-stable`; render-change timing keeps
-      resetting. Confirm which image changes invalidate readiness and repair the
-      shared completion gate without weakening scene/focus/ownership safeguards.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`; screenshot under
-      `.codex/investigations/native-trial-20261029/line39-wait/`.
-      No manual input was sent: it eventually advanced itself113.20 seconds after
-      PCM completion. Its interval includes UI focus interruptions; separate that
-      contribution. Cleaner same-gate cases have no logged focus loss:58 waits
-      43.872s after PCM before key dispatch (+11.114s to59 route),83 waits33.400s
-      before key (+10.537s to84 route). After recovery from99,100 also completed
-      all529200 frames at360517.784 but waited over90s with the same stable-frame
-      reason; exact narrator dialogue remains recognized, while speaker OCR reads
-      background marks at low confidence. Frame: `native-trial-20261029/line100-wait`.
-      Also isolate pre-route admission delays:101 had a canonical match at360671.714
-      but routed at360706.904;102 routed360823.903, ~51s after manual transition,
-      despite repeated exact `Hold on.` matches.101 also needed manual advance
-      after60.90s post-PCM. Do not treat bare route gaps as latency or add timeouts.
-      Proposed change (after RUN-29-03): fix `_dialogue_divider` in `vntts/ocr.py`
-      to expand the strongest contiguous rule band before checking ambiguity;
-      reject other strong rules only outside that band. Keep the existing maximum
-      thickness, horizontal support and nameplate checks. The retained native
-      divider spans five pixels, but the old ambiguity check treats rows four
-      pixels apart in that same rule as separate rules. Missing OCR regions then
-      include animated backdrop in the speaker comparison. An offline probe
-      resolves all 14 inspected native frames; the existing frame comparator
-      becomes equivalent for the retained line83 pair and several other pairs.
-      Keep freshness, speaker ownership, comparison tolerances and the 800ms quiet
-      requirement unchanged. Do not claim every observed delay has this cause.
-      Gate: native-derived thick-rule and animated-background regressions, real
-      separate-rule rejection, real speaker/text/punctuation changes still reject,
-      and affected split OCR, live render-stability and stale-attempt tests.
-      Carry any residual reproducible mismatch separately, without broadening
-      tolerances speculatively; native latency qualification remains open.
+Remaining proposed implementation order, pending user approval: RUN-29-04,
+RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before combined acceptance.
+UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
+Each coherent fix gets its own commit and focused checks; the full native chapter
+is still one final gate, not a per-fix test.
 
 - [ ] **RUN-29-04 - Punctuation-only dialogue blocks chapter continuation.**
       After314001:66, the game displays Cornerstone with only `...` and a visible
@@ -364,7 +326,7 @@ the full native chapter is still one final gate, not a per-fix test.
       completion policy; preserve uncertainty safety for truly absent text.
       Session `d8f1c1208ebf4d7fa10353e8b7145f6c`; frame evidence:
       `.codex/investigations/native-trial-20261029/line66-wait/frame-001.png`.
-      Proposed change (depends on RUN-29-02's divider fix): keep the shared visual
+      Proposed change: use the resolved divider regions and keep the shared visual
       ellipsis detector and replace its absolute tiny-dot geometry with geometry
       relative to dot size: exactly three compact similar components, aligned
       baseline and comparable spacing, inside the resolved dialogue region.
@@ -490,6 +452,16 @@ the full native chapter is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Visual readiness and admission latency (RUN-29-02):** measure full-text
+     observation to canonical route, and PCM completion to key dispatch, on
+     lines39/58/83/100/101/102. Separate focus waits and actual text changes.
+     Confirm stable text and scenery animation no longer strand advancement;
+     correct divider regions alone do not establish that every delay is fixed.
+     Retain residual reproducible comparison/admission failures as separate
+     defects with paired frames, without relaxing tolerances speculatively.
+     Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
+     visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
+     `d8f1c1208ebf4d7fa10353e8b7145f6c`.
    - **Prepared matching remaining edges:** after the approved3-character
      edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line

@@ -317,7 +317,54 @@ def glyph_frame(
     return CapturedDialogFrame(image, 0)
 
 
+def ridge_frame(text="A complete dialogue line.", speaker="Cornerstone"):
+    image = Image.new("RGB", (1600, 324), (25,) * 3)
+    draw = ImageDraw.Draw(image)
+    # Three antialiased pixels produce five contiguous strong ridge rows.
+    for y, brightness in ((163, 80), (164, 110), (165, 80)):
+        draw.line((55, y, 1494, y), fill=(brightness,) * 3)
+    draw.text((60, 111), speaker, fill="white", font_size=30)
+    draw.text((60, 190), text, fill="white", font_size=30)
+    return CapturedDialogFrame(image, 0)
+
+
 class DialogFrameEquivalenceTest(unittest.TestCase):
+    def test_five_row_divider_preserves_complete_speaker_and_dialogue(self):
+        frame = ridge_frame()
+        self.assertIsNotNone(frame.ocr_regions)
+        regions = frame.ocr_regions
+        self.assertEqual(regions.dialogue._pixel_box(*frame.image.size)[1], 167)
+        draw = ImageDraw.Draw(frame.image)
+        for region, position, text in (
+            (regions.speaker, (60, 111), "Cornerstone"),
+            (regions.dialogue, (60, 190), "A complete dialogue line."),
+        ):
+            with self.subTest(text=text):
+                left, top, right, bottom = region._pixel_box(*frame.image.size)
+                ink_left, ink_top, ink_right, ink_bottom = draw.textbbox(
+                    position, text, font_size=30
+                )
+                self.assertLessEqual(left, ink_left)
+                self.assertLessEqual(top, ink_top)
+                self.assertGreaterEqual(right, ink_right)
+                self.assertGreaterEqual(bottom, ink_bottom)
+
+    def test_five_row_divider_ignores_scenery_and_preserves_text_identity(self):
+        original = ridge_frame()
+        scenery = original.image.copy()
+        ImageDraw.Draw(scenery).rectangle((1100, 80, 1190, 145), fill="white")
+        changed = CapturedDialogFrame(scenery, 0)
+        self.assertEqual(original.ocr_regions, changed.ocr_regions)
+        self.assertTrue(dialog_frames_equivalent(original, changed))
+        self.assertTrue(dialog_frames_equivalent(changed, original))
+        for difference, changed in (
+            ("speaker", ridge_frame(speaker="Other")),
+            ("dialogue", ridge_frame(text="A different dialogue line.")),
+            ("punctuation", ridge_frame(text="A complete dialogue line!")),
+        ):
+            with self.subTest(difference=difference):
+                self.assertFalse(dialog_frames_equivalent(original, changed))
+
     def test_short_left_edge_text_survives_brightness_translation_and_cue(self):
         original = glyph_frame()
         for brightness, shift in ((210, (1, -2)), (250, (-2, 2)), (230, (0, 0))):
