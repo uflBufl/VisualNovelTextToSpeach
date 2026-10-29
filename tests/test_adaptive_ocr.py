@@ -552,6 +552,31 @@ class AdaptiveOCRTest(unittest.TestCase):
                 recognize_live_frame(CapturedDialogFrame(image, 0)), ("X", "...")
             )
 
+    def test_visual_ellipsis_from_empty_ocr_keeps_speaker_confidence_guard(self):
+        image, divider = self.frame(lines=4, text="")
+        draw = ImageDraw.Draw(image)
+        for x in (12, 24, 36):
+            draw.rectangle((x, divider + 12, x + 4, divider + 15), fill="white")
+        for confidence in (20, 95):
+            with self.subTest(speaker_confidence=confidence):
+                result = OCRResult(
+                    "X",
+                    "",
+                    0,
+                    "sauvola",
+                    1,
+                    speaker_confidence=confidence,
+                    dialogue_confidence=0,
+                )
+                with patch(
+                    "vntts.dialog_capture.recognize_screenshot_result",
+                    return_value=result,
+                ):
+                    self.assertEqual(
+                        recognize_live_frame(CapturedDialogFrame(image, 0)),
+                        (None, "") if confidence == 20 else ("X", "..."),
+                    )
+
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_real_wide_sample_keeps_single_letter_name(self):
         with Image.open(

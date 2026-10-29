@@ -108,6 +108,93 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
 
         return result, recognize
 
+    def test_recovery_detects_native_body_ellipsis_with_empty_ocr(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": f"story:{index}",
+                        "chapter": "1",
+                        "sequence": index,
+                        "speaker": "Ada",
+                        "text": text,
+                    }
+                    for index, text in enumerate(("First line.", "Last line."), 1)
+                ],
+            )
+            plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "first",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "automatic",
+                        "successors": ["silent"],
+                        "line_id": "story:1",
+                    },
+                    {
+                        "event_id": "silent",
+                        "sequence": 2,
+                        "kind": "silent",
+                        "control": "automatic",
+                        "successors": ["last"],
+                    },
+                    {
+                        "event_id": "last",
+                        "sequence": 3,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:2",
+                    },
+                ],
+            )
+            resolver = ChapterVoicePreloader.load_optional(story)
+            session = LiveReplayCaptureSession(
+                root / "raw",
+                story_resolver=resolver,
+                story_index_path=story,
+                story_index_sha256=sha256_file(story),
+            )
+            session.observe(self.frame((255, 0, 0)), "Ada", "First line.")
+            for top in (None, 105, 140):
+                image = Image.new("RGB", (640, 240), "#202020")
+                draw = ImageDraw.Draw(image)
+                draw.line((0, 125, 639, 125), fill="#707070")
+                if top is not None:
+                    for left in (12, 30, 48):
+                        draw.rectangle((left, top, left + 5, top + 5), fill="white")
+                session.observe(CapturedDialogFrame(image, 0.0), "Ada", "")
+            session.observe(self.frame((0, 255, 0)), "Ada", "Last line.")
+            captured = session.finish()
+
+            recovered = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered",
+                story_index=story,
+                sequence_plan=plan,
+                minimum_events=3,
+            )
+            report = json.loads(recovered.report.read_text(encoding="utf-8"))
+
+            self.assertTrue(recovered.sufficient)
+            self.assertTrue(recovered.contains_silent)
+            self.assertEqual(recovered.event_count, 3)
+            self.assertEqual(
+                report["visually_classified_ellipsis_observations"],
+                [
+                    {
+                        "observation_index": 4,
+                        "speaker_hint": "Ada",
+                        "method": "isolated-three-dot-glyph",
+                    }
+                ],
+            )
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )

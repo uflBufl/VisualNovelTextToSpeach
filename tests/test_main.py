@@ -76,7 +76,7 @@ from vntts.main import (
     speak_live_chunk,
 )
 from vntts.native_capture import CaptureError
-from vntts.ocr import DialogRegion, OCRResult
+from vntts.ocr import DialogRegion, OCRResult, detect_standalone_ellipsis_frame
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import (
     AudioPlaybackError,
@@ -4436,6 +4436,63 @@ class MainTest(unittest.TestCase):
         self.assertEqual(refusal.reason, "focus-wait")
         controller.capture_target.is_focused.assert_called_once_with()
         controller._auto_advance_dialog.assert_not_called()
+
+    def test_visual_ellipsis_routes_once_and_respects_manual_advance(self):
+        image = Image.new("RGB", (200, 80), "#202020")
+        for x in (10, 22, 33):
+            ImageDraw.Draw(image).rectangle((x, 12, x + 4, 15), fill="white")
+        self.assertTrue(detect_standalone_ellipsis_frame(image, dialogue_only=True))
+        for mode in ("audio-auto", "audio-manual"):
+            with self.subTest(mode=mode):
+                controller, lines, _pipeline = self._sequence_controller()
+                controller.settings = replace(
+                    controller.settings,
+                    live_sequence_mode=mode,
+                    capture_mode="window",
+                    auto_advance_enabled=True,
+                )
+                plan = controller.live_sequence_plan
+                plan.events["event-3"] = replace(
+                    plan.events["event-2"], event_id="event-3", sequence=3
+                )
+                plan.events["event-2"] = replace(
+                    plan.events["event-2"],
+                    kind="silent",
+                    line_id=None,
+                    control="automatic",
+                    successors=("event-3",),
+                )
+                controller.live_reader = Mock(active_generation=7)
+                controller.live_reader.state_lock = RLock()
+                controller.capture_target = Mock()
+                controller.capture_target.is_focused.return_value = True
+                controller._auto_advance_dialog = Mock(return_value=True)
+                self._complete_sequence_event(controller, "event-1")
+
+                self.assertEqual(
+                    controller._dialog_observed(lines[0].speaker, "..."),
+                    SilentDialogRoute("event-2"),
+                )
+                occurrence = controller.story_cursor.occurrence_id
+                controller._dialog_observed(lines[0].speaker, "...")
+                self.assertEqual(controller.story_cursor.occurrence_id, occurrence)
+                self.assertEqual(
+                    [
+                        lease
+                        for lease, route in controller.sequence_event_terminal_routes.items()
+                        if route == "silence"
+                    ],
+                    [SequenceEventLease("event-2", occurrence)],
+                )
+                callback = controller._live_auto_advance_callback()
+                if mode == "audio-auto":
+                    self.assertTrue(callback())
+                    self.assertFalse(callback())
+                    controller._auto_advance_dialog.assert_called_once()
+                else:
+                    self.assertIsNone(callback)
+                    self.assertFalse(controller._sequence_auto_advance_dialog())
+                    controller._auto_advance_dialog.assert_not_called()
 
     def test_sequence_audio_auto_confirms_unique_immediate_silent_ellipsis(self):
         rows = [

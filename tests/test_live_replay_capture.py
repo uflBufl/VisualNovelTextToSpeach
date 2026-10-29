@@ -114,6 +114,17 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 self.assertEqual(
                     kwargs["recognize_frame"](frame), ("Rhiannon", "Hello there.")
                 )
+                body_image = Image.new("RGB", image.size, "#202020")
+                body_draw = ImageDraw.Draw(body_image)
+                for left in (82, 92, 102):
+                    body_draw.rectangle((left, 44, left + 3, 47), fill="white")
+                recognize.return_value = OCRResult("Rhiannon", "", 0, "split", 1)
+                self.assertEqual(
+                    kwargs["recognize_frame"](
+                        CapturedDialogFrame(body_image, 0.0, regions)
+                    ),
+                    ("Rhiannon", "..."),
+                )
                 return result
 
             with (

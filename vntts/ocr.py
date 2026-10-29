@@ -522,31 +522,43 @@ def detect_standalone_ellipsis_frame(
     if not isinstance(image, Image.Image):
         return False
     rgb = image.convert("RGB")
+    if not dialogue_only and (regions := resolve_ocr_regions(rgb)) is not None:
+        rgb = regions.dialogue.crop(rgb)
+        dialogue_only = True
     width, height = rgb.size
-    right = min(width, max(30, round(width * 0.12)))
     top = 0 if dialogue_only else min(height - 1, round(height * 0.38))
     bottom = (
         height if dialogue_only else min(height, max(top + 1, round(height * 0.88)))
     )
-    pixels = np.asarray(rgb.crop((0, top, right, bottom)))
+    pixels = np.asarray(rgb.crop((0, top, width, bottom)))
     brightness = pixels.min(axis=2)
     bright = (brightness >= 150) & (pixels.max(axis=2) - brightness <= 45)
-    if not 6 <= np.count_nonzero(bright) <= 30:
-        return False
     components, count = label(bright, structure=np.ones((3, 3)))
     if count != 3:
         return False
-    centers = []
+    dots = []
     for index in range(1, count + 1):
         ys, xs = np.nonzero(components == index)
-        if not 2 <= len(xs) <= 12 or np.ptp(xs) > 3 or np.ptp(ys) > 3:
+        dot_width, dot_height = int(np.ptp(xs)) + 1, int(np.ptp(ys)) + 1
+        area = len(xs)
+        if (
+            area < 2
+            # Filled dots may lose a couple of edge pixels to rasterization.
+            or area < dot_width * dot_height * 0.75 - 2
+            or max(dot_width, dot_height) > 2 * min(dot_width, dot_height)
+            or max(dot_width, dot_height) > max(4, pixels.shape[0] * 0.12)
+        ):
             return False
-        centers.append((float(xs.mean()), float(ys.mean())))
-    centers.sort()
-    gaps = [centers[index + 1][0] - centers[index][0] for index in range(2)]
-    return max(center[1] for center in centers) - min(
-        center[1] for center in centers
-    ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
+        dots.append((float(xs.mean()), float(ys.mean()), dot_width, dot_height, area))
+    dots.sort()
+    scale = sum(max(dot[2], dot[3]) for dot in dots) / 3
+    gaps = [dots[index + 1][0] - dots[index][0] for index in range(2)]
+    return bool(
+        max(dot[4] for dot in dots) <= 2 * min(dot[4] for dot in dots)
+        and max(dot[1] for dot in dots) - min(dot[1] for dot in dots) <= scale * 0.5
+        and all(1.5 * scale <= gap <= 4.5 * scale for gap in gaps)
+        and max(gaps) <= 1.5 * min(gaps)
+    )
 
 
 class UncertainFrameRecorder:

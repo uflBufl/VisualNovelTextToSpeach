@@ -312,32 +312,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Remaining proposed implementation order, pending user approval: RUN-29-04,
-RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before combined acceptance.
+Proposed implementation order, pending user approval: RUN-29-01, UX-29-01,
+UX-29-03, then REC-29-01 before combined acceptance.
 UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
-
-- [ ] **RUN-29-04 - Punctuation-only dialogue blocks chapter continuation.**
-      After314001:66, the game displays Cornerstone with only `...` and a visible
-      completion cue. OCR returns the speaker but empty dialogue, so the reader
-      remains waiting for clearer text for over two minutes and never advances.
-      Investigate the canonical punctuation-only event and its recognition /
-      completion policy; preserve uncertainty safety for truly absent text.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`; frame evidence:
-      `.codex/investigations/native-trial-20261029/line66-wait/frame-001.png`.
-      Proposed change: use the resolved divider regions and keep the shared visual
-      ellipsis detector and replace its absolute tiny-dot geometry with geometry
-      relative to dot size: exactly three compact similar components, aligned
-      baseline and comparable spacing, inside the resolved dialogue region.
-      Retain neutral-bright filtering and reject extra text, blank frames and
-      uncertain speakers. The native crop has three 5x4 dots with 17-18 bright
-      pixels and 11-12px gaps, exceeding the old fixed limits. The broken divider
-      also put part of the nameplate into the fallback detector band.
-      Reuse canonical silent-event admission; empty OCR alone never means silence.
-      Gate: retained crop at native and scaled sizes; two/four dots, `Wait...`,
-      nameplate/no-dialogue negatives; live, split OCR and replay/recovery consumers
-      all use the same detector; one silent occurrence and no key in manual mode.
 
 - [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
       Native trial314001:18: Pause interrupted after153088 of490392 frames
@@ -452,6 +431,14 @@ is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Punctuation-only dialogue (RUN-29-04):** Cornerstone's `...` after314001:66
+     must admit one canonical silent occurrence and continue once in automatic
+     mode; manual mode must not dispatch a key. Check window/fullscreen and
+     display scales with the resolved/calibrated dialogue region. Investigate
+     whether divider rejection in synthetic1.5x/2x Lanczos-upscaled full crops
+     reproduces at native display scales; keep calibration on ambiguous layouts
+     and do not relax divider safeguards from synthetic evidence alone.
+     Evidence: `native-trial-20261029/line66-wait/frame-001.png`.
    - **Visual readiness and admission latency (RUN-29-02):** measure full-text
      observation to canonical route, and PCM completion to key dispatch, on
      lines39/58/83/100/101/102. Separate focus waits and actual text changes.

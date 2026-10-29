@@ -835,7 +835,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if isinstance(frame_regions, OCRRegions)
                 else frame.image
             )
-            if detect_standalone_ellipsis_frame(ellipsis_image):
+            if detect_standalone_ellipsis_frame(
+                ellipsis_image, dialogue_only=isinstance(frame_regions, OCRRegions)
+            ):
                 return (
                     ellipsis_speaker_hint(result.character, result.text, resolver),
                     "...",
