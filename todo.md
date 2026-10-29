@@ -312,6 +312,65 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
+Proposed implementation order, pending user approval: RUN-29-05, RUN-29-03,
+RUN-29-02, RUN-29-04, RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before
+combined acceptance. RUN-29-03's identity guard must precede faster visual
+completion. UX-29-02 remains a discussion item, not a confirmed defect or a
+mandatory redesign. Each coherent fix gets its own commit and focused checks;
+the full native chapter is still one final gate, not a per-fix test.
+
+- [ ] **RUN-29-05 - Preserve authorized audio-event omissions in live progress.**
+     314001:99 (`*sigh*`) waits indefinitely for generation although the saved
+      pack authorizes its silent omission and no WAV is scheduled for this pure
+      stage direction. Live-progress manifests omit the omission ledger; routing
+      consequently returns `waiting-for-generation`. Also check pending-route
+      resolution, which currently recognizes generated/live fallback only.
+      Proposed change: make the validated omission decision available when the
+      generation state is initialized/resumed, using the existing terminal
+      `omitted` representation and exact queue/line/text/plan authority. Reuse its
+      serialization for runtime and final manifests rather than creating the
+      policy only at final pack publication. Update all progress publication paths
+      (normal generation, fallback and cancellation/resume) through their shared
+      writer. Include validated omissions in both durable and in-memory readiness;
+      let `resolved_pending_route` return the existing `AudioEventOmissionRoute`.
+      Also cancel an unstarted pending route whose visible occurrence has changed,
+      including during Pause and immediately before resolved dispatch. Preserve
+      accepted ready-audio FIFO and background generation; do not clear the queue.
+      Gate: exact omission before reading and arriving during a wait, unchanged
+      WAVs on resume, wrong text/hash rejection, normal missing WAV still waits,
+      and pending99 -> admitted100 with publication/Pause races and no old advance.
+      Session `fa363219b30447bb88d112530fd69150`, start360232.269; waited over2min
+      before manual recovery. Manual Space reveals100, which OCR accepts exactly,
+      but stale99 preparation still blocks its playback: verify cancellation of an
+      unstarted pending route when a new canonical occurrence is admitted.
+      Frame: `.codex/investigations/native-trial-20261029/line99-wait/`.
+
+- [ ] **RUN-29-03 - Retain recognized unspoken dialogue across automatic transitions.**
+      While314001:48 was still playing, OCR observed49, including `Hey! You can't
+      take revenge on me just because you failed...`;49 was held as visual-only.
+      After48 finished, the application dispatched an advance for48, then routed
+      116 (`Ouch`) and53, with no49 route. Preserved continuous PCM confirms48
+      (correlation.999766) but not49's prepared WAV (.091172); VNTTS did not read49.
+      The library has no original49 source; this alone does not prove absence of
+      all speech in game output. Trace canonical event ownership, retain recognized
+      unspoken dialogue and prevent a previous frame's completion key skipping it.
+      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, interval359305-359314;
+      `.codex/investigations/native-trial-20261029/prefix-correlation.json`.
+      Proposed change: remove both quiet-only and cue-only prefix completion in
+      `controller.py`. `_confirm_sequence_render_completion` and
+      `_route_sequence_prefix_confirmation_locked` must require fresh positive
+      canonical evidence for that occurrence before binding a frame or declaring
+      full text. Quiet/cue may trigger rechecking, but cannot prove identity.
+      In the actual log, successor49 OCR was stale; afterwards owner-render-quiet
+      relabelled the latest frame as48 and authorized key48. The render owner was
+      copied from the cursor, so this was circular evidence, not confirmed pixels.
+      Preserve the existing accepted FIFO and occurrence leases (already present
+      before the trial); after fresh49 admission they provide exactly-once playback.
+      Gate: prefix48 playing -> held/stale49 -> quiet/cue49 -> PCM48 finishes must
+      neither confirm48 nor send its key; a fresh49 then plays once. Cover both
+      completion shortcuts and the real sequence advance callback, plus genuinely
+      completed same-occurrence prefixes and rapid A/B/C accepted playback.
+
 - [ ] **RUN-29-02 - Automatic advance stalls on fully read line39.**
       Native314001:39 finished356328/356328 frames at359114.326. For more than
       75 seconds afterwards the same fully visible text matches exactly, focus
@@ -333,22 +392,22 @@ complete. Do not change recognition or playback policy on an unverified hypothes
       but routed at360706.904;102 routed360823.903, ~51s after manual transition,
       despite repeated exact `Hold on.` matches.101 also needed manual advance
       after60.90s post-PCM. Do not treat bare route gaps as latency or add timeouts.
-      Present the concrete implementation plan before changes.
-
-- [ ] **RUN-29-05 - Preserve authorized audio-event omissions in live progress.**
-     314001:99 (`*sigh*`) waits indefinitely for generation although the saved
-      pack authorizes its silent omission and no WAV is scheduled for this pure
-      stage direction. Live-progress manifests omit the omission ledger; routing
-      consequently returns `waiting-for-generation`. Also check pending-route
-      resolution, which currently recognizes generated/live fallback only.
-      Carry the authorized omission policy through live publication and pending
-      consumption; preserve normal missing-audio waiting and reject unauthorized
-      omissions. Present implementation plan before changing code.
-      Session `fa363219b30447bb88d112530fd69150`, start360232.269; waited over2min
-      before manual recovery. Manual Space reveals100, which OCR accepts exactly,
-      but stale99 preparation still blocks its playback: verify cancellation of an
-      unstarted pending route when a new canonical occurrence is admitted.
-      Frame: `.codex/investigations/native-trial-20261029/line99-wait/`.
+      Proposed change (after RUN-29-03): fix `_dialogue_divider` in `vntts/ocr.py`
+      to expand the strongest contiguous rule band before checking ambiguity;
+      reject other strong rules only outside that band. Keep the existing maximum
+      thickness, horizontal support and nameplate checks. The retained native
+      divider spans five pixels, but the old ambiguity check treats rows four
+      pixels apart in that same rule as separate rules. Missing OCR regions then
+      include animated backdrop in the speaker comparison. An offline probe
+      resolves all 14 inspected native frames; the existing frame comparator
+      becomes equivalent for the retained line83 pair and several other pairs.
+      Keep freshness, speaker ownership, comparison tolerances and the 800ms quiet
+      requirement unchanged. Do not claim every observed delay has this cause.
+      Gate: native-derived thick-rule and animated-background regressions, real
+      separate-rule rejection, real speaker/text/punctuation changes still reject,
+      and affected split OCR, live render-stability and stale-attempt tests.
+      Carry any residual reproducible mismatch separately, without broadening
+      tolerances speculatively; native latency qualification remains open.
 
 - [ ] **RUN-29-04 - Punctuation-only dialogue blocks chapter continuation.**
       After314001:66, the game displays Cornerstone with only `...` and a visible
@@ -358,20 +417,54 @@ complete. Do not change recognition or playback policy on an unverified hypothes
       completion policy; preserve uncertainty safety for truly absent text.
       Session `d8f1c1208ebf4d7fa10353e8b7145f6c`; frame evidence:
       `.codex/investigations/native-trial-20261029/line66-wait/frame-001.png`.
-      Agree the implementation plan before changing code.
+      Proposed change (depends on RUN-29-02's divider fix): keep the shared visual
+      ellipsis detector and replace its absolute tiny-dot geometry with geometry
+      relative to dot size: exactly three compact similar components, aligned
+      baseline and comparable spacing, inside the resolved dialogue region.
+      Retain neutral-bright filtering and reject extra text, blank frames and
+      uncertain speakers. The native crop has three 5x4 dots with 17-18 bright
+      pixels and 11-12px gaps, exceeding the old fixed limits. The broken divider
+      also put part of the nameplate into the fallback detector band.
+      Reuse canonical silent-event admission; empty OCR alone never means silence.
+      Gate: retained crop at native and scaled sizes; two/four dots, `Wait...`,
+      nameplate/no-dialogue negatives; live, split OCR and replay/recovery consumers
+      all use the same detector; one silent occurrence and no key in manual mode.
 
-- [ ] **RUN-29-03 - Retain recognized unspoken dialogue across automatic transitions.**
-      While314001:48 was still playing, OCR observed49, including `Hey! You can't
-      take revenge on me just because you failed...`;49 was held as visual-only.
-      After48 finished, the application dispatched an advance for48, then routed
-      116 (`Ouch`) and53, with no49 route. Preserved continuous PCM confirms48
-      (correlation.999766) but not49's prepared WAV (.091172); VNTTS did not read49.
-      The library has no original49 source; this alone does not prove absence of
-      all speech in game output. Trace canonical event ownership, retain recognized
-      unspoken dialogue and prevent a previous frame's completion key skipping it.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, interval359305-359314;
-      `.codex/investigations/native-trial-20261029/prefix-correlation.json`.
-      Investigate and agree implementation before changes.
+- [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
+      Native trial314001:18: Pause interrupted after153088 of490392 frames
+      (~3.47 seconds); Resume started the same source WAV from offset0 and played
+      all490392 frames. Existing pause-retry policy requeues the whole chunk;
+      the Pause/Resume UI does not explain this replay. Proposed behavior is true
+      pause at the current playback position, including prepared and streamed PCM.
+      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, run `edcb5837d9bc41009c909d7bbde8ff50`.
+      Check auto-advance stays blocked during pause and occurs once after resumed
+      completion; preserve scene-change and Stop cancellation semantics.
+      Connect the existing native Pause/Resume commands through the shared Python
+      output/clip owner; retain its stream, buffer, chunk and occurrence lease.
+      Keep one native-event consumer; make completion deadlines/backpressure pause
+      aware, and wake paused waits on Stop/shutdown. Remove the superseded whole
+      chunk pause-retry path and migrate its callers/tests in this same change.
+      Preserve announcement position, do not repeat it on dialogue Resume, and
+      do not claim to pause the game's own audio. Original-audio completion waits
+      must not restart their full duration on Resume.
+      Gate: one load/synthesis, unchanged paused cursor, remaining PCM only after
+      Resume, no early advance, and Stop/focus/device failure/announcement/streaming
+      cancellation tests; use simulated time for long pauses, not timed live waits.
+
+- [ ] **UX-29-01 - Voice confirmation clips multiline voice names.**
+      Observed during the native chapter acceptance at the default window size:
+      Rossella's `Narrator voice (Centurion)` wraps onto two lines, but the second
+      line is cut off inside its row. Keep the full assigned voice readable and
+      Play aligned; verify narrator substitutions and long character names.
+      Evidence: `.codex/investigations/native-trial-20261029/voice-confirmation-clipped.png`.
+      Proposed change: preserve QLabel's height-for-width flag when setting the
+      four voice-card cells' horizontal size policy. `setWordWrap(True)` currently
+      enables it, then replacing QSizePolicy immediately clears it (confirmed by
+      an offscreen Qt probe). Keep the existing row resize/layout mechanism.
+      Gate: actual label height covers `heightForWidth(label.width())`, including
+      narrator substitution, long names, preview status, compact/large font and
+      widening again. Do not compute expected row height only with the same
+      layout method under test; that is why the existing regression missed it.
 
 - [ ] **UX-29-03 - Expanded generation details remain outside the visible panel.**
       During native generation, `Show generation details` changes to `Hide`, but
@@ -382,25 +475,13 @@ complete. Do not change recognition or playback policy on an unverified hypothes
       unqualified. Make disclosure visible without losing
       progress/Cancel controls. Screenshot:
       `.codex/investigations/native-trial-20261029/generation-details-hidden.png`.
-      Confirm layout cause and agree the fix before implementation.
-
-- [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
-      Native trial314001:18: Pause interrupted after153088 of490392 frames
-      (~3.47 seconds); Resume started the same source WAV from offset0 and played
-      all490392 frames. Existing pause-retry policy requeues the whole chunk;
-      the Pause/Resume UI does not explain this replay. Agree whether to preserve
-      playback position (including prepared/generated routes) before implementing.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, run `edcb5837d9bc41009c909d7bbde8ff50`.
-      Check auto-advance stays blocked during pause and occurs once after resumed
-      completion; preserve scene-change and Stop cancellation semantics.
-
-- [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
-      Two usability questions, not confirmed defects: `Prepare again` beside
-      `Continue preparation` makes the rebuild/reuse choice worth checking;
-      unchanged selected stories still pass through classification and voice
-      confirmation before generation resumes. Establish which steps are required,
-      whether cached classification was reused, and whether existing labels are
-      sufficient. Discuss findings before proposing UI changes.
+      Proposed change: after expanding details and Qt layout completion, reveal
+      the new section in the existing `content_scroll`, using the deferred-scroll
+      pattern already used for selection options. Do not add a nested scroll area.
+      Keep Read/Cancel in the fixed action area and preserve keyboard access.
+      Gate: actual intersection with the viewport after expansion at compact size
+      and large font, repeated expand/collapse, and available fixed actions;
+      `isVisibleTo` alone is insufficient because offscreen children pass it.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
@@ -418,15 +499,30 @@ complete. Do not change recognition or playback policy on an unverified hypothes
       Third session `fa363219b30447bb88d112530fd69150` also lost both taps together
       at360268.991 (~7m26s after restart), during the live wait on99. Keep video /
       log evidence, but do not claim continuous audio or full sound qualification.
-      Agree the implementation plan after investigation.
+      First proposed code change: add bounded timing/high-water diagnostics to the
+      existing recorder: callback overflow tick and queued frames, consumer wake
+      delay, CAF write, timeline serialization/write and HAL identity check maxima.
+      No allocation, logging or blocking work in the real-time callback. Preserve
+      explicit failure and readable partial CAF when samples are lost.
+      These measurements are a diagnostic prerequisite, not the claimed overflow
+      fix. Existing evidence cannot choose between scheduling, disk and HAL stalls;
+      do not blindly increase SLOT_COUNT or claim a QoS change solves it. Select
+      and agree the measured write/scheduling fix before native acceptance.
+      Gate: bounded synthetic consumer stalls, truthful overflow/timeline metadata,
+      partial-file finalization and related diagnostic tests; sustained dual-tap
+      capture during real generation remains part of the combined native gate.
 
-- [ ] **UX-29-01 - Voice confirmation clips multiline voice names.**
-      Observed during the native chapter acceptance at the default window size:
-      Rossella's `Narrator voice (Centurion)` wraps onto two lines, but the second
-      line is cut off inside its row. Keep the full assigned voice readable and
-      Play aligned; verify narrator substitutions and long character names.
-      Evidence: `.codex/investigations/native-trial-20261029/voice-confirmation-clipped.png`.
-      Investigate and agree the implementation plan before changing code.
+- [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
+      Two usability questions, not confirmed defects: `Prepare again` beside
+      `Continue preparation` makes the rebuild/reuse choice worth checking;
+      unchanged selected stories still pass through classification and voice
+      confirmation before generation resumes. Establish which steps are required,
+      whether cached classification was reused, and whether existing labels are
+      sufficient. Discuss findings before proposing UI changes.
+      Current importer already checks reusable semantic evidence and a completed
+      semantic successor before ASR. The generic classifying phase label alone
+      does not prove repeated inference. Do not bypass input validation, add a
+      new cache, or remove voice confirmation on the basis of this observation.
 
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    First resolve the RUN/REC/UX-29 findings above with agreed implementation plans.
