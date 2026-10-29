@@ -63,9 +63,6 @@
 
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
-- [ ] **RUN-25-10: проверить ложного персонажа `I` и смену владельца реплики.**
-      Сопоставить старые22/23 с raw OCR, speaker identity и source lead;
-      отличать отмену до PCM от повторного воспроизведения.
 - [ ] **RUN-25-09: разделить задержку100 на переход игры и распознавание.**
       В новом прогоне key99 -> route100 занимает2.742с. По сохранённому видео
       установить момент появления текста и сопоставить его с OCR/admission;
@@ -349,13 +346,67 @@ is still one final gate, not a per-fix test.
       SLOT_COUNT or claim a QoS change solves it. Preserve explicit failure and
       readable partial CAF when samples are lost, and keep allocation, logging
       and blocking work out of the real-time callback.
+      New load measurements show game high-water60/64 blocks, max consumer
+      lag0.690s, CAF write wall max0.671s and JSON write wall max0.493s;
+      no overflow in that28m36s game recording. The chapter Rust tap retained
+     25m46s with no sample/file gaps, high-water14 blocks and max lag0.150s.
+      These wall maxima include descheduling; correlate the retained max contexts
+      before selecting a correction. A passing interval does not explain prior
+      overflows or the separate clock-discontinuity failure below.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
+- [ ] **REC-29-02 - Process-audio sample clock discontinuity aborts acquisition.**
+      Combined follow-up session62335e1525c94a1e8e2f79c735f69d31 failed game-audio
+      before Reading began, at406761.9098 after15.91s, with
+      `Sample-time discontinuity`. Window video continued. New diagnostics show
+      no overflow, queue high-water11 blocks/5632frames and max consumer lag0.123s.
+      Correlate source host/sample timestamps with output activation, focus and
+      process lifecycle; distinguish an actual uncovered audio interval from a
+      valid clock restart before proposing a continuity policy. Preserve the
+      partial recording and truthful failed qualification; do not conceal a gap
+      by removing the check without evidence. New native acceptance is required.
+
+- [ ] **AUDIO-29-01 - Initial prepared playback fails native format check under load.**
+      Follow-up session09406def638a43caaf28b2de23f07bf1 routed314001:6 correctly
+      at407105.493 but reported `Rust audio check_format timed out (44100 Hz,
+      1 channels)`. No PCM completion, speech tap or game key followed. Game-audio
+      and window recording remained active while fresh MOSS generation continued.
+      Preserve worker startup/protocol/device evidence, check ordinary recovery
+      and distinguish a real worker/device stall from a stale local executable
+      before choosing a fix. Do not mask it by extending timeouts or advancing
+      the game without speech. Gate: prepared mono playback starts and completes
+      under the real generation/recording load, with truthful failure recovery.
+
+- [ ] **OCR-29-01 - Visible Duvalle nameplate blocks admission with zero confidence.**
+      In follow-up session09406def638a43caaf28b2de23f07bf1, run9fae902c7ad14a32a5f0123f285f4fda,
+      42 completed and advanced normally at407658, but visible43 (`Thank you ever
+      so much, madam.`, Duvalle) stayed unadmitted for over90s. Dialogue OCR is
+      correct at95-96%; speaker confidence is0%, raw character becomes Narrator,
+      and match_result is owned-prefix. It eventually admitted43 by itself at
+      407760.202, about102s after the game transition; no manual key caused that
+      recovery. Retained native frame shows an unobscured
+      Duvalle nameplate and text. Inspect actual speaker crop/nameplate admission
+      and ownership against this evidence; do not lower confidence or invent a
+      narrator/speaker from a timeout. Gate:43 admits once with correct speaker
+      without this long wait, preserving uncertainty guards elsewhere.
+      Evidence: native-trial-20261029-followup/line42-wait/frame-001.png.
+
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
-   First resolve REC-29-01 above with an agreed implementation plan.
-   The native attempt reached104 with manual recoveries; autonomous continuation
-   and continuous audio evidence failed, so those gates remain open.
+   The user approved one combined game campaign covering all accumulated fixes
+   and REC-29-01 measurements. Keep the recorder failure open until measurements
+   identify and qualify its correction; it does not postpone the other checks.
+   Start with Stories/voice UI and confirmation-resume checks, then record the
+   chapter under real background generation. Preserve baseline WAV hashes and
+   both process-tap summaries. Keep short targeted live/announcement, manual-mode,
+   display-transition and generation-failure episodes in this same campaign when
+   chapter314001 cannot exercise them. Record every intervention and failed gate
+   immediately; a recovered run is not an autonomous chapter pass.
+   Repeat autonomous chapter acceptance after the remaining startup/admission
+   repairs. The follow-up reaches104 but includes two operator Stop/Start
+   interventions; do not treat its automatic recovery from long waits as a pass.
+   The chapter game/Rust taps are continuous; the earlier clock failure and
+   post-chapter diagnostic-worker retirement remain separate incomplete captures.
    Include native confirmation that authorized silent events do not wait for a
    WAV during generation/resume, and a newly accepted occurrence releases an
    older unstarted wait without interrupting already dispatched speech.
@@ -371,14 +422,13 @@ is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
-   - **Preparation resume (UX-29-02):** cancel confirmed generation, reopen it and
-     continue the same input without another voice-confirmation screen. Changed
-     voices/settings/content and explicit `Prepare again` must still require
-     review. Check truthful phase labels, saved-recording reuse and cancellation.
+   - **Preparation resume (UX-29-02), remaining edges:** changed
+     voices/settings/content and explicit `Prepare again` must require review.
+     Check truthful phase labels for these changed-input paths.
    - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
      and aligned Play buttons in the actual chapter at compact size and enlarged
      font, including `Narrator (Centurion)` substitutions and preview messages.
-   - **True Pause/Resume (RUN-29-01):** pause a prepared clip, streamed live
+   - **True Pause/Resume (RUN-29-01), remaining paths:** pause streamed live
      synthesis and a speaker announcement mid-audio. Verify unchanged playback
      position during Pause, only remaining audio after Resume, one load/synthesis
      and one automatic transition after completion. Include an already paused
@@ -386,10 +436,9 @@ is still one final gate, not a per-fix test.
      Original game audio continues independently; its completion wait must not
      restart or advance the game while Reading remains paused. Keep one native
      session/clip identity and compare retained audio with the source around the
-     pause boundary. Previous failure: trial314001:18 repeated all490392 frames.
-   - **Punctuation-only dialogue (RUN-29-04):** Cornerstone's `...` after314001:66
-     must admit one canonical silent occurrence and continue once in automatic
-     mode; manual mode must not dispatch a key. Include other encountered
+     pause boundary for these remaining paths.
+   - **Punctuation-only dialogue (RUN-29-04), remaining paths:** Cornerstone's
+     `...` after314001:66 in manual mode must not dispatch a key. Include other encountered
      punctuation-only boxes: preserve the shown signs, separate different signs
      and speakers, suppress duplicate transitions and symbol-only TTS while
      retaining original/prepared audio and approved spoken projections. Confirm
@@ -407,6 +456,14 @@ is still one final gate, not a per-fix test.
      correct divider regions alone do not establish that every delay is fixed.
      Retain residual reproducible comparison/admission failures as separate
      defects with paired frames, without relaxing tolerances speculatively.
+     Follow-up09406def638a43caaf28b2de23f07bf1 reproduces100: route408215.076,
+     complete529200/529200 PCM, then290.596s until its key; expected-text-only
+     OCR and owned-frame-not-visible-and-stable persist despite complete
+     unobscured text and a visible triangle. Saved pair06 establishes full text
+     by408227.288, before PCM completion408227.373; key arrives408517.969.
+    101 and103 also wait41.466s and19.886s after PCM. Preserve paired frames and inspect
+     ownership/visual readiness rather than lowering tolerances. New frame:
+     `native-trial-20261029-followup/line100-wait/frame-001.png`.
      Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
      visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
      `d8f1c1208ebf4d7fa10353e8b7145f6c`.
