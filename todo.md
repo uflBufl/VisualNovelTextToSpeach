@@ -318,6 +318,25 @@ UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesi
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
 
+- [ ] **General symbol-only dialogue - proposed follow-up, pending agreement.**
+      Generalize the ellipsis repair to recognized punctuation/symbol-only text
+      while preserving the actual symbols. Generic tracking already completes
+      nonempty non-alphanumeric text without TTS; OCR cleanup, canonical silent
+      admission and replay/recovery still have ellipsis-only rules.
+      First fix symbol-sensitive matching: lexical normalization erases symbols,
+      so observed `?` can match canonical `!`, while exact `!` fails the complete
+      match gate. Share classification and exact symbol identity across consumers;
+      keep blank/uncertain frames distinct, preserve authoritative source audio,
+      occurrence identity, once-only keys and manual-mode restrictions.
+      Recognition is a separate dependency: the installed English OCR alphabet
+      lacks musical notes, and short-line/character modes alone did not recover
+      them. Compare a recognizer/alphabet that supports the required symbols
+      before promising their recognition or removing the validated dot fallback.
+      Gate: punctuation, musical signs, single letters/digits, mixed text, blank
+      and noisy crops; distinct `?`/`!` observations, repeated frames, canonical
+      exact/mismatch cases and replay recovery. An unreadable icon alone must
+      not authorize a key; unknown symbols need an explicit diagnostic outcome.
+
 - [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
       Native trial314001:18: Pause interrupted after153088 of490392 frames
       (~3.47 seconds); Resume started the same source WAV from offset0 and played
