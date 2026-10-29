@@ -354,14 +354,21 @@ is still one final gate, not a per-fix test.
       timelines and truthful failure metadata, in the combined native run.
 
 - [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
-      Unchanged selected stories still pass through classification and voice
-      confirmation before generation resumes. Establish which steps are required,
-      whether cached classification was reused, and whether existing labels are
-      sufficient. Discuss findings before proposing UI changes.
-      Current importer already checks reusable semantic evidence and a completed
-      semantic successor before ASR. The generic classifying phase label alone
-      does not prove repeated inference. Do not bypass input validation, add a
-      new cache, or remove voice confirmation on the basis of this observation.
+      Proposed implementation, awaiting agreement:
+      - Use an initial checking/preparation status before reuse is known; show
+        classification only when that actual stage reports progress. Retain
+        existing semantic evidence/successor and voice-candidate cache checks.
+      - Persist explicit confirmation of the validated generation input when
+        the user chooses `Generate with these voices`, separately from immutable
+        input metadata. Bind it to existing input identity and content hashes;
+        do not infer approval merely from a saved voice plan or input directory.
+      - On `Continue preparation`, run existing validation and resume generation
+        directly only for that same confirmed input. First preparation, changed
+        content/voices/references/synthesis controls, missing confirmation and
+        explicit `Prepare again` must still show voice confirmation.
+      - Check reopen/resume, changed input and reference invalidation, cancellation
+        before confirmation, missing/damaged confirmation, and existing damaged
+        audio failures. Preserve saved recordings and pending-work cancellation.
 
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    First resolve the RUN/REC/UX-29 findings above with agreed implementation plans.
