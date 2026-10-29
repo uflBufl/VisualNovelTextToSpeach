@@ -46,6 +46,9 @@ from vntts.playback import (
 )
 from vntts.playback import (
     PreparedPlayback,
+    SilentPlayback,
+    outcome_for_prepared,
+    prepare_silent_playback,
 )
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
@@ -1069,9 +1072,11 @@ class GeneratedAudioFallbackBackend:
         *,
         source_audio_lead_seconds: float = 0.0,
     ) -> LiveTTSRoute:
-        if self.live_backend is None:
-            raise LiveSpeechRequired(trace)
-        prepared = self.live_backend.prepare_playback(character, text)
+        prepared = prepare_silent_playback(text)
+        if prepared is None:
+            if self.live_backend is None:
+                raise LiveSpeechRequired(trace)
+            prepared = self.live_backend.prepare_playback(character, text)
         return LiveTTSRoute(
             prepared,
             replace(trace, effective_source=prepared.audio_source),
@@ -1098,15 +1103,21 @@ class GeneratedAudioFallbackBackend:
             if not isinstance(spoken_text, str):
                 raise ValueError("Generated-audio event projection text is missing")
             text = spoken_text
-        prepared = self.live_backend.prepare_playback(
-            decision.requested_voice_character, text
-        )
+        prepared = prepare_silent_playback(text)
+        if prepared is None:
+            prepared = self.live_backend.prepare_playback(
+                decision.requested_voice_character, text
+            )
         return LiveFallbackRoute(
             prepared,
             decision,
             replace(
                 trace,
-                effective_source="live-fallback",
+                effective_source=(
+                    prepared.audio_source
+                    if isinstance(prepared.payload, SilentPlayback)
+                    else "live-fallback"
+                ),
                 fallback_reason=";".join(
                     part
                     for part in (trace.fallback_reason, f"authorized:{decision.reason}")
@@ -1618,8 +1629,6 @@ class AudioRoutePlaybackOwner:
             self._deactivate()
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
         try:
-            if self.router.live_backend is None:
-                raise LiveSpeechRequired(route.trace)
             cancelled = playback_cancelled(self.progress_wait_stop, playback_guard)
             if not cancelled and on_playback_dispatch is not None:
                 cancelled = not on_playback_dispatch(route) or playback_cancelled(
@@ -1627,10 +1636,17 @@ class AudioRoutePlaybackOwner:
                 )
             if cancelled:
                 return _route_outcome(route, PlaybackStatus.INTERRUPTED, lead_ms)
-            outcome = self.router.live_backend.play_prepared(
-                route.prepared,
-                playback_guard=playback_guard,
-            )
+            if isinstance(route.prepared.payload, SilentPlayback):
+                outcome = outcome_for_prepared(
+                    route.prepared, PlaybackStatus.COMPLETED, 0.0
+                )
+            else:
+                if self.router.live_backend is None:
+                    raise LiveSpeechRequired(route.trace)
+                outcome = self.router.live_backend.play_prepared(
+                    route.prepared,
+                    playback_guard=playback_guard,
+                )
         except Exception as error:
             return _route_outcome(
                 route,

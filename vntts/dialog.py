@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable
 from typing import TypeVar
+from unicodedata import category, normalize
 
 MAX_CHARACTER_NAME_LENGTH = 40
 MAX_CHARACTER_NAME_WORDS = 4
@@ -11,6 +12,20 @@ Image = TypeVar("Image")
 
 def is_empty(text: str | None) -> bool:
     return text is None or text == "" or text.isspace()
+
+
+def is_symbol_only_text(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    return all(
+        character.isspace()
+        or (category(character)[0] in "PS" and character not in "\ufffc\ufffd")
+        for character in value
+    )
+
+
+def symbol_text_key(value: str) -> str:
+    return "".join(normalize("NFKC", value).split())
 
 
 def is_name_word(word: str) -> bool:
@@ -63,5 +78,5 @@ def recognize_dialog(
 
 
 def speak_dialog(text: str | None, speak_text: Callable[[str], object]) -> None:
-    if text is not None and not is_empty(text):
+    if text is not None and any(character.isalnum() for character in text):
         speak_text(text)

@@ -10,6 +10,8 @@ from time import monotonic
 from unicodedata import normalize
 from uuid import uuid4
 
+from vntts.dialog import is_symbol_only_text, symbol_text_key
+
 
 def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
     for position, character in enumerate(text):
@@ -255,8 +257,19 @@ class IncrementalDialogTracker:
 
     @classmethod
     def _texts_are_related(cls, previous: str, text: str) -> bool:
+        if previous.startswith(text) or text.startswith(previous):
+            return True
         previous_key = cls._comparison_key(previous)
         text_key = cls._comparison_key(text)
+        if is_symbol_only_text(previous) or is_symbol_only_text(text):
+            return (
+                is_symbol_only_text(previous)
+                and is_symbol_only_text(text)
+                and (
+                    previous_key.startswith(text_key)
+                    or text_key.startswith(previous_key)
+                )
+            )
         return (
             previous_key.startswith(text_key)
             or text_key.startswith(previous_key)
@@ -350,6 +363,8 @@ class IncrementalDialogTracker:
         """
         if character == self.character or not self.committed_text:
             return False
+        if is_symbol_only_text(self.committed_text) or is_symbol_only_text(text):
+            return False
         committed_key = self._comparison_key(self.committed_text)
         text_key = self._comparison_key(text)
         if len(committed_key) < 4 or not text_key:
@@ -394,11 +409,14 @@ class IncrementalDialogTracker:
 
     @staticmethod
     def _comparison_key(text: str) -> str:
-        return "".join(
+        if is_symbol_only_text(text):
+            return f"symbols:{symbol_text_key(text)}"
+        key = "".join(
             character.casefold()
             for character in normalize("NFKD", text)
             if character.isalnum()
         )
+        return key or text.strip()
 
     def _start_dialog(self, character: str, text: str, now: float) -> None:
         self._clear_dialog()
@@ -448,8 +466,16 @@ class IncrementalDialogTracker:
             return []
 
         text = unspoken_text[:boundary].strip()
+        symbols_only = is_symbol_only_text(text)
+        if (
+            text
+            and not symbols_only
+            and not any(character.isalnum() for character in text)
+        ):
+            self.admission_reason = "unrecognized"
+            return []
         self.committed_text += unspoken_text[:boundary]
-        if not text or not any(character.isalnum() for character in text):
+        if not text or symbols_only:
             self.admission_reason = "silent"
             return []
 

@@ -22,12 +22,12 @@ from vntts.authoring.publication import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
+from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     detect_standalone_ellipsis_frame,
     dialog_glyphs_visible,
     ellipsis_speaker_hint,
-    is_standalone_ellipsis_text,
 )
 from vntts.document_identity import sha256_file
 from vntts.json_types import has_schema_version
@@ -511,7 +511,7 @@ def _load_ledger_observations(
                 raise LiveReplayCaptureRecoveryError(
                     "Capture observation frame is not a valid image"
                 ) from error
-            if visual_ellipsis:
+            if visual_ellipsis and not is_symbol_only_text(text):
                 character = ellipsis_speaker_hint(character, text, resolver)
                 text = "..."
                 status = "visual-ellipsis"
@@ -589,14 +589,6 @@ def _candidate_events(
 ) -> tuple[Candidate, ...]:
     candidates: list[Candidate] = []
     for observation in observations:
-        if (
-            observation.status
-            in {"punctuation-only", "visual-ellipsis", "legacy-dialogue"}
-            and observation.text
-            and is_standalone_ellipsis_text(observation.text)
-        ):
-            candidates.append((observation, None, observation.status))
-            continue
         if observation.status in {"canonical", "legacy-dialogue"}:
             line: ChapterDialogue | None = resolver.line_for_id(observation.line_id)
             event: LiveSequenceEvent | None = plan.event_for_line(observation.line_id)
@@ -610,6 +602,14 @@ def _candidate_events(
             ):
                 candidates.append((observation, event, "exact-canonical-observation"))
                 continue
+        if (
+            observation.status
+            in {"punctuation-only", "visual-ellipsis", "legacy-dialogue"}
+            and observation.text
+            and is_symbol_only_text(observation.text)
+        ):
+            candidates.append((observation, None, observation.status))
+            continue
         bounded = _bounded_plan_match(observation, resolver, plan)
         if bounded is None:
             candidates.append(
@@ -790,10 +790,9 @@ def _frontier_bounded_match(
 def _same_silent_observation(current: _MappedEvent, observation: _Observation) -> bool:
     current_speaker = _normalized_text(current.observed_character)
     observed_speaker = _normalized_text(observation.character)
-    unknown = {"", "narrator", "unknown"}
-    if current_speaker in unknown or observed_speaker in unknown:
-        return True
-    return current_speaker == observed_speaker
+    return current_speaker == observed_speaker and symbol_text_key(
+        current.observed_text
+    ) == symbol_text_key(observation.text or "")
 
 
 def _merge_mapped_observation(

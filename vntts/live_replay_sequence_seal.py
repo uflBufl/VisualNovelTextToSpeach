@@ -21,7 +21,7 @@ from vntts.authoring.publication import (
 )
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
-from vntts.dialog_capture import is_standalone_ellipsis_text
+from vntts.dialog import is_symbol_only_text
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import has_schema_version
 from vntts.live_replay import (
@@ -397,7 +397,9 @@ def _map_dialogue(
                     f"Raw replay dialogue {index} reaches an ambiguous or skipped "
                     "visible sequence frontier"
                 )
-            if is_standalone_ellipsis_text(text):
+            if is_symbol_only_text(text) and (
+                len(candidates) != 1 or candidates[0].kind == "silent"
+            ):
                 if len(candidates) != 1 or candidates[0].kind != "silent":
                     raise SequenceReplaySealError(
                         f"Raw replay dialogue {index} cannot uniquely bind a silent "

@@ -2395,7 +2395,7 @@ def _sequence_replay_metrics(
             or (
                 event["stage"] in {"sequence-audio-manual", "sequence-audio-auto"}
                 and event.get("line_id") is None
-                and event.get("match_result") == "expected-silent-ellipsis"
+                and event.get("match_result") == "expected-silent-symbols"
             )
         ]
     identities: list[tuple[str, str | None]] = []

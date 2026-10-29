@@ -544,17 +544,18 @@ class LiveReplayCaptureTest(unittest.TestCase):
             report = json.loads(result.report.read_text(encoding="utf-8"))
             loaded = load_live_replay_corpus(result.corpus)
 
-            self.assertEqual(result.dialogue_count, 3)
+            self.assertEqual(result.dialogue_count, 4)
             self.assertEqual(result.frame_count, 5)
             self.assertEqual(result.boundary_review_count, 0)
             self.assertEqual(document["fixture_kind"], "saved-frame-ocr-replay-capture")
             self.assertEqual(document["dialogue"][0]["line_id"], "story:1")
             self.assertIsNone(document["dialogue"][0]["expected_source"])
             self.assertEqual(document["dialogue"][1]["line_id"], "capture:2")
-            self.assertEqual(document["dialogue"][1]["text"], "...")
-            self.assertEqual(document["dialogue"][2]["line_id"], "story:2")
+            self.assertEqual(document["dialogue"][1]["text"], "???")
+            self.assertEqual(document["dialogue"][2]["text"], "...")
+            self.assertEqual(document["dialogue"][3]["line_id"], "story:2")
             self.assertFalse(report["boundary_review_required"])
-            self.assertEqual(report["unresolved_observation_count"], 2)
+            self.assertEqual(report["unresolved_observation_count"], 1)
             ledger = json.loads(result.observation_ledger.read_text(encoding="utf-8"))
             self.assertEqual(ledger["observation_count"], 5)
             self.assertEqual(
@@ -562,7 +563,7 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 [
                     "unresolved",
                     "canonical",
-                    "unresolved",
+                    "punctuation-only",
                     "punctuation-only",
                     "canonical",
                 ],
@@ -578,6 +579,42 @@ class LiveReplayCaptureTest(unittest.TestCase):
                     self.assertEqual(
                         hashlib.sha256(payload).hexdigest(), specification["sha256"]
                     )
+
+    def test_symbols_group_by_speaker_and_normalized_identity(self):
+        for resolver in (None, FakeStoryResolver()):
+            with (
+                self.subTest(bound=resolver is not None),
+                TemporaryDirectory() as directory,
+            ):
+                session = LiveReplayCaptureSession(
+                    Path(directory) / "capture", story_resolver=resolver
+                )
+                for color, character, text in (
+                    ("red", "Ada", "?"),
+                    ("green", "Ada", "？"),
+                    ("yellow", "Ada", " ? "),
+                    ("blue", "Ada", "??"),
+                    ("purple", "Ada", "!"),
+                    ("orange", "Bea", "!"),
+                    ("white", "Bea", "★ ♥"),
+                ):
+                    session.observe(frame(color), character, text)
+                result = session.finish()
+                corpus = json.loads(result.corpus.read_bytes())
+                self.assertEqual(
+                    [(item["character"], item["text"]) for item in corpus["dialogue"]],
+                    [
+                        ("Ada", "?"),
+                        ("Ada", "??"),
+                        ("Ada", "!"),
+                        ("Bea", "!"),
+                        ("Bea", "★ ♥"),
+                    ],
+                )
+                self.assertEqual(
+                    [len(item["frames"]) for item in corpus["dialogue"]],
+                    [3, 1, 1, 1, 1],
+                )
 
     def test_capture_locks_exact_resolution_to_first_canonical_chapter(self):
         with TemporaryDirectory() as directory:

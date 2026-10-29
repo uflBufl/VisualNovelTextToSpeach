@@ -22,7 +22,7 @@ from scipy.ndimage import label, maximum_filter
 
 from vntts.capture_provenance import CaptureProvenance
 from vntts.diagnostics import DiagnosticSnapshot
-from vntts.dialog import is_empty, speak_dialog
+from vntts.dialog import is_empty, is_symbol_only_text, speak_dialog, symbol_text_key
 from vntts.native_capture import NativeFrame
 from vntts.ocr import (
     DialogRegion,
@@ -667,12 +667,6 @@ def _without_continue_indicator(image: Image.Image) -> Image.Image:
     return image
 
 
-def is_standalone_ellipsis_text(value: object) -> bool:
-    """Accept Unicode or ASCII ellipsis with arbitrary surrounding whitespace."""
-    text = "".join(str(value).split())
-    return text.replace("…", "...") == "..."
-
-
 def ellipsis_speaker_hint(
     character: str | None,
     raw_text: str | None,
@@ -728,12 +722,16 @@ def recognize_live_frame(
     dialogue_image = (
         regions.dialogue.crop(image) if isinstance(regions, OCRRegions) else image
     )
+    visual_ellipsis = detect_standalone_ellipsis_frame(
+        dialogue_image, dialogue_only=isinstance(regions, OCRRegions)
+    )
     recognized_text = (
         "..."
-        if detect_standalone_ellipsis_frame(
-            dialogue_image, dialogue_only=isinstance(regions, OCRRegions)
-        )
+        if visual_ellipsis and not is_symbol_only_text(result.text)
         else result.text
+    )
+    visual_text_confirmed = (
+        visual_ellipsis and symbol_text_key(recognized_text) == "..."
     )
     recognized_character = result.character
     if recognized_text == "..." and ellipsis_speaker_resolver is not None:
@@ -768,7 +766,7 @@ def recognize_live_frame(
         diagnostic_handler(snapshot)
     if (
         (
-            recognized_text != "..."
+            not visual_text_confirmed
             or bool(result.speaker_note)
             or (
                 result.speaker_confidence is not None

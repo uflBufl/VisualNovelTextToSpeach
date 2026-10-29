@@ -1436,18 +1436,63 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         self.assertTrue(tracker.is_idle_complete())
         self.assertEqual(tracker.observe("Rhiannon", full_text), [])
 
-    def test_punctuation_only_ellipsis_completes_without_speech(self):
+    def test_symbol_only_dialogue_completes_without_speech(self):
+        for symbols in ("...", "?", "?!", "—", "_", "「」", "“”", "،؛؟", "♪"):
+            with self.subTest(symbols=symbols):
+                tracker = self.create_tracker(
+                    idle_flush_seconds=0.7, complete_dialogue_only=True
+                )
+                tracker.observe("Rhiannon", symbols)
+                tracker.observe("Rhiannon", symbols)
+                self.clock.advance(0.8)
+                self.assertEqual(tracker.observe("Rhiannon", symbols), [])
+                self.assertTrue(tracker.is_idle_complete())
+                self.assertEqual(tracker.committed_text, symbols)
+
+    def test_unreadable_observations_do_not_become_completed_silence_after_waiting(
+        self,
+    ):
+        for text in ("", "\ufffd", "\ufffc", "\u0301"):
+            with self.subTest(text=text):
+                tracker = self.create_tracker(
+                    idle_flush_seconds=0.7, complete_dialogue_only=True
+                )
+                for _ in range(3):
+                    self.assertEqual(tracker.observe("Rhiannon", text), [])
+                    self.clock.advance(60)
+                self.assertFalse(tracker.is_idle_complete())
+                self.assertEqual(tracker.committed_text, "")
+
+    def test_unreadable_symbol_suffix_revokes_completed_silence(self):
         tracker = self.create_tracker(
-            idle_flush_seconds=0.7,
-            complete_dialogue_only=True,
+            idle_flush_seconds=0.7, complete_dialogue_only=True
         )
-
-        tracker.observe("Rhiannon", "...")
-        tracker.observe("Rhiannon", "...")
-        self.clock.advance(0.8)
-
-        self.assertEqual(tracker.observe("Rhiannon", "..."), [])
+        tracker.observe("Rhiannon", "?")
+        tracker.observe("Rhiannon", "?")
+        self.clock.advance(1)
+        tracker.observe("Rhiannon", "?")
         self.assertTrue(tracker.is_idle_complete())
+        for _ in range(3):
+            self.assertEqual(tracker.observe("Rhiannon", "? \ufffd"), [])
+            self.clock.advance(60)
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertEqual(tracker.committed_text, "?")
+
+    def test_distinct_symbols_and_speakers_are_new_dialogue_occurrences(self):
+        tracker = self.create_tracker(
+            idle_flush_seconds=0.7, complete_dialogue_only=True
+        )
+        generations = []
+        for speaker, symbols in (("Ada", "?"), ("Ada", "!"), ("Bea", "!")):
+            for _ in range(3):
+                self.assertEqual(tracker.observe(speaker, symbols), [])
+                self.clock.advance(1)
+            self.assertTrue(tracker.is_idle_complete())
+            self.assertEqual(
+                (tracker.character, tracker.committed_text), (speaker, symbols)
+            )
+            generations.append(tracker.generation)
+        self.assertEqual(len(set(generations)), 3)
 
     def test_exact_route_mode_does_not_emit_unresolved_prefix(self):
         resolver = Mock(return_value=None)

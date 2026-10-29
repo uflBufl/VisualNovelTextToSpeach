@@ -77,7 +77,7 @@ from vntts.main import (
 )
 from vntts.native_capture import CaptureError
 from vntts.ocr import DialogRegion, OCRResult, detect_standalone_ellipsis_frame
-from vntts.playback import PreparedPlayback
+from vntts.playback import PreparedPlayback, SilentPlayback
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -4437,13 +4437,17 @@ class MainTest(unittest.TestCase):
         controller.capture_target.is_focused.assert_called_once_with()
         controller._auto_advance_dialog.assert_not_called()
 
-    def test_visual_ellipsis_routes_once_and_respects_manual_advance(self):
+    def test_symbols_route_once_and_respect_manual_advance(self):
         image = Image.new("RGB", (200, 80), "#202020")
         for x in (10, 22, 33):
             ImageDraw.Draw(image).rectangle((x, 12, x + 4, 15), fill="white")
         self.assertTrue(detect_standalone_ellipsis_frame(image, dialogue_only=True))
-        for mode in ("audio-auto", "audio-manual"):
-            with self.subTest(mode=mode):
+        for mode, symbols in (
+            (mode, symbols)
+            for mode in ("audio-auto", "audio-manual")
+            for symbols in ("...", "?", "?!", "—", "_", "「」", "♪")
+        ):
+            with self.subTest(mode=mode, symbols=symbols):
                 controller, lines, _pipeline = self._sequence_controller()
                 controller.settings = replace(
                     controller.settings,
@@ -4470,12 +4474,13 @@ class MainTest(unittest.TestCase):
                 self._complete_sequence_event(controller, "event-1")
 
                 self.assertEqual(
-                    controller._dialog_observed(lines[0].speaker, "..."),
+                    controller._dialog_observed(lines[0].speaker, symbols),
                     SilentDialogRoute("event-2"),
                 )
                 occurrence = controller.story_cursor.occurrence_id
-                controller._dialog_observed(lines[0].speaker, "...")
+                controller._dialog_observed(lines[0].speaker, symbols)
                 self.assertEqual(controller.story_cursor.occurrence_id, occurrence)
+                self.assertEqual(controller.history.snapshot()[-1].text, symbols)
                 self.assertEqual(
                     [
                         lease
@@ -4600,7 +4605,9 @@ class MainTest(unittest.TestCase):
         self.assertTrue(controller.story_cursor.can_auto_advance)
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
         self.assertEqual(pipeline[-1][0][0], "sequence-visual-transition")
-        self.assertEqual(pipeline[-1][1]["match_result"], "expected-silent-ellipsis")
+        self.assertEqual(
+            pipeline[-1][1]["match_result"], "expected-silent-visual-transition"
+        )
         self.assertEqual(pipeline[-1][1]["proof"], "application-owned-single-dispatch")
 
     def test_sequence_silent_ellipsis_is_not_inferred_without_owned_dispatch(self):
@@ -8114,6 +8121,118 @@ class MainTest(unittest.TestCase):
             timeline_events[1][3]["voice_reference_id"],
             "voice:rhiannon-v2:reference-1",
         )
+
+    def test_canonical_symbols_skip_direct_and_routed_tts_with_playback_guards(self):
+        for wrapped in (False, True):
+            with self.subTest(wrapped=wrapped):
+                controller = AppController(
+                    AppSettings(
+                        audio_source_policy="live-tts-only",
+                        speaker_announcement_mode="off",
+                    ),
+                    status_handler=Mock(),
+                    error_handler=Mock(),
+                )
+                backend = RecordingAnnouncementBackend()
+                backend.capabilities = SpeechBackendCapabilities(True, False, True)
+                backend.materialize_prepared = Mock(
+                    side_effect=AssertionError("Silent text must not materialize")
+                )
+                row = ChapterDialogue("symbol", "1", 1, "Ada", "?!", text_sha256("?!"))
+                controller.chapter_voice_preloader = ChapterVoicePreloader((row,))
+                controller.speech_backend = (
+                    GeneratedAudioFallbackBackend(
+                        backend,
+                        None,
+                        controller.chapter_voice_preloader,
+                        audio_source_policy="live-tts-only",
+                        audio_output=Mock(),
+                    )
+                    if wrapped
+                    else backend
+                )
+                reader = Mock(active_generation=1)
+                reader.wait_until_playable.return_value = True
+                controller.live_reader = reader
+                chunk = IncrementalDialogTracker().observe_identified(
+                    "Ada", "?!", "symbol", exact=True
+                )[0]
+                with patch.object(
+                    controller, "_live_sequence_audio_active", return_value=True
+                ):
+                    prepared = controller._prepare_live_chunk(chunk)
+                payload = prepared.prepared if wrapped else prepared
+                self.assertIsInstance(payload.payload, SilentPlayback)
+                outcome = controller._dispatch_live_playback(reader, chunk, prepared)
+                self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+                self.assertIsNone(outcome.onset_observation(1.0))
+                self.assertTrue(controller._play_live_chunk(chunk, prepared))
+                reader.record_first_pcm.assert_not_called()
+                controller.settings = replace(
+                    controller.settings, live_sequence_mode="audio-auto"
+                )
+                controller.game_focused = True
+                with patch.object(
+                    controller,
+                    "_sequence_cursor_for_lease_locked",
+                    return_value=object(),
+                ):
+                    self.assertEqual(
+                        controller._prefetch_sequence_successor(
+                            ("symbol-prefetch",),
+                            controller.speech_backend,
+                            SequenceEventLease("owner", 1),
+                            row,
+                        ),
+                        "prepared",
+                    )
+                reader.wait_until_playable.return_value = False
+                outcome = controller._dispatch_live_playback(reader, chunk, prepared)
+                self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+                self.assertEqual(backend.prepare_calls, [])
+                self.assertEqual(backend.play_calls, [])
+                backend.materialize_prepared.assert_not_called()
+                controller.error_handler.assert_not_called()
+
+    def test_canonical_symbols_complete_and_seal_sequence_once_without_pcm(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        row = replace(lines[0], text="?!", text_sha256=text_sha256("?!"))
+        controller.chapter_voice_preloader = ChapterVoicePreloader((row, lines[1]))
+        backend = RecordingAnnouncementBackend()
+        controller.speech_backend = backend
+        controller.live_reader = Mock(active_generation=1)
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.story_cursor.anchor_event("event-1")
+        chunk = IncrementalDialogTracker().observe_canonical(
+            row.speaker, row.text, row.line_id
+        )[0]
+        chunk = controller._accept_live_chunk(chunk)
+        prepared = controller._prepare_live_chunk(chunk)
+        self.assertTrue(controller._play_live_chunk(chunk, prepared))
+        lease = SequenceEventLease("event-1", controller.story_cursor.occurrence_id)
+        self.assertEqual(controller.sequence_event_terminal_routes, {lease: "silence"})
+        self.assertEqual(controller.story_cursor.completed_playback_event_id, "event-1")
+        self.assertFalse(controller._play_live_chunk(chunk, prepared))
+        controller.live_reader.record_first_pcm.assert_not_called()
+        controller.live_reader.seal_generation.assert_called_once_with(1)
+        self.assertEqual(backend.prepare_calls, [])
+        self.assertEqual(backend.play_calls, [])
+
+    def test_symbol_silence_keeps_configured_speaker_announcement(self):
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="all-speakers"),
+            status_handler=Mock(),
+            error_handler=Mock(),
+        )
+        backend = RecordingAnnouncementBackend()
+        controller.speech_backend = backend
+        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+        chunk = SpeechChunk(1, "Ada", "?", ordinal=1, line_id="symbol")
+        prepared = controller._prepare_live_chunk(chunk)
+        self.assertIsInstance(prepared, PreparedLiveChunkRoutes)
+        self.assertIsInstance(prepared.dialogue.payload, SilentPlayback)
+        self.assertIsNotNone(prepared.speaker_announcement)
+        self.assertEqual(backend.prepare_calls, [("Narrator", "Ada.")])
 
     def _retained_playback_lease(self, kind, backend, registry, root):
         backend.capabilities = SpeechBackendCapabilities(True, False, True)

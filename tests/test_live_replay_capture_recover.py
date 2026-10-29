@@ -30,6 +30,7 @@ from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     seal_sequence_replay,
 )
+from vntts.live_sequence import LiveSequencePlan
 
 
 class LiveReplayCaptureRecoverTest(unittest.TestCase):
@@ -194,6 +195,120 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_recovery_keeps_distinct_symbols_and_absorbs_only_matching_repeats(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": f"story:{index}",
+                        "chapter": "1",
+                        "sequence": index,
+                        "speaker": "Ada",
+                        "text": text,
+                    }
+                    for index, text in enumerate(("First line.", "Last line."), 1)
+                ],
+            )
+            plan = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": name,
+                        "sequence": index,
+                        "kind": "speech" if line_id else "silent",
+                        "control": "automatic" if successor else "terminal",
+                        "successors": [successor] if successor else [],
+                        **({"line_id": line_id} if line_id else {}),
+                    }
+                    for index, (name, line_id, successor) in enumerate(
+                        (
+                            ("first", "story:1", "question"),
+                            ("question", None, "exclamation"),
+                            ("exclamation", None, "last"),
+                            ("last", "story:2", None),
+                        ),
+                        1,
+                    )
+                ],
+            )
+            captured, recognize = self.capture(
+                root,
+                story,
+                (
+                    ((255, 0, 0), "Ada", "First line."),
+                    ((0, 255, 0), "Ada", "?"),
+                    ((0, 0, 255), "Ada", ""),
+                    ((255, 255, 0), "Ada", " ？ "),
+                    ((255, 0, 255), "Ada", "!"),
+                    ((0, 255, 255), "Ada", "Last line."),
+                ),
+            )
+            recovered = recover_live_replay_capture(
+                captured.corpus,
+                root / "recovered",
+                story_index=story,
+                sequence_plan=plan,
+                minimum_events=4,
+            )
+            corpus = json.loads(recovered.corpus.read_bytes())
+            self.assertTrue(recovered.sufficient)
+            self.assertEqual(recovered.event_count, 4)
+            self.assertEqual(
+                [item["text"] for item in corpus["dialogue"]],
+                ["First line.", "?", "!", "Last line."],
+            )
+            sealed = seal_sequence_replay(
+                recovered.corpus,
+                root / "sealed",
+                story_index=story,
+                sequence_plan=plan,
+                recognizer=recognize,
+                interval_seconds=0.002,
+                timeout_seconds=5,
+            )
+            self.assertTrue(sealed.corpus.is_file())
+
+    def test_legacy_canonical_symbol_retains_speech_authority(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "?",
+                    }
+                ],
+            )
+            plan_path = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "spoken-symbol",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "terminal",
+                        "successors": [],
+                        "line_id": "story:1",
+                    }
+                ],
+            )
+            resolver = ChapterVoicePreloader.load_optional(story)
+            plan = LiveSequencePlan.load(plan_path, story)
+            observation = recovery._Observation(
+                1, (), "Ada", "?", "story:1", "legacy-dialogue", True, 100
+            )
+            candidates = recovery._candidate_events([observation], resolver, plan)
+            self.assertEqual(candidates[0][1], plan.event_for_line("story:1"))
+            self.assertEqual(candidates[0][2], "exact-canonical-observation")
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"

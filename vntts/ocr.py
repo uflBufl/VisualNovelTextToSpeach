@@ -20,6 +20,7 @@ from vntts_artifacts.atomic_io import atomic_output_group
 from vntts.dialog import (
     MAX_CHARACTER_NAME_LENGTH,
     is_probable_character_name,
+    is_symbol_only_text,
     parse_dialog,
 )
 from vntts.json_types import decode_json
@@ -512,7 +513,10 @@ class OCRResult:
     speaker_note: str = ""
 
     def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
-        return bool(self.text.strip()) and self.confidence >= minimum
+        return self.confidence >= minimum and (
+            any(character.isalnum() for character in self.text)
+            or is_symbol_only_text(self.text)
+        )
 
 
 def detect_standalone_ellipsis_frame(
@@ -1287,16 +1291,12 @@ def clean_dialog_lines(text: str) -> list[str]:
         line = _strip_trailing_ocr_glyphs(line.strip())
         alphanumeric_characters = sum(character.isalnum() for character in line)
         if (
-            _is_silent_ellipsis(line)
+            (line and alphanumeric_characters == 0)
             or alphanumeric_characters >= 3
             or (alphanumeric_characters >= 2 and len(line.split()) == 1)
         ):
             lines.append(line)
     return lines
-
-
-def _is_silent_ellipsis(text: str) -> bool:
-    return "".join(str(text).split()) in {"...", "…"}
 
 
 def clean_dialog_lines_from_data(
@@ -1348,6 +1348,10 @@ def _last_confident_terminal_position(words: Sequence[tuple[str, float]]) -> int
 def _trim_trailing_ocr_noise(
     words: Sequence[tuple[str, float]],
 ) -> Sequence[tuple[str, float]]:
+    if not any(
+        character.isalnum() for text, _confidence in words for character in text
+    ):
+        return words
     terminal_position = _last_confident_terminal_position(words)
     if terminal_position is None or terminal_position == len(words) - 1:
         return words
@@ -1369,6 +1373,8 @@ def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:
 
 
 def _strip_trailing_ocr_glyphs(line: str) -> str:
+    if not any(character.isalnum() for character in line):
+        return line
     tokens = line.split()
     while tokens:
         token = tokens[-1]

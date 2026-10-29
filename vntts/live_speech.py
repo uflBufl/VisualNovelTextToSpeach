@@ -2,7 +2,12 @@
 
 from collections.abc import Callable
 
-from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.playback import (
+    PlaybackOutcome,
+    PlaybackStatus,
+    PreparedPlayback,
+    prepare_silent_playback,
+)
 from vntts.playback import TypedPlaybackBackend as TypedPlaybackBackend
 from vntts.services.tts_engine import (
     AudioPlaybackError,
@@ -17,6 +22,8 @@ def play_typed_text(
     text: str,
     playback_guard: Callable[[], bool] | None = None,
 ) -> bool:
+    if prepare_silent_playback(text) is not None:
+        return playback_guard is None or playback_guard()
     prepared = backend.prepare_playback(character, text)
     if not isinstance(prepared, PreparedPlayback):
         raise TypeError("Speech backend returned an untyped prepared playback")

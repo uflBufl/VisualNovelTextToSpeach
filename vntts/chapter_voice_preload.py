@@ -20,6 +20,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.cleanup import temporary_directory
+from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_text, read_regular_bytes
@@ -34,6 +35,8 @@ ResolutionDiagnostics: TypeAlias = dict[str, int | float | str]
 
 
 def _normalize(value: object) -> str:
+    if is_symbol_only_text(value):
+        return ""
     # OCR engines disagree on whether an apostrophe is straight, curly, or a
     # word boundary. Treat every form as a boundary so captured ``it's`` and
     # ``it’s`` compare identically.
@@ -41,6 +44,8 @@ def _normalize(value: object) -> str:
 
 
 def _normalize_exact_text(value: object) -> str:
+    if is_symbol_only_text(value):
+        return symbol_text_key(str(value))
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
@@ -106,9 +111,9 @@ class ChapterVoicePreloader:
         self.by_chapter_speaker: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
             defaultdict(list)
         )
-        self.by_exact_dialogue: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
-            defaultdict(list)
-        )
+        self.by_exact_dialogue: defaultdict[
+            tuple[str, bool, str], list[ChapterDialogue]
+        ] = defaultdict(list)
         self.by_normalized_dialogue: defaultdict[
             tuple[str, str], list[ChapterDialogue]
         ] = defaultdict(list)
@@ -130,7 +135,11 @@ class ChapterVoicePreloader:
                 else _normalize_without_latin_diacritics(row.text)
             )
             self.by_exact_dialogue[
-                (speaker_key, _normalize_exact_text(row.text))
+                (
+                    speaker_key,
+                    is_symbol_only_text(row.text),
+                    _normalize_exact_text(row.text),
+                )
             ].append(row)
             self.by_normalized_dialogue[
                 (speaker_key, self.normalized_text[row])
@@ -330,14 +339,18 @@ class ChapterVoicePreloader:
     ) -> tuple[ChapterDialogue | None, str]:
         """Return an exact line plus an explicit match result for diagnostics."""
         speaker_key = _normalize(character)
+        exact_text = _normalize_exact_text(text)
+        if not exact_text:
+            return None, "no-match"
         all_candidates = self.by_exact_dialogue.get(
-            (speaker_key, _normalize_exact_text(text)),
+            (speaker_key, is_symbol_only_text(text), exact_text),
             (),
         )
         match_result = "exact"
-        if not all_candidates:
+        normalized_text = _normalize(text)
+        if not all_candidates and normalized_text:
             all_candidates = self.by_normalized_dialogue.get(
-                (speaker_key, _normalize(text)),
+                (speaker_key, normalized_text),
                 (),
             )
             match_result = "normalized-exact"
@@ -390,7 +403,9 @@ class ChapterVoicePreloader:
         valid = tuple(
             row
             for line_id in allowed
-            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
+            if (row := self.by_line_id.get(line_id)) is not None
+            and row.text_sha256
+            and is_symbol_only_text(row.text) == is_symbol_only_text(text)
         )
         candidates = []
         match_result = "expected-no-match"
@@ -400,6 +415,8 @@ class ChapterVoicePreloader:
             (True, exact_text, False, "expected-text-only"),
             (False, normalized_text, False, "expected-normalized-text-only"),
         ):
+            if not observed:
+                continue
             candidates = [
                 row
                 for row in valid
@@ -437,6 +454,14 @@ class ChapterVoicePreloader:
             for line_id in dict.fromkeys(str(value) for value in line_ids if value)
             if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
         )
+        if valid and is_symbol_only_text(text):
+            return self.resolve_exact_among(
+                character,
+                text,
+                (row.line_id for row in valid),
+                update_context=update_context,
+            )
+        valid = tuple(row for row in valid if not is_symbol_only_text(row.text))
         observed = _normalize(text)
         if not observed or not valid:
             return None, "expected-no-match"
@@ -539,16 +564,21 @@ class ChapterVoicePreloader:
             "missing_identity_candidate_count": len(allowed) - len(valid),
             "exact_speaker_candidate_count": sum(
                 _normalize(candidate.speaker) == speaker_key
+                and is_symbol_only_text(candidate.text) == is_symbol_only_text(text)
+                and bool(exact_text)
                 and _normalize_exact_text(candidate.text) == exact_text
                 for candidate in valid
             ),
             "normalized_speaker_candidate_count": sum(
                 _normalize(candidate.speaker) == speaker_key
+                and bool(normalized_text)
                 and self.normalized_text[candidate] == normalized_text
                 for candidate in valid
             ),
             "text_only_candidate_count": sum(
-                _normalize_exact_text(candidate.text) == exact_text
+                is_symbol_only_text(candidate.text) == is_symbol_only_text(text)
+                and bool(exact_text)
+                and _normalize_exact_text(candidate.text) == exact_text
                 for candidate in valid
             ),
         }
@@ -631,7 +661,7 @@ class ChapterVoicePreloader:
         """Resolve one full indexed line from a sufficiently long OCR prefix."""
         speaker_key = _normalize(character)
         prefix = _normalize(text)
-        if len(prefix) < minimum_characters:
+        if not prefix or len(prefix) < minimum_characters:
             return None
         candidates = self._prefix_candidates(
             speaker_key,
@@ -651,7 +681,7 @@ class ChapterVoicePreloader:
     ) -> ChapterDialogue | None:
         """Resolve one indexed line when OCR lost or corrupted its nameplate."""
         prefix = _normalize(text)
-        if len(prefix) < minimum_characters:
+        if not prefix or len(prefix) < minimum_characters:
             return None
 
         def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
@@ -695,7 +725,7 @@ class ChapterVoicePreloader:
         """Return whether OCR has one known line prefix but not its full text."""
         speaker_key = _normalize(character)
         prefix = _normalize(text)
-        if len(prefix) < minimum_characters:
+        if not prefix or len(prefix) < minimum_characters:
             return False
         candidates = self._prefix_candidates(speaker_key, prefix)
         return len(candidates) == 1 and self.normalized_text[candidates[0]] != prefix

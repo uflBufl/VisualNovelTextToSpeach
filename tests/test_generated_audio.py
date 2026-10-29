@@ -29,6 +29,7 @@ from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
     AudioEventOmissionRoute,
+    AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
     GeneratedAudioRoute,
@@ -44,7 +45,7 @@ from vntts.generated_audio import (
     _narrator_fallback_role,
     recorded_voice_identity,
 )
-from vntts.playback import PreparedPlayback, outcome_for_prepared
+from vntts.playback import PreparedPlayback, SilentPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.voice_library import VoiceLibrary
@@ -96,6 +97,136 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_symbol_only_live_routes_complete_without_tts_or_pcm(self):
+        for text in ("?", "?!", "—", "_", "♪", "？ ！"):
+            for with_backend in (False, True):
+                with self.subTest(text=text, with_backend=with_backend):
+                    live = self.create_live_backend() if with_backend else None
+                    output = FakeAudioOutput()
+                    backend = GeneratedAudioFallbackBackend(
+                        live,
+                        None,
+                        self.create_resolver(text=text),
+                        audio_source_policy="live-tts-only",
+                        audio_output=output,
+                    )
+                    route = backend.prepare_route("Ada", text, line_id="game:1")
+                    self.assertIsInstance(route, LiveTTSRoute)
+                    self.assertIsInstance(route.prepared.payload, SilentPlayback)
+                    rejected = backend.play_route(route, playback_guard=lambda: False)
+                    self.assertEqual(rejected.status, PlaybackStatus.INTERRUPTED)
+                    outcome = backend.play_route(route, playback_guard=lambda: True)
+                    self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+                    self.assertEqual(outcome.playback_ms, 0.0)
+                    self.assertIsNone(outcome.onset_observation(1.0))
+                    self.assertEqual(output.plays, [])
+                    if live is not None:
+                        live.prepare_playback.assert_not_called()
+                        live.play_prepared.assert_not_called()
+
+    def test_symbol_text_preserves_source_and_generated_audio_routes(self):
+        text = "?!"
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory), text=text)
+            live = self.create_live_backend()
+            resolver = self.create_resolver(
+                text=text,
+                source_audio_status="available",
+                source_audio_id="voice-1",
+                source_audio_duration_seconds=1.0,
+                source_audio_authoritative=True,
+            )
+            for policy, route_type in (
+                ("prefer-game-audio", SourceAudioRoute),
+                ("prefer-generated", GeneratedAudioRoute),
+            ):
+                with self.subTest(policy=policy):
+                    backend = GeneratedAudioFallbackBackend(
+                        live,
+                        library,
+                        resolver,
+                        audio_source_policy=policy,
+                        audio_output=FakeAudioOutput(),
+                    )
+                    backend.set_live_mode_active(True)
+                    route = backend.prepare_route("Ada", text, line_id="game:1")
+                    self.assertIsInstance(route, route_type)
+            live.prepare_playback.assert_not_called()
+
+    def test_live_fallback_symbol_policy_uses_effective_projected_text(self):
+        with TemporaryDirectory() as directory:
+            library = self.create_live_fallback_library(Path(directory))
+            original = library.find_live_fallback("game:1", text_sha256("Hello."))
+            live = self.create_live_backend()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(),
+                audio_output=FakeAudioOutput(),
+            )
+            trace = AudioRouteTrace(
+                None, "live-fallback", "exact", None, None, "game:1", "test"
+            )
+            for projected in ("?", "No!"):
+                with self.subTest(projected=projected):
+                    decision = replace(
+                        original, schema_version=6, evidence={"spoken_text": projected}
+                    )
+                    route = backend._live_fallback_route(
+                        decision, text="?!", trace=trace
+                    )
+                    if projected == "?":
+                        self.assertIsInstance(route.prepared.payload, SilentPlayback)
+                        outcome = backend.play_route(route, playback_guard=lambda: True)
+                        self.assertEqual(outcome.audio_source, "silence")
+                        self.assertIsNone(outcome.first_audio_ms)
+                        live.prepare_playback.assert_not_called()
+                        live.play_prepared.assert_not_called()
+                    else:
+                        live.prepare_playback.assert_called_once_with("Narrator", "No!")
+
+    def test_symbol_silence_keeps_source_lead_and_dispatch_guard(self):
+        backend = GeneratedAudioFallbackBackend(
+            None,
+            None,
+            self.create_resolver(text="?"),
+            audio_output=FakeAudioOutput(),
+        )
+        route = replace(
+            backend.prepare_route("Ada", "?"), source_audio_lead_seconds=0.5
+        )
+        dispatch = Mock(return_value=True)
+        with patch.object(
+            backend.playback_owner, "_wait_for_source_audio_lead", return_value=False
+        ) as wait:
+            outcome = backend.play_route(
+                route, playback_guard=lambda: True, on_playback_dispatch=dispatch
+            )
+        self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+        wait.assert_called_once()
+        dispatch.assert_not_called()
+        with patch.object(
+            backend.playback_owner, "_wait_for_source_audio_lead", return_value=True
+        ):
+            dispatch.return_value = False
+            outcome = backend.play_route(
+                route, playback_guard=lambda: True, on_playback_dispatch=dispatch
+            )
+        self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+        dispatch.assert_called_once_with(route)
+        self.assertIsNone(outcome.first_audio_ms)
+        dispatch.reset_mock()
+        dispatch.return_value = True
+        with patch.object(
+            backend.playback_owner, "_wait_for_source_audio_lead", return_value=True
+        ):
+            outcome = backend.play_route(
+                route, playback_guard=lambda: True, on_playback_dispatch=dispatch
+            )
+        self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+        dispatch.assert_called_once_with(route)
+        self.assertIsNone(outcome.first_audio_ms)
+
     def test_lossless_document_lookup_uses_the_library_identity_index(self):
         with TemporaryDirectory() as directory:
             legacy, audio = self.create_library(Path(directory))

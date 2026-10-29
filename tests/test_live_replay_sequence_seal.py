@@ -2,6 +2,7 @@ import hashlib
 import json
 import unittest
 import wave
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -21,9 +22,12 @@ from vntts.live_replay_capture import LiveReplayCaptureSession
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     _generated_audio_manifest_for_run,
+    _map_dialogue,
+    _sealed_dialogue,
     build_parser,
     seal_sequence_replay,
 )
+from vntts.live_sequence import LiveSequencePlan
 
 
 class LiveReplaySequenceSealTest(unittest.TestCase):
@@ -256,7 +260,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                 story,
                 (
                     ("Ada", "The game already voices this."),
-                    ("Narrator", "..."),
+                    ("Narrator", "?!★"),
                     ("Narrator", "The approved waveform is ready."),
                     ("Cora", "This line needs live speech."),
                 ),
@@ -353,6 +357,86 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
             ],
         )
         self.assertEqual([entry["line_id"] for entry in generated_entries], ["story:2"])
+
+    def test_symbol_mapping_preserves_canonical_speech_and_rejects_empty_or_words(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": "story:1",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "?",
+                        "source_audio_status": "available",
+                        "source_audio_duration_seconds": 0.001,
+                    }
+                ],
+            )
+            plan_path = self.write_plan(
+                root,
+                story,
+                [
+                    {
+                        "event_id": "spoken-symbol",
+                        "sequence": 1,
+                        "kind": "speech",
+                        "control": "automatic",
+                        "successors": ["silent"],
+                        "line_id": "story:1",
+                    },
+                    {
+                        "event_id": "silent",
+                        "sequence": 2,
+                        "kind": "silent",
+                        "control": "terminal",
+                        "successors": [],
+                    },
+                ],
+            )
+            resolver = ChapterVoicePreloader.load_optional(story)
+            plan = LiveSequencePlan.load(plan_path, story)
+            first = {"character": "Ada", "text": "?"}
+            mappings = _map_dialogue(
+                [first, {"character": "Ada", "text": "♥"}], resolver, plan
+            )
+            self.assertEqual(
+                [item["mapping_method"] for item in mappings],
+                ["unique-text-frontier", "unique-silent-frontier"],
+            )
+            self.assertEqual(mappings[0]["line_id"], "story:1")
+            self.assertEqual(mappings[1]["observed_text"], "♥")
+            line = resolver.line_for_id("story:1")
+            assert line is not None
+            with mock.patch.object(
+                resolver,
+                "line_for_id",
+                return_value=replace(
+                    line,
+                    source_audio_authoritative=True,
+                    source_audio_completeness="full",
+                ),
+            ):
+                sealed = _sealed_dialogue(
+                    [[], []],
+                    mappings,
+                    resolver,
+                    set(),
+                    audio_source_policy="prefer-game-audio",
+                )
+            self.assertTrue(sealed[0]["expect_playback"])
+            self.assertEqual(sealed[0]["expected_source"], "game")
+            self.assertFalse(sealed[1]["expect_playback"])
+            for text in ("", " ", "Unknown text"):
+                with (
+                    self.subTest(text=text),
+                    self.assertRaises(SequenceReplaySealError),
+                ):
+                    _map_dialogue(
+                        [first, {"character": "Ada", "text": text}], resolver, plan
+                    )
 
     def test_rejects_branch_ambiguous_text_and_changed_authority(self):
         with TemporaryDirectory() as directory:

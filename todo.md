@@ -318,25 +318,6 @@ UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesi
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
 
-- [ ] **General symbol-only dialogue - proposed follow-up, pending agreement.**
-      Generalize the ellipsis repair to recognized punctuation/symbol-only text
-      while preserving the actual symbols. Generic tracking already completes
-      nonempty non-alphanumeric text without TTS; OCR cleanup, canonical silent
-      admission and replay/recovery still have ellipsis-only rules.
-      First fix symbol-sensitive matching: lexical normalization erases symbols,
-      so observed `?` can match canonical `!`, while exact `!` fails the complete
-      match gate. Share classification and exact symbol identity across consumers;
-      keep blank/uncertain frames distinct, preserve authoritative source audio,
-      occurrence identity, once-only keys and manual-mode restrictions.
-      Recognition is a separate dependency: the installed English OCR alphabet
-      lacks musical notes, and short-line/character modes alone did not recover
-      them. Compare a recognizer/alphabet that supports the required symbols
-      before promising their recognition or removing the validated dot fallback.
-      Gate: punctuation, musical signs, single letters/digits, mixed text, blank
-      and noisy crops; distinct `?`/`!` observations, repeated frames, canonical
-      exact/mismatch cases and replay recovery. An unreadable icon alone must
-      not authorize a key; unknown symbols need an explicit diagnostic outcome.
-
 - [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
       Native trial314001:18: Pause interrupted after153088 of490392 frames
       (~3.47 seconds); Resume started the same source WAV from offset0 and played
@@ -452,7 +433,12 @@ is still one final gate, not a per-fix test.
    and the following deferred checks:
    - **Punctuation-only dialogue (RUN-29-04):** Cornerstone's `...` after314001:66
      must admit one canonical silent occurrence and continue once in automatic
-     mode; manual mode must not dispatch a key. Check window/fullscreen and
+     mode; manual mode must not dispatch a key. Include other encountered
+     punctuation-only boxes: preserve the shown signs, separate different signs
+     and speakers, suppress duplicate transitions and symbol-only TTS while
+     retaining original/prepared audio and approved spoken projections. Confirm
+     unreadable/uncertain OCR keeps waiting regardless of elapsed time; never
+     use a timeout or failed recognition to authorize a skip. Check window/fullscreen and
      display scales with the resolved/calibrated dialogue region. Investigate
      whether divider rejection in synthetic1.5x/2x Lanczos-upscaled full crops
      reproduces at native display scales; keep calibration on ambiguous layouts

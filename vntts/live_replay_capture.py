@@ -20,13 +20,13 @@ from PIL import Image
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error, cli_messages
+from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.dialog_capture import (
     capture_live_frame,
     detect_standalone_ellipsis_frame,
     ellipsis_speaker_hint,
     fingerprint_dialog_frame,
     get_screenshot_directory,
-    is_standalone_ellipsis_text,
     recognize_screenshot_result,
 )
 from vntts.document_identity import sha256_file
@@ -257,7 +257,7 @@ class LiveReplayCaptureSession:
             line, match_result = self._resolve_story_line(character, text)
             if line is not None:
                 status = "canonical"
-            elif is_standalone_ellipsis_text(text):
+            elif is_symbol_only_text(text):
                 status = "punctuation-only"
                 match_result = "punctuation-only"
             else:
@@ -295,7 +295,11 @@ class LiveReplayCaptureSession:
             self.active["observed_character"].casefold() == character.casefold()
         )
         previous = self.active["observed_text"]
-        prefix_related = text.startswith(previous) or previous.startswith(text)
+        prefix_related = (
+            symbol_text_key(text) == symbol_text_key(previous)
+            if is_symbol_only_text(text) or is_symbol_only_text(previous)
+            else text.startswith(previous) or previous.startswith(text)
+        )
         if same_character and prefix_related:
             self.active["frames"].append(frame_spec)
             if len(text) > len(previous):
@@ -346,7 +350,7 @@ class LiveReplayCaptureSession:
         identity = (
             f"line:{story_line.line_id}"
             if story_line is not None
-            else f"punctuation:{''.join(text.split())}"
+            else f"punctuation:{character.casefold()}:{symbol_text_key(text)}"
         )
         if self.active is not None and self.active.get("group_identity") == identity:
             self.active["frames"].append(frame_spec)
@@ -835,7 +839,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if isinstance(frame_regions, OCRRegions)
                 else frame.image
             )
-            if detect_standalone_ellipsis_frame(
+            if not is_symbol_only_text(
+                result.text
+            ) and detect_standalone_ellipsis_frame(
                 ellipsis_image, dialogue_only=isinstance(frame_regions, OCRRegions)
             ):
                 return (

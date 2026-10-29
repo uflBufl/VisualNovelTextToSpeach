@@ -328,14 +328,13 @@ class RecognizedDialogTest(unittest.TestCase):
             "Protocols, are you?",
         )
 
-    def test_punctuation_only_ellipsis_is_preserved_as_silent_dialogue(self):
-        character, text = parse_recognized_dialog(
-            "Rhiannon\n...\n",
-            self.registry,
-        )
-
-        self.assertEqual(character, "Rhiannon")
-        self.assertEqual(text, "...")
+    def test_symbol_only_dialogue_preserves_the_observed_symbols(self):
+        for symbols in ("...", "?", "?!", "—", "_", "「」", "“”", "،؛؟", "♪", "？ ！"):
+            with self.subTest(symbols=symbols):
+                self.assertEqual(
+                    parse_recognized_dialog(f"Rhiannon\n{symbols}\n", self.registry),
+                    ("Rhiannon", symbols),
+                )
 
     def test_numbered_npc_is_detected_from_text_line_structure(self):
         character, text = parse_recognized_dialog(
@@ -666,7 +665,31 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(clean_dialog_lines("Kamuta ... _\n"), ["Kamuta ..."])
         self.assertEqual(clean_dialog_lines("Wait!\n"), ["Wait!"])
         self.assertEqual(clean_dialog_lines("...\n…\n"), ["...", "…"])
-        self.assertEqual(clean_dialog_lines("___\n"), [])
+        self.assertEqual(clean_dialog_lines("___\n"), ["___"])
+
+    def test_symbol_only_tokens_are_not_trimmed_as_sentence_noise(self):
+        data = {"text": ["?", "—", "♪"], "conf": [95, 90, 80]}
+        self.assertEqual(clean_dialog_lines_from_data(data, ["? — ♪"]), ["? — ♪"])
+        self.assertAlmostEqual(calculate_ocr_confidence(data), (95 + 90 + 80) / 3)
+
+    def test_unreadable_symbol_suffix_is_preserved_and_not_confident(self):
+        for unknown in ("\ufffd", "\ufffc", "\u0301"):
+            with self.subTest(unknown=unknown):
+                text = f"? {unknown}"
+                self.assertEqual(clean_dialog_lines(text), [text])
+                self.assertEqual(
+                    parse_recognized_dialog(f"Rhiannon\n{text}", self.registry),
+                    ("Rhiannon", text),
+                )
+                self.assertEqual(
+                    clean_dialog_lines_from_data(
+                        {"text": ["?", unknown], "conf": [95, 10]}, [text]
+                    ),
+                    [text],
+                )
+                self.assertFalse(
+                    OCRResult("Rhiannon", text, 95, "sauvola", 1).is_confident()
+                )
 
     def test_dialog_cleanup_removes_low_confidence_background_suffix(self):
         data = {

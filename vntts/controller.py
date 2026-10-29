@@ -33,7 +33,7 @@ from vntts.controller_components import (
 )
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
 from vntts.diagnostics import resolve_voice_label
-from vntts.dialog import speak_dialog
+from vntts.dialog import is_symbol_only_text, speak_dialog
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     DiagnosticSnapshot,
@@ -100,7 +100,12 @@ from vntts.ocr import (
     get_ocr_regions,
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
-from vntts.playback import PreparedPlayback
+from vntts.playback import (
+    PreparedPlayback,
+    SilentPlayback,
+    outcome_for_prepared,
+    prepare_silent_playback,
+)
 from vntts.profiles import GameProfileStore
 from vntts.reading_diagnostics import record_diagnostic_event, retain_ocr_resolution
 from vntts.runtime_config import (
@@ -276,10 +281,6 @@ class _StoryCursor(Protocol):
     def observe_bounded_line(
         self, line_id: str, allowed_event_ids: Sequence[str]
     ) -> StoryCursorSnapshot: ...
-
-
-def _is_silent_sequence_text(value: object) -> bool:
-    return "".join(str(value).split()) in {"...", "…"}
 
 
 def _is_typed_playback_backend(value: object) -> TypeGuard[TypedPlaybackBackend]:
@@ -1524,6 +1525,9 @@ class AppController:
                     ):
                         if not self._mark_sequence_silence_locked(event.event_id):
                             return False
+                        if event.event_id != previous_event_id:
+                            self.history.finish_current()
+                        self._record_and_display_dialogue(character, text)
                         return SilentDialogRoute(event.event_id)
                     line = self._canonical_sequence_line_locked(
                         None if event is None else event.event_id,
@@ -1867,7 +1871,9 @@ class AppController:
         if line is None:
             return "Unavailable canonical line"
         if self.settings.audio_source_policy == "live-tts-only":
-            return "Live TTS"
+            return (
+                "No TTS for symbols" if is_symbol_only_text(line.text) else "Live TTS"
+            )
         if (
             self.settings.audio_source_policy == "prefer-game-audio"
             and line.source_audio_status == "available"
@@ -1892,7 +1898,11 @@ class AppController:
                 is not None
             ):
                 return "Generated audio (manifest declaration)"
-        return "Live TTS fallback"
+        return (
+            "No TTS for symbols"
+            if is_symbol_only_text(line.text)
+            else "Live TTS fallback"
+        )
 
     def _publish_live_sequence_status(self) -> LiveSequenceStatus:
         status = self.get_live_sequence_status()
@@ -1976,14 +1986,14 @@ class AppController:
             if (
                 silent_event is not None
                 and silent_event.kind == "silent"
-                and _is_silent_sequence_text(text)
+                and is_symbol_only_text(text)
             ):
                 snapshot = cursor.anchor_event(
                     silent_event.event_id,
                     "visual-transition-confirmed",
                 )
                 line = None
-                match_result = "expected-silent-ellipsis"
+                match_result = "expected-silent-symbols"
                 candidate_events = (silent_event,)
             else:
                 candidate_event_ids = tuple(
@@ -2934,7 +2944,7 @@ class AppController:
             line_id=None,
             route="silent",
             reason=cursor.reason,
-            match_result="expected-silent-ellipsis",
+            match_result="expected-silent-visual-transition",
             proof=(
                 "application-owned-single-dispatch"
                 if application_owned_transition
@@ -3221,28 +3231,31 @@ class AppController:
                         materialize = getattr(
                             backend.live_backend, "materialize_prepared", None
                         )
-                        if isinstance(
-                            route, (LiveFallbackRoute, LiveTTSRoute)
-                        ) and callable(materialize):
-                            materialized = materialize(
-                                route.prepared,
-                                cancellation=lambda: not self.game_focused,
-                            )
-                            outcome = (
-                                "prepared"
-                                if materialized.generation_completed
-                                else "stale"
-                            )
+                        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
+                            if isinstance(route.prepared.payload, SilentPlayback):
+                                outcome = "prepared"
+                            elif callable(materialize):
+                                materialized = materialize(
+                                    route.prepared,
+                                    cancellation=lambda: not self.game_focused,
+                                )
+                                outcome = (
+                                    "prepared"
+                                    if materialized.generation_completed
+                                    else "stale"
+                                )
                 else:
-                    materialize = getattr(backend, "materialize_prepared", None)
-                    if not callable(materialize):
-                        raise TypeError(
-                            "Live backend cannot materialize prepared audio"
+                    materialized = prepare_silent_playback(line.text)
+                    if materialized is None:
+                        materialize = getattr(backend, "materialize_prepared", None)
+                        if not callable(materialize):
+                            raise TypeError(
+                                "Live backend cannot materialize prepared audio"
+                            )
+                        materialized = materialize(
+                            backend.prepare_playback(line.speaker, line.text),
+                            cancellation=lambda: not self.game_focused,
                         )
-                    materialized = materialize(
-                        backend.prepare_playback(line.speaker, line.text),
-                        cancellation=lambda: not self.game_focused,
-                    )
                     outcome = (
                         "prepared" if materialized.generation_completed else "stale"
                     )
@@ -3300,6 +3313,8 @@ class AppController:
             backend = self.speech_backend
             prepared = route
         else:
+            return route
+        if isinstance(prepared.payload, SilentPlayback):
             return route
         materialize = getattr(backend, "materialize_prepared", None)
         if not callable(materialize):
@@ -3992,7 +4007,9 @@ class AppController:
                     else prepare_route(chunk.character, chunk.text)
                 )
             elif callable(prepare_playback):
-                prepared = prepare_playback(chunk.character, chunk.text)
+                prepared = prepare_silent_playback(chunk.text)
+                if prepared is None:
+                    prepared = prepare_playback(chunk.character, chunk.text)
             else:
                 raise TypeError("Speech backend does not implement prepare_playback()")
             prepared = self._materialize_live_route(prepared, chunk)
@@ -4285,10 +4302,19 @@ class AppController:
                 and callable(play_prepared)
                 and isinstance(audio, PreparedPlayback)
             ):
-                outcome = play_prepared(
-                    audio,
-                    playback_guard=playback_guard,
-                )
+                if isinstance(audio.payload, SilentPlayback):
+                    outcome = outcome_for_prepared(
+                        audio,
+                        PlaybackStatus.COMPLETED
+                        if playback_guard()
+                        else PlaybackStatus.INTERRUPTED,
+                        0.0,
+                    )
+                else:
+                    outcome = play_prepared(
+                        audio,
+                        playback_guard=playback_guard,
+                    )
         except PcmAdmissionRejected:
             return PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
         if outcome is None:
@@ -4572,7 +4598,9 @@ class AppController:
                 f"Original game cue ({lead_seconds:.2f}s including post-roll), "
                 f"then {following}"
             )
-        if isinstance(prepared, LiveFallbackRoute):
+        if isinstance(prepared, LiveFallbackRoute) and not isinstance(
+            prepared.prepared.payload, SilentPlayback
+        ):
             return (
                 "Authorized live fallback "
                 f"({prepared.decision.provider}/{prepared.decision.model})"
@@ -4584,6 +4612,8 @@ class AppController:
             prepared = prepared.prepared
         if isinstance(prepared, PreparedPlayback):
             prepared = prepared.payload
+        if isinstance(prepared, SilentPlayback):
+            return "No speech (symbols)"
         if isinstance(prepared, PreparedSourceAudioPassThrough):
             completion = (
                 f", completion {prepared.completion_seconds:.2f}s"

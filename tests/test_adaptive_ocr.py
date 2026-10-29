@@ -484,8 +484,14 @@ class AdaptiveOCRTest(unittest.TestCase):
         self.assertTrue(result.is_confident())
         self.assertIsNone(result.speaker_confidence)
 
-    def test_ellipsis_waives_body_confidence_without_waiving_name_confidence(self):
-        image, _ = self.frame(text="")
+    def test_visual_ellipsis_waives_body_confidence_without_waiving_name_confidence(
+        self,
+    ):
+        image, divider = self.frame(text="")
+        for x in (12, 24, 36):
+            ImageDraw.Draw(image).rectangle(
+                (x, divider + 12, x + 4, divider + 15), fill="white"
+            )
         for speaker_confidence in (20, 95):
             result = OCRResult(
                 "X",
@@ -507,6 +513,62 @@ class AdaptiveOCRTest(unittest.TestCase):
                 self.assertEqual(
                     recognize_live_frame(CapturedDialogFrame(image, 0)), expected
                 )
+
+    def test_recognized_symbols_keep_text_and_require_ocr_confidence(self):
+        image, _ = self.frame(text="?")
+        for symbols in ("...", "?", "?!", "—", "_", "「」", "♪"):
+            for confidence in (20, 95):
+                with self.subTest(symbols=symbols, confidence=confidence):
+                    result = OCRResult(
+                        "X",
+                        symbols,
+                        confidence,
+                        "sauvola",
+                        1,
+                        speaker_confidence=95,
+                        dialogue_confidence=confidence,
+                    )
+                    with patch(
+                        "vntts.dialog_capture.recognize_screenshot_result",
+                        return_value=result,
+                    ):
+                        self.assertEqual(
+                            recognize_live_frame(CapturedDialogFrame(image, 0)),
+                            ("X", symbols) if confidence == 95 else (None, ""),
+                        )
+
+    def test_dot_fallback_does_not_replace_recognized_symbols_or_waive_their_confidence(
+        self,
+    ):
+        image, _ = self.frame(text="?")
+        for symbols in ("?", "?!", "…"):
+            for confidence in (20, 95):
+                with self.subTest(symbols=symbols, confidence=confidence):
+                    result = OCRResult(
+                        "X",
+                        symbols,
+                        confidence,
+                        "sauvola",
+                        1,
+                        speaker_confidence=95,
+                        dialogue_confidence=confidence,
+                    )
+                    with (
+                        patch(
+                            "vntts.dialog_capture.recognize_screenshot_result",
+                            return_value=result,
+                        ),
+                        patch(
+                            "vntts.dialog_capture.detect_standalone_ellipsis_frame",
+                            return_value=True,
+                        ),
+                    ):
+                        self.assertEqual(
+                            recognize_live_frame(CapturedDialogFrame(image, 0)),
+                            ("X", symbols)
+                            if confidence == 95 or symbols == "…"
+                            else (None, ""),
+                        )
 
     def test_live_activity_observes_text_above_old_fixed_dialogue_crop(self):
         image, divider = self.frame(lines=4, text="I")

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from vntts.live_speech import TypedPlaybackBackend, play_typed_text
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
@@ -25,6 +26,27 @@ class StubBackend:
 
 
 class TypedLiveSpeechTests(unittest.TestCase):
+    def test_symbol_only_text_skips_tts_and_preserves_playback_guard(self):
+        for text in ("?", "?!", "—", "_", "♪", "？ ！"):
+            with self.subTest(text=text):
+                backend = Mock()
+                self.assertTrue(play_typed_text(backend, "Ada", text))
+                guard = Mock(return_value=False)
+                self.assertFalse(play_typed_text(backend, "Ada", text, guard))
+                guard.assert_called_once_with()
+                backend.prepare_playback.assert_not_called()
+                backend.play_prepared.assert_not_called()
+
+    def test_words_digits_and_unknown_glyphs_keep_the_backend_path(self):
+        for text in ("I", "1", "No!", "Hello ♪", "\ufffd", "? \ufffc"):
+            with self.subTest(text=text):
+                backend = Mock(
+                    wraps=StubBackend(PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0))
+                )
+                self.assertTrue(play_typed_text(backend, "Ada", text))
+                backend.prepare_playback.assert_called_once_with("Ada", text)
+                backend.play_prepared.assert_called_once()
+
     def test_live_protocol_reexports_shared_runtime_contract(self):
         self.assertIs(TypedPlaybackBackend, SharedTypedPlaybackBackend)
         self.assertIsInstance(

@@ -1,15 +1,64 @@
 import unittest
+from string import punctuation
 from unittest.mock import Mock
 
 from vntts.dialog import (
     is_probable_character_name,
+    is_symbol_only_text,
     parse_dialog,
     recognize_dialog,
     speak_dialog,
+    symbol_text_key,
 )
 
 
 class DialogTest(unittest.TestCase):
+    def test_symbol_only_dialogue_includes_unicode_punctuation_and_symbols(self):
+        for text in (
+            punctuation,
+            "?!",
+            "…",
+            "—",
+            "_",
+            "「」",
+            "«»",
+            "“”",
+            "،؛؟",
+            "♪",
+            " ？ ！ ",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(is_symbol_only_text(text))
+                speaker = Mock()
+                speak_dialog(text, speaker)
+                speaker.assert_not_called()
+
+    def test_symbols_do_not_include_words_digits_blank_or_unknown_encoding(self):
+        for text in (
+            None,
+            "",
+            " \n",
+            "A",
+            "I",
+            "я",
+            "あ",
+            "1",
+            "Wait...",
+            "a ♪",
+            "\ufffd",
+            "\ufffc",
+            "\u0301",
+            "\x00",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(is_symbol_only_text(text))
+
+    def test_symbol_identity_normalizes_spacing_and_width_without_erasing_signs(self):
+        self.assertEqual(symbol_text_key(" ？ ！ "), "?!")
+        self.assertEqual(symbol_text_key("…"), "...")
+        self.assertNotEqual(symbol_text_key("?"), symbol_text_key("!"))
+        self.assertNotEqual(symbol_text_key("?"), symbol_text_key("??"))
+
     def test_recognize_dialog_returns_speaker_and_text_from_mocked_ocr(self):
         image = object()
         recognize_text = Mock(return_value="Alice\n\nHello there.\n")

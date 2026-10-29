@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
+from vntts.dialog import is_symbol_only_text
 from vntts.synthesis import (
     SynthesisChunkStream,
     SynthesisCompletion,
@@ -31,6 +32,11 @@ class PlaybackStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class SilentPlayback:
+    """Recognized symbols whose TTS route has no spoken words."""
+
+
+@dataclass(frozen=True)
 class PreparedPlayback:
     payload: object
     synthesis_ms: float | None
@@ -38,6 +44,12 @@ class PreparedPlayback:
     cache_source: str | None
     audio_source: str
     generation_completed: bool = True
+
+
+def prepare_silent_playback(text: str) -> PreparedPlayback | None:
+    if not is_symbol_only_text(text):
+        return None
+    return PreparedPlayback(SilentPlayback(), 0.0, None, "symbol-only", "silence")
 
 
 @dataclass(frozen=True)

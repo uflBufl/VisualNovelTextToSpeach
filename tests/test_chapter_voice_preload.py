@@ -121,6 +121,159 @@ class _EvidenceReadFailure:
 
 
 class ChapterVoicePreloaderTest(unittest.TestCase):
+    def test_symbol_only_resolution_preserves_exact_identity_across_matchers(self):
+        for canonical, observed in (
+            ("!", "！"),
+            ("?!", "？ \t ！"),
+            ("…", ". . ."),
+            ("_", "＿"),
+            ("—", "—"),
+            ("(", "（"),
+            (")", "）"),
+            ("“", "“"),
+            ("”", "”"),
+            ("+", "＋"),
+            ("$", "＄"),
+            ("^", "＾"),
+            ("☀", "☀"),
+            ("™", "™"),
+        ):
+            row = ChapterDialogue("symbol", "1", 1, "Ada", canonical, "a" * 64)
+            for method in (
+                "resolve_exact_with_result",
+                "resolve_exact_among",
+                "resolve_complete_among",
+                "resolve_bounded_among",
+            ):
+                with self.subTest(
+                    canonical=canonical, observed=observed, method=method
+                ):
+                    preloader = ChapterVoicePreloader((row,))
+                    resolver = getattr(preloader, method)
+                    arguments = (
+                        ()
+                        if method == "resolve_exact_with_result"
+                        else ((row.line_id,),)
+                    )
+                    selected, result = resolver("Ada", observed, *arguments)
+                    self.assertIs(selected, row)
+                    self.assertEqual(
+                        result, "exact" if not arguments else "expected-exact"
+                    )
+                    self.assertEqual(selected.text, canonical)
+                    self.assertEqual(preloader.current_match, ChapterMatch("1", 1, 1.0))
+
+    def test_symbol_only_resolution_never_uses_lexical_empty_or_fuzzy_equality(self):
+        for canonical, observed in (
+            ("!", "?"),
+            ("?!", "!?"),
+            ("…", ".."),
+            ("_?", "_!"),
+            ("_", "_?"),
+            ("!", ""),
+            ("!", " \t "),
+            ("", ""),
+            (" ", "\t"),
+            ("™", "TM"),
+            ("TM", "™"),
+            ("№", "No"),
+            ("No", "№"),
+            ("℅", "c/o"),
+            ("c/o", "℅"),
+            ("!", "\ufffc"),
+            ("!", "\ufffd"),
+            ("_word", "_"),
+            ("_", "_word"),
+        ):
+            row = ChapterDialogue("symbol", "1", 1, "Ada", canonical, "a" * 64)
+            for method in (
+                "resolve_exact_with_result",
+                "resolve_exact_among",
+                "resolve_complete_among",
+                "resolve_bounded_among",
+            ):
+                with self.subTest(
+                    canonical=canonical, observed=observed, method=method
+                ):
+                    preloader = ChapterVoicePreloader((row,))
+                    previous = ChapterMatch("previous", 9, 1.0)
+                    preloader.current_match = previous
+                    arguments = (
+                        ()
+                        if method == "resolve_exact_with_result"
+                        else ((row.line_id,),)
+                    )
+                    selected, _result = getattr(preloader, method)(
+                        "Ada", observed, *arguments
+                    )
+                    self.assertIsNone(selected)
+                    self.assertIs(preloader.current_match, previous)
+
+    def test_symbol_only_expected_resolution_keeps_ambiguity_and_context(self):
+        rows = tuple(
+            ChapterDialogue(str(index), "1", index, "Ada", text, "a" * 64)
+            for index, text in enumerate(("?!", "？ ！", "!"), 1)
+        )
+        for method in (
+            "resolve_exact_among",
+            "resolve_complete_among",
+            "resolve_bounded_among",
+        ):
+            with self.subTest(method=method):
+                preloader = ChapterVoicePreloader(rows)
+                previous = ChapterMatch("previous", 9, 1.0)
+                preloader.current_match = previous
+                resolver = getattr(preloader, method)
+                selected, result = resolver("Ada", "?!", [row.line_id for row in rows])
+                self.assertIsNone(selected)
+                if method != "resolve_bounded_among":
+                    self.assertEqual(result, "expected-ambiguous")
+                self.assertIs(preloader.current_match, previous)
+                if method != "resolve_bounded_among":
+                    self.assertEqual(
+                        resolver(
+                            "Unknown",
+                            "！",
+                            [row.line_id for row in rows],
+                            update_context=False,
+                        ),
+                        (rows[-1], "expected-text-only"),
+                    )
+                    self.assertIs(preloader.current_match, previous)
+
+    def test_symbol_only_text_does_not_become_a_word_prefix(self):
+        row = ChapterDialogue("word", "1", 1, "Ada", "_word", "a" * 64)
+        preloader = ChapterVoicePreloader((row,))
+        for observed in ("", "!", "_", "_" * 25):
+            with self.subTest(observed=observed):
+                self.assertIsNone(
+                    preloader.resolve_unique_prefix(
+                        "Ada", observed, minimum_characters=0
+                    )
+                )
+                self.assertIsNone(
+                    preloader.resolve_unique_prefix_by_text(
+                        observed, minimum_characters=0
+                    )
+                )
+                self.assertFalse(
+                    preloader.is_unique_incomplete_prefix(
+                        "Ada", observed, minimum_characters=0
+                    )
+                )
+        for canonical, observed in (
+            ("No.", "Go."),
+            ("I", "J"),
+            ("100", "101"),
+            ("Not.", "Now."),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                row = ChapterDialogue("word", "1", 1, "Ada", canonical, "a" * 64)
+                preloader = ChapterVoicePreloader((row,))
+                self.assertIsNone(
+                    preloader.resolve_complete_among("Ada", observed, [row.line_id])[0]
+                )
+
     def test_story_order_preserves_nonmonotonic_ids_in_preflight_and_recommendation(
         self,
     ):
