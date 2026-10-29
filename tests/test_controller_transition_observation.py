@@ -570,6 +570,273 @@ class ControllerTransitionObservationTest(unittest.TestCase):
         )
         self.accept(controller, lines[-1], 4)
 
+    def sequence_playback_harness(self):
+        controller, lines = self.controller()
+        controller.settings = controller.settings.updated(
+            capture_mode="window", auto_advance_enabled=True
+        )
+        harness = self.reader_harness(controller)
+        controller.game_focused = True
+        controller._is_game_focused = lambda: True
+        harness.reader.recognize_frame = harness._recognize
+        harness.reader.frame_equivalent = lambda old, new: old == new
+        harness.reader.frame_recheck_required = (
+            controller._sequence_prefix_recheck_required
+        )
+
+        def play(prepared, *, playback_guard):
+            self.assertTrue(playback_guard())
+            harness.played.append(prepared.payload)
+            return PlaybackOutcome(
+                PlaybackStatus.COMPLETED,
+                1.0,
+                first_audio_ms=0,
+                audio_source="live",
+            )
+
+        controller.speech_backend = SimpleNamespace(
+            name="test",
+            prepare_playback=lambda _speaker, text: PreparedPlayback(
+                text, None, None, None, "live:test"
+            ),
+            play_prepared=play,
+        )
+        return controller, lines, harness
+
+    def expected_prefix_harness(self):
+        controller, lines, harness = self.sequence_playback_harness()
+        controller._declared_generated_sequence_line_locked = lambda event, **_kwargs: (
+            None
+            if event is None
+            else controller._canonical_sequence_line_locked(event.event_id)
+        )
+        controller._reserve_generated_prefix = Mock(return_value=True)
+        controller.story_cursor.anchor_event("event-1")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+        controller.sequence_prefix_dispatch_lease = SequenceEventLease(
+            "event-1", controller.story_cursor.occurrence_id
+        )
+        return controller, lines, harness
+
+    def test_fresh_exact_text_confirms_the_same_accepted_prefix_occurrence(self):
+        controller, lines, harness = self.expected_prefix_harness()
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            try:
+                harness.push(
+                    "Ada",
+                    "Birds gather",
+                    background="prefix",
+                    fingerprint="prefix",
+                    expected=("Ada", lines[1].text),
+                )
+                accepted = tuple(controller.sequence_admitted_chunks)
+                self.assertEqual(
+                    controller.sequence_prefix_confirmation_event_id, "event-2"
+                )
+                harness.push(
+                    "Ada", lines[1].text, background="full", fingerprint="full"
+                )
+                self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
+                self.assertEqual(tuple(controller.sequence_admitted_chunks), accepted)
+                full_text = [
+                    details
+                    for stage, _generation, _timestamp, details in harness.pipeline_events
+                    if stage == "canonical-full-text"
+                ]
+                self.assertEqual(len(full_text), 1)
+                self.assertEqual(full_text[0]["line_id"], lines[1].line_id)
+                harness.speech_executor.run_next()
+                harness.playback_executor.run_next()
+                self.assertEqual(harness.played, [lines[1].text])
+                self.assertTrue(controller._sequence_auto_advance_dialog())
+                controller._auto_advance_dialog.assert_called_once_with(
+                    focus_verified=True
+                )
+                self.assertEqual(harness.errors, [])
+            finally:
+                harness.stop()
+
+    def test_successor_held_during_prefix_pcm_cannot_confirm_or_advance_old_occurrence(
+        self,
+    ):
+        for completion_cue in (False, True):
+            with self.subTest(completion_cue=completion_cue):
+                controller, lines, harness = self.expected_prefix_harness()
+                reader = harness.reader
+                started, release = Event(), Event()
+                original_play = controller.speech_backend.play_prepared
+
+                def play(prepared, **kwargs):
+                    if prepared.payload == lines[1].text:
+                        started.set()
+                        self.assertTrue(release.wait(timeout=2))
+                    return original_play(prepared, **kwargs)
+
+                controller.speech_backend.play_prepared = play
+                held_text = "Unreadable successor dialogue."
+
+                def recognize(frame):
+                    if frame["background"] == "stale-successor":
+                        with reader.pause_condition:
+                            reader.latest_frame = {
+                                **frame,
+                                "background": "successor",
+                            }
+                            reader.latest_frame_fingerprint = "successor"
+                            reader.frame_version += 1
+                            reader.pause_condition.notify_all()
+                        return "Ada", lines[2].text
+                    return (
+                        "Ada",
+                        held_text if frame["text"] == lines[2].text else frame["text"],
+                    )
+
+                reader.recognize_frame = recognize
+                with patch(
+                    "vntts.live.Timer", side_effect=harness.timer_scheduler.create
+                ):
+                    harness.start()
+                    worker = None
+                    try:
+                        harness.push(
+                            "Ada",
+                            "Birds gather",
+                            background="prefix",
+                            fingerprint="prefix",
+                            expected=("Ada", lines[1].text),
+                        )
+                        self.assertEqual(
+                            controller.sequence_prefix_confirmation_event_id,
+                            "event-2",
+                        )
+                        harness.speech_executor.run_next()
+                        worker = Thread(target=harness.playback_executor.run_next)
+                        worker.start()
+                        self.assertTrue(started.wait(timeout=1))
+                        harness.push(
+                            "Ada",
+                            lines[2].text,
+                            background="stale-successor",
+                            fingerprint="stale-successor",
+                            complete=completion_cue,
+                            expected=("Ada", held_text),
+                        )
+                        self.assertTrue(
+                            any(
+                                stage == "ocr-attempt"
+                                and details.get("outcome") == "stale"
+                                for stage, _generation, _timestamp, details in harness.pipeline_events
+                            )
+                        )
+                        with reader.state_lock:
+                            reader.latest_render_fingerprint = "successor"
+                        harness.clock.advance(1.0)
+                        harness.push(
+                            "Ada",
+                            lines[2].text,
+                            background="successor",
+                            fingerprint="successor",
+                            complete=completion_cue,
+                            expected=("Ada", held_text),
+                        )
+                        self.assertEqual(
+                            controller.sequence_prefix_confirmation_event_id,
+                            "event-2",
+                        )
+                        self.assertFalse(
+                            any(
+                                stage == "canonical-full-text"
+                                for stage, *_rest in harness.pipeline_events
+                            )
+                        )
+                        self.assertEqual(reader.routed_frame_fingerprint, "prefix")
+                        release.set()
+                        worker.join(timeout=1)
+                        self.assertFalse(worker.is_alive())
+                        reader._run_auto_advance(reader.active_generation)
+                        self.assertFalse(controller._sequence_auto_advance_dialog())
+                        controller._auto_advance_dialog.assert_not_called()
+
+                        reader.recognize_frame = harness._recognize
+                        harness.push(
+                            "Ada",
+                            lines[2].text,
+                            background="fresh-successor",
+                            fingerprint="fresh-successor",
+                        )
+                        self.assertEqual(
+                            controller.story_cursor.current_event_id, "event-3"
+                        )
+                        harness.speech_executor.run_next()
+                        harness.playback_executor.run_next()
+                        harness.push(
+                            "Ada",
+                            lines[2].text,
+                            background="fresh-successor",
+                            fingerprint="fresh-successor",
+                        )
+                        self.assertEqual(harness.played, [lines[1].text, lines[2].text])
+                        self.assertEqual(harness.speech_executor.jobs, [])
+                        self.assertEqual(harness.playback_executor.jobs, [])
+                        self.assertEqual(
+                            tuple(
+                                lease.event_id
+                                for lease in controller.sequence_admitted_chunks
+                            ),
+                            ("event-2", "event-3"),
+                        )
+                        self.assertEqual(harness.errors, [])
+                    finally:
+                        release.set()
+                        if worker is not None:
+                            worker.join(timeout=1)
+                        harness.stop()
+
+    def test_rapid_accepted_occurrences_drain_fifo_without_old_completion_advancing_current(
+        self,
+    ):
+        controller, lines, harness = self.sequence_playback_harness()
+        reader = harness.reader
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            try:
+                for index, line in enumerate(lines[:3]):
+                    harness.push(
+                        "Ada",
+                        line.text,
+                        background=f"frame-{index}",
+                        fingerprint=f"frame-{index}",
+                    )
+                visible = controller.story_cursor.snapshot()
+                self.assertEqual(visible.current_event_id, "event-3")
+                for index in range(3):
+                    harness.speech_executor.run_next()
+                    harness.playback_executor.run_next()
+                    self.assertEqual(
+                        harness.played, [line.text for line in lines[: index + 1]]
+                    )
+                    if index < 2:
+                        self.assertEqual(controller.story_cursor.snapshot(), visible)
+                        reader._run_auto_advance(reader.active_generation)
+                        self.assertFalse(controller._sequence_auto_advance_dialog())
+                        controller._auto_advance_dialog.assert_not_called()
+                self.assertEqual(len(reader.accepted_chunks), 3)
+                self.assertEqual(len(controller.sequence_event_terminal_routes), 3)
+                self.assertFalse(controller.sequence_playback_leases)
+                self.assertEqual(reader.speech_futures, {})
+                self.assertFalse(reader.deferred_chunks)
+                self.assertIsNone(reader.current_chunk)
+                self.assertTrue(controller._sequence_auto_advance_dialog())
+                controller._auto_advance_dialog.assert_called_once_with(
+                    focus_verified=True
+                )
+                self.assertEqual(harness.errors, [])
+            finally:
+                harness.stop()
+
     def ordinary_harness(self):
         controller, lines = self.controller()
         controller.settings = controller.settings.updated(

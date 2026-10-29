@@ -312,38 +312,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Remaining proposed implementation order, pending user approval: RUN-29-03,
-RUN-29-02, RUN-29-04, RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before
-combined acceptance. RUN-29-03's identity guard must precede faster visual
-completion. UX-29-02 remains a discussion item, not a confirmed defect or a
+Remaining proposed implementation order, pending user approval: RUN-29-02,
+RUN-29-04, RUN-29-01, UX-29-01, UX-29-03, then REC-29-01 before combined
+acceptance. UX-29-02 remains a discussion item, not a confirmed defect or a
 mandatory redesign. Each coherent fix gets its own commit and focused checks;
 the full native chapter is still one final gate, not a per-fix test.
-
-- [ ] **RUN-29-03 - Retain recognized unspoken dialogue across automatic transitions.**
-      While314001:48 was still playing, OCR observed49, including `Hey! You can't
-      take revenge on me just because you failed...`;49 was held as visual-only.
-      After48 finished, the application dispatched an advance for48, then routed
-      116 (`Ouch`) and53, with no49 route. Preserved continuous PCM confirms48
-      (correlation.999766) but not49's prepared WAV (.091172); VNTTS did not read49.
-      The library has no original49 source; this alone does not prove absence of
-      all speech in game output. Trace canonical event ownership, retain recognized
-      unspoken dialogue and prevent a previous frame's completion key skipping it.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, interval359305-359314;
-      `.codex/investigations/native-trial-20261029/prefix-correlation.json`.
-      Proposed change: remove both quiet-only and cue-only prefix completion in
-      `controller.py`. `_confirm_sequence_render_completion` and
-      `_route_sequence_prefix_confirmation_locked` must require fresh positive
-      canonical evidence for that occurrence before binding a frame or declaring
-      full text. Quiet/cue may trigger rechecking, but cannot prove identity.
-      In the actual log, successor49 OCR was stale; afterwards owner-render-quiet
-      relabelled the latest frame as48 and authorized key48. The render owner was
-      copied from the cursor, so this was circular evidence, not confirmed pixels.
-      Preserve the existing accepted FIFO and occurrence leases (already present
-      before the trial); after fresh49 admission they provide exactly-once playback.
-      Gate: prefix48 playing -> held/stale49 -> quiet/cue49 -> PCM48 finishes must
-      neither confirm48 nor send its key; a fresh49 then plays once. Cover both
-      completion shortcuts and the real sequence advance callback, plus genuinely
-      completed same-occurrence prefixes and rapid A/B/C accepted playback.
 
 - [ ] **RUN-29-02 - Automatic advance stalls on fully read line39.**
       Native314001:39 finished356328/356328 frames at359114.326. For more than
@@ -505,6 +478,10 @@ the full native chapter is still one final gate, not a per-fix test.
    Include native confirmation that authorized silent events do not wait for a
    WAV during generation/resume, and a newly accepted occurrence releases an
    older unstarted wait without interrupting already dispatched speech.
+   Verify RUN-29-03 at automatic transition48/49: a quiet frame or completion
+   cue must not confirm48 or authorize its key when49 OCR is stale/unresolved.
+   Fresh49 must play once; accepted rapid A/B/C must all finish in order, and a
+   genuinely completed same-occurrence prefix must still permit automatic advance.
    Run all314001 through104 from Stories without manual transitions while real
    heavy generation/publication remains active. Also qualify partly prepared
    active-chapter catch-up across newly published boundaries, failed/not-ready

@@ -524,18 +524,16 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         self.assertEqual(harness.errors, [])
 
     def test_completion_cue_change_bypasses_same_fingerprint_ocr_cache(self):
-        harness = None
-
         def stable_route(_fingerprint, settled, _owner, _route_epoch):
             if not settled:
                 return False
-            if harness.reader.current_frame_has_completion_cue():
-                return ("Bea", "Canonical short line.")
             return None
 
         harness = AutoAdvanceFakeFrameHarness(
             stable_frame_route=stable_route,
-            dialog_observed=lambda _character, text: text == "First line.",
+            dialog_observed=lambda _character, text: (
+                text in {"First line.", "Canonical short line."}
+            ),
         )
         harness.start()
         self.addCleanup(harness.stop)
@@ -555,8 +553,8 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             fingerprint="short-line",
         )
         harness.push(
-            "bad OCR",
-            "partial",
+            "Bea",
+            "Canonical short line.",
             background="candidate-with-cue",
             fingerprint="short-line",
             complete=True,
@@ -569,7 +567,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             if stage == "stable-frame-gate"
         ]
         self.assertTrue(gate_events[-1]["completion_cue"])
-        self.assertEqual(harness.recognized_frames[-1]["text"], "partial")
+        self.assertEqual(harness.recognized_frames[-1]["text"], "Canonical short line.")
         self.assertEqual(harness.errors, [])
 
     def test_pending_prefix_periodically_rechecks_same_fingerprint(self):
@@ -3269,77 +3267,26 @@ class LiveDialogReaderTest(unittest.TestCase):
         timer.return_value.start.assert_called_once_with()
         state_changed.assert_called_once_with("visual-wait", 3, 0)
 
-    def test_render_completion_can_bind_quiet_owner_frame_before_visual_gate(self):
-        state_changed = Mock()
+    def test_quiet_successor_cannot_rebind_previous_prefix_for_auto_advance(self):
         auto_advance = Mock(return_value=True)
-        reader = None
-
-        def complete_render():
-            reader.routed_frame_fingerprint = reader.latest_frame_fingerprint
-            return True
-
         reader = self.create_reader(
             auto_advance=auto_advance,
-            render_completion=complete_render,
             require_visible_auto_advance=True,
-            auto_advance_state_changed=state_changed,
         )
         reader.active_generation = 3
         reader.dialog_ready_generation = 3
         reader.latest_frame_visible = True
-        reader.latest_frame_fingerprint = "full-render"
+        reader.latest_frame_complete = True
+        reader.latest_frame_fingerprint = "new-dialogue"
         reader.routed_frame_fingerprint = "early-prefix"
+        reader.stable_frame_clock = lambda: 10.0
 
         with patch("vntts.live.Timer"):
             reader._run_auto_advance(3)
 
-        auto_advance.assert_called_once_with()
-        state_changed.assert_called_once_with("dispatched", 3, 1)
-
-    def test_render_quiet_evidence_requires_focus_visibility_owner_and_time(self):
-        clock = FakeClock()
-        owner = ["event-1"]
-        focused = [True]
-        reader = self.create_reader(
-            stable_frame_clock=clock,
-            stable_frame_owner=lambda: owner[0],
-            focus_probe=lambda: focused[0],
-            render_quiet_minimum_seconds=0.8,
-        )
-        reader.latest_frame_visible = True
-        reader.latest_render_fingerprint = "full-glyphs"
-        reader.latest_render_owner = "event-1"
-        reader.latest_render_changed_at = clock()
-
-        clock.advance(0.79)
-        self.assertIsNone(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1")
-        )
-        clock.advance(0.01)
-        self.assertEqual(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1"),
-            800,
-        )
-        reader.latest_render_fingerprint = "more-glyphs"
-        reader.latest_render_changed_at = clock()
-        clock.advance(0.79)
-        self.assertIsNone(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1")
-        )
-        clock.advance(0.01)
-        self.assertEqual(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1"),
-            800,
-        )
-        owner[0] = "event-2"
-        self.assertIsNone(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1")
-        )
-        owner[0] = "event-1"
-        focused[0] = False
-        self.assertIsNone(
-            reader.current_frame_render_quiet_ms(expected_owner="event-1")
-        )
+        auto_advance.assert_not_called()
+        self.assertEqual(reader.routed_frame_fingerprint, "early-prefix")
+        self.assertEqual(reader.auto_advance_visual_wait_generation, 3)
 
     def test_focused_callback_refusal_blocks_generation_without_retry(self):
         state_changed = Mock()

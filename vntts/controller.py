@@ -2828,7 +2828,8 @@ class AppController:
             }:
                 return None
             if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
-                return self._route_sequence_prefix_confirmation_locked(cursor)
+                # Completion cues cannot identify which dialogue is on screen.
+                return None
             if not cursor.can_confirm_visual_transition:
                 return None
             return self._route_visual_successor_locked(cursor)
@@ -2846,32 +2847,6 @@ class AppController:
             and self.live_reader is not None
             and not self.live_reader.frame_route_epoch_is_current(route_epoch)
         )
-
-    def _route_sequence_prefix_confirmation_locked(
-        self, cursor: _StoryCursor
-    ) -> tuple[str, str] | None:
-        completion_probe = getattr(
-            self.live_reader,
-            "current_frame_has_completion_cue",
-            None,
-        )
-        if not callable(completion_probe) or not completion_probe():
-            return None
-        event = cursor.current_event
-        line = self._canonical_sequence_line_locked(
-            None if event is None else event.event_id
-        )
-        if line is None:
-            return None
-        self.sequence_prefix_confirmation_event_id = None
-        record_full_text = getattr(
-            self.live_reader,
-            "record_canonical_full_text",
-            None,
-        )
-        if callable(record_full_text):
-            record_full_text(line_id=line.line_id)
-        return line.speaker, line.text
 
     def _route_visual_successor_locked(
         self, cursor: _StoryCursor
@@ -3050,70 +3025,6 @@ class AppController:
                 and self.sequence_prefix_confirmation_event_id
                 == self.story_cursor.current_event_id
             )
-
-    def _confirm_sequence_render_completion(self) -> bool:
-        """Close only the current prefix barrier from owner-bound render quiet."""
-        quiet_ms = None
-        with self.story_cursor_lock:
-            cursor = self.story_cursor
-            reader = self.live_reader
-            target_event_id = self.sequence_prefix_confirmation_event_id
-            event_id = None if cursor is None else cursor.current_event_id
-            if (
-                cursor is None
-                or reader is None
-                or self.settings.live_sequence_mode != "audio-auto"
-                or cursor.state != StoryCursorState.LOCKED
-                or target_event_id != cursor.current_event_id
-            ):
-                reason = (
-                    "prefix-owner-changed"
-                    if cursor is not None and target_event_id != cursor.current_event_id
-                    else "prefix-cursor-unavailable"
-                )
-            else:
-                quiet_probe = getattr(reader, "current_frame_render_quiet_ms", None)
-                quiet_ms = (
-                    quiet_probe(expected_owner=cursor.current_event_id)
-                    if callable(quiet_probe)
-                    else None
-                )
-                if quiet_ms is None:
-                    reason = "prefix-render-not-quiet"
-                else:
-                    event = cursor.current_event
-                    line = self._canonical_sequence_line_locked(
-                        None if event is None else event.event_id
-                    )
-                    bind_frame = getattr(reader, "bind_current_frame_route", None)
-                    if (
-                        line is None
-                        or not callable(bind_frame)
-                        or not bind_frame(expected_render_owner=cursor.current_event_id)
-                    ):
-                        reason = "prefix-observation-unavailable"
-                    else:
-                        self.sequence_prefix_confirmation_event_id = None
-                        record_full_text = getattr(
-                            reader, "record_canonical_full_text", None
-                        )
-                        if callable(record_full_text):
-                            record_full_text(
-                                line_id=line.line_id,
-                                reason="owner-render-quiet",
-                                settled_ms=quiet_ms,
-                            )
-                        return True
-        if reader is not None and target_event_id is not None:
-            record_wait = getattr(reader, "record_prefix_confirmation_wait", None)
-            if callable(record_wait):
-                record_wait(
-                    reason,
-                    event_id=event_id,
-                    target_event_id=target_event_id,
-                    quiet_ms=quiet_ms,
-                )
-        return False
 
     def _live_sequence_line_id(self, character: str, text: str) -> str | None:
         """Return the exact cursor-owned line identity for a routed observation."""

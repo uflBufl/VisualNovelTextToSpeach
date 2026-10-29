@@ -1378,7 +1378,6 @@ class LiveReplayRunner:
             stable_frame_owner=controller._stable_live_frame_owner,
             frame_recheck_required=controller._sequence_prefix_recheck_required,
             ocr_purpose=controller._live_ocr_purpose,
-            render_completion=controller._confirm_sequence_render_completion,
             frame_routed=frame_routed,
             frame_observed=frame_observed,
             line_id_resolver=line_id_resolver,

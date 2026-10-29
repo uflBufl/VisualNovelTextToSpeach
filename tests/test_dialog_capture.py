@@ -16,7 +16,6 @@ from vntts.dialog_capture import (
     capture_dialog,
     capture_live_frame,
     dialog_frames_equivalent,
-    dialog_render_frames_equivalent,
     format_runtime_error,
     recognize_screenshot_result,
 )
@@ -404,32 +403,27 @@ class DialogFrameEquivalenceTest(unittest.TestCase):
         changed.image.putpixel((27, 49), (160,) * 3)
         changed.image.putpixel((37, 50), (162,) * 3)
         changed.image.putpixel((24, 102), (218,) * 3)
-        for compare in (dialog_frames_equivalent, dialog_render_frames_equivalent):
-            with self.subTest(comparator=compare.__name__):
-                self.assertTrue(compare(original, changed))
-                self.assertTrue(compare(changed, original))
+        self.assertTrue(dialog_frames_equivalent(original, changed))
+        self.assertTrue(dialog_frames_equivalent(changed, original))
 
     def test_crop_union_keeps_new_glyph_at_region_edge(self):
         original = self.antialiased_frame()
         changed = self.antialiased_frame(shifted_regions=True)
         changed.image.putpixel((15, 102), (180,) * 3)
-        for compare in (dialog_frames_equivalent, dialog_render_frames_equivalent):
-            self.assertFalse(compare(original, changed))
+        self.assertFalse(dialog_frames_equivalent(original, changed))
 
     def test_new_dim_punctuation_without_stable_core_support_invalidates(self):
         original = self.antialiased_frame()
         changed = self.antialiased_frame()
         original.image.putpixel((70, 102), (158,) * 3)
         changed.image.putpixel((70, 102), (160,) * 3)
-        for compare in (dialog_frames_equivalent, dialog_render_frames_equivalent):
-            self.assertFalse(compare(original, changed))
+        self.assertFalse(dialog_frames_equivalent(original, changed))
 
     def test_new_pixel_beside_glyph_is_not_antialiasing_noise(self):
         original = self.antialiased_frame()
         changed = self.antialiased_frame()
         changed.image.putpixel((27, 49), (180,) * 3)
-        for compare in (dialog_frames_equivalent, dialog_render_frames_equivalent):
-            self.assertFalse(compare(original, changed))
+        self.assertFalse(dialog_frames_equivalent(original, changed))
 
     def test_cumulative_brightness_changes_are_bounded_by_original_anchor(self):
         original = self.antialiased_frame()
@@ -437,32 +431,15 @@ class DialogFrameEquivalenceTest(unittest.TestCase):
         second = self.antialiased_frame()
         first.image.putpixel((27, 49), (162,) * 3)
         second.image.putpixel((27, 49), (166,) * 3)
-        for compare in (dialog_frames_equivalent, dialog_render_frames_equivalent):
-            self.assertTrue(compare(original, first))
-            self.assertTrue(compare(first, second))
-            self.assertFalse(compare(original, second))
+        self.assertTrue(dialog_frames_equivalent(original, first))
+        self.assertTrue(dialog_frames_equivalent(first, second))
+        self.assertFalse(dialog_frames_equivalent(original, second))
 
     def test_independent_speaker_and_dialogue_translations_invalidate(self):
         original = glyph_frame()
         changed = glyph_frame(shift=(1, 0))
         changed.image.paste(glyph_frame(shift=(-1, 0)).image.crop((0, 0, 256, 30)))
         self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_render_comparison_preserves_pixel_position_and_small_text_additions(self):
-        original = glyph_frame()
-        self.assertFalse(
-            dialog_render_frames_equivalent(original, glyph_frame(shift=(1, 0)))
-        )
-        overlay = glyph_frame()
-        ImageDraw.Draw(overlay.image).rectangle((110, 54, 150, 66), fill="white")
-        for changed in (
-            glyph_frame("Ouch!"),
-            glyph_frame("Ouc"),
-            glyph_frame("Ouch", "Other"),
-            glyph_frame(""),
-            overlay,
-        ):
-            self.assertFalse(dialog_render_frames_equivalent(original, changed))
 
     def test_continue_cue_alone_does_not_prove_visible_dialogue(self):
         empty = glyph_frame("", "", cue=True)

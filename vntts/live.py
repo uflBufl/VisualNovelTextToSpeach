@@ -418,14 +418,11 @@ class LiveDialogReader:
         frame_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_render_fingerprint: Callable[[Frame], FrameFingerprint] | None = None,
         frame_equivalent: Callable[[Frame, Frame], bool] | None = None,
-        frame_render_equivalent: Callable[[Frame, Frame], bool] | None = None,
         frame_presence: Callable[[Frame], bool] | None = None,
         frame_completion: Callable[[Frame], bool] | None = None,
         frame_recheck_required: Callable[[], bool] | None = None,
         ocr_purpose: Callable[[], str | None] | None = None,
         frame_recheck_interval_seconds: float = 0.6,
-        render_completion: Callable[[], object] | None = None,
-        render_quiet_minimum_seconds: float = 0.8,
         stable_frame_route: Callable[
             [FrameFingerprint, bool, str | None, int], StableFrameRoute
         ]
@@ -472,17 +469,12 @@ class LiveDialogReader:
         # expensive fingerprint twice for replay readers.
         self.frame_render_fingerprint = frame_render_fingerprint
         self.frame_equivalent = frame_equivalent or (lambda _before, _after: False)
-        self.frame_render_equivalent = frame_render_equivalent
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.frame_completion = frame_completion or (lambda _frame: False)
         self.frame_recheck_required = frame_recheck_required or (lambda: False)
         self.ocr_purpose = ocr_purpose or (lambda: "legacy")
         self.frame_recheck_interval_seconds = _positive_seconds(
             frame_recheck_interval_seconds, "frame_recheck_interval_seconds"
-        )
-        self.render_completion = render_completion or (lambda: False)
-        self.render_quiet_minimum_seconds = _positive_seconds(
-            render_quiet_minimum_seconds, "render_quiet_minimum_seconds"
         )
         self.stable_frame_route = stable_frame_route
         self.stable_frame_owner = stable_frame_owner or (lambda: None)
@@ -626,13 +618,6 @@ class LiveDialogReader:
         self.pending_transition_typing = False
         self.pending_transition_text = ""
 
-    def _reset_render_observation(self) -> None:
-        self.render_anchor_frame: Frame | None = None
-        self.render_anchor_fingerprint: FrameFingerprint | None = None
-        self.latest_render_fingerprint: FrameFingerprint | None = None
-        self.latest_render_owner: object | None = None
-        self.latest_render_changed_at: float | None = None
-
     def _reset_frame_observations(self) -> None:
         self.observation_uncertain = False
         self.observation_frame: Frame | None = None
@@ -641,7 +626,7 @@ class LiveDialogReader:
         self.latest_frame_fingerprint: FrameFingerprint | None = None
         self.latest_frame_visible = False
         self.latest_frame_complete = False
-        self._reset_render_observation()
+        self.latest_render_fingerprint: FrameFingerprint | None = None
         self.routed_frame: Frame | None = None
         self.candidate_frame: Frame | None = None
         self.routed_frame_fingerprint: FrameFingerprint | None = None
@@ -968,28 +953,10 @@ class LiveDialogReader:
         self._schedule([SpeechChunk(generation, character, text, line_id=line_id)])
         return True
 
-    def bind_current_frame_route(
-        self, *, expected_render_owner: str | None = None
-    ) -> bool:
-        """Bind recovery, optionally requiring current owner-bound render quiet."""
-        if expected_render_owner is not None:
-            if not self._is_focused():
-                return False
-            owner = self.stable_frame_owner()
-            now = self.stable_frame_clock()
+    def bind_current_frame_route(self) -> bool:
         with self.state_lock:
             fingerprint = self.latest_frame_fingerprint
             if fingerprint is None:
-                return False
-            if expected_render_owner is not None and (
-                self.stop_event.is_set()
-                or self.paused
-                or self.emergency_stopped
-                or self.is_shutting_down
-                or self.observation_uncertain
-                or self._render_quiet_ms_locked(now, owner, expected_render_owner)
-                is None
-            ):
                 return False
             self._accept_routed_frame_locked(fingerprint)
         return True
@@ -1440,7 +1407,7 @@ class LiveDialogReader:
             focused = self._is_focused()
             if not focused:
                 with self.state_lock:
-                    self._reset_render_observation()
+                    self.latest_render_fingerprint = None
                 interval = policy.observe(None, None, focused=False)
                 self._notify_capture_state(False, interval)
                 stop_event.wait(interval)
@@ -1457,21 +1424,6 @@ class LiveDialogReader:
                 complete = bool(self.frame_completion(frame))
                 render_owner = self.stable_frame_owner()
                 recheck_required = bool(self.frame_recheck_required())
-                captured_at = self.stable_frame_clock()
-                with self.state_lock:
-                    render_anchor = self.render_anchor_frame
-                    anchor_fingerprint = self.render_anchor_fingerprint
-                    anchor_owner = self.latest_render_owner
-                same_render = bool(
-                    visible
-                    and render_anchor is not None
-                    and render_owner == anchor_owner
-                    and (
-                        self.frame_render_equivalent(render_anchor, frame)
-                        if self.frame_render_equivalent is not None
-                        else render_fingerprint == anchor_fingerprint
-                    )
-                )
                 with self.pause_condition:
                     fingerprint_changed = fingerprint != self.latest_frame_fingerprint
                     render_changed = (
@@ -1484,21 +1436,9 @@ class LiveDialogReader:
                     self.latest_frame_fingerprint = fingerprint
                     self.latest_frame_visible = visible
                     self.latest_frame_complete = complete
-                    if not visible:
-                        self._reset_render_observation()
-                    else:
-                        if (
-                            not same_render
-                            or render_anchor is not self.render_anchor_frame
-                            or render_owner != self.latest_render_owner
-                        ):
-                            # Compare every frame to this fixed anchor, never to
-                            # successive tolerated edges that could slowly drift.
-                            self.render_anchor_frame = frame
-                            self.render_anchor_fingerprint = render_fingerprint
-                            self.latest_render_changed_at = captured_at
-                        self.latest_render_fingerprint = render_fingerprint
-                        self.latest_render_owner = render_owner
+                    self.latest_render_fingerprint = (
+                        render_fingerprint if visible else None
+                    )
                     self.frame_version += 1
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
@@ -1522,9 +1462,7 @@ class LiveDialogReader:
                         # previous static-dialogue interval before giving the
                         # stability gate its confirming frame. The same fast
                         # cadence must stay active while early canonical audio
-                        # is waiting for the typewriter render to finish;
-                        # otherwise the render-quiet fallback can expire before
-                        # capture ever sees the next visible prefix.
+                        # is waiting for fresh OCR to confirm the full text.
                         interval = min(interval, policy.fast_interval)
                 self._observe_transition_frame(
                     frame,
@@ -1881,6 +1819,7 @@ class LiveDialogReader:
                     cached_canonical = None
                 elif frame_route is None and (
                     fingerprint != cached_fingerprint
+                    or complete != cached_completion
                     or awaiting_post_advance_dialog
                     or recheck_now
                     or render_changed
@@ -2456,37 +2395,6 @@ class LiveDialogReader:
     def _accept_routed_frame(self, fingerprint: FrameFingerprint) -> None:
         with self.state_lock:
             self._accept_routed_frame_locked(fingerprint)
-
-    def current_frame_has_completion_cue(self) -> bool:
-        with self.state_lock:
-            return bool(self.latest_frame_visible and self.latest_frame_complete)
-
-    def current_frame_render_quiet_ms(
-        self, *, expected_owner: object | None = None
-    ) -> int | None:
-        """Return owner-bound render quiet time, or None when evidence is unsafe."""
-        if not self._is_focused():
-            return None
-        owner = self.stable_frame_owner()
-        now = self.stable_frame_clock()
-        with self.state_lock:
-            return self._render_quiet_ms_locked(now, owner, expected_owner)
-
-    def _render_quiet_ms_locked(
-        self, now: float, owner: object, expected_owner: object | None
-    ) -> int | None:
-        if (
-            not self.latest_frame_visible
-            or self.latest_render_fingerprint is None
-            or self.latest_render_changed_at is None
-            or owner != self.latest_render_owner
-            or (expected_owner is not None and owner != expected_owner)
-        ):
-            return None
-        quiet_seconds = now - self.latest_render_changed_at
-        if quiet_seconds < self.render_quiet_minimum_seconds:
-            return None
-        return round(quiet_seconds * 1000)
 
     def _accept_routed_frame_locked(
         self, fingerprint: FrameFingerprint, frame: Frame | None = None
@@ -3064,9 +2972,6 @@ class LiveDialogReader:
             "candidate_owner_present": self.candidate_frame_owner is not None,
             "candidate_started_at": self.candidate_frame_started_at,
             "stable_minimum_ms": self.stable_frame_minimum_seconds * 1000,
-            "render_owner_present": self.latest_render_owner is not None,
-            "render_changed_at": self.latest_render_changed_at,
-            "render_quiet_minimum_ms": self.render_quiet_minimum_seconds * 1000,
             "current_chunk_present": self.current_chunk is not None,
             "speech_future_count": len(self.speech_futures),
             "deferred_chunk_present": bool(self.deferred_chunks),
@@ -3108,26 +3013,6 @@ class LiveDialogReader:
             focused=focused,
             **details,
         )
-
-    def record_prefix_confirmation_wait(
-        self,
-        reason: str,
-        *,
-        event_id: str | None,
-        target_event_id: str,
-        quiet_ms: int | None = None,
-    ) -> None:
-        with self.state_lock:
-            generation = self.active_generation
-            details = self._auto_advance_gate_details_locked()
-        details.update(
-            event_id=event_id,
-            target_event_id=target_event_id,
-            prefix_confirmation_pending=True,
-            prefix_owner_current=event_id == target_event_id,
-            render_quiet_ms=quiet_ms,
-        )
-        self._report_auto_advance_gate(generation, reason, details)
 
     def _maybe_auto_advance(self) -> None:
         with self.state_lock:
@@ -3242,10 +3127,6 @@ class LiveDialogReader:
                 self._report_auto_advance_state("focus-wait", generation, 0)
             self._maybe_auto_advance()
             return
-        try:
-            self.render_completion()
-        except Exception as error:
-            self.report_error(error)
         with self.state_lock:
             routed_frame = self.routed_frame
             latest_frame = self.latest_frame
@@ -3785,8 +3666,6 @@ class LiveDialogReader:
         *,
         line_id: str | None = None,
         timestamp: float | None = None,
-        reason: str | None = None,
-        settled_ms: int | None = None,
     ) -> bool:
         """Record full-text confirmation after an early canonical prefix route."""
         occurred_at = monotonic() if timestamp is None else timestamp
@@ -3806,10 +3685,6 @@ class LiveDialogReader:
                 else None
             )
         details: dict[str, object] = {"line_id": line_id} if line_id is not None else {}
-        if reason is not None:
-            details["reason"] = reason
-        if settled_ms is not None:
-            details["settled_ms"] = settled_ms
         if first_pcm_at is not None and first_pcm_at <= occurred_at:
             details["first_pcm_before_canonical_full_ms"] = round(
                 (occurred_at - first_pcm_at) * 1000

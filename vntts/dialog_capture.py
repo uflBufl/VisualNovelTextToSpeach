@@ -529,9 +529,8 @@ def _dialog_band_equivalent(
     return True
 
 
-def _dialog_frames_equivalent(
-    previous: object, current: object, maximum_translation: int
-) -> bool:
+def dialog_frames_equivalent(previous: object, current: object) -> bool:
+    """Compare glyphs with one shared translation bounded by two pixels."""
     before, after = _frame_image(previous), _frame_image(current)
     if before.size != after.size:
         return False
@@ -543,7 +542,7 @@ def _dialog_frames_equivalent(
     after_bands = _dialog_equivalence_bands(current, boxes)
     if not (before_bands[-1] >= 160).any() or not (after_bands[-1] >= 160).any():
         return False
-    offsets = sorted(range(-maximum_translation, maximum_translation + 1), key=abs)
+    offsets = sorted(range(-2, 3), key=abs)
     for dy in offsets:
         for dx in offsets:
             if all(
@@ -554,22 +553,12 @@ def _dialog_frames_equivalent(
     return False
 
 
-def dialog_frames_equivalent(previous: object, current: object) -> bool:
-    """Compare glyphs with one shared translation bounded by two pixels."""
-    return _dialog_frames_equivalent(previous, current, 2)
-
-
-def dialog_render_frames_equivalent(previous: object, current: object) -> bool:
-    """Compare a fixed render anchor, allowing only supported intensity noise."""
-    return _dialog_frames_equivalent(previous, current, 0)
-
-
 def fingerprint_dialog_render_activity(frame: object) -> bytes:
     """Fingerprint high-fidelity dialogue glyph activity, not screen identity.
 
     The ordinary dialogue fingerprint is intentionally compact and may map a
     nearly complete typewriter prefix to the same identity as the full line.
-    Render completion needs the opposite tradeoff: retain small new glyphs, but
+    OCR rechecking needs the opposite tradeoff: retain small new glyphs, but
     ignore the portrait, continue indicator and most animated backdrop pixels.
     """
     grayscale = _frame_image(frame).convert("L")

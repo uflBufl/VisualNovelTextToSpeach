@@ -6106,7 +6106,7 @@ class MainTest(unittest.TestCase):
         self.assertRegex(miss[1]["normalized_text_sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("A complete canonical", repr(miss))
 
-    def test_stable_completion_cue_closes_current_prefix_without_advancing(self):
+    def test_stable_completion_cue_cannot_confirm_current_prefix(self):
         canonical = "Sharpodonties, sir."
         preloader = ChapterVoicePreloader(
             (
@@ -6133,7 +6133,6 @@ class MainTest(unittest.TestCase):
         )
         controller.live_reader = Mock()
         controller.live_reader.frame_route_epoch_is_current.return_value = True
-        controller.live_reader.current_frame_has_completion_cue.return_value = True
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
@@ -6146,58 +6145,12 @@ class MainTest(unittest.TestCase):
             1,
         )
 
-        self.assertEqual(routed, ("Rhiannon", canonical))
-        self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
-        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
-        controller.live_reader.record_canonical_full_text.assert_called_once_with(
-            line_id="reverse1999:1:27"
-        )
-
-    def test_stable_current_prefix_without_completion_cue_remains_closed(self):
-        canonical = "Sharpodonties, sir."
-        preloader = ChapterVoicePreloader(
-            (
-                ChapterDialogue(
-                    "reverse1999:1:27",
-                    "1",
-                    27,
-                    "Rhiannon",
-                    canonical,
-                    text_sha256(canonical),
-                ),
-            )
-        )
-        plan = stub_live_sequence_plan(*preloader.dialogue)
-        controller = AppController(
-            AppSettings(
-                story_index="story.jsonl",
-                live_sequence_plan="plan.json",
-                live_sequence_mode="audio-auto",
-            ),
-            tts_factory=Mock(),
-            chapter_voice_preloader=preloader,
-            live_sequence_plan_factory=Mock(return_value=plan),
-        )
-        controller.live_reader = Mock()
-        controller.live_reader.frame_route_epoch_is_current.return_value = True
-        controller.live_reader.current_frame_has_completion_cue.return_value = False
-        controller.story_cursor.anchor_event("event-1")
-        controller.story_cursor.begin_playback()
-        controller.story_cursor.finish_playback()
-        controller.sequence_prefix_confirmation_event_id = "event-1"
-
-        routed = controller._stable_live_frame_route(
-            "full-frame",
-            True,
-            "event-1",
-            1,
-        )
-
-        self.assertFalse(routed)
+        self.assertIsNone(routed)
         self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
         controller.live_reader.record_canonical_full_text.assert_not_called()
 
-    def test_owner_render_quiet_closes_current_prefix_after_playback(self):
+    def test_full_canonical_ocr_confirms_current_prefix_once_after_playback(self):
         canonical = "A complete line with a persistent OCR substitution."
         line = ChapterDialogue(
             "reverse1999:1:83",
@@ -6219,23 +6172,23 @@ class MainTest(unittest.TestCase):
             live_sequence_plan_factory=Mock(return_value=stub_live_sequence_plan(line)),
         )
         controller.live_reader = Mock()
-        controller.live_reader.current_frame_render_quiet_ms.return_value = 900
-        controller.live_reader.bind_current_frame_route.return_value = True
         controller.story_cursor.anchor_event("event-1")
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
         controller.sequence_prefix_confirmation_event_id = "event-1"
 
-        self.assertTrue(controller._confirm_sequence_render_completion())
+        controller._observe_live_sequence(line.speaker, "A complete line with")
+        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
+        controller.live_reader.record_canonical_full_text.assert_not_called()
 
+        observed = controller._observe_live_sequence(line.speaker, canonical)
+
+        self.assertIsNotNone(observed)
         self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
-        controller.live_reader.current_frame_render_quiet_ms.assert_called_once_with(
-            expected_owner="event-1"
-        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        controller._observe_live_sequence(line.speaker, canonical)
         controller.live_reader.record_canonical_full_text.assert_called_once_with(
             line_id="reverse1999:1:83",
-            reason="owner-render-quiet",
-            settled_ms=900,
         )
 
     def test_same_owner_pending_prefix_requests_bounded_ocr_rechecks(self):

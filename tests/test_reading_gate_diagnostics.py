@@ -36,8 +36,6 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         reader.processed_frame_version = 24
         reader.frame_route_epoch = 4
         reader.candidate_frame_count = 2
-        reader.latest_render_changed_at = 12.5
-        reader.latest_render_owner = "private-owner"
         return reader
 
     def test_exact_visual_refusal_has_branch_state_without_changing_dispatch(self):
@@ -62,9 +60,6 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         self.assertEqual(event["processed_frame_version"], 24)
         self.assertEqual(event["frame_route_epoch"], 4)
         self.assertEqual(event["candidate_frames"], 2)
-        self.assertEqual(event["render_changed_at"], 12.5)
-        self.assertEqual(event["render_quiet_minimum_ms"], 800)
-        self.assertNotIn("private-owner", repr(event))
 
     def test_equivalent_frame_can_advance_without_moving_route_anchor(self):
         reader = self.reader(frame_equivalent=Mock(return_value=True))
@@ -210,7 +205,6 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         self.assertIs(event["routed_latest_equal"], False)
         self.assertEqual(event["frame_version"], 25)
         self.assertEqual(event["processed_frame_version"], 24)
-        self.assertEqual(event["render_changed_at"], 12.5)
 
     def test_journal_retains_known_reasons_and_hashes_owner_without_private_text(self):
         with TemporaryDirectory() as directory:
@@ -349,90 +343,3 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         self.assertEqual(event["reason"], "callback-blocked")
         self.assertNotIn("PRIVATE", repr(event))
         self.assertEqual(reader.failed_auto_advance_generation, 3)
-
-    def prefix_controller(self, reader):
-        from threading import RLock
-        from types import SimpleNamespace
-
-        from vntts.controller import AppController
-        from vntts.live_sequence import StoryCursorState
-        from vntts.settings import AppSettings
-
-        controller = object.__new__(AppController)
-        controller.story_cursor_lock = RLock()
-        controller.settings = AppSettings(live_sequence_mode="audio-auto")
-        controller.live_reader = reader
-        controller.story_cursor = SimpleNamespace(
-            state=StoryCursorState.LOCKED,
-            current_event_id="event-1",
-            current_event=SimpleNamespace(event_id="event-1"),
-        )
-        controller.sequence_prefix_confirmation_event_id = "event-1"
-        controller._canonical_sequence_line_locked = Mock(
-            return_value=SimpleNamespace(line_id="line-1")
-        )
-        reader.current_frame_render_quiet_ms = Mock(return_value=None)
-        reader.bind_current_frame_route = Mock(return_value=True)
-        reader.record_canonical_full_text = Mock()
-        return controller
-
-    def test_prefix_quiet_refusal_records_actual_pending_owner_outside_cursor_lock(
-        self,
-    ):
-        reader = self.reader()
-        controller = self.prefix_controller(reader)
-        events = []
-
-        def record(*args, **details):
-            self.assertFalse(controller.story_cursor_lock._is_owned())
-            self.assertFalse(reader.state_lock._is_owned())
-            events.append(details)
-
-        reader.pipeline_event_handler = record
-        self.assertFalse(controller._confirm_sequence_render_completion())
-        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
-        reader.bind_current_frame_route.assert_not_called()
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["reason"], "prefix-render-not-quiet")
-        self.assertIs(events[0]["prefix_confirmation_pending"], True)
-        self.assertIs(events[0]["prefix_owner_current"], True)
-        self.assertEqual(events[0]["event_id"], "event-1")
-        self.assertEqual(events[0]["target_event_id"], "event-1")
-
-    def test_prefix_owner_change_and_missing_observation_are_distinct_refusals(self):
-        reader = self.reader()
-        controller = self.prefix_controller(reader)
-        controller.story_cursor.current_event_id = "event-2"
-        self.assertFalse(controller._confirm_sequence_render_completion())
-        event = reader.pipeline_event_handler.call_args.kwargs
-        self.assertEqual(event["reason"], "prefix-owner-changed")
-        self.assertIs(event["prefix_owner_current"], False)
-        self.assertEqual(event["event_id"], "event-2")
-        reader.current_frame_render_quiet_ms.assert_not_called()
-        controller.story_cursor.current_event_id = "event-1"
-        reader.current_frame_render_quiet_ms.return_value = 900
-        reader.bind_current_frame_route.return_value = False
-        self.assertFalse(controller._confirm_sequence_render_completion())
-        event = reader.pipeline_event_handler.call_args.kwargs
-        self.assertEqual(event["reason"], "prefix-observation-unavailable")
-        self.assertEqual(event["render_quiet_ms"], 900)
-        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
-
-    def test_no_prefix_barrier_does_not_create_a_false_refusal_event(self):
-        reader = self.reader()
-        controller = self.prefix_controller(reader)
-        controller.sequence_prefix_confirmation_event_id = None
-        self.assertFalse(controller._confirm_sequence_render_completion())
-        reader.pipeline_event_handler.assert_not_called()
-        reader.current_frame_render_quiet_ms.assert_not_called()
-
-    def test_prefix_success_still_closes_barrier_once_without_wait_event(self):
-        reader = self.reader()
-        controller = self.prefix_controller(reader)
-        reader.current_frame_render_quiet_ms.return_value = 900
-        self.assertTrue(controller._confirm_sequence_render_completion())
-        self.assertIsNone(controller.sequence_prefix_confirmation_event_id)
-        reader.record_canonical_full_text.assert_called_once_with(
-            line_id="line-1", reason="owner-render-quiet", settled_ms=900
-        )
-        reader.pipeline_event_handler.assert_not_called()

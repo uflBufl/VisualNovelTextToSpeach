@@ -72,7 +72,6 @@ class LiveConfigurationTest(unittest.TestCase):
                 make_reader,
                 (
                     "frame_recheck_interval_seconds",
-                    "render_quiet_minimum_seconds",
                     "stable_frame_minimum_seconds",
                     "interval_seconds",
                     "auto_advance_delay_seconds",
@@ -215,13 +214,11 @@ class LiveConfigurationTest(unittest.TestCase):
         policy = AdaptiveSpeechBackpressure(cooldown_seconds=maximum)
         reader = make_reader(
             frame_recheck_interval_seconds=maximum,
-            render_quiet_minimum_seconds=maximum,
             stable_frame_minimum_seconds=maximum,
             auto_advance_delay_seconds=0,
         )
         self.assertEqual(policy.cooldown_seconds, maximum)
         self.assertEqual(reader.frame_recheck_interval_seconds, maximum)
-        self.assertEqual(reader.render_quiet_minimum_seconds, maximum)
         self.assertEqual(reader.stable_frame_minimum_seconds, maximum)
         self.assertEqual(
             make_reader(stable_frame_minimum_seconds=0).stable_frame_minimum_seconds, 0
@@ -235,7 +232,6 @@ class LiveConfigurationTest(unittest.TestCase):
         reader = make_reader(
             interval_seconds=True,
             frame_recheck_interval_seconds=True,
-            render_quiet_minimum_seconds=True,
             stable_frame_minimum_seconds=False,
             auto_advance_delay_seconds=False,
         )
