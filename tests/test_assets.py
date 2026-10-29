@@ -25,6 +25,7 @@ from vntts.assets import (
     ModelIntegrityError,
     VoicePackManager,
 )
+from vntts.coqui_models import COQUI_MODEL_SOURCES
 from vntts.document_identity import file_sha256
 from vntts.voice_packs import VoiceReplacementRequired
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
@@ -114,6 +115,48 @@ class MemoryOpener:
             data,
             headers={"Content-Length": str(len(data))},
         )
+
+
+class CoquiCatalogTest(unittest.TestCase):
+    def test_all_supported_models_have_pinned_offline_downloads(self):
+        self.assertEqual(len(COQUI_MODEL_SOURCES), 6)
+        for name, source in COQUI_MODEL_SOURCES.items():
+            with self.subTest(model=name), TemporaryDirectory() as directory:
+                asset = model_assets.load_coqui_model_asset(name)
+                self.assertRegex(source.revision, r"^[a-f0-9]{40}$")
+                self.assertEqual(len(asset.urls), len(source.files))
+                self.assertIsNone(asset.expected_hash)
+                for url, filename in zip(asset.urls, source.files, strict=True):
+                    self.assertEqual(
+                        url,
+                        f"https://huggingface.co/{source.repo_id}/resolve/"
+                        f"{source.revision}/{filename}",
+                    )
+                opener = MemoryOpener({url: url.encode() for url in asset.urls})
+                manager = ModelAssetManager(directory, opener=opener)
+                legacy = manager.coqui_cache_root / name.replace("/", "--")
+                legacy.mkdir(parents=True)
+                (legacy / "model.pth").write_bytes(b"old verified checkpoint")
+                (legacy / asset_integrity.asset_manifest_name).write_bytes(b"old proof")
+                voice = legacy / "voices" / "cloned.pth"
+                voice.parent.mkdir()
+                voice.write_bytes(b"old cloned voice")
+                path = manager.download(name)
+                self.assertNotEqual(path, legacy)
+                self.assertIn(source.revision, path.name)
+                self.assertIn(source.repo_id.split("/")[-1], path.name)
+                requests = len(opener.requests)
+                self.assertEqual(manager.validate(name), path)
+                self.assertEqual(manager.download(name), path)
+                self.assertEqual(len(opener.requests), requests)
+                self.assertEqual(
+                    (legacy / "model.pth").read_bytes(), b"old verified checkpoint"
+                )
+                self.assertEqual(
+                    (legacy / asset_integrity.asset_manifest_name).read_bytes(),
+                    b"old proof",
+                )
+                self.assertEqual(voice.read_bytes(), b"old cloned voice")
 
 
 class ModelAssetManagerTest(unittest.TestCase):

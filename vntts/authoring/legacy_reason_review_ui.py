@@ -60,6 +60,55 @@ class _AudioPlayer(Protocol):
 
 
 class LegacyReasonReviewDialog(QDialog):
+    def _create_assessment_controls(self) -> QVBoxLayout:
+        self.acceptable = QCheckBox(
+            "Sounds acceptable now (minor imperfections are okay)"
+        )
+        checkbox_style = (
+            "QCheckBox { border: 1px solid transparent; }"
+            "QCheckBox:focus { border-color: palette(highlight); }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+            "QCheckBox::indicator:enabled { border: 2px solid palette(text); }"
+            "QCheckBox::indicator:enabled:checked { background: palette(highlight); }"
+            "QCheckBox::indicator:disabled { border: 1px solid palette(mid); }"
+        )
+        self.acceptable.setStyleSheet(checkbox_style)
+        self.acceptable.toggled.connect(self._acceptable_changed)
+        reasons = QVBoxLayout()
+        self.reason_controls: dict[str, QCheckBox] = {}
+        for reason, label in _REASON_LABELS.items():
+            control = QCheckBox(label)
+            control.setStyleSheet(checkbox_style)
+            control.toggled.connect(self._reasons_changed)
+            reasons.addWidget(control)
+            self.reason_controls[reason] = control
+
+        return reasons
+
+    def _create_review_navigation(self) -> QHBoxLayout:
+        self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
+        self.previous.setAccessibleName("Previous")
+        self.previous.setToolTip(self.previous.accessibleName())
+        self.previous.clicked.connect(lambda: self._move(-1))
+        self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
+        self.next.setAccessibleName("Next")
+        self.next.setToolTip(self.next.accessibleName())
+        self.next.clicked.connect(lambda: self._move(1))
+        self.finish = QPushButton("Publish assessments")
+        set_action_icon(self.finish, "check")
+        self.finish.setAccessibleName("Publish assessments")
+        self.finish.setToolTip(self.finish.accessibleName())
+        self.finish.clicked.connect(self.publish)
+        actions = QHBoxLayout()
+        actions.addWidget(self.previous)
+        actions.addWidget(self.next)
+        actions.addStretch()
+        actions.addWidget(self.finish)
+
+        return actions
+
     def __init__(
         self,
         review: LegacyReasonReview,
@@ -132,49 +181,8 @@ class LegacyReasonReviewDialog(QDialog):
         self.player.errorOccurred.connect(self._playback_failed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
-        self.acceptable = QCheckBox(
-            "Sounds acceptable now (minor imperfections are okay)"
-        )
-        checkbox_style = (
-            "QCheckBox { border: 1px solid transparent; }"
-            "QCheckBox:focus { border-color: palette(highlight); }"
-            "QCheckBox::indicator { width: 16px; height: 16px; }"
-            "QCheckBox::indicator:enabled { border: 2px solid palette(text); }"
-            "QCheckBox::indicator:enabled:checked { background: palette(highlight); }"
-            "QCheckBox::indicator:disabled { border: 1px solid palette(mid); }"
-        )
-        self.acceptable.setStyleSheet(checkbox_style)
-        self.acceptable.toggled.connect(self._acceptable_changed)
-        reasons = QVBoxLayout()
-        self.reason_controls: dict[str, QCheckBox] = {}
-        for reason, label in _REASON_LABELS.items():
-            control = QCheckBox(label)
-            control.setStyleSheet(checkbox_style)
-            control.toggled.connect(self._reasons_changed)
-            reasons.addWidget(control)
-            self.reason_controls[reason] = control
-
-        self.previous = QPushButton("Previous")
-        set_action_icon(self.previous, "chevron-left")
-        self.previous.setAccessibleName("Previous")
-        self.previous.setToolTip(self.previous.accessibleName())
-        self.previous.clicked.connect(lambda: self._move(-1))
-        self.next = QPushButton("Next")
-        set_action_icon(self.next, "chevron-right")
-        self.next.setAccessibleName("Next")
-        self.next.setToolTip(self.next.accessibleName())
-        self.next.clicked.connect(lambda: self._move(1))
-        self.finish = QPushButton("Publish assessments")
-        set_action_icon(self.finish, "check")
-        self.finish.setAccessibleName("Publish assessments")
-        self.finish.setToolTip(self.finish.accessibleName())
-        self.finish.clicked.connect(self.publish)
-        actions = QHBoxLayout()
-        actions.addWidget(self.previous)
-        actions.addWidget(self.next)
-        actions.addStretch()
-        actions.addWidget(self.finish)
-
+        reasons = self._create_assessment_controls()
+        actions = self._create_review_navigation()
         audio_actions = QHBoxLayout()
         audio_actions.addWidget(self.play)
         audio_actions.addWidget(self.stop)

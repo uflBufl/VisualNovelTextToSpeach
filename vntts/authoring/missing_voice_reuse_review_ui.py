@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialogButtonBox,
+    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -392,6 +393,52 @@ def _create_audio_player(parent: QObject) -> QMediaPlayer:
 class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
     """Review exact cohort samples while keeping failed arms visible."""
 
+    def _create_sample_navigation(self) -> QFormLayout:
+        self.previous = QPushButton("Previous")
+        set_action_icon(self.previous, "chevron-left")
+        self.previous.setSizePolicy(
+            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
+        )
+        self.sample_selector = QComboBox()
+        self.sample_selector.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.sample_selector.setMinimumContentsLength(16)
+        self.sample_selector.currentTextChanged.connect(self.sample_selector.setToolTip)
+        self.sample_selector.setAccessibleName("Exact review sample")
+        self.sample_selector.setAccessibleDescription(
+            "Choose one exact sample from the current review family"
+        )
+        self.sample_label = QLabel("Sample")
+        self.sample_label.setBuddy(self.sample_selector)
+        self.next = QPushButton("Next")
+        set_action_icon(self.next, "chevron-right")
+        self.next.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.previous.setAccessibleName("Previous exact review sample")
+        self.previous.setAccessibleDescription(
+            "Select the previous sample in the current family"
+        )
+        self.next.setAccessibleName("Next exact review sample")
+        self.next.setAccessibleDescription(
+            "Select the next sample in the current family"
+        )
+        self.previous.setShortcut(QKeySequence("Alt+Left"))
+        self.previous.setToolTip(
+            shortcut_tooltip(self.previous.accessibleName(), self.previous.shortcut())
+        )
+        self.next.setShortcut(QKeySequence("Alt+Right"))
+        self.next.setToolTip(
+            shortcut_tooltip(self.next.accessibleName(), self.next.shortcut())
+        )
+        self.previous.clicked.connect(lambda: self._move_sample(-1))
+        self.next.clicked.connect(lambda: self._move_sample(1))
+        self.sample_selector.currentIndexChanged.connect(self._select_sample)
+        navigation = review_form_layout()
+        navigation.addRow(self.sample_label, self.sample_selector)
+        navigation.addRow(self.previous, self.next)
+
+        return navigation
+
     def __init__(
         self,
         session_path: str | Path,
@@ -453,49 +500,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         self.cohort_heading = QLabel()
         self.cohort_heading.setWordWrap(True)
         self.cohort_heading.setAccessibleName("Current missing voice family")
-        self.previous = QPushButton("Previous")
-        set_action_icon(self.previous, "chevron-left")
-        self.previous.setSizePolicy(
-            QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
-        )
-        self.sample_selector = QComboBox()
-        self.sample_selector.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
-        self.sample_selector.setMinimumContentsLength(16)
-        self.sample_selector.currentTextChanged.connect(self.sample_selector.setToolTip)
-        self.sample_selector.setAccessibleName("Exact review sample")
-        self.sample_selector.setAccessibleDescription(
-            "Choose one exact sample from the current review family"
-        )
-        self.sample_label = QLabel("Sample")
-        self.sample_label.setBuddy(self.sample_selector)
-        self.next = QPushButton("Next")
-        set_action_icon(self.next, "chevron-right")
-        self.next.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        self.previous.setAccessibleName("Previous exact review sample")
-        self.previous.setAccessibleDescription(
-            "Select the previous sample in the current family"
-        )
-        self.next.setAccessibleName("Next exact review sample")
-        self.next.setAccessibleDescription(
-            "Select the next sample in the current family"
-        )
-        self.previous.setShortcut(QKeySequence("Alt+Left"))
-        self.previous.setToolTip(
-            shortcut_tooltip(self.previous.accessibleName(), self.previous.shortcut())
-        )
-        self.next.setShortcut(QKeySequence("Alt+Right"))
-        self.next.setToolTip(
-            shortcut_tooltip(self.next.accessibleName(), self.next.shortcut())
-        )
-        self.previous.clicked.connect(lambda: self._move_sample(-1))
-        self.next.clicked.connect(lambda: self._move_sample(1))
-        self.sample_selector.currentIndexChanged.connect(self._select_sample)
-        navigation = review_form_layout()
-        navigation.addRow(self.sample_label, self.sample_selector)
-        navigation.addRow(self.previous, self.next)
-
+        navigation = self._create_sample_navigation()
         self.sample_text = QLabel()
         self.sample_text.setWordWrap(True)
         self.sample_text.setTextInteractionFlags(

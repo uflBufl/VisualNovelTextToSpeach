@@ -47,6 +47,34 @@ class ReadinessDialog(QDialog):
     voices_requested = Signal()
     refresh_requested = Signal()
 
+    def _create_results_table(self) -> None:
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Status", "Component", "Details"])
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setAccessibleName("Readiness results")
+        self.table.setAccessibleDescription(
+            "Select a check to see its exact remediation action"
+        )
+        table_palette = self.table.palette()
+        dark = table_palette.color(QPalette.ColorRole.Base).lightness() < 128
+        table_palette.setColor(
+            QPalette.ColorRole.Highlight,
+            QColor("#4a4f55" if dark else "#d5e0ea"),
+        )
+        table_palette.setColor(
+            QPalette.ColorRole.HighlightedText,
+            QColor("#ffffff" if dark else "#202020"),
+        )
+        self.table.setPalette(table_palette)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.itemSelectionChanged.connect(self._update_remediation)
+
     def __init__(
         self,
         settings: AppSettings,
@@ -80,32 +108,7 @@ class ReadinessDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Status", "Component", "Details"])
-        self.table.verticalHeader().hide()
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setAccessibleName("Readiness results")
-        self.table.setAccessibleDescription(
-            "Select a check to see its exact remediation action"
-        )
-        table_palette = self.table.palette()
-        dark = table_palette.color(QPalette.ColorRole.Base).lightness() < 128
-        table_palette.setColor(
-            QPalette.ColorRole.Highlight,
-            QColor("#4a4f55" if dark else "#d5e0ea"),
-        )
-        table_palette.setColor(
-            QPalette.ColorRole.HighlightedText,
-            QColor("#ffffff" if dark else "#202020"),
-        )
-        self.table.setPalette(table_palette)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.itemSelectionChanged.connect(self._update_remediation)
+        self._create_results_table()
         self.selected_details = QPlainTextEdit()
         self.selected_details.setReadOnly(True)
         self.selected_details.setMaximumHeight(90)
@@ -265,25 +268,8 @@ class ReadinessDialog(QDialog):
         self.cancel_button.setDefault(running)
         self.reading_button.hide()
 
-    def _checks_finished(self, results: object, error: Exception | None) -> None:
-        if self._suspended or self._cancellation.is_set():
-            return
-        self._set_checks_running(False)
-        if error is not None or not is_diagnostic_results(results):
-            self._results = ()
-            self.table.setRowCount(0)
-            reason = error if error is not None else "Readiness results are malformed"
-            logging.getLogger(__name__).error(
-                "Readiness checks failed: %s", reason, exc_info=error
-            )
-            self.summary.setText(f"Checks failed: {reason}")
-            self._update_remediation()
-            return
-        priority = {"error": 0, "warning": 1, "ok": 2}
-        self._results = tuple(
-            sorted(results, key=lambda result: priority[result.status])
-        )
-        self.table.setRowCount(len(results))
+    def _populate_results_table(self) -> None:
+        self.table.setRowCount(len(self._results))
         dark = self.table.palette().color(QPalette.ColorRole.Base).lightness() < 128
         colors = {
             "ok": QColor("#75d894" if dark else "#287a3d"),
@@ -308,6 +294,26 @@ class ReadinessDialog(QDialog):
                 if column == 0:
                     item.setForeground(colors[result.status])
                 self.table.setItem(row, column, item)
+
+    def _checks_finished(self, results: object, error: Exception | None) -> None:
+        if self._suspended or self._cancellation.is_set():
+            return
+        self._set_checks_running(False)
+        if error is not None or not is_diagnostic_results(results):
+            self._results = ()
+            self.table.setRowCount(0)
+            reason = error if error is not None else "Readiness results are malformed"
+            logging.getLogger(__name__).error(
+                "Readiness checks failed: %s", reason, exc_info=error
+            )
+            self.summary.setText(f"Checks failed: {reason}")
+            self._update_remediation()
+            return
+        priority = {"error": 0, "warning": 1, "ok": 2}
+        self._results = tuple(
+            sorted(results, key=lambda result: priority[result.status])
+        )
+        self._populate_results_table()
         errors = sum(result.status == "error" for result in results)
         warnings = sum(result.status == "warning" for result in results)
         if errors:
@@ -352,6 +358,41 @@ class ReadinessDialog(QDialog):
             return None
         return self._results[row]
 
+    def _show_ocr_remediation(self, result: DiagnosticResult) -> None:
+        if result.remediation == "external-ocr":
+            language_names = {
+                "eng": "English",
+                "jpn": "Japanese",
+                "rus": "Russian",
+                "deu": "German",
+                "fra": "French",
+                "spa": "Spanish",
+                "kor": "Korean",
+                "chi_sim": "Simplified Chinese",
+                "chi_tra": "Traditional Chinese",
+            }
+            language_name = (
+                ", ".join(
+                    f"{language_names.get(code, 'selected OCR language')} ({code})"
+                    for code in self.settings.ocr_language.split("+")
+                    if code
+                )
+                or "your selected OCR language"
+            )
+            self.remediation_reason.setText(
+                "Install Tesseract OCR (the text-recognition app) with language "
+                f"data for {language_name}. Add the folder containing Tesseract to your "
+                "system's app search path (PATH). "
+                "Restart VNTTS, then run checks again."
+            )
+            self.remediation_button.setText("Tesseract install guide")
+            set_action_icon(self.remediation_button, "circle-help")
+            self.remediation_button.setAccessibleName("Open Tesseract install guide")
+            self.remediation_button.setEnabled(True)
+            self.remediation_button.setDefault(result.status == "error")
+            self.remediation_button.show()
+            return
+
     def _update_remediation(self) -> None:
         self.selected_details.setPlainText(self._selected_text())
         result = self._selected_result()
@@ -385,37 +426,7 @@ class ReadinessDialog(QDialog):
             return
         self.remediation_reason.show()
         if result.remediation == "external-ocr":
-            language_names = {
-                "eng": "English",
-                "jpn": "Japanese",
-                "rus": "Russian",
-                "deu": "German",
-                "fra": "French",
-                "spa": "Spanish",
-                "kor": "Korean",
-                "chi_sim": "Simplified Chinese",
-                "chi_tra": "Traditional Chinese",
-            }
-            language_name = (
-                ", ".join(
-                    f"{language_names.get(code, 'selected OCR language')} ({code})"
-                    for code in self.settings.ocr_language.split("+")
-                    if code
-                )
-                or "your selected OCR language"
-            )
-            self.remediation_reason.setText(
-                "Install Tesseract OCR (the text-recognition app) with language "
-                f"data for {language_name}. Add the folder containing Tesseract to your "
-                "system's app search path (PATH). "
-                "Restart VNTTS, then run checks again."
-            )
-            self.remediation_button.setText("Tesseract install guide")
-            set_action_icon(self.remediation_button, "circle-help")
-            self.remediation_button.setAccessibleName("Open Tesseract install guide")
-            self.remediation_button.setEnabled(True)
-            self.remediation_button.setDefault(result.status == "error")
-            self.remediation_button.show()
+            self._show_ocr_remediation(result)
             return
         if result.remediation == "external-audio-runtime":
             self.details_toggle.setChecked(True)

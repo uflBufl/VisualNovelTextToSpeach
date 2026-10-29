@@ -170,19 +170,7 @@ def plan_automatic_recovery(
     cancelled_queue_ids: list[str] = []
     seen_queue_ids: set[str] = set()
     for record in records:
-        if not isinstance(record, dict):
-            raise OfflineRecoveryError("Offline recovery record is malformed")
-        queue_id = record.get("queue_id")
-        action = record.get("action")
-        if (
-            not isinstance(queue_id, str)
-            or not queue_id.strip()
-            or queue_id != queue_id.strip()
-            or queue_id in seen_queue_ids
-            or not isinstance(action, str)
-            or not action
-        ):
-            raise OfflineRecoveryError("Offline recovery record is malformed")
+        queue_id, action = _recovery_record_identity(record, seen_queue_ids)
         seen_queue_ids.add(queue_id)
         if record.get("failure_kind") == "cancelled":
             cancelled_queue_ids.append(queue_id)
@@ -227,6 +215,26 @@ def plan_automatic_recovery(
         live_fallback_queue_ids=tuple(sorted(live_fallback_queue_ids)),
         cancelled_queue_ids=tuple(sorted(cancelled_queue_ids)),
     )
+
+
+def _recovery_record_identity(
+    record: object,
+    seen_queue_ids: set[str],
+) -> tuple[str, str]:
+    if not isinstance(record, dict):
+        raise OfflineRecoveryError("Offline recovery record is malformed")
+    queue_id = record.get("queue_id")
+    action = record.get("action")
+    if (
+        not isinstance(queue_id, str)
+        or not queue_id.strip()
+        or queue_id != queue_id.strip()
+        or queue_id in seen_queue_ids
+        or not isinstance(action, str)
+        or not action
+    ):
+        raise OfflineRecoveryError("Offline recovery record is malformed")
+    return queue_id, action
 
 
 class OfflineRecoveryWorker:

@@ -18,17 +18,16 @@ authors = [
 
 dependencies = [
     # Core
-    "coqui-tts[codec]>=0.27.5,<0.28",
+    "coqui-tts[codec]>=0.28,<0.29",
     "sounddevice>=0.5.6,<0.6",
     "soxr>=1.1,<2",
     "pyobjc-framework-quartz>=12.2.2,<13 ; sys_platform == 'darwin'",
     "python-xlib>=0.33 ; sys_platform == 'linux'",
     "pynput>=1.8.2,<2",
-    "torch>=2.11,<2.12",
+    "torch>=2.13,<2.14",
     "torchaudio>=2.11,<2.12",
     "torchcodec>=0.16,<0.17",
-    # Coqui XTTS 0.27.5 imports an API removed in Transformers 5.
-    "transformers>=4.57.6,<5",
+    "transformers>=5.17,<6",
     "pytesseract>=0.3.13",
     "numpy>=2.5,<3",
     "soundfile>=0.14,<0.15",

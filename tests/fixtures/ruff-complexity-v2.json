@@ -55,14 +55,14 @@
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
       "count": 1,
-      "maximum": 23
+      "maximum": 17
     },
     {
       "code": "C901",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_second_process",
       "count": 1,
-      "maximum": 13
+      "maximum": 12
     },
     {
       "code": "C901",
@@ -265,7 +265,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController._play_live_chunk",
       "count": 1,
-      "maximum": 13
+      "maximum": 11
     },
     {
       "code": "C901",
@@ -307,21 +307,7 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 16
-    },
-    {
-      "code": "C901",
-      "path": "vntts/live.py",
-      "scope": "LiveDialogReader._run_ocr",
-      "count": 1,
-      "maximum": 24
-    },
-    {
-      "code": "C901",
-      "path": "vntts/live.py",
-      "scope": "LiveDialogReader._set_generation",
-      "count": 1,
-      "maximum": 12
+      "maximum": 15
     },
     {
       "code": "C901",
@@ -507,13 +493,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/readiness_ui.py",
-      "scope": "ReadinessDialog._checks_finished",
-      "count": 1,
-      "maximum": 11
-    },
-    {
-      "code": "C901",
       "path": "vntts/release_runtime.py",
       "scope": "_prune_runtime_entrypoints",
       "count": 1,
@@ -524,7 +503,7 @@
       "path": "vntts/release_smoke_test.py",
       "scope": "run_release_smoke_test",
       "count": 1,
-      "maximum": 20
+      "maximum": 17
     },
     {
       "code": "C901",
@@ -570,13 +549,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/speech_presentation.py",
-      "scope": "playback_labels",
-      "count": 1,
-      "maximum": 12
-    },
-    {
-      "code": "C901",
       "path": "vntts/speech_worker.py",
       "scope": "IsolatedSpeechBackend._launch_worker",
       "count": 1,
@@ -587,7 +559,7 @@
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
       "count": 1,
-      "maximum": 23
+      "maximum": 20
     },
     {
       "code": "C901",
@@ -643,14 +615,7 @@
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
       "count": 1,
-      "maximum": 25
-    },
-    {
-      "code": "PLR0912",
-      "path": "tests/test_fresh_install_gui_journey.py",
-      "scope": "_second_process",
-      "count": 1,
-      "maximum": 13
+      "maximum": 18
     },
     {
       "code": "PLR0912",
@@ -773,13 +738,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/controller.py",
-      "scope": "AppController._play_live_chunk",
-      "count": 1,
-      "maximum": 13
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
       "count": 1,
@@ -805,13 +763,6 @@
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
       "maximum": 16
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/live.py",
-      "scope": "LiveDialogReader._run_ocr",
-      "count": 1,
-      "maximum": 28
     },
     {
       "code": "PLR0912",
@@ -902,7 +853,7 @@
       "path": "vntts/release_smoke_test.py",
       "scope": "run_release_smoke_test",
       "count": 1,
-      "maximum": 19
+      "maximum": 17
     },
     {
       "code": "PLR0912",
@@ -944,7 +895,7 @@
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
       "count": 1,
-      "maximum": 23
+      "maximum": 20
     },
     {
       "code": "PLR0912",
@@ -979,14 +930,14 @@
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories",
       "count": 1,
-      "maximum": 589
+      "maximum": 587
     },
     {
       "code": "PLR0915",
       "path": "scripts/render_ui_catalog.py",
       "scope": "_render_stories.offline_preparation",
       "count": 1,
-      "maximum": 88
+      "maximum": 87
     },
     {
       "code": "PLR0915",
@@ -1063,14 +1014,14 @@
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_first_process",
       "count": 1,
-      "maximum": 109
+      "maximum": 71
     },
     {
       "code": "PLR0915",
       "path": "tests/test_fresh_install_gui_journey.py",
       "scope": "_second_process",
       "count": 1,
-      "maximum": 63
+      "maximum": 60
     },
     {
       "code": "PLR0915",
@@ -1083,13 +1034,6 @@
       "code": "PLR0915",
       "path": "tests/test_live_replay.py",
       "scope": "LiveReplayTest.test_serialized_media_paths_are_contained_and_not_symlinks",
-      "count": 1,
-      "maximum": 52
-    },
-    {
-      "code": "PLR0915",
-      "path": "tests/test_pregeneration_audition_ui.py",
-      "scope": "VoiceAuditionPanelTest.test_auto_preview_replay_candidate_cycle_and_persisted_choice",
       "count": 1,
       "maximum": 52
     },
@@ -1117,21 +1061,7 @@
     {
       "code": "PLR0915",
       "path": "tests/test_self_service_pregeneration.py",
-      "scope": "SelfServicePregenerationJourneyTest.test_game_narrator_and_routes_are_confirmed_before_generation",
-      "count": 1,
-      "maximum": 69
-    },
-    {
-      "code": "PLR0915",
-      "path": "tests/test_self_service_pregeneration.py",
       "scope": "SelfServicePregenerationJourneyTest.test_reopened_dialog_resumes_only_the_cancelled_line",
-      "count": 1,
-      "maximum": 52
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication.shutdown",
       "count": 1,
       "maximum": 52
     },
@@ -1140,7 +1070,7 @@
       "path": "vntts/authoring/failure_reference_audit_ui.py",
       "scope": "FailureReferenceAuditDialog.__init__",
       "count": 1,
-      "maximum": 219
+      "maximum": 210
     },
     {
       "code": "PLR0915",
@@ -1154,14 +1084,14 @@
       "path": "vntts/authoring/legacy_reason_review_ui.py",
       "scope": "LegacyReasonReviewDialog.__init__",
       "count": 1,
-      "maximum": 86
+      "maximum": 72
     },
     {
       "code": "PLR0915",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.__init__",
       "count": 1,
-      "maximum": 162
+      "maximum": 134
     },
     {
       "code": "PLR0915",
@@ -1182,7 +1112,7 @@
       "path": "vntts/authoring/missing_voice_reuse_review_ui.py",
       "scope": "MissingVoiceReuseReviewDialog.__init__",
       "count": 1,
-      "maximum": 183
+      "maximum": 170
     },
     {
       "code": "PLR0915",
@@ -1196,7 +1126,7 @@
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
       "count": 1,
-      "maximum": 113
+      "maximum": 106
     },
     {
       "code": "PLR0915",
@@ -1224,7 +1154,7 @@
       "path": "vntts/controller.py",
       "scope": "AppController.__init__",
       "count": 1,
-      "maximum": 79
+      "maximum": 53
     },
     {
       "code": "PLR0915",
@@ -1245,21 +1175,14 @@
       "path": "vntts/live.py",
       "scope": "LiveDialogReader.__init__",
       "count": 1,
-      "maximum": 94
+      "maximum": 89
     },
     {
       "code": "PLR0915",
       "path": "vntts/live.py",
       "scope": "LiveDialogReader._run_auto_advance",
       "count": 1,
-      "maximum": 63
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/live.py",
-      "scope": "LiveDialogReader._run_ocr",
-      "count": 1,
-      "maximum": 134
+      "maximum": 55
     },
     {
       "code": "PLR0915",
@@ -1315,14 +1238,14 @@
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
       "count": 1,
-      "maximum": 98
+      "maximum": 90
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
       "count": 1,
-      "maximum": 96
+      "maximum": 69
     },
     {
       "code": "PLR0915",
@@ -1343,7 +1266,7 @@
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog.__init__",
       "count": 1,
-      "maximum": 93
+      "maximum": 90
     },
     {
       "code": "PLR0915",
@@ -1378,14 +1301,7 @@
       "path": "vntts/speech_worker.py",
       "scope": "worker_main",
       "count": 1,
-      "maximum": 72
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/support_ui.py",
-      "scope": "SupportCenterDialog.__init__",
-      "count": 1,
-      "maximum": 54
+      "maximum": 71
     },
     {
       "code": "C901",
@@ -1406,21 +1322,14 @@
       "path": "vntts/onboarding_ui.py",
       "scope": "DiagnosticsPage.__init__",
       "count": 1,
-      "maximum": 64
-    },
-    {
-      "code": "C901",
-      "path": "vntts/app.py",
-      "scope": "TrayApplication._narrator_finished",
-      "count": 1,
-      "maximum": 11
+      "maximum": 54
     },
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_ui.py",
       "scope": "OfflineAudioPreparationDialog._populate_stories",
       "count": 1,
-      "maximum": 72
+      "maximum": 62
     }
   ]
 }

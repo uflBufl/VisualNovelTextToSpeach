@@ -2791,29 +2791,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not self.settings.onboarding_completed:
             self.run_onboarding()
             return
-        if runtime_settings is not None:
-            generation = self._begin_controller_lifecycle()
-            applied = self.session_owner.attach(generation, runtime_settings)
-            self._finish_controller_lifecycle()
-            if applied is False:
-                self.show_error("Unable to connect in-progress prepared audio")
-                return
-            if self.controller.is_ready:
-                self._controller_ready = True
-                backend = getattr(self.controller, "speech_backend", None)
-                dialog = self.pregeneration_dialog
-                if backend is not None and dialog is not None:
-                    backend.progress_wait_request = dialog.prioritize_line
-                    backend.progress_line_observed = dialog.readingLineObserved.emit
-                self._apply_controller_action_state()
-                self.set_status(
-                    "Reading uses finished recordings while preparation continues. "
-                    "If you catch up, it waits for that dialogue instead of starting "
-                    "a second TTS generation."
-                )
-                if start_live and not self.controller.is_live_running:
-                    self.toggle_live()
-                return
+        if runtime_settings is not None and self._attach_preparation_reading(
+            runtime_settings, start_live=start_live
+        ):
+            return
         generation = self._begin_controller_lifecycle()
         self._start_live_after_initial_start = bool(start_live)
         self.set_status(
@@ -2826,6 +2807,33 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.initial_start_runner.start(
             self._initialize_controller, generation, runtime_settings
         )
+
+    def _attach_preparation_reading(
+        self, runtime_settings: AppSettings, *, start_live: bool
+    ) -> bool:
+        generation = self._begin_controller_lifecycle()
+        applied = self.session_owner.attach(generation, runtime_settings)
+        self._finish_controller_lifecycle()
+        if applied is False:
+            self.show_error("Unable to connect in-progress prepared audio")
+            return True
+        if self.controller.is_ready:
+            self._controller_ready = True
+            backend = getattr(self.controller, "speech_backend", None)
+            dialog = self.pregeneration_dialog
+            if backend is not None and dialog is not None:
+                backend.progress_wait_request = dialog.prioritize_line
+                backend.progress_line_observed = dialog.readingLineObserved.emit
+            self._apply_controller_action_state()
+            self.set_status(
+                "Reading uses finished recordings while preparation continues. "
+                "If you catch up, it waits for that dialogue instead of starting "
+                "a second TTS generation."
+            )
+            if start_live and not self.controller.is_live_running:
+                self.toggle_live()
+            return True
+        return False
 
     def _initialize_controller(
         self, generation: int, runtime_settings: AppSettings | None = None
@@ -3218,60 +3226,60 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.signals.live_changed.emit(False)
             return
         if identified is not True:
-            match_result = getattr(
-                self.controller,
-                "live_scope_identification_match_result",
-                None,
-            )
-            if match_result:
-                details = getattr(
-                    self.controller,
-                    "live_scope_identification_diagnostics",
-                    {},
-                )
-                details = dict(details) if isinstance(details, dict) else {}
-                details["match_result"] = match_result
-                self.support_log.add(
-                    "live-scope",
-                    f"Initial story matcher result: {match_result}",
-                    **details,
-                    **collect_active_content_identity(self.settings),
-                )
-            if failure == "no-dialog-text":
-                message = (
-                    "Live reading could not start: no dialog text was recognized "
-                    "in the selected game window"
-                )
-            elif failure == "ocr-uncertain":
-                message = (
-                    "Live reading could not start: dialogue text or speaker name "
-                    "was not recognized confidently. Wait for the full dialogue "
-                    "or check the capture area."
-                )
-            elif failure == "capture-target-unavailable":
-                message = (
-                    "Live reading could not start: select a game window in Settings"
-                )
-            elif failure == "target-changed":
-                message = "Live reading cancelled: the selected game window changed"
-            elif failure == "cancelled":
-                message = "Live reading start cancelled"
-            elif failure == "story-line-no-match":
-                message = (
-                    "The visible dialogue does not match the prepared story "
-                    "at this point."
-                )
-                self._offer_story_match_recovery(message)
-                return
-            else:
-                message = (
-                    "Live reading could not start: keep a complete dialog line "
-                    "visible and try again"
-                )
-            self.set_status(message)
-            self.signals.live_changed.emit(False)
+            self._report_live_scope_failure(failure)
             return
         self._start_live_with_available_scope(allow_scope_bootstrap=False)
+
+    def _report_live_scope_failure(self, failure: object) -> None:
+        match_result = getattr(
+            self.controller,
+            "live_scope_identification_match_result",
+            None,
+        )
+        if match_result:
+            details = getattr(
+                self.controller,
+                "live_scope_identification_diagnostics",
+                {},
+            )
+            details = dict(details) if isinstance(details, dict) else {}
+            details["match_result"] = match_result
+            self.support_log.add(
+                "live-scope",
+                f"Initial story matcher result: {match_result}",
+                **details,
+                **collect_active_content_identity(self.settings),
+            )
+        if failure == "no-dialog-text":
+            message = (
+                "Live reading could not start: no dialog text was recognized "
+                "in the selected game window"
+            )
+        elif failure == "ocr-uncertain":
+            message = (
+                "Live reading could not start: dialogue text or speaker name "
+                "was not recognized confidently. Wait for the full dialogue "
+                "or check the capture area."
+            )
+        elif failure == "capture-target-unavailable":
+            message = "Live reading could not start: select a game window in Settings"
+        elif failure == "target-changed":
+            message = "Live reading cancelled: the selected game window changed"
+        elif failure == "cancelled":
+            message = "Live reading start cancelled"
+        elif failure == "story-line-no-match":
+            message = (
+                "The visible dialogue does not match the prepared story at this point."
+            )
+            self._offer_story_match_recovery(message)
+            return
+        else:
+            message = (
+                "Live reading could not start: keep a complete dialog line "
+                "visible and try again"
+            )
+        self.set_status(message)
+        self.signals.live_changed.emit(False)
 
     def _offer_story_match_recovery(self, message: str) -> bool:
         generation = self._lifecycle_generation
@@ -3783,26 +3791,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
             def prepare_live() -> None:
                 nonlocal started
-                if cancel_event.is_set():
-                    raise RuntimeError("OCR-to-speech test cancelled.")
-                if settings.speech_backend == "coqui-xtts":
-                    if not model_name:
-                        raise RuntimeError(
-                            "Select a Coqui model before testing live speech."
-                        )
-                    download_error = self._download_onboarding_model(
-                        model_name, cancel_event
-                    )
-                    if download_error is not None:
-                        raise RuntimeError(download_error)
-                if cancel_event.is_set():
-                    raise RuntimeError("OCR-to-speech test cancelled.")
-                started = bool(self.controller.start())
-                if not started:
-                    raise RuntimeError(
-                        self.last_controller_error
-                        or "The live speech engine could not be initialized."
-                    )
+                started = self._start_onboarding_live(
+                    settings, model_name, cancel_event
+                )
 
             prepared_route_test = bool(
                 settings.story_index and settings.audio_source_policy != "live-tts-only"
@@ -3844,11 +3835,38 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 return False, "OCR-to-speech test cancelled."
             return False, format_runtime_error(error)
         finally:
-            try:
-                if cancel_event.is_set() or (started and not preview_succeeded):
-                    self.controller.shutdown()
-            except Exception as error:
-                self.report_controller_error(error)
+            self._finish_onboarding_preview(cancel_event, started, preview_succeeded)
+
+    def _finish_onboarding_preview(
+        self, cancel_event: Event, started: bool, preview_succeeded: bool
+    ) -> None:
+        try:
+            if cancel_event.is_set() or (started and not preview_succeeded):
+                self.controller.shutdown()
+        except Exception as error:
+            self.report_controller_error(error)
+
+    def _start_onboarding_live(
+        self, settings: AppSettings, model_name: str | None, cancel_event: Event
+    ) -> bool:
+        if cancel_event.is_set():
+            raise RuntimeError("OCR-to-speech test cancelled.")
+        if settings.speech_backend == "coqui-xtts":
+            if not model_name:
+                raise RuntimeError("Select a Coqui model before testing live speech.")
+            download_error = self._download_onboarding_model(model_name, cancel_event)
+            if download_error is not None:
+                raise RuntimeError(download_error)
+        if cancel_event.is_set():
+            raise RuntimeError("OCR-to-speech test cancelled.")
+        started = bool(self.controller.start())
+        if not started:
+            raise RuntimeError(
+                self.last_controller_error
+                or "The live speech engine could not be initialized."
+            )
+
+        return started
 
     def _prepare_onboarding_controller(
         self,
@@ -4785,12 +4803,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = self.narrator_dialog
         if dialog is None:
             return
-        if (
-            self._narrator_playback_pending is not None
-            and self._narrator_playback_pending[0] is dialog
-        ):
-            if self._narrator_result_after_stop is None:
-                self._narrator_result_after_stop = result
+        if self._defer_narrator_result(dialog, result):
             return
         saved_assignment = (
             dialog.saved_assignment_summary()
@@ -4851,14 +4864,29 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         finally:
             if not completion_deferred:
                 finish_mapping()
-            if (
-                return_to_stories
-                and preparation is self.pregeneration_dialog
-                and preparation is not None
-            ):
-                self.dashboard.show_stories()
-            if self._onboarding_voice_wizard is not None:
-                self._resume_onboarding_after_voices()
+            self._finish_narrator_navigation(return_to_stories, preparation)
+
+    def _finish_narrator_navigation(
+        self, return_to_stories: bool, preparation: OfflineAudioPreparationDialog | None
+    ) -> None:
+        if (
+            return_to_stories
+            and preparation is self.pregeneration_dialog
+            and preparation is not None
+        ):
+            self.dashboard.show_stories()
+        if self._onboarding_voice_wizard is not None:
+            self._resume_onboarding_after_voices()
+
+    def _defer_narrator_result(self, dialog: GameNarratorDialog, result: int) -> bool:
+        if (
+            self._narrator_playback_pending is not None
+            and self._narrator_playback_pending[0] is dialog
+        ):
+            if self._narrator_result_after_stop is None:
+                self._narrator_result_after_stop = result
+            return True
+        return False
 
     def _finish_narrator_mapping(
         self, speaker: str | None, *, resolved: bool, resume_live: bool
@@ -5903,23 +5931,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.reading_diagnostic_session, SavedDiagnosticSession
         ):
             self.reading_diagnostic_session.stop(timeout=15)
-        self._controller_busy = True
-        self._live_stop_continuation = None
-        self._live_stop_generation = None
-        self.live_stop_runner.cancel()
-        self._cancel_calibration()
-        self._cancel_live_scope()
-        self._cancel_diagnostics_refresh()
-        self.initial_start_runner.cancel()
-        self.profile_restart_runner.cancel()
-        self.configuration_runner.cancel()
-        self.onboarding_test_runner.cancel()
-        self._onboarding_test_generation = None
-        self.moss_runtime_runner.cancel()
-        if self._pregeneration_activation_cancellation is not None:
-            self._pregeneration_activation_cancellation.set()
-        self.pregeneration_activation_runner.cancel()
-        self.onboarding_cancel_event.set()
+        self._cancel_shutdown_tasks()
         self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
         self._queued_unknown_speakers.clear()
@@ -5949,6 +5961,25 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 daemon=True,
             ).start()
 
+    def _cancel_shutdown_tasks(self) -> None:
+        self._controller_busy = True
+        self._live_stop_continuation = None
+        self._live_stop_generation = None
+        self.live_stop_runner.cancel()
+        self._cancel_calibration()
+        self._cancel_live_scope()
+        self._cancel_diagnostics_refresh()
+        self.initial_start_runner.cancel()
+        self.profile_restart_runner.cancel()
+        self.configuration_runner.cancel()
+        self.onboarding_test_runner.cancel()
+        self._onboarding_test_generation = None
+        self.moss_runtime_runner.cancel()
+        if self._pregeneration_activation_cancellation is not None:
+            self._pregeneration_activation_cancellation.set()
+        self.pregeneration_activation_runner.cancel()
+        self.onboarding_cancel_event.set()
+
     def request_quit(self) -> None:
         self._quit_requested = True
         # Embedded dialogs can be hidden by navigation or dashboard.close().
@@ -5977,6 +6008,50 @@ def _worker_exit_code(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError("Worker returned a non-integer exit code")
     return value
+
+
+def _dispatch_application_worker(
+    arguments: argparse.Namespace, qt_arguments: list[str], release_smoke: bool
+) -> int | None:
+    if arguments.game_content_import_worker == "reverse1999":
+        from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
+
+        return _worker_exit_code(reverse1999_bootstrap_main(qt_arguments))
+    if arguments.source_audio_publisher_worker == "duration":
+        from r1999extractor.source_audio_duration import main as duration_main
+
+        return _worker_exit_code(duration_main(qt_arguments))
+    if arguments.source_audio_publisher_worker == "semantics":
+        from r1999extractor.source_audio_semantics import main as semantics_main
+
+        return _worker_exit_code(semantics_main(qt_arguments))
+    if arguments.offline_generation_worker:
+        from vntts.authoring.cli_generation import main as generation_main
+
+        return generation_main(qt_arguments)
+    if arguments.prepared_sequence_worker:
+        from r1999extractor.live_sequence import main as live_sequence_main
+
+        return _worker_exit_code(live_sequence_main(qt_arguments))
+    if arguments.package_self_test:
+        return run_package_self_test(arguments.package_self_test_report).exit_code
+    if release_smoke:
+        return run_release_smoke_test(
+            image_path=arguments.release_smoke_test_image,
+            window_title=arguments.release_smoke_test_window_title,
+            report_path=arguments.release_smoke_test_report,
+            model_name=(
+                arguments.release_smoke_test_model
+                if arguments.release_smoke_test_model is not None
+                else default_smoke_test_model
+            ),
+            expected_speaker=arguments.release_smoke_test_expected_speaker,
+            auto_advance_expected_text=(
+                arguments.release_smoke_test_auto_advance_expected_text
+            ),
+        ).exit_code
+
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -6039,43 +6114,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Unable to configure bundled dependencies"
         )
         raise
-    if arguments.game_content_import_worker == "reverse1999":
-        from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
-
-        return _worker_exit_code(reverse1999_bootstrap_main(qt_arguments))
-    if arguments.source_audio_publisher_worker == "duration":
-        from r1999extractor.source_audio_duration import main as duration_main
-
-        return _worker_exit_code(duration_main(qt_arguments))
-    if arguments.source_audio_publisher_worker == "semantics":
-        from r1999extractor.source_audio_semantics import main as semantics_main
-
-        return _worker_exit_code(semantics_main(qt_arguments))
-    if arguments.offline_generation_worker:
-        from vntts.authoring.cli_generation import main as generation_main
-
-        return generation_main(qt_arguments)
-    if arguments.prepared_sequence_worker:
-        from r1999extractor.live_sequence import main as live_sequence_main
-
-        return _worker_exit_code(live_sequence_main(qt_arguments))
-    if arguments.package_self_test:
-        return run_package_self_test(arguments.package_self_test_report).exit_code
-    if release_smoke:
-        return run_release_smoke_test(
-            image_path=arguments.release_smoke_test_image,
-            window_title=arguments.release_smoke_test_window_title,
-            report_path=arguments.release_smoke_test_report,
-            model_name=(
-                arguments.release_smoke_test_model
-                if arguments.release_smoke_test_model is not None
-                else default_smoke_test_model
-            ),
-            expected_speaker=arguments.release_smoke_test_expected_speaker,
-            auto_advance_expected_text=(
-                arguments.release_smoke_test_auto_advance_expected_text
-            ),
-        ).exit_code
+    worker_result = _dispatch_application_worker(arguments, qt_arguments, release_smoke)
+    if worker_result is not None:
+        return worker_result
 
     with capture_unhandled_errors():
         enable_windows_dpi_awareness()

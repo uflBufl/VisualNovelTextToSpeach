@@ -2,8 +2,8 @@ import argparse
 from pathlib import Path
 
 import torch
-from TTS.api import TTS
 
+from vntts.coqui_runtime import ManagedCoquiTTS
 from vntts.settings import get_local_data_directory
 
 project_root = Path(__file__).resolve().parents[1]
@@ -75,7 +75,7 @@ def main():
     device = select_device()
     print(f"Loading {arguments.model} on {device}")
     print("XTTS-v2 and its generated output are licensed for non-commercial use.")
-    tts = TTS(model_name=arguments.model).to(device)
+    tts = ManagedCoquiTTS(model_name=arguments.model).to(device)
 
     synthesis_arguments = {
         "text": arguments.text,

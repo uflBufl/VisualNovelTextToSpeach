@@ -162,6 +162,41 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
 
     loadFailed = Signal(object)
 
+    def _create_playback_controls(self) -> QVBoxLayout:
+        playback = QVBoxLayout()
+        play_pair = QHBoxLayout()
+        for index in range(2):
+            button = QPushButton(chr(65 + index))
+            set_action_icon(button, "play")
+            button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
+            button.setAccessibleDescription(
+                "Play this checksum-distinct blind candidate through to the end"
+            )
+            button.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
+            button.setToolTip(
+                shortcut_tooltip(button.accessibleName(), button.shortcut())
+            )
+            button.clicked.connect(
+                lambda _checked=False, value=index: self._play(value)
+            )
+            self.play_buttons.append(button)
+        for button in self.play_buttons:
+            play_pair.addWidget(button, 1)
+        playback.addLayout(play_pair)
+        self.stop = QPushButton("Stop")
+        set_action_icon(self.stop, "square")
+        self.stop.setAccessibleName("Stop terminal conflict audio")
+        self.stop.setAccessibleDescription("Stop blind candidate playback")
+        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
+        self.stop.clicked.connect(self._stop)
+        self.stop.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        playback.addWidget(self.stop)
+
+        return playback
+
     def __init__(
         self,
         directory: str | Path,
@@ -228,38 +263,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Terminal conflict review status")
         self.play_buttons: list[QPushButton] = []
-        playback = QVBoxLayout()
-        play_pair = QHBoxLayout()
-        for index in range(2):
-            button = QPushButton(chr(65 + index))
-            set_action_icon(button, "play")
-            button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
-            button.setAccessibleDescription(
-                "Play this checksum-distinct blind candidate through to the end"
-            )
-            button.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
-            button.setToolTip(
-                shortcut_tooltip(button.accessibleName(), button.shortcut())
-            )
-            button.clicked.connect(
-                lambda _checked=False, value=index: self._play(value)
-            )
-            self.play_buttons.append(button)
-        for button in self.play_buttons:
-            play_pair.addWidget(button, 1)
-        playback.addLayout(play_pair)
-        self.stop = QPushButton("Stop")
-        set_action_icon(self.stop, "square")
-        self.stop.setAccessibleName("Stop terminal conflict audio")
-        self.stop.setAccessibleDescription("Stop blind candidate playback")
-        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
-        self.stop.setToolTip(
-            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
-        )
-        self.stop.clicked.connect(self._stop)
-        self.stop.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        playback.addWidget(self.stop)
-
+        playback = self._create_playback_controls()
         self.choose_buttons: list[QPushButton] = []
         decisions = QVBoxLayout()
         choose_pair = QHBoxLayout()

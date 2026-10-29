@@ -2306,6 +2306,47 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
 
+    def _assert_compact_story_layout_at_font_sizes(self, dialog, dashboard):
+        default_font = dashboard.font()
+        for large_text in (False, True):
+            font = dashboard.font()
+            font.setPointSize(22 if large_text else default_font.pointSize())
+            dashboard.setFont(font)
+            for expanded in (False, True):
+                with self.subTest(large_text=large_text, expanded=expanded):
+                    dialog.selection_settings_toggle.setChecked(expanded)
+                    dialog.selection_details_toggle.setChecked(expanded)
+                    if expanded:
+                        dialog._set_resume_error(
+                            "Unable to save preparation", "unbroken-error-" * 30
+                        )
+                    else:
+                        dialog._clear_resume_error()
+                    dashboard.resize(480, 340)
+                    self.application.processEvents()
+                    row_height = dialog.stories.visualItemRect(
+                        dialog.stories.topLevelItem(0)
+                    ).height()
+                    self.assertGreaterEqual(
+                        dialog.stories.viewport().height(), 5 * row_height
+                    )
+                    for widget in (
+                        dialog.stories,
+                        dialog.select_all_button,
+                        dialog.select_none_button,
+                        dialog.buttons,
+                    ):
+                        self.assertTrue(widget.isVisibleTo(dashboard))
+                        origin = widget.mapTo(dashboard, QPoint(0, 0))
+                        self.assertGreaterEqual(origin.x(), 0)
+                        self.assertGreaterEqual(origin.y(), 0)
+                        self.assertLessEqual(
+                            origin.x() + widget.width(), dashboard.width()
+                        )
+                        self.assertLessEqual(
+                            origin.y() + widget.height(), dashboard.height()
+                        )
+
     def test_story_controls_are_compact_and_copy_full_details(self):
         from vntts.dashboard_ui import ControlDashboard
 
@@ -2388,45 +2429,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 f"Unable to save preparation: {error}",
             )
 
-            default_font = dashboard.font()
-            for large_text in (False, True):
-                font = dashboard.font()
-                font.setPointSize(22 if large_text else default_font.pointSize())
-                dashboard.setFont(font)
-                for expanded in (False, True):
-                    with self.subTest(large_text=large_text, expanded=expanded):
-                        dialog.selection_settings_toggle.setChecked(expanded)
-                        dialog.selection_details_toggle.setChecked(expanded)
-                        if expanded:
-                            dialog._set_resume_error(
-                                "Unable to save preparation", "unbroken-error-" * 30
-                            )
-                        else:
-                            dialog._clear_resume_error()
-                        dashboard.resize(480, 340)
-                        self.application.processEvents()
-                        row_height = dialog.stories.visualItemRect(
-                            dialog.stories.topLevelItem(0)
-                        ).height()
-                        self.assertGreaterEqual(
-                            dialog.stories.viewport().height(), 5 * row_height
-                        )
-                        for widget in (
-                            dialog.stories,
-                            dialog.select_all_button,
-                            dialog.select_none_button,
-                            dialog.buttons,
-                        ):
-                            self.assertTrue(widget.isVisibleTo(dashboard))
-                            origin = widget.mapTo(dashboard, QPoint(0, 0))
-                            self.assertGreaterEqual(origin.x(), 0)
-                            self.assertGreaterEqual(origin.y(), 0)
-                            self.assertLessEqual(
-                                origin.x() + widget.width(), dashboard.width()
-                            )
-                            self.assertLessEqual(
-                                origin.y() + widget.height(), dashboard.height()
-                            )
+            self._assert_compact_story_layout_at_font_sizes(dialog, dashboard)
 
     def test_story_rows_and_actions_stay_visible_when_details_scroll(self):
         with TemporaryDirectory() as temporary_directory:
@@ -3047,6 +3050,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.run_next_task(pool)
             self.assertEqual(dialog.stories.item(0).text(1), "Partially prepared")
 
+    def _assert_live_ready_story_controls(self, dialog):
+        self.assertIn("Ready with live speech", dialog.stories.item(0).text(1))
+        self.assertIn("live speech: 1", dialog.story_audio_status.text())
+        self.assertIn(
+            "Checked the active Reading pack", dialog.story_audio_status.text()
+        )
+        self.assertEqual(dialog.continue_button.text(), "Start reading")
+        self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
+
     def test_checked_story_readiness_updates_list_and_primary_without_preparing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3102,13 +3114,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             ):
                 dialog.check_story_audio.click()
                 self.run_next_task(pool)
-            self.assertIn("Ready with live speech", dialog.stories.item(0).text(1))
-            self.assertIn("live speech: 1", dialog.story_audio_status.text())
-            self.assertIn(
-                "Checked the active Reading pack", dialog.story_audio_status.text()
-            )
-            self.assertEqual(dialog.continue_button.text(), "Start reading")
-            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
+            self._assert_live_ready_story_controls(dialog)
             with (
                 patch.object(
                     dialog,

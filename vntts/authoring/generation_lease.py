@@ -225,60 +225,7 @@ class GenerationLease:
                         "Cancelled generation lease is no longer current"
                     )
                 if self.path.exists():
-                    try:
-                        lease_payload = read_regular_bytes(self.path)
-                        parsed: object = decode_json(lease_payload.decode("utf-8"))
-                    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                        raise BulkGenerationError(
-                            f"Unable to read generation lease {self.path}: {error}"
-                        ) from error
-                    if (
-                        not isinstance(parsed, dict)
-                        or type(parsed.get("schema_version")) is not int
-                        or parsed.get("schema") != LEASE_SCHEMA
-                        or parsed.get("schema_version") != LEASE_VERSION
-                        or not isinstance(parsed.get("queue_sha256"), str)
-                        or not is_process_id(parsed.get("pid"))
-                    ):
-                        raise BulkGenerationError(
-                            f"Unrecognized generation lease blocks output: {self.path}"
-                        )
-                    existing: dict[str, object] = parsed
-                    if (
-                        self.expected_previous is not None
-                        and existing != self.expected_previous
-                    ):
-                        raise BulkGenerationError(
-                            "Cancelled generation lease ownership changed"
-                        )
-                    same_host = existing.get("hostname") in {
-                        None,
-                        socket.gethostname(),
-                    }
-                    live = same_host and self.process_checker(existing.get("pid"))
-                    recorded_start = existing.get("process_started_at")
-                    if live and recorded_start is not None:
-                        actual_start = process_started_at(existing.get("pid"))
-                        if actual_start is not None:
-                            live = recorded_start == actual_start
-                    if not same_host or live:
-                        raise BulkGenerationError(
-                            "Another generation process is active with PID "
-                            f"{existing.get('pid')}"
-                        )
-                    archived = archive_interrupted_artifact(
-                        self.output_directory,
-                        self.path,
-                        expected_payload=lease_payload,
-                    )
-                    self.interrupted_process = {
-                        "lease": str(archived.resolve()),
-                        "lease_sha256": hashlib.sha256(lease_payload).hexdigest(),
-                        "pid": existing["pid"],
-                        "recorded_status": "running",
-                        "detected_status": "interrupted",
-                        "detected_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    self._archive_previous_lease()
                 lease: GenerationLeaseDocument = {
                     "schema": LEASE_SCHEMA,
                     "schema_version": LEASE_VERSION,
@@ -308,6 +255,56 @@ class GenerationLease:
                 "Another generation process acquired the output"
             ) from error
         return self
+
+    def _archive_previous_lease(self) -> None:
+        try:
+            lease_payload = read_regular_bytes(self.path)
+            parsed: object = decode_json(lease_payload.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise BulkGenerationError(
+                f"Unable to read generation lease {self.path}: {error}"
+            ) from error
+        if (
+            not isinstance(parsed, dict)
+            or type(parsed.get("schema_version")) is not int
+            or parsed.get("schema") != LEASE_SCHEMA
+            or parsed.get("schema_version") != LEASE_VERSION
+            or not isinstance(parsed.get("queue_sha256"), str)
+            or not is_process_id(parsed.get("pid"))
+        ):
+            raise BulkGenerationError(
+                f"Unrecognized generation lease blocks output: {self.path}"
+            )
+        existing: dict[str, object] = parsed
+        if self.expected_previous is not None and existing != self.expected_previous:
+            raise BulkGenerationError("Cancelled generation lease ownership changed")
+        same_host = existing.get("hostname") in {
+            None,
+            socket.gethostname(),
+        }
+        live = same_host and self.process_checker(existing.get("pid"))
+        recorded_start = existing.get("process_started_at")
+        if live and recorded_start is not None:
+            actual_start = process_started_at(existing.get("pid"))
+            if actual_start is not None:
+                live = recorded_start == actual_start
+        if not same_host or live:
+            raise BulkGenerationError(
+                f"Another generation process is active with PID {existing.get('pid')}"
+            )
+        archived = archive_interrupted_artifact(
+            self.output_directory,
+            self.path,
+            expected_payload=lease_payload,
+        )
+        self.interrupted_process = {
+            "lease": str(archived.resolve()),
+            "lease_sha256": hashlib.sha256(lease_payload).hexdigest(),
+            "pid": existing["pid"],
+            "recorded_status": "running",
+            "detected_status": "interrupted",
+            "detected_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def __exit__(
         self,

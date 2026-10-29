@@ -276,6 +276,14 @@ class RustAudioProtocolTest(unittest.TestCase):
             self.assertFalse(owner.is_alive())
             self.assertEqual(result, [(False, False)])
 
+    def _assert_prepared_pcm_paused(self, marker, worker, reader):
+        deadline = time.monotonic() + 1
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(marker.exists(), "Pause did not reach the prepared PCM owner")
+        self.assertEqual(worker.next_id, 1)
+        self.assertTrue(reader.runtime_control_snapshot()["queued"])
+
     def test_reading_pause_stops_prepared_rust_pcm_and_resume_replays_once(self):
         from concurrent.futures import ThreadPoolExecutor
         from queue import Queue
@@ -344,14 +352,7 @@ class RustAudioProtocolTest(unittest.TestCase):
                     reader._schedule([SpeechChunk(1, "Ada", "Hello.", ordinal=0)])
                     self.assertTrue(started.wait(2))
                     self.assertTrue(reader.toggle_pause())
-                    deadline = time.monotonic() + 1
-                    while not marker.exists() and time.monotonic() < deadline:
-                        time.sleep(0.01)
-                    self.assertTrue(
-                        marker.exists(), "Pause did not reach the prepared PCM owner"
-                    )
-                    self.assertEqual(worker.next_id, 1)
-                    self.assertTrue(reader.runtime_control_snapshot()["queued"])
+                    self._assert_prepared_pcm_paused(marker, worker, reader)
                     self.assertFalse(reader.toggle_pause())
                     self.assertFalse(finished.get(timeout=2))
                     self.assertTrue(finished.get(timeout=2))

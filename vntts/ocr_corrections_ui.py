@@ -48,6 +48,37 @@ AllTableRows = tuple[TableRows, TableRows]
 
 
 class OCRCorrectionsDialog(QDialog):
+    def _create_footer(self) -> QHBoxLayout:
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.save)
+        self.buttons.rejected.connect(self.reject)
+        self.save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        set_action_icon(self.save_button, "save")
+        self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        set_action_icon(self.cancel_button, "x")
+        self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.status.setAccessibleName("OCR correction save status")
+        self.status.setFrameShape(QFrame.Shape.NoFrame)
+        self.status.viewport().setAutoFillBackground(False)
+        self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 3 + 12)
+        self.status.installEventFilter(self)
+        self.copy_button = QPushButton("Copy rules")
+        set_action_icon(self.copy_button, "copy")
+        self.copy_button.setToolTip(
+            "Copy all edited rules from both scopes, including unsaved changes"
+        )
+        self.copy_button.clicked.connect(self.copy_rules)
+        footer = QHBoxLayout()
+        footer.addWidget(self.copy_button)
+        footer.addStretch()
+        footer.addWidget(self.buttons)
+
+        return footer
+
     def __init__(
         self,
         profile_id: str | None = None,
@@ -95,34 +126,7 @@ class OCRCorrectionsDialog(QDialog):
         )
         note.setWordWrap(True)
 
-        self.buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.buttons.accepted.connect(self.save)
-        self.buttons.rejected.connect(self.reject)
-        self.save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
-        set_action_icon(self.save_button, "save")
-        self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
-        set_action_icon(self.cancel_button, "x")
-        self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
-        self.status.setAccessibleName("OCR correction save status")
-        self.status.setFrameShape(QFrame.Shape.NoFrame)
-        self.status.viewport().setAutoFillBackground(False)
-        self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 3 + 12)
-        self.status.installEventFilter(self)
-        self.copy_button = QPushButton("Copy rules")
-        set_action_icon(self.copy_button, "copy")
-        self.copy_button.setToolTip(
-            "Copy all edited rules from both scopes, including unsaved changes"
-        )
-        self.copy_button.clicked.connect(self.copy_rules)
-        footer = QHBoxLayout()
-        footer.addWidget(self.copy_button)
-        footer.addStretch()
-        footer.addWidget(self.buttons)
-
+        footer = self._create_footer()
         layout = QVBoxLayout(self)
         layout.addWidget(note)
         layout.addWidget(self.tabs, 1)

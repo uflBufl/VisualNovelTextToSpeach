@@ -45,23 +45,7 @@ def request(line: bytes) -> dict[str, Any]:
         if value.get("op") == "open":
             allowed |= {"target", "max_fps"}
             integer(value.get("max_fps", 10), 1, 60)
-            target = value.get("target")
-            if not isinstance(target, dict):
-                raise ValueError()
-            if target.get("kind") == "window" and set(target) == {
-                "kind",
-                "window_id",
-                "pid",
-            }:
-                integer(target["window_id"], 1, 2**32 - 1)
-                integer(target["pid"], 1, 2**31 - 1)
-            elif target.get("kind") == "display" and set(target) == {
-                "kind",
-                "display_id",
-            }:
-                integer(target["display_id"], 0, 2**32 - 1)
-            else:
-                raise ValueError()
+            _validate_target(value.get("target"))
         elif value.get("op") == "capture":
             allowed.add("timeout_ms")
             integer(value.get("timeout_ms", 2000), 1, 10_000)
@@ -74,6 +58,40 @@ def request(line: bytes) -> dict[str, Any]:
         raise
     except TypeError, ValueError, AttributeError:
         raise Failure("invalid_request", "Invalid capture request") from None
+
+
+def _validate_target(target: Any) -> None:
+    if not isinstance(target, dict):
+        raise ValueError()
+    if target.get("kind") == "window" and set(target) == {
+        "kind",
+        "window_id",
+        "pid",
+    }:
+        integer(target["window_id"], 1, 2**32 - 1)
+        integer(target["pid"], 1, 2**31 - 1)
+    elif target.get("kind") == "display" and set(target) == {
+        "kind",
+        "display_id",
+    }:
+        integer(target["display_id"], 0, 2**32 - 1)
+    else:
+        raise ValueError()
+
+
+def _channel_shifts(masks: tuple[int, int, int], bits: int) -> list[tuple[int, int]]:
+    shifts = []
+    for mask in masks:
+        if mask <= 0 or mask >= 1 << bits:
+            raise Failure("unsupported_format", "Invalid TrueColor channel mask")
+        shift = (mask & -mask).bit_length() - 1
+        maximum = mask >> shift
+        if maximum & (maximum + 1):
+            raise Failure("unsupported_format", "Noncontiguous TrueColor channel mask")
+        shifts.append((shift, maximum))
+    if any(masks[a] & masks[b] for a, b in ((0, 1), (0, 2), (1, 2))):
+        raise Failure("unsupported_format", "Overlapping TrueColor masks")
+    return shifts
 
 
 def decode_pixels(
@@ -92,17 +110,7 @@ def decode_pixels(
     stride = ((width * bits + pad - 1) // pad) * (pad // 8)
     if len(data) != stride * height:
         raise Failure("invalid_frame", "Unexpected X11 image byte count")
-    shifts = []
-    for mask in masks:
-        if mask <= 0 or mask >= 1 << bits:
-            raise Failure("unsupported_format", "Invalid TrueColor channel mask")
-        shift = (mask & -mask).bit_length() - 1
-        maximum = mask >> shift
-        if maximum & (maximum + 1):
-            raise Failure("unsupported_format", "Noncontiguous TrueColor channel mask")
-        shifts.append((shift, maximum))
-    if any(masks[a] & masks[b] for a, b in ((0, 1), (0, 2), (1, 2))):
-        raise Failure("unsupported_format", "Overlapping TrueColor masks")
+    shifts = _channel_shifts(masks, bits)
     if masks == (0xFF0000, 0xFF00, 0xFF) and bits in (24, 32):
         raw = (
             ("BGR" if bits == 24 else "BGRX")
@@ -389,6 +397,31 @@ class Source:
             self.display.close()
 
 
+def _execute_request(
+    value: dict[str, Any], source: Source | None, source_type: type[Source]
+) -> tuple[Source | None, dict[str, Any], bytes]:
+    pixels = b""
+    if value["op"] == "open":
+        if source:
+            raise Failure("already_open", "Capture session is already open")
+        source = source_type(value["target"], value["session_id"])
+        result = {
+            "backend": BACKEND,
+            "session_id": value["session_id"],
+            "clock_now": monotonic(),
+        }
+    else:
+        if source is None or source.session != value["session_id"]:
+            raise Failure("session_mismatch", "No matching capture session")
+        if value["op"] == "capture":
+            result, pixels = source.capture(value.get("timeout_ms", 2000))
+        else:
+            source.close()
+            source = None
+            result = {}
+    return source, result, pixels
+
+
 def run(
     input_stream: BinaryIO, output_stream: BinaryIO, source_type: type[Source] = Source
 ) -> None:
@@ -407,24 +440,7 @@ def run(
             try:
                 value = request(line)
                 identifier = value["id"]
-                if value["op"] == "open":
-                    if source:
-                        raise Failure("already_open", "Capture session is already open")
-                    source = source_type(value["target"], value["session_id"])
-                    result = {
-                        "backend": BACKEND,
-                        "session_id": value["session_id"],
-                        "clock_now": monotonic(),
-                    }
-                else:
-                    if source is None or source.session != value["session_id"]:
-                        raise Failure("session_mismatch", "No matching capture session")
-                    if value["op"] == "capture":
-                        result, pixels = source.capture(value.get("timeout_ms", 2000))
-                    else:
-                        source.close()
-                        source = None
-                        result = {}
+                source, result, pixels = _execute_request(value, source, source_type)
                 header = {
                     "version": 1,
                     "id": identifier,

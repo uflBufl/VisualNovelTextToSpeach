@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkab
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from vntts.controller import AppController, _Executor, _ExecutorFuture
+    from vntts.controller import AppController, _Executor, _ExecutorFuture, _VoiceRouter
 
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
@@ -39,6 +39,7 @@ from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     LiveSpeechRequired,
     PendingGeneratedAudioRoute,
+    RouteDecision,
 )
 from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
@@ -951,26 +952,15 @@ class LiveSessionComponent:
             return False
 
         def request_refusal() -> str | None:
-            if (
-                controller.live_scope_identification_token != bootstrap_id
-                or controller.shutdown_requested.is_set()
-                or (cancellation is not None and cancellation.is_set())
-                or controller.observation_serial != observation_serial
-                or controller.is_live_running
-            ):
-                return "cancelled"
-            if (
-                controller.capture_target is not target
-                or controller.settings is not settings
-                or controller.chapter_voice_preloader is not preloader
-            ):
-                return "target-changed"
-            if target is None or settings.capture_mode != "window":
-                return "capture-target-unavailable"
-            focused = controller._is_game_focused()
-            if window is not None and getattr(target, "last_window", None) != window:
-                return "target-changed"
-            return None if focused else "focus-lost"
+            return self._scope_request_refusal(
+                bootstrap_id,
+                observation_serial,
+                cancellation,
+                target,
+                settings,
+                preloader,
+                window,
+            )
 
         try:
             refusal = request_refusal()
@@ -978,85 +968,157 @@ class LiveSessionComponent:
                 return finish("focus-wait" if refusal == "focus-lost" else refusal)
             window = getattr(target, "last_window", None)
 
-            def while_current(callback: Callable[..., object]) -> Callable[..., object]:
-                def guarded(*arguments: object) -> object:
-                    if request_refusal() is None:
-                        return callback(*arguments)
-                    return None
-
-                return guarded
-
-            def defer_uncertainty(result: OCRResult, minimum: float) -> None:
-                nonlocal uncertain
-                # Publishing uncertainty invalidates this request's observation serial.
-                uncertain = result, minimum
-
-            character, text = read_live_snapshot(
-                get_screenshot_directory(settings),
-                voice_router.registry,
-                target,
-                settings.ocr_minimum_confidence,
-                defer_uncertainty,
-                controller.uncertain_frame_recorder,
-                while_current(controller._publish_diagnostic),
-                controller._resolve_voice_label,
-                settings.ocr_language,
-                controller.correction_dictionary,
-                controller._capture_region(),
-                controller._capture_ocr_regions(),
-                controller._resolve_story_ocr_result,
+            character, text, uncertain = self._read_scope_snapshot(
+                settings, voice_router, target, request_refusal
             )
             with controller.story_cursor_lock:
-                refusal = request_refusal()
+                line, match_result, refusal = self._bind_scope_snapshot(
+                    character, text, uncertain, preloader, request_refusal
+                )
                 if refusal is not None:
                     return finish(refusal)
-                if uncertain is not None:
-                    controller._ocr_uncertain(*uncertain)
-                    return finish("ocr-uncertain")
-                if is_empty(text):
-                    return finish("no-dialog-text")
-                previous_match = preloader.current_match
-                observed_character = character
-                character = controller._canonical_observed_character(
-                    character or "Narrator", text
-                )
-                line, match_result = controller._resolve_initial_live_sequence_line(
-                    character,
-                    text,
-                )
-                refusal = request_refusal()
-                if refusal is not None:
-                    preloader.current_match = previous_match
-                    return finish(refusal)
-                controller.live_scope_identification_match_result = str(match_result)
-                latest = controller.get_latest_diagnostic()
-                controller.live_scope_identification_diagnostics = {
-                    **controller.chapter_voice_preloader.last_resolution_diagnostics,
-                    "live_sequence_mode": controller.settings.live_sequence_mode,
-                    "plan_speech_line_count": (
-                        sum(
-                            event.is_speech
-                            for event in controller.live_sequence_plan.events.values()
-                        )
-                        if controller.live_sequence_plan is not None
-                        else 0
-                    ),
-                    "speaker_canonicalized": observed_character != character,
-                    "ocr_confidence": round(latest.confidence, 2)
-                    if latest is not None
-                    else 0.0,
-                    "correction_count": len(latest.corrections)
-                    if latest is not None
-                    else 0,
-                }
-                if line is None:
-                    return finish("story-line-no-match")
+                assert line is not None
                 controller.dialog_handler(line.speaker, line.text)
                 finish("matched")
                 return True
         except Exception as error:
             finish("error", error_type=type(error).__name__)
             raise
+
+    def _bind_scope_snapshot(
+        self,
+        character: str | None,
+        text: str,
+        uncertain: tuple[OCRResult, float] | None,
+        preloader: ChapterVoicePreloader,
+        request_refusal: Callable[[], str | None],
+    ) -> tuple[ChapterDialogue | None, object, str | None]:
+        controller = self.controller
+        match_result: object = None
+        refusal = request_refusal()
+        if refusal is not None:
+            return None, match_result, refusal
+        if uncertain is not None:
+            controller._ocr_uncertain(*uncertain)
+            return None, match_result, "ocr-uncertain"
+        if is_empty(text):
+            return None, match_result, "no-dialog-text"
+        previous_match = preloader.current_match
+        observed_character = character
+        character = controller._canonical_observed_character(
+            character or "Narrator", text
+        )
+        line, match_result = controller._resolve_initial_live_sequence_line(
+            character,
+            text,
+        )
+        refusal = request_refusal()
+        if refusal is not None:
+            preloader.current_match = previous_match
+            return None, match_result, refusal
+        controller.live_scope_identification_match_result = str(match_result)
+        self._record_scope_identification_diagnostics(observed_character, character)
+        if line is None:
+            return None, match_result, "story-line-no-match"
+        return line, match_result, None
+
+    def _read_scope_snapshot(
+        self,
+        settings: AppSettings,
+        voice_router: _VoiceRouter,
+        target: object,
+        request_refusal: Callable[[], str | None],
+    ) -> tuple[str | None, str, tuple[OCRResult, float] | None]:
+        controller = self.controller
+        uncertain: tuple[OCRResult, float] | None = None
+
+        def while_current(callback: Callable[..., object]) -> Callable[..., object]:
+            def guarded(*arguments: object) -> object:
+                if request_refusal() is None:
+                    return callback(*arguments)
+                return None
+
+            return guarded
+
+        def defer_uncertainty(result: OCRResult, minimum: float) -> None:
+            nonlocal uncertain
+            # Publishing uncertainty invalidates this request's observation serial.
+            uncertain = result, minimum
+
+        character, text = read_live_snapshot(
+            get_screenshot_directory(settings),
+            voice_router.registry,
+            target,
+            settings.ocr_minimum_confidence,
+            defer_uncertainty,
+            controller.uncertain_frame_recorder,
+            while_current(controller._publish_diagnostic),
+            controller._resolve_voice_label,
+            settings.ocr_language,
+            controller.correction_dictionary,
+            controller._capture_region(),
+            controller._capture_ocr_regions(),
+            controller._resolve_story_ocr_result,
+        )
+        return character, text, uncertain
+
+    def _scope_request_refusal(
+        self,
+        bootstrap_id: str,
+        observation_serial: int,
+        cancellation: _Cancellation | None,
+        target: object,
+        settings: AppSettings,
+        preloader: ChapterVoicePreloader,
+        window: object,
+    ) -> str | None:
+        controller = self.controller
+
+        if (
+            controller.live_scope_identification_token != bootstrap_id
+            or controller.shutdown_requested.is_set()
+            or (cancellation is not None and cancellation.is_set())
+            or controller.observation_serial != observation_serial
+            or controller.is_live_running
+        ):
+            return "cancelled"
+        if (
+            controller.capture_target is not target
+            or controller.settings is not settings
+            or controller.chapter_voice_preloader is not preloader
+        ):
+            return "target-changed"
+        if target is None or settings.capture_mode != "window":
+            return "capture-target-unavailable"
+        focused = controller._is_game_focused()
+        if window is not None and getattr(target, "last_window", None) != window:
+            return "target-changed"
+        return None if focused else "focus-lost"
+
+    def _record_scope_identification_diagnostics(
+        self,
+        observed_character: str | None,
+        character: str,
+    ) -> None:
+        controller = self.controller
+        latest = controller.get_latest_diagnostic()
+        controller.live_scope_identification_diagnostics = {
+            **controller.chapter_voice_preloader.last_resolution_diagnostics,
+            "live_sequence_mode": controller.settings.live_sequence_mode,
+            "plan_speech_line_count": (
+                sum(
+                    event.is_speech
+                    for event in controller.live_sequence_plan.events.values()
+                )
+                if controller.live_sequence_plan is not None
+                else 0
+            ),
+            "speaker_canonicalized": observed_character != character,
+            "ocr_confidence": round(latest.confidence, 2)
+            if latest is not None
+            else 0.0,
+            "correction_count": len(latest.corrections) if latest is not None else 0,
+        }
 
     def toggle(self) -> bool:
         controller = self.controller
@@ -1696,46 +1758,57 @@ class DiagnosticsComponent:
                         ) from error
                     backend.set_live_mode_active(True)
                     route = backend.prepare_route(character, text)
-                if not guard():
-                    raise RuntimeError("OCR-to-speech test cancelled.")
-                if isinstance(route, PendingGeneratedAudioRoute):
-                    raise RuntimeError(
-                        "This line is still being prepared. Finish offline preparation "
-                        "and read the line again."
-                    )
-                if isinstance(route, AudioEventOmissionRoute):
-                    raise RuntimeError(
-                        "This story line intentionally has no speech. Show another line "
-                        "to test audio output."
-                    )
-                controller.last_audio_source_description = (
-                    controller._describe_audio_source(route)
-                )
-                controller.last_audio_route_trace = route.trace
-                outcome = backend.play_route(route, playback_guard=guard)
-                if not isinstance(outcome, PlaybackOutcome):
-                    raise TypeError(
-                        "Speech backend returned an untyped playback outcome"
-                    )
-                raise_playback_failure(outcome)
-                if not guard() or outcome.status is not PlaybackStatus.COMPLETED:
-                    raise RuntimeError(
-                        "Audio playback did not complete. Read the line again."
-                    )
+                self._play_test_generated_route(backend, route, guard)
             else:
-                if prepare_live is not None:
-                    prepare_live()
-                if not guard() or not controller._speak_with_live_backend(
-                    character, text
-                ):
-                    raise RuntimeError(
-                        "Audio playback did not complete. Read the line again."
-                    )
-                controller.last_audio_source_description = (
-                    controller._describe_audio_source(None)
-                )
+                self._play_test_live_route(character, text, prepare_live, guard)
         finally:
             if isinstance(backend, GeneratedAudioFallbackBackend):
                 backend.set_live_mode_active(False)
                 if backend.live_backend is None:
                     backend.stop()
+
+    def _play_test_live_route(
+        self,
+        character: str,
+        text: str,
+        prepare_live: Callable[[], None] | None,
+        guard: Callable[[], bool],
+    ) -> None:
+        controller = self.controller
+        if prepare_live is not None:
+            prepare_live()
+        if not guard() or not controller._speak_with_live_backend(character, text):
+            raise RuntimeError("Audio playback did not complete. Read the line again.")
+        controller.last_audio_source_description = controller._describe_audio_source(
+            None
+        )
+
+    def _play_test_generated_route(
+        self,
+        backend: GeneratedAudioFallbackBackend,
+        route: RouteDecision,
+        guard: Callable[[], bool],
+    ) -> None:
+        controller = self.controller
+        if not guard():
+            raise RuntimeError("OCR-to-speech test cancelled.")
+        if isinstance(route, PendingGeneratedAudioRoute):
+            raise RuntimeError(
+                "This line is still being prepared. Finish offline preparation "
+                "and read the line again."
+            )
+        if isinstance(route, AudioEventOmissionRoute):
+            raise RuntimeError(
+                "This story line intentionally has no speech. Show another line "
+                "to test audio output."
+            )
+        controller.last_audio_source_description = controller._describe_audio_source(
+            route
+        )
+        controller.last_audio_route_trace = route.trace
+        outcome = backend.play_route(route, playback_guard=guard)
+        if not isinstance(outcome, PlaybackOutcome):
+            raise TypeError("Speech backend returned an untyped playback outcome")
+        raise_playback_failure(outcome)
+        if not guard() or outcome.status is not PlaybackStatus.COMPLETED:
+            raise RuntimeError("Audio playback did not complete. Read the line again.")

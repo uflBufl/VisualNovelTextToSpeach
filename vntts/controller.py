@@ -647,6 +647,13 @@ class AppController:
         self._initialize_live_sequence_state()
         self.capture_target = self._create_capture_target()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
+        self._initialize_runtime_state()
+        self.runtime_lifecycle = RuntimeLifecycleComponent(self)
+        self.live_session = LiveSessionComponent(self)
+        self.voice_assignments = VoiceAssignmentComponent(self)
+        self.diagnostics = DiagnosticsComponent(self)
+
+    def _initialize_runtime_state(self) -> None:
         self.tts = None
         self.voice_router = None
         self.speech_backend = None
@@ -677,10 +684,6 @@ class AppController:
         self.voice_prime_futures: set[_ExecutorFuture] = set()
         self.shutdown_requested = Event()
         self.shutdown_complete = Event()
-        self.runtime_lifecycle = RuntimeLifecycleComponent(self)
-        self.live_session = LiveSessionComponent(self)
-        self.voice_assignments = VoiceAssignmentComponent(self)
-        self.diagnostics = DiagnosticsComponent(self)
 
     def _record_pipeline_event(
         self,
@@ -4173,29 +4176,7 @@ class AppController:
         )
         self.last_audio_source_description = source
         self.status_handler(f"Audio source for {chunk.character}: {source}")
-        if not chunk.explicit_replay and (
-            (
-                isinstance(audio, SourceAudioRoute)
-                and audio.prepared.completion_seconds is None
-            )
-            or (
-                isinstance(audio, PreparedSourceAudioPassThrough)
-                and audio.completion_seconds is None
-            )
-        ):
-            source_audio = (
-                audio.prepared if isinstance(audio, SourceAudioRoute) else audio
-            )
-            reason = (
-                f"Auto advance paused for original game audio line {source_audio.line_id}: "
-                "completion timing is unavailable. Wait for the original game voice "
-                "to finish, then advance manually in the game."
-            )
-            if reader.block_auto_advance_for_generation(
-                chunk.generation,
-                reason,
-            ):
-                self.status_handler(reason)
+        self._guard_original_audio_completion(reader, chunk, audio)
         playback_started = monotonic()
         outcome = None
         interrupted_for_pause = False
@@ -4269,6 +4250,33 @@ class AppController:
                 sequence_lease, outcome, interrupted_for_pause=interrupted_for_pause
             )
             self._refresh_diagnostic_metrics(outcome, source)
+
+    def _guard_original_audio_completion(
+        self, reader: LiveDialogReader, chunk: SpeechChunk, audio: object
+    ) -> None:
+        if not chunk.explicit_replay and (
+            (
+                isinstance(audio, SourceAudioRoute)
+                and audio.prepared.completion_seconds is None
+            )
+            or (
+                isinstance(audio, PreparedSourceAudioPassThrough)
+                and audio.completion_seconds is None
+            )
+        ):
+            source_audio = (
+                audio.prepared if isinstance(audio, SourceAudioRoute) else audio
+            )
+            reason = (
+                f"Auto advance paused for original game audio line {source_audio.line_id}: "
+                "completion timing is unavailable. Wait for the original game voice "
+                "to finish, then advance manually in the game."
+            )
+            if reader.block_auto_advance_for_generation(
+                chunk.generation,
+                reason,
+            ):
+                self.status_handler(reason)
 
     def _live_sequence_playback_suppressed(
         self,
@@ -4512,6 +4520,22 @@ class AppController:
                     0.0,
                     audio_source="live-accessibility-announcement",
                 )
+        outcome = self._dispatch_speaker_announcement(chunk, route, announced_speaker)
+        self._report_speaker_announcement(chunk, route, announced_speaker, outcome)
+        self._observe_live_playback_backpressure(outcome.underflowed)
+        if outcome.status is PlaybackStatus.COMPLETED:
+            with self.speaker_announcement_lock:
+                self.last_visible_speaker_key = speaker_key
+        elif outcome.status is PlaybackStatus.FAILED:
+            try:
+                raise_playback_failure(outcome)
+            except Exception as error:
+                self.error_handler(error)
+        return outcome
+
+    def _dispatch_speaker_announcement(
+        self, chunk: SpeechChunk, route: LiveTTSRoute, announced_speaker: str
+    ) -> PlaybackOutcome:
         backend = self.speech_backend
         play_route = getattr(backend, "play_route", None)
         live_backend = getattr(backend, "live_backend", backend)
@@ -4558,6 +4582,15 @@ class AppController:
             outcome,
             audio_source="live-accessibility-announcement",
         )
+        return outcome
+
+    def _report_speaker_announcement(
+        self,
+        chunk: SpeechChunk,
+        route: LiveTTSRoute,
+        announced_speaker: str,
+        outcome: PlaybackOutcome,
+    ) -> None:
         try:
             self.pipeline_event_handler(
                 "speaker-announcement-outcome",
@@ -4578,16 +4611,6 @@ class AppController:
             )
         except Exception as error:
             self.error_handler(error)
-        self._observe_live_playback_backpressure(outcome.underflowed)
-        if outcome.status is PlaybackStatus.COMPLETED:
-            with self.speaker_announcement_lock:
-                self.last_visible_speaker_key = speaker_key
-        elif outcome.status is PlaybackStatus.FAILED:
-            try:
-                raise_playback_failure(outcome)
-            except Exception as error:
-                self.error_handler(error)
-        return outcome
 
     def _observe_live_playback_backpressure(self, underflowed: bool) -> None:
         jobs, changed = self.live_speech_backpressure.observe_playback(

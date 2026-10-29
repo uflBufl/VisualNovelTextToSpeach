@@ -464,34 +464,11 @@ class ChapterVoicePreloader:
                     return None, "expected-no-match"
                 result = "expected-complete-diacritic-fold"
         if line is None:
-            # Include every competitor, even one which fails its own acceptance
-            # guards. A missing alternative is not evidence of a unique match.
-            # Cutoff 4 distinguishes distance 5, the margin needed at budget 3.
-            ranked = sorted(
-                (
-                    (
-                        _bounded_levenshtein(
-                            observed, self.diacritic_folded_text[row], 4
-                        ),
-                        row,
-                    )
-                    for row in valid
-                ),
-                key=lambda item: item[0],
+            line, result = self._resolve_complete_edit_distance(
+                valid, observed, protected
             )
-            distance, line = ranked[0]
-            canonical = self.diacritic_folded_text[line]
-            length = sum(character.isalnum() for character in canonical)
-            budget = sum(length >= boundary for boundary in (3, 60, 120))
-            if (
-                distance > budget
-                or _protected_text_content(line.text) != protected
-                or not _complete_ocr_words(observed, canonical)
-            ):
-                return None, "expected-no-match"
-            if len(ranked) > 1 and ranked[1][0] < distance + 2:
-                return None, "expected-ambiguous"
-            result = "expected-complete-edit-distance"
+            if line is None:
+                return None, result
         canonical = self.diacritic_folded_text[line]
         if any(
             row.line_id != line.line_id
@@ -504,6 +481,40 @@ class ChapterVoicePreloader:
             self.current_match = ChapterMatch(
                 line.chapter, line.sequence, 1.0, line.story_order
             )
+        return line, result
+
+    def _resolve_complete_edit_distance(
+        self,
+        valid: tuple[ChapterDialogue, ...],
+        observed: str,
+        protected: object,
+    ) -> tuple[ChapterDialogue | None, str]:
+        # Include every competitor, even one which fails its own acceptance
+        # guards. A missing alternative is not evidence of a unique match.
+        # Cutoff 4 distinguishes distance 5, the margin needed at budget 3.
+        ranked = sorted(
+            (
+                (
+                    _bounded_levenshtein(observed, self.diacritic_folded_text[row], 4),
+                    row,
+                )
+                for row in valid
+            ),
+            key=lambda item: item[0],
+        )
+        distance, line = ranked[0]
+        canonical = self.diacritic_folded_text[line]
+        length = sum(character.isalnum() for character in canonical)
+        budget = sum(length >= boundary for boundary in (3, 60, 120))
+        if (
+            distance > budget
+            or _protected_text_content(line.text) != protected
+            or not _complete_ocr_words(observed, canonical)
+        ):
+            return None, "expected-no-match"
+        if len(ranked) > 1 and ranked[1][0] < distance + 2:
+            return None, "expected-ambiguous"
+        result = "expected-complete-edit-distance"
         return line, result
 
     def resolve_bounded_among(

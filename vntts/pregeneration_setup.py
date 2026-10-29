@@ -847,38 +847,7 @@ def discover_game_content(
                     sha256_file(path),
                     hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest(),
                 )
-            if (
-                isinstance(settings, AppSettings)
-                and settings.game_pack
-                and settings.story_index
-                and path == Path(settings.story_index).expanduser().resolve()
-            ):
-                from vntts.game_pack import GamePackError, import_game_pack
-
-                try:
-                    imported = import_game_pack(settings.game_pack)
-                    if (
-                        imported.story_index == path
-                        and imported.pack.story_index.sha256
-                        == content.story_index_sha256
-                    ):
-                        content = _with_game_id(content, imported.pack.game_id)
-                except (
-                    GamePackError,
-                    OSError,
-                    ValueError,
-                    PregenerationSetupError,
-                ) as error:
-                    logging.getLogger(__name__).exception(
-                        "Unable to admit configured game pack %s for story index %s",
-                        settings.game_pack,
-                        path,
-                    )
-                    if isinstance(error, PregenerationSetupError):
-                        raise
-                    raise PregenerationSetupError(
-                        f"Configured game pack is invalid: {error}"
-                    ) from error
+            content = _configured_game_pack_content(settings, path, content)
             discovered.append(content)
         except (OSError, ValueError) as error:
             logging.getLogger(__name__).exception(
@@ -889,6 +858,45 @@ def discover_game_content(
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)
     return ContentDiscovery(tuple(discovered), tuple(errors))
+
+
+def _configured_game_pack_content(
+    settings: AppSettings | object,
+    path: Path,
+    content: GameContent,
+) -> GameContent:
+    if (
+        isinstance(settings, AppSettings)
+        and settings.game_pack
+        and settings.story_index
+        and path == Path(settings.story_index).expanduser().resolve()
+    ):
+        from vntts.game_pack import GamePackError, import_game_pack
+
+        try:
+            imported = import_game_pack(settings.game_pack)
+            if (
+                imported.story_index == path
+                and imported.pack.story_index.sha256 == content.story_index_sha256
+            ):
+                content = _with_game_id(content, imported.pack.game_id)
+        except (
+            GamePackError,
+            OSError,
+            ValueError,
+            PregenerationSetupError,
+        ) as error:
+            logging.getLogger(__name__).exception(
+                "Unable to admit configured game pack %s for story index %s",
+                settings.game_pack,
+                path,
+            )
+            if isinstance(error, PregenerationSetupError):
+                raise
+            raise PregenerationSetupError(
+                f"Configured game pack is invalid: {error}"
+            ) from error
+    return content
 
 
 def estimate_preparation(

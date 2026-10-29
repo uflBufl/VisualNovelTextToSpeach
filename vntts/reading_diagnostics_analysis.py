@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from threading import Event
 from time import monotonic
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import soundfile as sf
@@ -20,6 +20,21 @@ RATE = 16000
 MAX_SOURCE_SECONDS = 60
 MATCH_STEP = RATE * 30
 MAX_MATCH_SAMPLES = 1 << 22
+
+
+class _CaptureAudio(NamedTuple):
+    path: Path
+    offset: float
+    residual_ms: float
+    frames: int
+    pid: int
+
+
+class _RouteCapture(NamedTuple):
+    source: dict
+    dispatch: float
+    source_lead_ms: float | None
+    identity_verified: bool
 
 
 def normalized_match(audio: np.ndarray, source: np.ndarray) -> tuple[int, float] | None:
@@ -201,13 +216,7 @@ def _number(value: object) -> float:
     return float(value)
 
 
-def _capture_clock(
-    directory: Path,
-    *,
-    started: float | None = None,
-    cancelled: Event | None = None,
-    audio_path: Path | None = None,
-) -> tuple[float, float]:
+def _capture_metadata(directory: Path) -> tuple[dict[str, Any], float]:
     metadata = _json(directory / "session.json")
     if (
         metadata.get("status") != "captured_unqualified"
@@ -225,6 +234,17 @@ def _capture_clock(
         raise ValueError(
             "Captured process identity differs from its evidence directory"
         )
+    return metadata, rate
+
+
+def _capture_clock(
+    directory: Path,
+    *,
+    started: float | None = None,
+    cancelled: Event | None = None,
+    audio_path: Path | None = None,
+) -> tuple[float, float]:
+    metadata, rate = _capture_metadata(directory)
     frames = 0
     previous_sample: float | None = None
     previous_host = float("-inf")
@@ -391,25 +411,7 @@ def _playback_lifetime(
     return end, complete, reason
 
 
-def analyze_session(
-    directory: Path, *, cancelled: Event | None = None, interrupted: bool = False
-) -> dict[str, object]:
-    """A match qualifies digital source evidence, never physical speaker quality."""
-    started = monotonic()
-    _check(started, cancelled)
-    events = _events(
-        directory / "timeline.jsonl",
-        "stage",
-        {
-            "route-decision",
-            "playback-start",
-            "playback-completion",
-            "playback-outcome",
-            "reading-control",
-        },
-        started,
-        cancelled,
-    )
+def _source_entries(directory: Path) -> dict[tuple[str, str], dict]:
     entries = _json(directory / "sources.json", 1024**2).get("entries", [])
     if not isinstance(entries, list) or len(entries) > 200:
         raise ValueError("Source manifest exceeds analysis budget")
@@ -420,50 +422,22 @@ def analyze_session(
         digest = entry.get("audio_sha256")
         if not isinstance(digest, str) or len(digest) != 64:
             raise ValueError("Invalid source evidence digest")
-        key = (entry["line_id"], digest)
-        if key in sources and sources[key] != entry:
+        source_key = (entry["line_id"], digest)
+        if source_key in sources and sources[source_key] != entry:
             raise ValueError("Ambiguous source evidence identity")
-        sources[key] = entry
-    routes = [
-        e
-        for e in events
-        if e.get("stage") == "route-decision"
-        and e.get("effective_source") == "generated"
-    ]
-    if len(routes) > 200:
-        raise ValueError("Generated route count exceeds analysis budget")
-    dispatch_times: dict[tuple, list[object]] = {}
-    for event in events:
-        if event.get("stage") == "playback-start" and isinstance(
-            event.get("playback_id"), str
-        ):
-            dispatch_times.setdefault(_playback_key(event), []).append(
-                event.get("occurred_at")
-            )
-    dispatches = {
-        _playback_key(e): e["occurred_at"]
-        for e in events
-        if e.get("stage") == "playback-start"
-        and e.get("playback_id")
-        and _timestamp(e.get("occurred_at")) is not None
-        and math.isfinite(e["occurred_at"])
-    }
-    runtime = (
-        _events(
-            directory / "runtime.jsonl",
-            "operation",
-            {
-                "prepared-source",
-                "rust-worker-finished",
-                "cancel",
-                "stop",
-            },
-            started,
-            cancelled,
-        )
-        if (directory / "runtime.jsonl").exists()
-        else []
-    )
+        sources[source_key] = entry
+    return sources
+
+
+def _runtime_playback_evidence(
+    runtime: list[dict],
+) -> tuple[
+    dict[tuple, set[int]],
+    dict[tuple, set[str]],
+    dict[tuple, set[str]],
+    dict[tuple, set[float | None]],
+    dict[tuple, list[object]],
+]:
     owners: dict[tuple, set[int]] = {}
     owner_tokens: dict[tuple, set[str]] = {}
     admitted: dict[tuple, set[str]] = {}
@@ -501,6 +475,10 @@ def analyze_session(
                 owner_tokens.setdefault(_playback_key(event), set()).add(
                     event["worker_id"]
                 )
+    return owners, owner_tokens, admitted, source_leads, admission_times
+
+
+def _recording_evidence(directory: Path) -> tuple[dict, list, dict[str, dict]]:
     session_path = directory / "session.json"
     recording = (
         _json(session_path).get("recording", {}) if session_path.exists() else {}
@@ -518,41 +496,321 @@ def analyze_session(
         for value in recorded_captures
         if isinstance(value, dict) and isinstance(value.get("directory"), str)
     }
-    results, captures, attempted, matched = [], [], set(), set()
-    unmatched_reasons = {}
+    return recording, gaps, capture_records
+
+
+def _capture_audio_evidence(
+    directory: Path,
+    capture: Path,
+    record: dict,
+    started: float,
+    cancelled: Event | None,
+) -> _CaptureAudio:
+    if capture.is_symlink() or not capture.resolve().is_relative_to(
+        directory.resolve()
+    ):
+        raise ValueError("Process capture escapes its session")
+    if record.get("acquisition_failure"):
+        raise ValueError("Process capture has an acquisition failure")
+    audio_path = diagnostic_audio_path(
+        capture / "process.caf", cancelled=cancelled, deadline=started + 120
+    )
+    offset, residual = _capture_clock(
+        capture, started=started, cancelled=cancelled, audio_path=audio_path
+    )
+    with (
+        open_regular_binary(audio_path) as source_file,
+        sf.SoundFile(source_file) as captured_audio,
+    ):
+        if captured_audio.frames > MAX_CAPTURE_SECONDS * captured_audio.samplerate:
+            raise ValueError("Unsupported or oversized diagnostic audio")
+        audio_frames = round(captured_audio.frames * RATE / captured_audio.samplerate)
+    capture_pid = int(capture.name.split("-")[1])
+    return _CaptureAudio(audio_path, offset, residual, audio_frames, capture_pid)
+
+
+def _route_capture_evidence(
+    route: dict,
+    sources: dict[tuple[str, str], dict],
+    dispatches: dict[tuple, float],
+    owners: dict[tuple, set[int]],
+    owner_tokens: dict[tuple, set[str]],
+    admitted: dict[tuple, set[str]],
+    source_leads: dict[tuple, set[float | None]],
+    record: dict,
+    capture_paths: list[Path],
+    audio: _CaptureAudio,
+) -> _RouteCapture | None:
+    _audio_path, offset, _residual, audio_frames, capture_pid = audio
+    playback_id = route.get("playback_id")
+    line_id = route.get("line_id")
+    if not isinstance(playback_id, str) or not isinstance(line_id, str):
+        return None
+    key = _playback_key(route)
+    digests = admitted.get(key, set())
+    entry = sources.get((line_id, next(iter(digests)))) if len(digests) == 1 else None
+    dispatch = dispatches.get(key)
+    worker_pids = owners.get(key, set())
+    tokens = owner_tokens.get(key, set())
+    captured_token = record.get("worker_identity", {}) or {}
+    identity_verified = bool(worker_pids) and (
+        tokens == {captured_token.get("worker_id")}
+        if tokens
+        else sum(path.name.split("-")[1] == str(capture_pid) for path in capture_paths)
+        == 1
+    )
+    if (
+        entry is None
+        or dispatch is None
+        or (worker_pids and capture_pid not in worker_pids)
+        or (tokens and not identity_verified)
+    ):
+        return None
+    leads = source_leads.get((key, entry["audio_sha256"]), set())
+    source_lead = next(iter(leads)) if len(leads) == 1 else None
+    expected_start = dispatch + (source_lead / 1000 if source_lead is not None else 0)
+    if not offset - 0.25 <= expected_start < offset + audio_frames / RATE:
+        return None
+    return _RouteCapture(entry, dispatch, source_lead, identity_verified)
+
+
+def _correlate_route_capture(
+    directory: Path,
+    capture: Path,
+    audio: _CaptureAudio,
+    evidence: _RouteCapture,
+    route: dict,
+    end: float,
+    lifetime_complete: bool,
+    lifetime_reason: str,
+    phase_dispatches: list[object],
+    admissions: list[object],
+    started: float,
+    cancelled: Event | None,
+) -> dict[str, object] | None:
+    audio_path, offset, residual, audio_frames, _capture_pid = audio
+    entry, dispatch, source_lead, identity_verified = evidence
+    source = _audio(
+        _source_path(directory, entry, started=started, cancelled=cancelled),
+        seconds=MAX_SOURCE_SECONDS,
+        cancelled=cancelled,
+        started=started,
+    )
+    left = max(0, math.ceil((dispatch - offset) * RATE))
+    right = min(
+        audio_frames,
+        math.floor((end - offset) * RATE),
+    )
+    if right <= left:
+        return None
+    full_source = lifetime_complete and right - left >= len(source)
+    template_source = (
+        source
+        if full_source
+        else source[: min(len(source), RATE // 2, max(0, (right - left) // 2))]
+    )
+    match = _match_audio(audio_path, left, right, template_source, started, cancelled)
+    if match is None or (not full_source and match[1] < 0.9):
+        return None
+    position, score = match
+    onset = offset + (left + position) / RATE
+    dispatch_to_admission = admission_to_onset = None
+    if len(phase_dispatches) == len(admissions) == 1:
+        try:
+            phase_dispatch = _number(phase_dispatches[0])
+            admission = _number(admissions[0])
+        except ValueError:
+            pass
+        else:
+            if phase_dispatch <= admission <= onset:
+                dispatch_to_admission = (admission - phase_dispatch) * 1000
+                admission_to_onset = (onset - admission) * 1000
+    windows = []
+    for frame in range(0, len(template_source) - RATE // 10 + 1, RATE // 5):
+        _check(started, cancelled)
+        template = source[frame : frame + RATE // 10]
+        if float(np.sqrt(np.mean(template**2))) < 0.004:
+            return None
+        predicted = left + position + frame
+        lo, hi = (
+            max(left, predicted - RATE // 5),
+            min(right, predicted + RATE * 3 // 10),
+        )
+        local = normalized_match(
+            _audio(
+                audio_path,
+                first=lo,
+                last=hi,
+                started=started,
+                cancelled=cancelled,
+            ),
+            template,
+        )
+        if local is not None and local[1] >= 0.9:
+            windows.append(
+                {
+                    "source_seconds": frame / RATE,
+                    "offset_ms": (lo + local[0] - frame - left - position)
+                    / RATE
+                    * 1000,
+                    "correlation": local[1],
+                }
+            )
+    shifts = [w["offset_ms"] for w in windows]
+    qualified = (
+        full_source
+        and len(phase_dispatches) == 1
+        and score >= 0.9
+        and residual < 0.1
+        and identity_verified
+        and bool(windows)
+    )
+    return {
+        "line_id": route["line_id"],
+        "run_id": route.get("run_id"),
+        "playback_id": route.get("playback_id"),
+        "capture": capture.name,
+        "source_sha256": entry["audio_sha256"],
+        "correlation": score,
+        "playback_lifetime": lifetime_reason,
+        "matched_source_seconds": len(template_source) / RATE,
+        "candidate_onset_monotonic": onset,
+        "candidate_onset_provenance": "source-frame-zero-alignment",
+        "candidate_dispatch_to_onset_ms": (onset - dispatch) * 1000,
+        "candidate_dispatch_to_prepared_source_admission_ms": dispatch_to_admission,
+        "candidate_prepared_source_admission_to_captured_onset_ms": admission_to_onset,
+        "source_audio_lead_ms": source_lead,
+        "candidate_latency_after_source_wait_ms": (onset - dispatch) * 1000
+        - source_lead
+        if source_lead is not None
+        else None,
+        "window_shift_range_ms": max(shifts) - min(shifts) if shifts else None,
+        "energetic_windows": windows,
+        "worker_identity_verified": identity_verified,
+        "status": "correlated" if qualified else "review-required",
+    }
+
+
+def _playback_dispatches(
+    events: list[dict],
+) -> tuple[dict[tuple, list[object]], dict[tuple, float]]:
+    dispatch_times: dict[tuple, list[object]] = {}
+    for event in events:
+        if event.get("stage") == "playback-start" and isinstance(
+            event.get("playback_id"), str
+        ):
+            dispatch_times.setdefault(_playback_key(event), []).append(
+                event.get("occurred_at")
+            )
+    dispatches = {
+        _playback_key(e): e["occurred_at"]
+        for e in events
+        if e.get("stage") == "playback-start"
+        and e.get("playback_id")
+        and _timestamp(e.get("occurred_at")) is not None
+        and math.isfinite(e["occurred_at"])
+    }
+    return dispatch_times, dispatches
+
+
+def _runtime_events(
+    directory: Path, started: float, cancelled: Event | None
+) -> list[dict]:
+    return (
+        _events(
+            directory / "runtime.jsonl",
+            "operation",
+            {
+                "prepared-source",
+                "rust-worker-finished",
+                "cancel",
+                "stop",
+            },
+            started,
+            cancelled,
+        )
+        if (directory / "runtime.jsonl").exists()
+        else []
+    )
+
+
+def _capture_failure_report(
+    capture: Path, record: dict, error: Exception
+) -> dict[str, object]:
+    try:
+        native = _json(capture / "session.json")
+    except OSError, ValueError:
+        native = {"status": "unavailable"}
+    return {
+        "capture": capture.name,
+        "status": "unavailable",
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "native_status": native.get("status"),
+        "native_errors": native.get("errors"),
+        "target": native.get("target"),
+        "acquisition_failure": record.get("acquisition_failure"),
+    }
+
+
+def _generated_routes(events: list[dict]) -> list[dict]:
+    routes = [
+        e
+        for e in events
+        if e.get("stage") == "route-decision"
+        and e.get("effective_source") == "generated"
+    ]
+    if len(routes) > 200:
+        raise ValueError("Generated route count exceeds analysis budget")
+    return routes
+
+
+def _capture_paths(directory: Path) -> list[Path]:
     capture_paths = sorted(path for path in directory.glob("rust-*") if path.is_dir())
     if len(capture_paths) > 8:
         raise ValueError("Process capture count exceeds analysis budget")
+    return capture_paths
+
+
+def analyze_session(
+    directory: Path, *, cancelled: Event | None = None, interrupted: bool = False
+) -> dict[str, object]:
+    """A match qualifies digital source evidence, never physical speaker quality."""
+    started = monotonic()
+    _check(started, cancelled)
+    events = _events(
+        directory / "timeline.jsonl",
+        "stage",
+        {
+            "route-decision",
+            "playback-start",
+            "playback-completion",
+            "playback-outcome",
+            "reading-control",
+        },
+        started,
+        cancelled,
+    )
+    sources = _source_entries(directory)
+    routes = _generated_routes(events)
+    dispatch_times, dispatches = _playback_dispatches(events)
+    runtime = _runtime_events(directory, started, cancelled)
+    owners, owner_tokens, admitted, source_leads, admission_times = (
+        _runtime_playback_evidence(runtime)
+    )
+    recording, gaps, capture_records = _recording_evidence(directory)
+    results, captures, attempted, matched = [], [], set(), set()
+    unmatched_reasons = {}
+    capture_paths = _capture_paths(directory)
     analysis_interruption: str | None = None
     for capture in capture_paths:
         try:
             _check(started, cancelled)
-            if capture.is_symlink() or not capture.resolve().is_relative_to(
-                directory.resolve()
-            ):
-                raise ValueError("Process capture escapes its session")
             record = capture_records.get(capture.name, {})
-            if record.get("acquisition_failure"):
-                raise ValueError("Process capture has an acquisition failure")
-            audio_path = diagnostic_audio_path(
-                capture / "process.caf", cancelled=cancelled, deadline=started + 120
+            audio = _capture_audio_evidence(
+                directory, capture, record, started, cancelled
             )
-            offset, residual = _capture_clock(
-                capture, started=started, cancelled=cancelled, audio_path=audio_path
-            )
-            with (
-                open_regular_binary(audio_path) as source_file,
-                sf.SoundFile(source_file) as captured_audio,
-            ):
-                if (
-                    captured_audio.frames
-                    > MAX_CAPTURE_SECONDS * captured_audio.samplerate
-                ):
-                    raise ValueError("Unsupported or oversized diagnostic audio")
-                audio_frames = round(
-                    captured_audio.frames * RATE / captured_audio.samplerate
-                )
-            capture_pid = int(capture.name.split("-")[1])
+            _audio_path, offset, residual, audio_frames, _capture_pid = audio
             captures.append(
                 {
                     "capture": capture.name,
@@ -564,44 +822,22 @@ def analyze_session(
             )
             for index, route in enumerate(routes):
                 _check(started, cancelled)
-                playback_id = route.get("playback_id")
-                line_id = route.get("line_id")
-                if not isinstance(playback_id, str) or not isinstance(line_id, str):
+                evidence = _route_capture_evidence(
+                    route,
+                    sources,
+                    dispatches,
+                    owners,
+                    owner_tokens,
+                    admitted,
+                    source_leads,
+                    record,
+                    capture_paths,
+                    audio,
+                )
+                if evidence is None:
                     continue
+                entry, dispatch, _source_lead, _identity_verified = evidence
                 key = _playback_key(route)
-                digests = admitted.get(key, set())
-                entry = (
-                    sources.get((line_id, next(iter(digests))))
-                    if len(digests) == 1
-                    else None
-                )
-                dispatch = dispatches.get(key)
-                worker_pids = owners.get(key, set())
-                tokens = owner_tokens.get(key, set())
-                captured_token = record.get("worker_identity", {}) or {}
-                identity_verified = bool(worker_pids) and (
-                    tokens == {captured_token.get("worker_id")}
-                    if tokens
-                    else sum(
-                        path.name.split("-")[1] == str(capture_pid)
-                        for path in capture_paths
-                    )
-                    == 1
-                )
-                if (
-                    entry is None
-                    or dispatch is None
-                    or (worker_pids and capture_pid not in worker_pids)
-                    or (tokens and not identity_verified)
-                ):
-                    continue
-                leads = source_leads.get((key, entry["audio_sha256"]), set())
-                source_lead = next(iter(leads)) if len(leads) == 1 else None
-                expected_start = dispatch + (
-                    source_lead / 1000 if source_lead is not None else 0
-                )
-                if not offset - 0.25 <= expected_start < offset + audio_frames / RATE:
-                    continue
                 attempted.add(index)
                 end, lifetime_complete, lifetime_reason = _playback_lifetime(
                     route, dispatch, events, runtime
@@ -609,141 +845,32 @@ def analyze_session(
                 unmatched_reasons[index] = lifetime_reason
                 if end is None:
                     continue
-                source = _audio(
-                    _source_path(
-                        directory, entry, started=started, cancelled=cancelled
-                    ),
-                    seconds=MAX_SOURCE_SECONDS,
-                    cancelled=cancelled,
-                    started=started,
+                result = _correlate_route_capture(
+                    directory,
+                    capture,
+                    audio,
+                    evidence,
+                    route,
+                    end,
+                    lifetime_complete,
+                    lifetime_reason,
+                    dispatch_times.get(key, []),
+                    admission_times.get((key, entry["audio_sha256"]), []),
+                    started,
+                    cancelled,
                 )
-                left = max(0, math.ceil((dispatch - offset) * RATE))
-                right = min(
-                    audio_frames,
-                    math.floor((end - offset) * RATE),
-                )
-                if right <= left:
-                    continue
-                full_source = lifetime_complete and right - left >= len(source)
-                template_source = (
-                    source
-                    if full_source
-                    else source[
-                        : min(len(source), RATE // 2, max(0, (right - left) // 2))
-                    ]
-                )
-                match = _match_audio(
-                    audio_path, left, right, template_source, started, cancelled
-                )
-                if match is None or (not full_source and match[1] < 0.9):
-                    continue
-                position, score = match
-                onset = offset + (left + position) / RATE
-                dispatch_to_admission = admission_to_onset = None
-                phase_dispatches = dispatch_times.get(key, [])
-                admissions = admission_times.get((key, entry["audio_sha256"]), [])
-                if len(phase_dispatches) == len(admissions) == 1:
-                    try:
-                        phase_dispatch = _number(phase_dispatches[0])
-                        admission = _number(admissions[0])
-                    except ValueError:
-                        pass
-                    else:
-                        if phase_dispatch <= admission <= onset:
-                            dispatch_to_admission = (admission - phase_dispatch) * 1000
-                            admission_to_onset = (onset - admission) * 1000
-                windows = []
-                for frame in range(0, len(template_source) - RATE // 10 + 1, RATE // 5):
-                    _check(started, cancelled)
-                    template = source[frame : frame + RATE // 10]
-                    if float(np.sqrt(np.mean(template**2))) < 0.004:
-                        continue
-                    predicted = left + position + frame
-                    lo, hi = (
-                        max(left, predicted - RATE // 5),
-                        min(right, predicted + RATE * 3 // 10),
-                    )
-                    local = normalized_match(
-                        _audio(
-                            audio_path,
-                            first=lo,
-                            last=hi,
-                            started=started,
-                            cancelled=cancelled,
-                        ),
-                        template,
-                    )
-                    if local is not None and local[1] >= 0.9:
-                        windows.append(
-                            {
-                                "source_seconds": frame / RATE,
-                                "offset_ms": (lo + local[0] - frame - left - position)
-                                / RATE
-                                * 1000,
-                                "correlation": local[1],
-                            }
-                        )
-                shifts = [w["offset_ms"] for w in windows]
-                qualified = (
-                    full_source
-                    and len(dispatch_times.get(key, [])) == 1
-                    and score >= 0.9
-                    and residual < 0.1
-                    and identity_verified
-                    and bool(windows)
-                )
-                if qualified:
-                    matched.add(index)
-                results.append(
-                    {
-                        "line_id": route["line_id"],
-                        "run_id": route.get("run_id"),
-                        "playback_id": route.get("playback_id"),
-                        "capture": capture.name,
-                        "source_sha256": entry["audio_sha256"],
-                        "correlation": score,
-                        "playback_lifetime": lifetime_reason,
-                        "matched_source_seconds": len(template_source) / RATE,
-                        "candidate_onset_monotonic": onset,
-                        "candidate_onset_provenance": "source-frame-zero-alignment",
-                        "candidate_dispatch_to_onset_ms": (onset - dispatch) * 1000,
-                        "candidate_dispatch_to_prepared_source_admission_ms": dispatch_to_admission,
-                        "candidate_prepared_source_admission_to_captured_onset_ms": admission_to_onset,
-                        "source_audio_lead_ms": source_lead,
-                        "candidate_latency_after_source_wait_ms": (onset - dispatch)
-                        * 1000
-                        - source_lead
-                        if source_lead is not None
-                        else None,
-                        "window_shift_range_ms": max(shifts) - min(shifts)
-                        if shifts
-                        else None,
-                        "energetic_windows": windows,
-                        "worker_identity_verified": identity_verified,
-                        "status": "correlated" if qualified else "review-required",
-                    }
-                )
+                if result is not None:
+                    if result["status"] == "correlated":
+                        matched.add(index)
+                    results.append(result)
         except (InterruptedError, TimeoutError) as error:
             analysis_interruption = type(error).__name__
             break
         except Exception as error:
-            try:
-                native = _json(capture / "session.json")
-            except OSError, ValueError:
-                native = {"status": "unavailable"}
             captures.append(
-                {
-                    "capture": capture.name,
-                    "status": "unavailable",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                    "native_status": native.get("status"),
-                    "native_errors": native.get("errors"),
-                    "target": native.get("target"),
-                    "acquisition_failure": capture_records.get(capture.name, {}).get(
-                        "acquisition_failure"
-                    ),
-                }
+                _capture_failure_report(
+                    capture, capture_records.get(capture.name, {}), error
+                )
             )
     unmatched = [
         {

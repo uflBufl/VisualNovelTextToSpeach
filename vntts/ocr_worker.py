@@ -210,6 +210,56 @@ class PersistentOCR:
         except Exception:
             pass
 
+    def _run_native(
+        self,
+        img: Image.Image,
+        check: Callable[[], float | None],
+        *,
+        lang: str,
+        config: str,
+        text: bool,
+        data: bool,
+        **unused: object,
+    ) -> tuple[str, OcrData]:
+        check()
+        modes = {tesseract_config(psm): psm for psm in (6, 7, 11)}
+        if config not in modes or img.mode != "L":
+            raise ValueError("Unsupported native OCR input")
+        if img.width * img.height > _MAX_PIXELS:
+            raise ValueError("OCR image exceeds worker limit")
+        self._ensure_worker(check)
+        assert self._directory is not None and self._connection is not None
+        root = Path(self._directory.name)
+        (root / "image.raw").write_bytes(img.tobytes())
+        (root / "request.json").write_text(
+            json.dumps(
+                {
+                    "size": img.size,
+                    "language": lang,
+                    "psm": modes[config],
+                    "text": text,
+                    "data": data,
+                }
+            )
+        )
+        check()
+        self._connection.send_bytes(b"run")
+        self._wait(b"done", check)
+        result_path = root / "result.json"
+        if result_path.stat().st_size > _MAX_RESULT_BYTES:
+            raise RuntimeError("OCR worker result exceeds limit")
+        result = json.loads(result_path.read_text())
+        check()
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise RuntimeError(
+                f"Native OCR failed: {result.get('error', 'invalid response') if isinstance(result, dict) else 'invalid response'}"
+            )
+        if not isinstance(result.get("text"), str) or not isinstance(
+            result.get("data"), dict
+        ):
+            raise RuntimeError("Invalid OCR worker result")
+        return result["text"], result["data"]
+
     def recognize(
         self,
         image: Image.Image,
@@ -223,54 +273,6 @@ class PersistentOCR:
     ) -> OCRResult:
         def is_cancelled() -> bool:
             return cancellation.is_set() or (cancelled is not None and cancelled())
-
-        def run(
-            img: Image.Image,
-            *,
-            lang: str,
-            config: str,
-            text: bool,
-            data: bool,
-            **unused: object,
-        ) -> tuple[str, OcrData]:
-            check()
-            modes = {tesseract_config(psm): psm for psm in (6, 7, 11)}
-            if config not in modes or img.mode != "L":
-                raise ValueError("Unsupported native OCR input")
-            if img.width * img.height > _MAX_PIXELS:
-                raise ValueError("OCR image exceeds worker limit")
-            self._ensure_worker(check)
-            assert self._directory is not None and self._connection is not None
-            root = Path(self._directory.name)
-            (root / "image.raw").write_bytes(img.tobytes())
-            (root / "request.json").write_text(
-                json.dumps(
-                    {
-                        "size": img.size,
-                        "language": lang,
-                        "psm": modes[config],
-                        "text": text,
-                        "data": data,
-                    }
-                )
-            )
-            check()
-            self._connection.send_bytes(b"run")
-            self._wait(b"done", check)
-            result_path = root / "result.json"
-            if result_path.stat().st_size > _MAX_RESULT_BYTES:
-                raise RuntimeError("OCR worker result exceeds limit")
-            result = json.loads(result_path.read_text())
-            check()
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                raise RuntimeError(
-                    f"Native OCR failed: {result.get('error', 'invalid response') if isinstance(result, dict) else 'invalid response'}"
-                )
-            if not isinstance(result.get("text"), str) or not isinstance(
-                result.get("data"), dict
-            ):
-                raise RuntimeError("Invalid OCR worker result")
-            return result["text"], result["data"]
 
         provenance = image.info.get("capture_provenance")
         identity = (
@@ -301,14 +303,19 @@ class PersistentOCR:
             result = recognize_pipeline(
                 image,
                 voice_registry,
-                recognize_text=lambda img, **kw: run(img, text=True, data=False, **kw)[
-                    0
-                ],
-                recognize_data=lambda img, **kw: run(img, text=False, data=True, **kw)[
-                    1
-                ],
-                recognize_combined=lambda img, lang, remaining: run(
-                    img, lang=lang, config=tesseract_config(6), text=True, data=True
+                recognize_text=lambda img, **kw: self._run_native(
+                    img, check, text=True, data=False, **kw
+                )[0],
+                recognize_data=lambda img, **kw: self._run_native(
+                    img, check, text=False, data=True, **kw
+                )[1],
+                recognize_combined=lambda img, lang, remaining: self._run_native(
+                    img,
+                    check,
+                    lang=lang,
+                    config=tesseract_config(6),
+                    text=True,
+                    data=True,
                 ),
                 minimum_confidence=minimum_confidence,
                 language=language,

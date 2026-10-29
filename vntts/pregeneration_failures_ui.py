@@ -29,6 +29,51 @@ from vntts.qt_audio import QtPcmPlayer
 
 
 class PreparationFailuresPanel(QWidget):
+    def _create_failure_table(self, body: QVBoxLayout) -> None:
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(("Character", "Phrase", "Reason"))
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().hide()
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.table.setMinimumHeight(160)
+        self.table.setMaximumHeight(260)
+        self.table.setAccessibleName("Unsuccessful preparation results")
+        self.table.currentCellChanged.connect(self._selected)
+        body.addWidget(self.table)
+
+    def _create_playback_controls(self, body: QVBoxLayout) -> None:
+        controls = QHBoxLayout()
+        self.character = QLabel()
+        self.character.setTextFormat(Qt.TextFormat.PlainText)
+        controls.addWidget(self.character, 1)
+        self.play = QPushButton("Listen")
+        self.play.setToolTip(
+            "Listen to this diagnostic recording. Active reading will stop first."
+        )
+        set_action_icon(self.play, "play")
+        self.play.clicked.connect(self._play)
+        controls.addWidget(self.play)
+        self.stop_button = QPushButton("Stop")
+        set_action_icon(self.stop_button, "square")
+        self.stop_button.clicked.connect(self.stop)
+        controls.addWidget(self.stop_button)
+        body.addLayout(controls)
+
+    def _create_technical_details(self, body: QVBoxLayout) -> None:
+        self.details = QPushButton("Technical details")
+        self.details.setCheckable(True)
+        self.details.toggled.connect(self._show_details)
+        body.addWidget(self.details, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.technical = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.technical.setAccessibleName("Preparation failure technical details")
+        self.technical.setMaximumHeight(160)
+        self.technical.hide()
+        body.addWidget(self.technical)
+
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -55,36 +100,8 @@ class PreparationFailuresPanel(QWidget):
         self.body = QWidget()
         body = QVBoxLayout(self.body)
         body.setContentsMargins(0, 0, 0, 0)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(("Character", "Phrase", "Reason"))
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.verticalHeader().hide()
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self.table.setMinimumHeight(160)
-        self.table.setMaximumHeight(260)
-        self.table.setAccessibleName("Unsuccessful preparation results")
-        self.table.currentCellChanged.connect(self._selected)
-        body.addWidget(self.table)
-        controls = QHBoxLayout()
-        self.character = QLabel()
-        self.character.setTextFormat(Qt.TextFormat.PlainText)
-        controls.addWidget(self.character, 1)
-        self.play = QPushButton("Listen")
-        self.play.setToolTip(
-            "Listen to this diagnostic recording. Active reading will stop first."
-        )
-        set_action_icon(self.play, "play")
-        self.play.clicked.connect(self._play)
-        controls.addWidget(self.play)
-        self.stop_button = QPushButton("Stop")
-        set_action_icon(self.stop_button, "square")
-        self.stop_button.clicked.connect(self.stop)
-        controls.addWidget(self.stop_button)
-        body.addLayout(controls)
+        self._create_failure_table(body)
+        self._create_playback_controls(body)
         self.phrase = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.phrase.setAccessibleName("Full failed phrase")
         self.phrase.setFixedHeight(self.phrase.fontMetrics().lineSpacing() * 4 + 16)
@@ -101,15 +118,7 @@ class PreparationFailuresPanel(QWidget):
         self.audio_status.setWordWrap(True)
         self.audio_status.setTextFormat(Qt.TextFormat.PlainText)
         body.addWidget(self.audio_status)
-        self.details = QPushButton("Technical details")
-        self.details.setCheckable(True)
-        self.details.toggled.connect(self._show_details)
-        body.addWidget(self.details, alignment=Qt.AlignmentFlag.AlignLeft)
-        self.technical = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
-        self.technical.setAccessibleName("Preparation failure technical details")
-        self.technical.setMaximumHeight(160)
-        self.technical.hide()
-        body.addWidget(self.technical)
+        self._create_technical_details(body)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.toggle, alignment=Qt.AlignmentFlag.AlignLeft)

@@ -190,6 +190,56 @@ def _load_public_document(
 class FailureReferenceAuditDialog(CloseGuardedDialog):
     """Review four exact control groups without revealing private source names."""
 
+    def _create_preview_controls(self) -> None:
+        self.generate_preview = QPushButton("Generate sample")
+        set_action_icon(self.generate_preview, "wand-sparkles")
+        self.replay_preview = QPushButton("Generated")
+        set_action_icon(self.replay_preview, "play")
+        self.cancel_preview = QPushButton("Cancel generation")
+        set_action_icon(self.cancel_preview, "square")
+        for button in (
+            self.generate_preview,
+            self.replay_preview,
+            self.cancel_preview,
+        ):
+            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.generate_preview.setAccessibleName("Generate optional voice sample")
+        self.generate_preview.setToolTip(self.generate_preview.accessibleName())
+        self.replay_preview.setAccessibleName("Replay optional generated sample")
+        self.replay_preview.setToolTip(self.replay_preview.accessibleName())
+        self.cancel_preview.setAccessibleName("Cancel optional sample generation")
+        self.cancel_preview.setToolTip(self.cancel_preview.accessibleName())
+        self.generate_preview.setAccessibleDescription(
+            "Render the selected affected phrase with this reference without saving "
+            "authoring state or making a reference decision"
+        )
+        self.replay_preview.setAccessibleDescription(
+            "Replay the current dialog-lifetime generated sample from immutable bytes"
+        )
+        self.cancel_preview.setAccessibleDescription(
+            "Cancel only the active optional reference-preview render"
+        )
+
+    def _create_failure_table(self) -> None:
+        self.cases = QTableWidget(0, 3)
+        self.cases.setHorizontalHeaderLabels(["Line", "Speaker", "Failed text"])
+        self.cases.setAccessibleName("Lines affected by this reference decision")
+        self.cases.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.cases.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.cases.verticalHeader().setVisible(False)
+        self.cases.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self.cases.setColumnWidth(0, 260)
+        self.cases.setColumnWidth(1, 150)
+        self.technical_details = QCheckBox("Affected failed lines")
+        self.technical_details.setAccessibleName("Show affected failed line details")
+        self.technical_details.setAccessibleDescription(
+            "Reveal the exact failed lines affected by this reference decision"
+        )
+        self.technical_details.toggled.connect(self.cases.setVisible)
+        self.cases.setVisible(False)
+
     def __init__(
         self,
         audit: str | Path,
@@ -304,25 +354,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self.candidate_heard.setAccessibleName("Candidate listening progress")
         self.candidate_heard.setWordWrap(True)
 
-        self.cases = QTableWidget(0, 3)
-        self.cases.setHorizontalHeaderLabels(["Line", "Speaker", "Failed text"])
-        self.cases.setAccessibleName("Lines affected by this reference decision")
-        self.cases.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.cases.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.cases.verticalHeader().setVisible(False)
-        self.cases.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
-        )
-        self.cases.setColumnWidth(0, 260)
-        self.cases.setColumnWidth(1, 150)
-        self.technical_details = QCheckBox("Affected failed lines")
-        self.technical_details.setAccessibleName("Show affected failed line details")
-        self.technical_details.setAccessibleDescription(
-            "Reveal the exact failed lines affected by this reference decision"
-        )
-        self.technical_details.toggled.connect(self.cases.setVisible)
-        self.cases.setVisible(False)
-
+        self._create_failure_table()
         self.play = QPushButton("Reference")
         set_action_icon(self.play, "play")
         self.stop = QPushButton("Stop")
@@ -337,34 +369,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self.stop.setAccessibleName("Stop source candidate playback")
         self.stop.setToolTip(self.stop.accessibleName())
         self.stop.setAccessibleDescription("Stop source or generated preview playback")
-        self.generate_preview = QPushButton("Generate sample")
-        set_action_icon(self.generate_preview, "wand-sparkles")
-        self.replay_preview = QPushButton("Generated")
-        set_action_icon(self.replay_preview, "play")
-        self.cancel_preview = QPushButton("Cancel generation")
-        set_action_icon(self.cancel_preview, "square")
-        for button in (
-            self.generate_preview,
-            self.replay_preview,
-            self.cancel_preview,
-        ):
-            button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        self.generate_preview.setAccessibleName("Generate optional voice sample")
-        self.generate_preview.setToolTip(self.generate_preview.accessibleName())
-        self.replay_preview.setAccessibleName("Replay optional generated sample")
-        self.replay_preview.setToolTip(self.replay_preview.accessibleName())
-        self.cancel_preview.setAccessibleName("Cancel optional sample generation")
-        self.cancel_preview.setToolTip(self.cancel_preview.accessibleName())
-        self.generate_preview.setAccessibleDescription(
-            "Render the selected affected phrase with this reference without saving "
-            "authoring state or making a reference decision"
-        )
-        self.replay_preview.setAccessibleDescription(
-            "Replay the current dialog-lifetime generated sample from immutable bytes"
-        )
-        self.cancel_preview.setAccessibleDescription(
-            "Cancel only the active optional reference-preview render"
-        )
+        self._create_preview_controls()
         self.choose = QPushButton("Use selected candidate")
         set_action_icon(self.choose, "check")
         self.neither = QPushButton("No suitable reference")

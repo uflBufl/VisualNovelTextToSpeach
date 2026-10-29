@@ -221,34 +221,7 @@ class NativeCaptureSession:
         assert self.process.stdout is not None
         try:
             while not self._closed.is_set():
-                line = self.process.stdout.readline(MAX_HEADER_BYTES + 1)
-                if not line:
-                    raise CaptureError("Native capture worker exited before responding")
-                if len(line) > MAX_HEADER_BYTES or not line.endswith(b"\n"):
-                    raise CaptureError("Native capture response header exceeds limit")
-                header = json.loads(line)
-                if (
-                    not isinstance(header, dict)
-                    or header.get("version") != 1
-                    or type(header.get("version")) is not int
-                    or not _integer(header.get("id"), 1)
-                    or type(header.get("ok")) is not bool
-                    or not _integer(header.get("payload_bytes"))
-                    or header["payload_bytes"] > MAX_PAYLOAD_BYTES
-                ):
-                    raise CaptureError("Invalid native capture response envelope")
-                size = header["payload_bytes"]
-                if not header["ok"] and size:
-                    raise CaptureError("Native capture error included pixel payload")
-                chunks = bytearray()
-                while len(chunks) < size:
-                    chunk = self.process.stdout.read(
-                        min(size - len(chunks), 1024 * 1024)
-                    )
-                    if not chunk:
-                        raise CaptureError("Truncated native capture pixel payload")
-                    chunks.extend(chunk)
-                self._responses.put_nowait((header, bytes(chunks)))
+                self._responses.put_nowait(self._read_response())
         except Exception as error:
             if not self._closed.is_set():
                 try:
@@ -257,6 +230,35 @@ class NativeCaptureSession:
                     pass
                 if self.process.poll() is None:
                     self.process.kill()
+
+    def _read_response(self) -> tuple[dict[str, Any], bytes]:
+        assert self.process.stdout is not None
+        line = self.process.stdout.readline(MAX_HEADER_BYTES + 1)
+        if not line:
+            raise CaptureError("Native capture worker exited before responding")
+        if len(line) > MAX_HEADER_BYTES or not line.endswith(b"\n"):
+            raise CaptureError("Native capture response header exceeds limit")
+        header = json.loads(line)
+        if (
+            not isinstance(header, dict)
+            or header.get("version") != 1
+            or type(header.get("version")) is not int
+            or not _integer(header.get("id"), 1)
+            or type(header.get("ok")) is not bool
+            or not _integer(header.get("payload_bytes"))
+            or header["payload_bytes"] > MAX_PAYLOAD_BYTES
+        ):
+            raise CaptureError("Invalid native capture response envelope")
+        size = header["payload_bytes"]
+        if not header["ok"] and size:
+            raise CaptureError("Native capture error included pixel payload")
+        chunks = bytearray()
+        while len(chunks) < size:
+            chunk = self.process.stdout.read(min(size - len(chunks), 1024 * 1024))
+            if not chunk:
+                raise CaptureError("Truncated native capture pixel payload")
+            chunks.extend(chunk)
+        return header, bytes(chunks)
 
     def _request(
         self,
@@ -286,56 +288,60 @@ class NativeCaptureSession:
                 assert self.process.stdin is not None
                 self.process.stdin.write(encoded)
                 self.process.stdin.flush()
-                while True:
-                    if self._closed.is_set():
-                        raise CaptureError(
-                            "Native capture session is closed", code="closed"
-                        )
-                    if capture_cancelled(cancel):
-                        raise CaptureError("Native capture cancelled", code="cancelled")
-                    remaining = deadline - monotonic()
-                    if remaining <= 0:
-                        raise CaptureError(
-                            "Native capture response timed out", code="timeout"
-                        )
-                    try:
-                        response = self._responses.get(timeout=min(remaining, 0.025))
-                        break
-                    except queue.Empty:
-                        continue
+                response = self._wait_response(deadline, cancel)
                 if self._closed.is_set():
                     raise CaptureError(
                         "Native capture session is closed", code="closed"
                     )
                 if capture_cancelled(cancel):
                     raise CaptureError("Native capture cancelled", code="cancelled")
-                if isinstance(response, BaseException):
-                    raise CaptureError(str(response)) from response
-                header, payload = response
-                if header["id"] != self._next_id:
-                    raise CaptureError(
-                        "Native capture response request identity mismatch"
-                    )
-                if not header["ok"]:
-                    error = header.get("error")
-                    if (
-                        not isinstance(error, dict)
-                        or not isinstance(error.get("code"), str)
-                        or not error["code"]
-                        or not isinstance(error.get("message"), str)
-                    ):
-                        raise CaptureError("Invalid native capture error response")
-                    raise CaptureError(error["message"], code=error["code"])
-                result = header.get("result")
-                if not isinstance(result, dict):
-                    raise CaptureError("Invalid native capture result")
-                return result, payload
+                return self._response_result(response)
             except (OSError, ValueError) as error:
                 self.close()
                 raise CaptureError(f"Native capture pipe failed: {error}") from error
             except BaseException:
                 self.close()
                 raise
+
+    def _response_result(
+        self, response: tuple[dict[str, Any], bytes] | BaseException
+    ) -> tuple[dict[str, Any], bytes]:
+        if isinstance(response, BaseException):
+            raise CaptureError(str(response)) from response
+        header, payload = response
+        if header["id"] != self._next_id:
+            raise CaptureError("Native capture response request identity mismatch")
+        if not header["ok"]:
+            error = header.get("error")
+            if (
+                not isinstance(error, dict)
+                or not isinstance(error.get("code"), str)
+                or not error["code"]
+                or not isinstance(error.get("message"), str)
+            ):
+                raise CaptureError("Invalid native capture error response")
+            raise CaptureError(error["message"], code=error["code"])
+        result = header.get("result")
+        if not isinstance(result, dict):
+            raise CaptureError("Invalid native capture result")
+        return result, payload
+
+    def _wait_response(
+        self, deadline: float, cancel: Event | Callable[[], bool] | None
+    ) -> tuple[dict[str, Any], bytes] | BaseException:
+        while True:
+            if self._closed.is_set():
+                raise CaptureError("Native capture session is closed", code="closed")
+            if capture_cancelled(cancel):
+                raise CaptureError("Native capture cancelled", code="cancelled")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise CaptureError("Native capture response timed out", code="timeout")
+            try:
+                response = self._responses.get(timeout=min(remaining, 0.025))
+                return response
+            except queue.Empty:
+                continue
 
     def capture(
         self,
@@ -355,52 +361,7 @@ class NativeCaptureSession:
             "capture", timeout_ms / 1000 + 0.5, cancel, timeout_ms=timeout_ms
         )
         try:
-            required = set(NativeFrame.__dataclass_fields__) - {"pixels"}
-            if not required.issubset(result):
-                raise CaptureError("Native capture frame metadata is incomplete")
-            width, height = result.get("width"), result.get("height")
-            if (
-                not _integer(width, 1)
-                or not _integer(height, 1)
-                or width * height > MAX_PIXELS
-                or result.get("row_stride") != width * 4
-                or type(result.get("row_stride")) is not int
-                or result.get("pixel_format") != "BGRA8"
-                or len(payload) != width * height * 4
-            ):
-                raise CaptureError("Invalid native capture frame dimensions or payload")
-            rect = result.get("content_rect")
-            if (
-                not _rect(rect)
-                or rect[0] < 0
-                or rect[1] < 0
-                or rect[0] + rect[2] > width
-                or rect[1] + rect[3] > height
-                or not _rect(result.get("desktop_bounds"))
-            ):
-                raise CaptureError("Invalid native capture frame rectangles")
-            window = self._target["kind"] == "window"
-            if window and (
-                not _integer(result.get("window_id"), 1)
-                or not _integer(result.get("pid"), 1)
-            ):
-                raise CaptureError("Invalid native capture window identity")
-            if (
-                result.get("backend") != self.backend
-                or result.get("session_id") != self.session_id
-                or result.get("scope") != ("selected_window" if window else "display")
-                or result.get("window_id") != self._target.get("window_id")
-                or result.get("pid") != self._target.get("pid")
-            ):
-                raise CaptureError("Native capture frame target identity mismatch")
-            source = result.get("source_time")
-            if (
-                not _integer(result.get("frame_sequence"), 1)
-                or not _integer(result.get("layout_epoch"), 1)
-                or not _time(result.get("acquired_at"))
-                or (source is not None and not _time(source))
-            ):
-                raise CaptureError("Invalid native capture frame clock or sequence")
+            rect = self._validate_frame_metadata(result, payload)
             frame = NativeFrame(
                 **{
                     key: result[key]
@@ -429,6 +390,60 @@ class NativeCaptureSession:
         except BaseException:
             self.close()
             raise
+
+    def _validate_frame_metadata(
+        self, result: dict[str, Any], payload: bytes
+    ) -> list[int]:
+        required = set(NativeFrame.__dataclass_fields__) - {"pixels"}
+        if not required.issubset(result):
+            raise CaptureError("Native capture frame metadata is incomplete")
+        width, height = result.get("width"), result.get("height")
+        if (
+            not _integer(width, 1)
+            or not _integer(height, 1)
+            or width * height > MAX_PIXELS
+            or result.get("row_stride") != width * 4
+            or type(result.get("row_stride")) is not int
+            or result.get("pixel_format") != "BGRA8"
+            or len(payload) != width * height * 4
+        ):
+            raise CaptureError("Invalid native capture frame dimensions or payload")
+        rect = result.get("content_rect")
+        if (
+            not _rect(rect)
+            or rect[0] < 0
+            or rect[1] < 0
+            or rect[0] + rect[2] > width
+            or rect[1] + rect[3] > height
+            or not _rect(result.get("desktop_bounds"))
+        ):
+            raise CaptureError("Invalid native capture frame rectangles")
+        self._validate_frame_identity(result)
+        source = result.get("source_time")
+        if (
+            not _integer(result.get("frame_sequence"), 1)
+            or not _integer(result.get("layout_epoch"), 1)
+            or not _time(result.get("acquired_at"))
+            or (source is not None and not _time(source))
+        ):
+            raise CaptureError("Invalid native capture frame clock or sequence")
+        return rect
+
+    def _validate_frame_identity(self, result: dict[str, Any]) -> None:
+        window = self._target["kind"] == "window"
+        if window and (
+            not _integer(result.get("window_id"), 1)
+            or not _integer(result.get("pid"), 1)
+        ):
+            raise CaptureError("Invalid native capture window identity")
+        if (
+            result.get("backend") != self.backend
+            or result.get("session_id") != self.session_id
+            or result.get("scope") != ("selected_window" if window else "display")
+            or result.get("window_id") != self._target.get("window_id")
+            or result.get("pid") != self._target.get("pid")
+        ):
+            raise CaptureError("Native capture frame target identity mismatch")
 
     def close(self) -> None:
         with self._close_lock:

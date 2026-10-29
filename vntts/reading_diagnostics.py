@@ -442,21 +442,7 @@ def _process_is_running(pid: object, created: object) -> bool:
         return True
 
 
-def _exportable_session(
-    directory: Path, report: dict[str, object]
-) -> SavedDiagnosticSession:
-    try:
-        return _finished_session(directory, report)
-    except ValueError as error:
-        reason = str(error)
-    if (
-        _active is not None
-        and not _active.finished.is_set()
-        and _active.directory.resolve() == directory.resolve()
-    ):
-        raise ValueError("Diagnostic session is still active or finalizing")
-    if report.get("status") not in {"recording", "stopping", "finalizing", "finished"}:
-        raise ValueError(reason)
+def _assert_interrupted_owner_stopped(report: dict[str, object], reason: str) -> None:
     owner = report.get("owner")
     if isinstance(owner, dict):
         if _process_is_running(owner.get("pid"), owner.get("created")):
@@ -481,6 +467,9 @@ def _exportable_session(
         ).total_seconds()
         if age <= duration + 30:
             raise ValueError(reason)
+
+
+def _assert_interrupted_media_stopped(report: dict[str, object]) -> None:
     recording = report.get("recording")
     if isinstance(recording, dict):
         captures = recording.get("captures", [])
@@ -497,6 +486,25 @@ def _exportable_session(
                     capture["helper_pid"]
                 ):
                     raise ValueError("Diagnostic media is still finalizing")
+
+
+def _exportable_session(
+    directory: Path, report: dict[str, object]
+) -> SavedDiagnosticSession:
+    try:
+        return _finished_session(directory, report)
+    except ValueError as error:
+        reason = str(error)
+    if (
+        _active is not None
+        and not _active.finished.is_set()
+        and _active.directory.resolve() == directory.resolve()
+    ):
+        raise ValueError("Diagnostic session is still active or finalizing")
+    if report.get("status") not in {"recording", "stopping", "finalizing", "finished"}:
+        raise ValueError(reason)
+    _assert_interrupted_owner_stopped(report, reason)
+    _assert_interrupted_media_stopped(report)
     partial = {
         **report,
         "status": "interrupted",
@@ -661,17 +669,7 @@ class ReadingDiagnosticSession:
         self.directory = root / self.session_id
         self.directory.mkdir(parents=True)
         self.timelines, self.seconds = timelines, seconds
-        self.sources: dict[tuple[str, str], Path] = {}
-        self.source_lock = Lock()
-        self.retained_sources: dict[tuple[str, str], dict[str, object]] = {}
-        self.source_errors: dict[tuple[str, str], str] = {}
-        self.source_bytes = 0
-        self.visual_wait_lock = Lock()
-        self.visual_wait_frames: dict[
-            tuple[str, int], tuple[tuple[Image, ...], dict[str, object]]
-        ] = {}
-        self.visual_wait_pixels = 0
-        self.visual_wait_dropped = 0
+        self._initialize_retained_evidence()
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started_monotonic = monotonic()
         self.owner = {"pid": os.getpid(), "created": psutil.Process().create_time()}
@@ -721,6 +719,19 @@ class ReadingDiagnosticSession:
             self.runtime.stop()
             raise
 
+    def _initialize_retained_evidence(self) -> None:
+        self.sources: dict[tuple[str, str], Path] = {}
+        self.source_lock = Lock()
+        self.retained_sources: dict[tuple[str, str], dict[str, object]] = {}
+        self.source_errors: dict[tuple[str, str], str] = {}
+        self.source_bytes = 0
+        self.visual_wait_lock = Lock()
+        self.visual_wait_frames: dict[
+            tuple[str, int], tuple[tuple[Image, ...], dict[str, object]]
+        ] = {}
+        self.visual_wait_pixels = 0
+        self.visual_wait_dropped = 0
+
     def _run_recording(self) -> None:
         try:
             assert self.recording is not None
@@ -729,7 +740,6 @@ class ReadingDiagnosticSession:
             self.failure = type(error).__name__
 
     def _run(self) -> None:
-        global _active
         recording_thread = None
         try:
             if self.recording is not None:
@@ -759,45 +769,50 @@ class ReadingDiagnosticSession:
                 max(0, self.started_monotonic + self.seconds - monotonic())
             )
         finally:
-            self.phase = "finalizing"
-            # Close admission on both journals before waiting for any writer or recorder.
-            self.timeline.stop(timeout=0)
-            self.runtime.stop(timeout=0)
-            if self.recording is not None:
-                self.recording.cancelled.set()
-            self.timeline_status = self.timelines.stop_acquisition()
-            self.runtime.stop()
-            try:
-                if self.recording is not None:
-                    if recording_thread is not None and recording_thread.is_alive():
-                        # Native teardown shares one budget across all owned processes.
-                        # Retain ownership until release; Stop's caller has its own bound.
-                        recording_thread.join()
-                    self._retain_visual_wait_frames()
-                    try:
-                        self._retain_sources()
-                    except (OSError, ValueError) as error:
-                        self.failure = type(error).__name__
-                    self.analysis_status = "running"
-                    self._persist()
-                    from vntts.reading_diagnostics_analysis import analyze_session
+            self._finalize(recording_thread)
 
-                    analyze_session(self.directory, cancelled=self.analysis_cancelled)
-                    self.analysis_status = (
-                        "partial" if self.source_errors else "complete"
-                    )
-            except Exception as error:
-                self.analysis_status = "unavailable"
-                self.failure = type(error).__name__
-            self.phase = "finished"
-            try:
-                self._persist()
-            except OSError as error:
-                self.failure = type(error).__name__
-            finally:
-                if _active is self:
-                    _active = None
-                self.finished.set()
+    def _finalize(self, recording_thread: Thread | None) -> None:
+        global _active
+        self.phase = "finalizing"
+        # Close admission on both journals before waiting for any writer or recorder.
+        self.timeline.stop(timeout=0)
+        self.runtime.stop(timeout=0)
+        if self.recording is not None:
+            self.recording.cancelled.set()
+        self.timeline_status = self.timelines.stop_acquisition()
+        self.runtime.stop()
+        try:
+            if self.recording is not None:
+                self._analyze_recorded_media(recording_thread)
+        except Exception as error:
+            self.analysis_status = "unavailable"
+            self.failure = type(error).__name__
+        self.phase = "finished"
+        try:
+            self._persist()
+        except OSError as error:
+            self.failure = type(error).__name__
+        finally:
+            if _active is self:
+                _active = None
+            self.finished.set()
+
+    def _analyze_recorded_media(self, recording_thread: Thread | None) -> None:
+        if recording_thread is not None and recording_thread.is_alive():
+            # Native teardown shares one budget across all owned processes.
+            # Retain ownership until release; Stop's caller has its own bound.
+            recording_thread.join()
+        self._retain_visual_wait_frames()
+        try:
+            self._retain_sources()
+        except (OSError, ValueError) as error:
+            self.failure = type(error).__name__
+        self.analysis_status = "running"
+        self._persist()
+        from vntts.reading_diagnostics_analysis import analyze_session
+
+        analyze_session(self.directory, cancelled=self.analysis_cancelled)
+        self.analysis_status = "partial" if self.source_errors else "complete"
 
     def stop(self, timeout: float = 0) -> None:
         self.stop_requested.set()

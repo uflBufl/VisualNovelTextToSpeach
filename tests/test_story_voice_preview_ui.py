@@ -611,7 +611,8 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
         self.assertFalse(self.dialog.confirmation_options_scroll.isHidden())
 
-    def test_summary_keeps_model_identity_in_preparation_details(self):
+    @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False)
+    def test_summary_keeps_model_identity_in_preparation_details(self, _native):
         model = "/models/huggingface/openmoss/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"
         self.dialog._voice_plan = replace(
             self.plan, synthesis_backend="moss-tts", synthesis_model=model

@@ -410,6 +410,9 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
     all_speakers_scope = "review-scope:all"
     narrator_scope = "review-scope:narrator"
     characters_scope = "review-scope:characters"
+    _review_status_explicit: bool
+    _stored_review_character_scope: str
+    _stored_review_collection: str
 
     def __init__(
         self,

@@ -965,23 +965,7 @@ class DiagnosticsPage(QWizardPage):
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.results.hide()
         self.results.itemSelectionChanged.connect(self._update_remediation)
-        self.remediation_reason = QLabel()
-        self.remediation_reason.setWordWrap(True)
-        self.remediation_reason.setAccessibleName("Selected setup issue guidance")
-        self.remediation_button = QPushButton("Fix selected issue")
-        set_action_icon(self.remediation_button, "wand-sparkles")
-        self.remediation_button.setEnabled(False)
-        self.remediation_button.hide()
-        self.remediation_button.setAccessibleDescription(
-            "Open the most direct available action for the selected setup issue"
-        )
-        self.remediation_button.clicked.connect(self._run_remediation)
-        remediation = QVBoxLayout()
-        remediation.addWidget(self.remediation_reason)
-        remediation_action = QHBoxLayout()
-        remediation_action.addWidget(self.remediation_button)
-        remediation_action.addStretch()
-        remediation.addLayout(remediation_action)
+        remediation = self._build_remediation_controls()
         actions = QHBoxLayout()
         self.retry_button = QPushButton("Run checks again")
         set_action_icon(self.retry_button, "refresh-cw")
@@ -1010,6 +994,26 @@ class DiagnosticsPage(QWizardPage):
         layout.addWidget(self.results)
         layout.addLayout(remediation)
         layout.addStretch()
+
+    def _build_remediation_controls(self) -> QVBoxLayout:
+        self.remediation_reason = QLabel()
+        self.remediation_reason.setWordWrap(True)
+        self.remediation_reason.setAccessibleName("Selected setup issue guidance")
+        self.remediation_button = QPushButton("Fix selected issue")
+        set_action_icon(self.remediation_button, "wand-sparkles")
+        self.remediation_button.setEnabled(False)
+        self.remediation_button.hide()
+        self.remediation_button.setAccessibleDescription(
+            "Open the most direct available action for the selected setup issue"
+        )
+        self.remediation_button.clicked.connect(self._run_remediation)
+        remediation = QVBoxLayout()
+        remediation.addWidget(self.remediation_reason)
+        remediation_action = QHBoxLayout()
+        remediation_action.addWidget(self.remediation_button)
+        remediation_action.addStretch()
+        remediation.addLayout(remediation_action)
+        return remediation
 
     def initializePage(self) -> None:
         if self.complete:
@@ -1247,7 +1251,7 @@ class DiagnosticsPage(QWizardPage):
             "settings": "settings",
             "voices": "audio-lines",
             "permissions": "key-round",
-        }.get(remediation, "circle-help")
+        }.get(remediation or "", "circle-help")
         if self.flow.reading_setup and remediation in {"settings", "voices"}:
             icon = (
                 "settings"

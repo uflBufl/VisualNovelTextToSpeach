@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from hashlib import sha256
 from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Timer
@@ -46,6 +46,39 @@ class _CanonicalRecognition:
     epoch: int
     is_current: Callable[[int], bool]
     observations: int = 1
+
+
+@dataclass
+class _OCRFrameCache:
+    fingerprint: FrameFingerprint = field(default_factory=object)
+    render_fingerprint: FrameFingerprint = field(default_factory=object)
+    completion: object = field(default_factory=object)
+    observation: Observation = (None, "")
+    canonical: _CanonicalRecognition | None = None
+    last_recheck_at: float | None = None
+
+    def recognize(
+        self, observation: Observation | _CanonicalRecognition
+    ) -> Observation:
+        previous = self.canonical
+        self.canonical = (
+            observation if isinstance(observation, _CanonicalRecognition) else None
+        )
+        if (
+            self.canonical is not None
+            and previous is not None
+            and self.canonical.dialog == previous.dialog
+            and self.canonical.run_id == previous.run_id
+            and self.canonical.epoch == previous.epoch
+        ):
+            self.canonical = replace(
+                self.canonical, observations=previous.observations + 1
+            )
+        return (
+            (observation.dialog.character, observation.dialog.text)
+            if isinstance(observation, _CanonicalRecognition)
+            else observation
+        )
 
 
 class _Executor(Protocol):
@@ -1472,21 +1505,15 @@ class LiveDialogReader:
                     self.latest_frame_fingerprint = fingerprint
                     self.latest_frame_visible = visible
                     self.latest_frame_complete = complete
-                    if not visible:
-                        self._reset_render_observation()
-                    else:
-                        if (
-                            not same_render
-                            or render_anchor is not self.render_anchor_frame
-                            or render_owner != self.latest_render_owner
-                        ):
-                            # Compare every frame to this fixed anchor, never to
-                            # successive tolerated edges that could slowly drift.
-                            self.render_anchor_frame = frame
-                            self.render_anchor_fingerprint = render_fingerprint
-                            self.latest_render_changed_at = captured_at
-                        self.latest_render_fingerprint = render_fingerprint
-                        self.latest_render_owner = render_owner
+                    self._update_render_observation_locked(
+                        frame,
+                        visible,
+                        same_render,
+                        render_anchor,
+                        render_owner,
+                        render_fingerprint,
+                        captured_at,
+                    )
                     self.frame_version += 1
                     metrics = self.pipeline_metrics
                     self.pipeline_metrics = replace(
@@ -1529,6 +1556,32 @@ class LiveDialogReader:
                 interval = self.interval_seconds
             self._notify_capture_state(True, interval)
             stop_event.wait(interval)
+
+    def _update_render_observation_locked(
+        self,
+        frame: Frame,
+        visible: bool,
+        same_render: bool,
+        render_anchor: Frame | None,
+        render_owner: str | None,
+        render_fingerprint: FrameFingerprint,
+        captured_at: float,
+    ) -> None:
+        if not visible:
+            self._reset_render_observation()
+        else:
+            if (
+                not same_render
+                or render_anchor is not self.render_anchor_frame
+                or render_owner != self.latest_render_owner
+            ):
+                # Compare every frame to this fixed anchor, never to
+                # successive tolerated edges that could slowly drift.
+                self.render_anchor_frame = frame
+                self.render_anchor_fingerprint = render_fingerprint
+                self.latest_render_changed_at = captured_at
+            self.latest_render_fingerprint = render_fingerprint
+            self.latest_render_owner = render_owner
 
     def _notify_capture_state(self, focused: bool, interval: float) -> None:
         if not focused:
@@ -1726,12 +1779,7 @@ class LiveDialogReader:
         policy: _CapturePolicy,
         admission: _TrackerAdmissionDiagnostics,
     ) -> None:
-        cached_fingerprint = object()
-        cached_render_fingerprint = object()
-        cached_completion = object()
-        cached_observation: Observation = (None, "")
-        cached_canonical: _CanonicalRecognition | None = None
-        last_frame_recheck_at = None
+        cache = _OCRFrameCache()
         while True:
             self._ocr_progress("waiting-for-frame")
             with self.pause_condition:
@@ -1754,41 +1802,7 @@ class LiveDialogReader:
                 recognition_version = self.frame_version
                 recognition_capture_at = self.latest_frame_captured_at
             try:
-                recheck_required = bool(
-                    self._ocr_callback("checking-recheck", self.frame_recheck_required)
-                )
-                focused = (
-                    self._ocr_callback("checking-focus", self._is_focused)
-                    if recheck_required
-                    else False
-                )
-                recheck_now = False
-                if recheck_required and visible and focused:
-                    now = self._ocr_callback("reading-clock", self.stable_frame_clock)
-                    recheck_now = bool(
-                        last_frame_recheck_at is None
-                        or now - last_frame_recheck_at
-                        >= self.frame_recheck_interval_seconds
-                    )
-                    if recheck_now:
-                        last_frame_recheck_at = now
-                        self._ocr_callback(
-                            "reporting-prefix-recheck",
-                            self._report_pipeline_event,
-                            "canonical-prefix-visual-recheck",
-                            self.active_generation,
-                            fingerprint=self._privacy_safe_fingerprint(fingerprint),
-                            visible=True,
-                            focused=True,
-                            owner=self._ocr_callback(
-                                "reading-owner", self.stable_frame_owner
-                            ),
-                            recheck_interval_ms=_recheck_interval_milliseconds(
-                                self.frame_recheck_interval_seconds
-                            ),
-                        )
-                else:
-                    last_frame_recheck_at = None
+                recheck_now = self._prefix_recheck_due(visible, fingerprint, cache)
                 with self.state_lock:
                     # Keep recognizing a dispatched transition after its timeout.
                     awaiting_post_advance_dialog = (
@@ -1800,284 +1814,369 @@ class LiveDialogReader:
                             == self.active_generation
                         )
                     )
-                render_changed = bool(
-                    self.tracker_options.get("complete_dialogue_only")
-                    and self.frame_render_fingerprint is not None
-                    and render_fingerprint != cached_render_fingerprint
-                )
-                confirm_identity = bool(
-                    cached_canonical is not None
-                    and not cached_canonical.dialog.exact_match
-                    and tracker.canonical_line_id != cached_canonical.dialog.line_id
-                )
-                if (
-                    fingerprint == cached_fingerprint
-                    and complete == cached_completion
-                    and not awaiting_post_advance_dialog
-                    and not recheck_now
-                    and not render_changed
-                    and not self.observation_uncertain
-                    and not confirm_identity
-                ):
-                    character, text = cached_observation
-                    route_kind = "cached"
-                    with self.state_lock:
-                        metrics = self.pipeline_metrics
-                        self.pipeline_metrics = replace(
-                            metrics,
-                            reused_frames=metrics.reused_frames + 1,
-                        )
-                    frame_route = None
-                else:
-                    frame_route = self._stable_frame_route_decision(
-                        fingerprint,
-                        visible,
-                        complete,
-                    )
-                if frame_route is False:
-                    admission.observe(
-                        tracker,
-                        self.run_id,
-                        "visual",
-                        frame,
-                        recognition_version,
-                        "visual-only",
-                    )
-                    if self._ocr_callback("reading-purpose", self.ocr_purpose) is None:
-                        self._ocr_callback(
-                            "observing-frame",
-                            self.frame_observed,
-                            frame,
-                            fingerprint,
-                            "locked-visual-only",
-                        )
-                    character, text = cached_observation
-                    interval = self._ocr_callback(
-                        "updating-policy", policy.observe, character, text, focused=True
-                    )
-                    with self.state_lock:
-                        self.next_capture_interval = interval
-                    continue
-                canonical_observation = _canonical_frame_observation(frame_route)
-                if canonical_observation is not None:
-                    character, text = canonical_observation
-                    route_kind = "canonical"
-                    cached_fingerprint = fingerprint
-                    cached_render_fingerprint = render_fingerprint
-                    cached_completion = complete
-                    cached_observation = (character, text)
-                    cached_canonical = None
-                elif frame_route is None and (
-                    fingerprint != cached_fingerprint
-                    or awaiting_post_advance_dialog
-                    or recheck_now
-                    or render_changed
-                    or self.observation_uncertain
-                    or confirm_identity
-                ):
-                    purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
-                    if purpose is None:
-                        admission.observe(
-                            tracker,
-                            self.run_id,
-                            "visual",
-                            frame,
-                            recognition_version,
-                            "visual-only",
-                        )
-                        self._ocr_callback(
-                            "observing-frame",
-                            self.frame_observed,
-                            frame,
-                            fingerprint,
-                            "locked-visual-only",
-                        )
-                        character, text = cached_observation
-                        interval = self._ocr_callback(
-                            "updating-policy",
-                            policy.observe,
-                            character,
-                            text,
-                            focused=True,
-                        )
-                        with self.state_lock:
-                            self.next_capture_interval = interval
-                        continue
-                    observation = self._recognize_current_frame(
-                        frame,
-                        purpose,
-                        fingerprint,
-                        visible,
-                        complete,
-                        render_fingerprint,
-                        policy,
-                        recognition_version,
-                        recognition_capture_at,
-                    )
-                    if observation is None:
-                        continue
-                    previous_canonical = cached_canonical
-                    cached_canonical = (
-                        observation
-                        if isinstance(observation, _CanonicalRecognition)
-                        else None
-                    )
-                    if (
-                        cached_canonical is not None
-                        and previous_canonical is not None
-                        and cached_canonical.dialog == previous_canonical.dialog
-                        and cached_canonical.run_id == previous_canonical.run_id
-                        and cached_canonical.epoch == previous_canonical.epoch
-                    ):
-                        cached_canonical = replace(
-                            cached_canonical,
-                            observations=previous_canonical.observations + 1,
-                        )
-                    character, text = (
-                        (observation.dialog.character, observation.dialog.text)
-                        if isinstance(observation, _CanonicalRecognition)
-                        else observation
-                    )
-                    route_kind = "ocr"
-                    cached_fingerprint = fingerprint
-                    cached_render_fingerprint = render_fingerprint
-                    cached_completion = complete
-                    cached_observation = (character, text)
-                    self._record_ocr_completion(
-                        frame, recognition_version, recognition_capture_at
-                    )
-                elif frame_route is not None:
-                    raise TypeError(
-                        "stable_frame_route must return None, False or "
-                        "a SilentDialogRoute/CanonicalDialogRoute/"
-                        "(character, text) route"
-                    )
-                self._record_route_observation(
-                    frame, recognition_version, recognition_capture_at, route_kind
-                )
-                self._ocr_progress("routing")
-                if (
-                    cached_canonical is not None
-                    and not cached_canonical.dialog.exact_match
-                    and cached_canonical.observations < tracker.stability_frames
-                ):
-                    admission.observe(
-                        tracker,
-                        self.run_id,
-                        route_kind,
-                        frame,
-                        recognition_version,
-                        "waiting-stability",
-                    )
-                    interval = self._ocr_callback(
-                        "updating-policy", policy.observe, character, text, focused=True
-                    )
-                    with self.state_lock:
-                        self.next_capture_interval = interval
-                    continue
-                self._ocr_callback(
-                    "observing-transition",
-                    self._observe_pending_transition_text,
-                    character,
-                    text,
-                )
-                routed_observation = (
-                    frame_route
-                    if isinstance(
-                        frame_route,
-                        (SilentDialogRoute, CanonicalDialogRoute),
-                    )
-                    else self._ocr_callback(
-                        "routing-observation", self._report_observation, character, text
-                    )
-                )
-                if routed_observation is None:
-                    admission.observe(
-                        tracker,
-                        self.run_id,
-                        route_kind,
-                        frame,
-                        recognition_version,
-                        "routing-held",
-                    )
-                    interval = self._ocr_callback(
-                        "updating-policy", policy.observe, character, text, focused=True
-                    )
-                    with self.state_lock:
-                        self.next_capture_interval = interval
-                    continue
-                if isinstance(routed_observation, SilentDialogRoute):
-                    silent_route = routed_observation
-                    character, text = None, ""
-                elif isinstance(routed_observation, CanonicalDialogRoute):
-                    silent_route = None
-                    character = routed_observation.character
-                    text = routed_observation.text
-                else:
-                    silent_route = None
-                    character, text = routed_observation
-                frame_already_routed, cached_canonical = self._bind_observed_route(
+                selected = self._select_ocr_observation(
+                    cache,
                     tracker,
-                    character,
-                    text,
-                    cached_canonical,
+                    policy,
+                    admission,
                     frame,
                     fingerprint,
+                    render_fingerprint,
+                    visible,
+                    complete,
+                    recognition_version,
+                    recognition_capture_at,
+                    awaiting_post_advance_dialog,
+                    recheck_now,
+                )
+                if selected is None:
+                    continue
+                route_kind, frame_route, (character, text) = selected
+                self._route_ocr_observation(
+                    tracker,
+                    policy,
+                    admission,
+                    frame,
+                    fingerprint,
+                    recognition_version,
+                    recognition_capture_at,
                     route_kind,
+                    cache,
+                    frame_route,
+                    character,
+                    text,
+                    awaiting_post_advance_dialog,
                 )
-                if route_kind != "cached" and not frame_already_routed:
-                    self._ocr_callback(
-                        "publishing-route",
-                        self.frame_routed,
-                        frame,
-                        fingerprint,
-                        route_kind,
-                        character,
-                        text,
-                    )
-                replacement = (
-                    self._replace_unheard_candidate(
-                        tracker, cached_canonical, character, text
-                    )
-                    if silent_route is None
-                    and not isinstance(routed_observation, CanonicalDialogRoute)
-                    else None
-                )
-                if silent_route is not None:
-                    self._ocr_callback(
-                        "tracking-silent", tracker.observe_silent, silent_route.event_id
-                    )
-                    chunks: list[SpeechChunk] | None = []
-                elif replacement is not None:
-                    chunks = replacement
-                else:
-                    chunks = self._track_routed_dialog(
-                        tracker,
-                        character,
-                        text,
-                        cached_canonical,
-                        route_kind,
-                        awaiting_post_advance_dialog,
-                    )
-                admission.observe(
-                    tracker, self.run_id, route_kind, frame, recognition_version
-                )
-                if chunks is not None:
-                    self._ocr_callback(
-                        "scheduling-speech",
-                        self._schedule_tracked_chunks,
-                        tracker,
-                        chunks,
-                    )
-                interval = self._ocr_callback(
-                    "updating-policy", policy.observe, character, text, focused=True
-                )
-                with self.state_lock:
-                    self.next_capture_interval = interval
             except Exception as error:
                 self._ocr_callback("reporting-error", self.report_error, error)
                 with self.state_lock:
                     self.next_capture_interval = self.interval_seconds
+
+    def _select_ocr_observation(
+        self,
+        cache: _OCRFrameCache,
+        tracker: IncrementalDialogTracker,
+        policy: _CapturePolicy,
+        admission: _TrackerAdmissionDiagnostics,
+        frame: Frame,
+        fingerprint: FrameFingerprint,
+        render_fingerprint: FrameFingerprint,
+        visible: bool,
+        complete: bool,
+        recognition_version: int,
+        recognition_capture_at: float | None,
+        awaiting_post_advance_dialog: bool,
+        recheck_now: bool,
+    ) -> tuple[str, StableFrameRoute, Observation] | None:
+        render_changed = bool(
+            self.tracker_options.get("complete_dialogue_only")
+            and self.frame_render_fingerprint is not None
+            and render_fingerprint != cache.render_fingerprint
+        )
+        confirm_identity = bool(
+            cache.canonical is not None
+            and not cache.canonical.dialog.exact_match
+            and tracker.canonical_line_id != cache.canonical.dialog.line_id
+        )
+        if (
+            fingerprint == cache.fingerprint
+            and complete == cache.completion
+            and not awaiting_post_advance_dialog
+            and not recheck_now
+            and not render_changed
+            and not self.observation_uncertain
+            and not confirm_identity
+        ):
+            character, text = cache.observation
+            route_kind = "cached"
+            with self.state_lock:
+                metrics = self.pipeline_metrics
+                self.pipeline_metrics = replace(
+                    metrics,
+                    reused_frames=metrics.reused_frames + 1,
+                )
+            frame_route = None
+        else:
+            frame_route = self._stable_frame_route_decision(
+                fingerprint,
+                visible,
+                complete,
+            )
+        if frame_route is False:
+            admission.observe(
+                tracker,
+                self.run_id,
+                "visual",
+                frame,
+                recognition_version,
+                "visual-only",
+            )
+            if self._ocr_callback("reading-purpose", self.ocr_purpose) is None:
+                self._ocr_callback(
+                    "observing-frame",
+                    self.frame_observed,
+                    frame,
+                    fingerprint,
+                    "locked-visual-only",
+                )
+            character, text = cache.observation
+            interval = self._ocr_callback(
+                "updating-policy", policy.observe, character, text, focused=True
+            )
+            with self.state_lock:
+                self.next_capture_interval = interval
+            return None
+        canonical_observation = _canonical_frame_observation(frame_route)
+        if canonical_observation is not None:
+            character, text = canonical_observation
+            route_kind = "canonical"
+            cache.fingerprint = fingerprint
+            cache.render_fingerprint = render_fingerprint
+            cache.completion = complete
+            cache.observation = (character, text)
+            cache.canonical = None
+        elif frame_route is None and (
+            fingerprint != cache.fingerprint
+            or complete != cache.completion
+            or awaiting_post_advance_dialog
+            or recheck_now
+            or render_changed
+            or self.observation_uncertain
+            or confirm_identity
+        ):
+            purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
+            if purpose is None:
+                admission.observe(
+                    tracker,
+                    self.run_id,
+                    "visual",
+                    frame,
+                    recognition_version,
+                    "visual-only",
+                )
+                self._ocr_callback(
+                    "observing-frame",
+                    self.frame_observed,
+                    frame,
+                    fingerprint,
+                    "locked-visual-only",
+                )
+                character, text = cache.observation
+                interval = self._ocr_callback(
+                    "updating-policy",
+                    policy.observe,
+                    character,
+                    text,
+                    focused=True,
+                )
+                with self.state_lock:
+                    self.next_capture_interval = interval
+                return None
+            observation = self._recognize_current_frame(
+                frame,
+                purpose,
+                fingerprint,
+                visible,
+                complete,
+                render_fingerprint,
+                policy,
+                recognition_version,
+                recognition_capture_at,
+            )
+            if observation is None:
+                return None
+            character, text = cache.recognize(observation)
+            route_kind = "ocr"
+            cache.fingerprint = fingerprint
+            cache.render_fingerprint = render_fingerprint
+            cache.completion = complete
+            cache.observation = (character, text)
+            self._record_ocr_completion(
+                frame, recognition_version, recognition_capture_at
+            )
+        elif frame_route is not None:
+            raise TypeError(
+                "stable_frame_route must return None, False or "
+                "a SilentDialogRoute/CanonicalDialogRoute/"
+                "(character, text) route"
+            )
+        return route_kind, frame_route, (character, text)
+
+    def _route_ocr_observation(
+        self,
+        tracker: IncrementalDialogTracker,
+        policy: _CapturePolicy,
+        admission: _TrackerAdmissionDiagnostics,
+        frame: Frame,
+        fingerprint: FrameFingerprint,
+        recognition_version: int,
+        recognition_capture_at: float | None,
+        route_kind: str,
+        cache: _OCRFrameCache,
+        frame_route: StableFrameRoute,
+        character: str | None,
+        text: str,
+        awaiting_post_advance_dialog: bool,
+    ) -> None:
+        self._record_route_observation(
+            frame, recognition_version, recognition_capture_at, route_kind
+        )
+        self._ocr_progress("routing")
+        if (
+            cache.canonical is not None
+            and not cache.canonical.dialog.exact_match
+            and cache.canonical.observations < tracker.stability_frames
+        ):
+            admission.observe(
+                tracker,
+                self.run_id,
+                route_kind,
+                frame,
+                recognition_version,
+                "waiting-stability",
+            )
+            interval = self._ocr_callback(
+                "updating-policy", policy.observe, character, text, focused=True
+            )
+            with self.state_lock:
+                self.next_capture_interval = interval
+            return
+        self._ocr_callback(
+            "observing-transition",
+            self._observe_pending_transition_text,
+            character,
+            text,
+        )
+        routed_observation = (
+            frame_route
+            if isinstance(
+                frame_route,
+                (SilentDialogRoute, CanonicalDialogRoute),
+            )
+            else self._ocr_callback(
+                "routing-observation", self._report_observation, character, text
+            )
+        )
+        if routed_observation is None:
+            admission.observe(
+                tracker,
+                self.run_id,
+                route_kind,
+                frame,
+                recognition_version,
+                "routing-held",
+            )
+            interval = self._ocr_callback(
+                "updating-policy", policy.observe, character, text, focused=True
+            )
+            with self.state_lock:
+                self.next_capture_interval = interval
+            return
+        if isinstance(routed_observation, SilentDialogRoute):
+            silent_route = routed_observation
+            character, text = None, ""
+        elif isinstance(routed_observation, CanonicalDialogRoute):
+            silent_route = None
+            character = routed_observation.character
+            text = routed_observation.text
+        else:
+            silent_route = None
+            character, text = routed_observation
+        frame_already_routed, cache.canonical = self._bind_observed_route(
+            tracker,
+            character,
+            text,
+            cache.canonical,
+            frame,
+            fingerprint,
+            route_kind,
+        )
+        if route_kind != "cached" and not frame_already_routed:
+            self._ocr_callback(
+                "publishing-route",
+                self.frame_routed,
+                frame,
+                fingerprint,
+                route_kind,
+                character,
+                text,
+            )
+        replacement = (
+            self._replace_unheard_candidate(tracker, cache.canonical, character, text)
+            if silent_route is None
+            and not isinstance(routed_observation, CanonicalDialogRoute)
+            else None
+        )
+        if silent_route is not None:
+            self._ocr_callback(
+                "tracking-silent", tracker.observe_silent, silent_route.event_id
+            )
+            chunks: list[SpeechChunk] | None = []
+        elif replacement is not None:
+            chunks = replacement
+        else:
+            chunks = self._track_routed_dialog(
+                tracker,
+                character,
+                text,
+                cache.canonical,
+                route_kind,
+                awaiting_post_advance_dialog,
+            )
+        admission.observe(tracker, self.run_id, route_kind, frame, recognition_version)
+        if chunks is not None:
+            self._ocr_callback(
+                "scheduling-speech",
+                self._schedule_tracked_chunks,
+                tracker,
+                chunks,
+            )
+        interval = self._ocr_callback(
+            "updating-policy", policy.observe, character, text, focused=True
+        )
+        with self.state_lock:
+            self.next_capture_interval = interval
+        return
+
+    def _prefix_recheck_due(
+        self,
+        visible: bool,
+        fingerprint: FrameFingerprint,
+        cache: _OCRFrameCache,
+    ) -> bool:
+        recheck_required = bool(
+            self._ocr_callback("checking-recheck", self.frame_recheck_required)
+        )
+        focused = (
+            self._ocr_callback("checking-focus", self._is_focused)
+            if recheck_required
+            else False
+        )
+        recheck_now = False
+        if recheck_required and visible and focused:
+            now = self._ocr_callback("reading-clock", self.stable_frame_clock)
+            recheck_now = bool(
+                cache.last_recheck_at is None
+                or now - cache.last_recheck_at >= self.frame_recheck_interval_seconds
+            )
+            if recheck_now:
+                cache.last_recheck_at = now
+                self._ocr_callback(
+                    "reporting-prefix-recheck",
+                    self._report_pipeline_event,
+                    "canonical-prefix-visual-recheck",
+                    self.active_generation,
+                    fingerprint=self._privacy_safe_fingerprint(fingerprint),
+                    visible=True,
+                    focused=True,
+                    owner=self._ocr_callback("reading-owner", self.stable_frame_owner),
+                    recheck_interval_ms=_recheck_interval_milliseconds(
+                        self.frame_recheck_interval_seconds
+                    ),
+                )
+        else:
+            cache.last_recheck_at = None
+        return recheck_now
 
     def _bind_observed_route(
         self,
@@ -3162,73 +3261,7 @@ class LiveDialogReader:
     def _run_auto_advance(
         self, generation: int, timer_serial: int | None = None
     ) -> None:
-        reason = None
-        with self.state_lock:
-            if (
-                timer_serial is not None
-                and timer_serial != self._auto_advance_timer_serial
-            ):
-                reason = "stale-auto-advance-timer"
-            else:
-                self.auto_advance_timer = None
-                if (
-                    self.auto_advance is None
-                    or generation != self.active_generation
-                    or self.dialog_ready_generation != generation
-                    or self.failed_auto_advance_generation == generation
-                    or self.last_auto_advance_dispatched_generation == generation
-                    or self.current_chunk is not None
-                    or self.speech_futures
-                    or bool(self.deferred_chunks)
-                    or self.paused
-                    or self.suppressed_generation == generation
-                    or self.observation_uncertain
-                    or self.stop_event.is_set()
-                ):
-                    reason = "dispatch-precondition"
-            details = (
-                self._auto_advance_gate_details_locked(timer_serial)
-                if reason is not None
-                else None
-            )
-        if reason is not None:
-            self._report_auto_advance_gate(generation, reason, details)
-            return
-        focused = self._is_focused()
-        with self.state_lock:
-            if (
-                (
-                    timer_serial is not None
-                    and timer_serial != self._auto_advance_timer_serial
-                )
-                or generation != self.active_generation
-                or self.paused
-                or self.stop_event.is_set()
-            ):
-                invalidated = self._auto_advance_gate_details_locked(timer_serial)
-            else:
-                invalidated = None
-        if invalidated is not None:
-            self._report_auto_advance_gate(
-                generation, "ownership-changed-after-focus", invalidated
-            )
-            return
-        if not focused:
-            # A nonmodal voice prompt can own focus exactly when speech ends.
-            # Keep a delayed attempt alive so returning to the game cannot
-            # strand a ready dialogue forever.
-            with self.state_lock:
-                report_focus_wait = (
-                    self.auto_advance_focus_wait_generation != generation
-                )
-                self.auto_advance_focus_wait_generation = generation
-                focus_details = self._auto_advance_gate_details_locked(timer_serial)
-            self._report_auto_advance_gate(
-                generation, "game-focus-not-owned", focus_details, focused=False
-            )
-            if report_focus_wait:
-                self._report_auto_advance_state("focus-wait", generation, 0)
-            self._maybe_auto_advance()
+        if not self._auto_advance_dispatch_ready(generation, timer_serial):
             return
         try:
             self.render_completion()
@@ -3345,6 +3378,17 @@ class LiveDialogReader:
         if advanced is False:
             self._handle_auto_advance_refusal(generation, refusal_reason)
             return
+        self._record_auto_advance_dispatch(
+            generation, same_routed, same_fingerprint, frame_equivalence_ms
+        )
+
+    def _record_auto_advance_dispatch(
+        self,
+        generation: int,
+        same_routed: bool,
+        same_fingerprint: bool,
+        frame_equivalence_ms: float,
+    ) -> None:
         dispatched = None
         with self.state_lock:
             if generation == self.active_generation:
@@ -3385,6 +3429,79 @@ class LiveDialogReader:
             )
             self._report_auto_advance_state("dispatched", generation, attempt)
             timer.start()
+
+    def _auto_advance_dispatch_ready(
+        self, generation: int, timer_serial: int | None
+    ) -> bool:
+        reason = None
+        with self.state_lock:
+            if (
+                timer_serial is not None
+                and timer_serial != self._auto_advance_timer_serial
+            ):
+                reason = "stale-auto-advance-timer"
+            else:
+                self.auto_advance_timer = None
+                if (
+                    self.auto_advance is None
+                    or generation != self.active_generation
+                    or self.dialog_ready_generation != generation
+                    or self.failed_auto_advance_generation == generation
+                    or self.last_auto_advance_dispatched_generation == generation
+                    or self.current_chunk is not None
+                    or self.speech_futures
+                    or bool(self.deferred_chunks)
+                    or self.paused
+                    or self.suppressed_generation == generation
+                    or self.observation_uncertain
+                    or self.stop_event.is_set()
+                ):
+                    reason = "dispatch-precondition"
+            details = (
+                self._auto_advance_gate_details_locked(timer_serial)
+                if reason is not None
+                else None
+            )
+        if reason is not None:
+            self._report_auto_advance_gate(generation, reason, details)
+            return False
+        focused = self._is_focused()
+        with self.state_lock:
+            if (
+                (
+                    timer_serial is not None
+                    and timer_serial != self._auto_advance_timer_serial
+                )
+                or generation != self.active_generation
+                or self.paused
+                or self.stop_event.is_set()
+            ):
+                invalidated = self._auto_advance_gate_details_locked(timer_serial)
+            else:
+                invalidated = None
+        if invalidated is not None:
+            self._report_auto_advance_gate(
+                generation, "ownership-changed-after-focus", invalidated
+            )
+            return False
+        if not focused:
+            # A nonmodal voice prompt can own focus exactly when speech ends.
+            # Keep a delayed attempt alive so returning to the game cannot
+            # strand a ready dialogue forever.
+            with self.state_lock:
+                report_focus_wait = (
+                    self.auto_advance_focus_wait_generation != generation
+                )
+                self.auto_advance_focus_wait_generation = generation
+                focus_details = self._auto_advance_gate_details_locked(timer_serial)
+            self._report_auto_advance_gate(
+                generation, "game-focus-not-owned", focus_details, focused=False
+            )
+            if report_focus_wait:
+                self._report_auto_advance_state("focus-wait", generation, 0)
+            self._maybe_auto_advance()
+            return False
+        return True
 
     def _handle_auto_advance_refusal(
         self, generation: int, refusal_reason: str | None

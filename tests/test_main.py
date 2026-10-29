@@ -3610,6 +3610,19 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(reader.suppressed_generation)
         self.assertTrue(reader.observation_uncertain)
 
+    def _assert_uncertain_audio_events(self, reader, events):
+        invalidations = [
+            item for item in events if item[0] == "observation-invalidated"
+        ]
+        self.assertEqual(len(invalidations), 2)
+        details = invalidations[-1][2]
+        self.assertEqual(details["reason"], "ocr-uncertain")
+        self.assertEqual(details["ocr_confidence"], 10)
+        self.assertEqual(details["minimum_confidence"], 60)
+        self.assertEqual(details["run_id"], reader.run_id)
+        self.assertEqual(details["playback_id"], reader.last_spoken_chunk.playback_id)
+        self.assertNotIn("noise", repr(details))
+
     def test_nonsequence_uncertainty_retains_admitted_audio_and_recovery_deduplicates(
         self,
     ):
@@ -3680,17 +3693,7 @@ class MainTest(unittest.TestCase):
         advance.assert_not_called()
         interrupt.assert_not_called()
         self.assertFalse(any(stage == "queue-cancelled" for stage, _, _ in events))
-        invalidations = [
-            item for item in events if item[0] == "observation-invalidated"
-        ]
-        self.assertEqual(len(invalidations), 2)
-        details = invalidations[-1][2]
-        self.assertEqual(details["reason"], "ocr-uncertain")
-        self.assertEqual(details["ocr_confidence"], 10)
-        self.assertEqual(details["minimum_confidence"], 60)
-        self.assertEqual(details["run_id"], reader.run_id)
-        self.assertEqual(details["playback_id"], reader.last_spoken_chunk.playback_id)
-        self.assertNotIn("noise", repr(details))
+        self._assert_uncertain_audio_events(reader, events)
         reader.report_error.assert_not_called()
 
     def test_confirmed_new_line_after_uncertainty_keeps_accepted_speech(self):

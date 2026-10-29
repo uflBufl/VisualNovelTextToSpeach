@@ -20,6 +20,7 @@ from typing import Protocol, cast
 from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.bulk_generation import (
+    GenerationCancellationWitness,
     GenerationProgressEvent,
     GenerationProgressItem,
     _assert_control_files_unchanged,
@@ -415,18 +416,9 @@ class OfflineGenerationWorker:
                 continue
             resume_options: list[str] = []
             if action == "safe_resume":
-                saved = resumed_items.get(selected[0], {})
-                repair = saved.get("failure_repair")
-                if generation_item_status(saved) == "cancelled" and isinstance(
-                    repair, dict
-                ):
-                    option, retries = _repair_option(str(repair["strategy"]))
-                    if repair["strategy"] == "sentence_boundary_segmentation":
-                        resume_options = ["--segment-pause-ms", str(repair["pause_ms"])]
-                    elif repair["strategy"] == "inline_pause_marker":
-                        resume_options = ["--inline-pause-ms", str(repair["pause_ms"])]
-                else:
-                    option, retries = _repair_option(action)
+                option, retries, resume_options = _cancelled_repair_options(
+                    resumed_items.get(selected[0], {}), action
+                )
             arguments = self._base_arguments(
                 generation_input,
                 voice_plan,
@@ -741,33 +733,13 @@ class OfflineGenerationWorker:
                             cancellation_error = OfflineGenerationCancelled(
                                 "Offline speech generation was cancelled"
                             )
-                            if generation_input is not None:
-                                try:
-                                    cancellation_witness = (
-                                        capture_generation_cancellation(
-                                            _generation_output(generation_input),
-                                            generation_input.queue,
-                                            generation_input.queue_sha256,
-                                            process,
-                                        )
-                                    )
-                                except (
-                                    BulkGenerationError,
-                                    OSError,
-                                    ValueError,
-                                ) as witness_error:
-                                    cancellation_error.add_note(
-                                        f"Cancellation authority unavailable: {witness_error}"
-                                    )
+                            cancellation_witness = _capture_cancelled_process(
+                                generation_input, process, cancellation_error
+                            )
                             raise cancellation_error from None
         except OfflineGenerationCancelled as error:
             if cancellation_witness is not None and terminated_owned_child:
-                try:
-                    reconcile_generation_cancellation(cancellation_witness, process)
-                except (BulkGenerationError, OSError, ValueError) as reconcile_error:
-                    error.add_note(
-                        f"Cancellation state could not be reconciled: {reconcile_error}"
-                    )
+                _reconcile_cancelled_process(cancellation_witness, process, error)
             raise
         finally:
             self._process = None
@@ -1094,6 +1066,59 @@ def _queue_ids(values: object) -> tuple[str, ...]:
     if len(result) != len(set(result)):
         raise OfflineGenerationError("Offline repair queue IDs are duplicated")
     return tuple(sorted(result))
+
+
+def _reconcile_cancelled_process(
+    cancellation_witness: GenerationCancellationWitness,
+    process: subprocess.Popen[str],
+    error: OfflineGenerationCancelled,
+) -> None:
+    try:
+        reconcile_generation_cancellation(cancellation_witness, process)
+    except (BulkGenerationError, OSError, ValueError) as reconcile_error:
+        error.add_note(f"Cancellation state could not be reconciled: {reconcile_error}")
+
+
+def _capture_cancelled_process(
+    generation_input: PregenerationInput | None,
+    process: subprocess.Popen[str],
+    cancellation_error: OfflineGenerationCancelled,
+) -> GenerationCancellationWitness | None:
+    cancellation_witness = None
+    if generation_input is not None:
+        try:
+            cancellation_witness = capture_generation_cancellation(
+                _generation_output(generation_input),
+                generation_input.queue,
+                generation_input.queue_sha256,
+                process,
+            )
+        except (
+            BulkGenerationError,
+            OSError,
+            ValueError,
+        ) as witness_error:
+            cancellation_error.add_note(
+                f"Cancellation authority unavailable: {witness_error}"
+            )
+    return cancellation_witness
+
+
+def _cancelled_repair_options(
+    saved: Mapping[str, object],
+    action: str,
+) -> tuple[str | None, int, list[str]]:
+    resume_options: list[str] = []
+    repair = saved.get("failure_repair")
+    if generation_item_status(saved) == "cancelled" and isinstance(repair, dict):
+        option, retries = _repair_option(str(repair["strategy"]))
+        if repair["strategy"] == "sentence_boundary_segmentation":
+            resume_options = ["--segment-pause-ms", str(repair["pause_ms"])]
+        elif repair["strategy"] == "inline_pause_marker":
+            resume_options = ["--inline-pause-ms", str(repair["pause_ms"])]
+    else:
+        option, retries = _repair_option(action)
+    return option, retries, resume_options
 
 
 def _repair_option(action: str) -> tuple[str | None, int]:

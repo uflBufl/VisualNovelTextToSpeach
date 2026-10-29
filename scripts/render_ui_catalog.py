@@ -602,6 +602,27 @@ def _authoring_workbench_story(
     _set_long_authoring_review(dialog, state)
     if process is not None:
         _stop_authoring_catalog_process(dialog, state)
+    _set_authoring_workbench_state(dialog, state, resources)
+    if state in {
+        "compact",
+        "compact-actions",
+        "review-long-names",
+        "review-long-names-second",
+        "review-long-names-details",
+        "review-long-names-second-details",
+    }:
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(dialog.minimumSize())
+    if enlarged:
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
+def _set_authoring_workbench_state(
+    dialog: AuthoringWorkbenchDialog, state: str, resources: ExitStack
+) -> None:
     if state in {"filtered-empty", "filters-reset"}:
         dialog.review_status.setCurrentText("Awaiting review")
         if state == "filters-reset":
@@ -624,21 +645,6 @@ def _authoring_workbench_story(
             "Generation completed: 1 saved recording awaits review.\n"
             "Review decisions revalidate the exact recording before saving.\n"
         )
-    if state in {
-        "compact",
-        "compact-actions",
-        "review-long-names",
-        "review-long-names-second",
-        "review-long-names-details",
-        "review-long-names-second-details",
-    }:
-        font = dialog.font()
-        font.setPointSize(max(font.pointSize() + 3, 16))
-        dialog.setFont(font)
-        dialog.resize(dialog.minimumSize())
-    if enlarged:
-        dialog.resize(dialog.minimumSize())
-    return dialog
 
 
 def _prepare_authoring_screenshot(

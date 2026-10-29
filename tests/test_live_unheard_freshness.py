@@ -38,29 +38,12 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
                 reader.frame_version += 1
                 reader.pause_condition.notify_all()
 
-        def mutate():
-            if barrier == "invalidation":
-                reader.invalidate_observation()
-            elif barrier == "run":
-                reader.run_id = "another-run"
-            elif barrier == "frame":
-                reader.latest_frame = "different frame"
-                reader.latest_frame_fingerprint = "different glyphs"
-            elif barrier == "owner":
-                context["owner"] = "another-owner"
-            elif barrier == "focus":
-                context["focused"] = False
-            elif barrier == "stop":
-                reader.stop_event.set()
-            elif barrier == "pause":
-                reader.paused = True
-
         def observe(character, text, *, focused=True):
             observations.append((character, text))
             if len(observations) == 1:
                 if not qualify_before:
                     self.assertTrue(reader.allow_unheard_replacement(candidate))
-                mutate()
+                self.mutate_barrier(reader, context, barrier)
                 push()
             elif len(observations) < 3 and barrier is None and not rewrite:
                 push()
@@ -98,6 +81,30 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
         candidate = next(iter(reader.speech_futures.values()))
         if qualify_before:
             self.assertTrue(reader.allow_unheard_replacement(candidate))
+        self.run_ocr_frames(reader, loop_stop)
+        self.assertLessEqual(len(observations), 3)
+        self.assertEqual(errors, [])
+        queued = [arguments[0] for _, _, arguments in executor.jobs]
+        return reader, tracker, recognize, queued
+
+    def mutate_barrier(self, reader, context, barrier):
+        if barrier == "invalidation":
+            reader.invalidate_observation()
+        elif barrier == "run":
+            reader.run_id = "another-run"
+        elif barrier == "frame":
+            reader.latest_frame = "different frame"
+            reader.latest_frame_fingerprint = "different glyphs"
+        elif barrier == "owner":
+            context["owner"] = "another-owner"
+        elif barrier == "focus":
+            context["focused"] = False
+        elif barrier == "stop":
+            reader.stop_event.set()
+        elif barrier == "pause":
+            reader.paused = True
+
+    def run_ocr_frames(self, reader, loop_stop):
         worker = Thread(target=reader._run_ocr, args=(loop_stop,), daemon=True)
         worker.start()
         worker.join(timeout=2)
@@ -107,10 +114,6 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
                 reader.pause_condition.notify_all()
             worker.join(timeout=1)
             self.fail("OCR consumer did not finish the bounded frame sequence")
-        self.assertLessEqual(len(observations), 3)
-        self.assertEqual(errors, [])
-        queued = [arguments[0] for _, _, arguments in executor.jobs]
-        return reader, tracker, recognize, queued
 
     def test_cached_canonical_can_replace_late_qualified_candidate_once(self):
         reader, tracker, recognize, queued = self.harness()

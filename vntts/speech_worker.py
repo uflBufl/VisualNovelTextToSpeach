@@ -769,6 +769,26 @@ def _backend_runtime_metadata(backend: object) -> FrameDocument:
     return metadata
 
 
+def _configure_worker_narrator(backend: _WorkerBackend, command: FrameDocument) -> None:
+    narrator_reference = command.get("narrator_reference")
+    if narrator_reference is not None and not isinstance(
+        narrator_reference, (str, Path)
+    ):
+        raise TTSConfigurationError(
+            "Speech worker narrator_reference must be text or a path"
+        )
+    if narrator_reference != backend.narrator_reference:
+        backend.narrator_reference = narrator_reference
+        for cache_name in (
+            "voice_states",
+            "prompt_audio_codes",
+            "conditionals",
+        ):
+            cache = getattr(backend, cache_name, None)
+            if isinstance(cache, dict):
+                cache.pop("narrator", None)
+
+
 def worker_main(
     *,
     input_stream: _ReadableBinaryStream | None = None,
@@ -846,23 +866,7 @@ def worker_main(
                 backend.registry = _registry_from_document(
                     _registry_document(command["registry"])
                 )
-                narrator_reference = command.get("narrator_reference")
-                if narrator_reference is not None and not isinstance(
-                    narrator_reference, (str, Path)
-                ):
-                    raise TTSConfigurationError(
-                        "Speech worker narrator_reference must be text or a path"
-                    )
-                if narrator_reference != backend.narrator_reference:
-                    backend.narrator_reference = narrator_reference
-                    for cache_name in (
-                        "voice_states",
-                        "prompt_audio_codes",
-                        "conditionals",
-                    ):
-                        cache = getattr(backend, cache_name, None)
-                        if isinstance(cache, dict):
-                            cache.pop("narrator", None)
+                _configure_worker_narrator(backend, command)
                 if command_type in {"render", "synthesis-key"}:
                     request = SynthesisRequest(
                         voice=_required_text(command, "voice"),

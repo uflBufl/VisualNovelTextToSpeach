@@ -1762,6 +1762,15 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.close()
             wizard.deleteLater()
 
+    def _assert_native_calibration_failure(self, show, wizard, other, page, window):
+        show.assert_not_called()
+        self.assertTrue(wizard.isVisible())
+        self.assertTrue(other.isVisible())
+        self.assertFalse(page.isComplete())
+        self.assertIn("Native target lost", page.status.text())
+        self.assertIn("try again", page.status.text())
+        self.assertEqual(wizard.draft_settings.game_window_title, window.title)
+
     def test_native_calibration_failure_retries_same_selected_window(self):
         window = WindowInfo(17, "Game", 42)
         geometry = WindowGeometry(0, 0, 800, 500)
@@ -1813,14 +1822,9 @@ class OnboardingWizardTest(unittest.TestCase):
                 pool.run_next()
                 self.application.processEvents()
 
-                show.assert_not_called()
-                self.assertTrue(wizard.isVisible())
-                self.assertTrue(other.isVisible())
-                self.assertFalse(page.isComplete())
-                self.assertIn("Native target lost", page.status.text())
-                self.assertIn("try again", page.status.text())
-                self.assertEqual(wizard.draft_settings.game_window_title, window.title)
-
+                self._assert_native_calibration_failure(
+                    show, wizard, other, page, window
+                )
                 capture.side_effect = capture_after_window_moves
                 page.calibrate()
                 page.open_overlay()

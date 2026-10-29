@@ -633,31 +633,34 @@ class _ClipPlayback:
         return complete and not self.stop_sent.is_set(), event["underflow_count"] > 0
 
 
+def _validate_clock_diagnostics(metric: object, clock: str) -> None:
+    if not isinstance(metric, dict):
+        raise RuntimeError(f"Rust audio returned invalid {clock}")
+    for name in (
+        "observation_count",
+        "unavailable_count",
+        "discontinuity_count",
+        "max_offset_position_frames",
+        "max_offset_output_frame",
+    ):
+        if type(metric.get(name)) is not int or metric[name] < 0:
+            raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
+    for name in ("max_gap_seconds", "max_offset_seconds"):
+        value = metric.get(name)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            or (name == "max_gap_seconds" and value < 0)
+        ):
+            raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
+
+
 def _validate_timing_diagnostics(event: dict[str, Any]) -> None:
     for clock in ("callback_timing", "dac_timing"):
         if clock not in event:
             continue  # Protocol 2 peers built before timing diagnostics remain supported.
-        metric = event[clock]
-        if not isinstance(metric, dict):
-            raise RuntimeError(f"Rust audio returned invalid {clock}")
-        for name in (
-            "observation_count",
-            "unavailable_count",
-            "discontinuity_count",
-            "max_offset_position_frames",
-            "max_offset_output_frame",
-        ):
-            if type(metric.get(name)) is not int or metric[name] < 0:
-                raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
-        for name in ("max_gap_seconds", "max_offset_seconds"):
-            value = metric.get(name)
-            if (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not isfinite(value)
-                or (name == "max_gap_seconds" and value < 0)
-            ):
-                raise RuntimeError(f"Rust audio returned invalid {clock}.{name}")
+        _validate_clock_diagnostics(event[clock], clock)
     for name in ("timing_output_frames", "timing_sample_rate"):
         if name in event:
             value = event[name]

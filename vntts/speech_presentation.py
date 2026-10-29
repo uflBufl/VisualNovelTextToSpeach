@@ -158,27 +158,31 @@ def readable_model_name(model: object | None) -> str:
     return aliases.get(name, name if len(name) <= 70 else "Custom model (see details)")
 
 
+def _recorded_playback_labels(source: str) -> tuple[str, str]:
+    recorded_voice = "Voice not recorded"
+    for part in source.split("; "):
+        if part.startswith("source voice: "):
+            recorded_voice = part.removeprefix("source voice: ")
+        elif part.startswith("voice ID: "):
+            recorded_voice = readable_voice_label(recorded_voice + "; " + part)
+    provider = source.partition("Recorded with: ")[2].split("; ")[0]
+    model = source.partition("; model: ")[2].split("; ")[0]
+    engine = SPEECH_BACKEND_LABELS.get(provider, provider)
+    label = "Prepared recording · no generation"
+    if engine:
+        label += f"\n{engine}"
+    if model:
+        label += f" · {readable_model_name(model)}"
+    return recorded_voice, label
+
+
 def playback_labels(source: str, voice: str) -> tuple[str, str]:
     """Summarize the diagnostic source; never substitute live defaults for a WAV."""
     voice = readable_voice_label(voice)
     if "/" in voice or "\\" in voice:
         voice = "Reference: " + voice.replace("\\", "/").rsplit("/", 1)[-1]
     if source.startswith("Generated audio"):
-        recorded_voice = "Voice not recorded"
-        for part in source.split("; "):
-            if part.startswith("source voice: "):
-                recorded_voice = part.removeprefix("source voice: ")
-            elif part.startswith("voice ID: "):
-                recorded_voice = readable_voice_label(recorded_voice + "; " + part)
-        provider = source.partition("Recorded with: ")[2].split("; ")[0]
-        model = source.partition("; model: ")[2].split("; ")[0]
-        engine = SPEECH_BACKEND_LABELS.get(provider, provider)
-        label = "Prepared recording · no generation"
-        if engine:
-            label += f"\n{engine}"
-        if model:
-            label += f" · {readable_model_name(model)}"
-        return recorded_voice, label
+        return _recorded_playback_labels(source)
     if source.startswith("Original game audio"):
         return "Original game voice", "Played by the game · no generation"
     if source.startswith("Original game cue"):

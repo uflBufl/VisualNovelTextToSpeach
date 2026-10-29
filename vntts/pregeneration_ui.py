@@ -1241,28 +1241,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.clicked.connect(self._continue_requested)
         self.cancel_button.clicked.connect(self._cancel_or_reject)
 
-    def _build_layout(
-        self,
-        narrator_row: QHBoxLayout,
-        source_row: QHBoxLayout,
-        story_filters: QHBoxLayout,
-        selection_actions: QHBoxLayout,
+    def _build_selection_options(
+        self, source_row: QHBoxLayout, narrator_row: QHBoxLayout
     ) -> None:
-        self.selection_settings_toggle = QPushButton("Game and voice settings")
-        self.selection_settings_toggle.setCheckable(True)
-        self.selection_settings_toggle.setAutoDefault(False)
-        self.selection_details_toggle = QPushButton("Preparation details")
-        self.selection_details_toggle.setCheckable(True)
-        self.selection_details_toggle.setAutoDefault(False)
-        self.selection_configuration = QLabel()
-        self.selection_configuration.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
-        options_row = QHBoxLayout()
-        options_row.addWidget(self.selection_settings_toggle)
-        options_row.addWidget(self.selection_details_toggle)
-        options_row.addWidget(self.selection_configuration, 1)
-
         self.selection_settings = QWidget()
         settings_layout = QVBoxLayout(self.selection_settings)
         settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -1298,6 +1279,29 @@ class OfflineAudioPreparationDialog(QDialog):
         self._update_selection_options()
         self._refresh_narrator_status()
 
+    def _build_layout(
+        self,
+        narrator_row: QHBoxLayout,
+        source_row: QHBoxLayout,
+        story_filters: QHBoxLayout,
+        selection_actions: QHBoxLayout,
+    ) -> None:
+        self.selection_settings_toggle = QPushButton("Game and voice settings")
+        self.selection_settings_toggle.setCheckable(True)
+        self.selection_settings_toggle.setAutoDefault(False)
+        self.selection_details_toggle = QPushButton("Preparation details")
+        self.selection_details_toggle.setCheckable(True)
+        self.selection_details_toggle.setAutoDefault(False)
+        self.selection_configuration = QLabel()
+        self.selection_configuration.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        options_row = QHBoxLayout()
+        options_row.addWidget(self.selection_settings_toggle)
+        options_row.addWidget(self.selection_details_toggle)
+        options_row.addWidget(self.selection_configuration, 1)
+
+        self._build_selection_options(source_row, narrator_row)
         self.selection_panel = QWidget()
         selection_layout = QVBoxLayout(self.selection_panel)
         selection_layout.setContentsMargins(0, 0, 0, 0)
@@ -2061,6 +2065,28 @@ class OfflineAudioPreparationDialog(QDialog):
             choices.extend(registry.choices())
         return tuple(choices)
 
+    def _populate_narrator_choices(self, choices: tuple[VoiceChoice, ...]) -> None:
+        self.narrator_choice.blockSignals(True)
+        self.narrator_choice.clear()
+        self.narrator_choice.addItem("Choose voice...", None)
+        for choice in choices:
+            self.narrator_choice.addItem(voice_source_label(choice.label), choice.id)
+            self.narrator_choice.setItemData(
+                self.narrator_choice.count() - 1,
+                choice.description,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        current = pregeneration_narrator_source_id(
+            resolve_pregeneration_settings(self.settings),
+            voice_library=self.voice_library,
+        )
+        selected = self.narrator_choice.findData(current)
+        self.narrator_choice.setCurrentIndex(max(0, selected))
+        model = self.narrator_choice.model()
+        if isinstance(model, QStandardItemModel):
+            model.item(0).setEnabled(False)
+        self.narrator_choice.blockSignals(False)
+
     def _show_voice_confirmation(self, plan: VoicePlan) -> None:
         self.continue_button.setDefault(True)
         self.cancel_button.setAutoDefault(True)
@@ -2111,26 +2137,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "These voices apply to generated lines in the selected stories. "
             "Matching saved work can be resumed. Other prepared stories remain unchanged."
         )
-        self.narrator_choice.blockSignals(True)
-        self.narrator_choice.clear()
-        self.narrator_choice.addItem("Choose voice...", None)
-        for choice in choices:
-            self.narrator_choice.addItem(voice_source_label(choice.label), choice.id)
-            self.narrator_choice.setItemData(
-                self.narrator_choice.count() - 1,
-                choice.description,
-                Qt.ItemDataRole.ToolTipRole,
-            )
-        current = pregeneration_narrator_source_id(
-            resolve_pregeneration_settings(self.settings),
-            voice_library=self.voice_library,
-        )
-        selected = self.narrator_choice.findData(current)
-        self.narrator_choice.setCurrentIndex(max(0, selected))
-        model = self.narrator_choice.model()
-        if isinstance(model, QStandardItemModel):
-            model.item(0).setEnabled(False)
-        self.narrator_choice.blockSignals(False)
+        self._populate_narrator_choices(choices)
         self._render_voice_routes(plan)
         self.continue_button.setText("Generate with these voices")
         set_action_icon(self.continue_button, "wand-sparkles")
@@ -4309,6 +4316,31 @@ class OfflineAudioPreparationDialog(QDialog):
         self._pack_result = result
         self.accept()
 
+    def _story_type_group(
+        self, content: GameContent, selection: StorySelection
+    ) -> QTreeWidgetItem:
+        group = self._story_groups.get(selection.kind)
+        if group is None:
+            group = QTreeWidgetItem(self.stories)
+            group.setData(0, Qt.ItemDataRole.UserRole + 3, selection.kind)
+            group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            group.setCheckState(0, Qt.CheckState.Unchecked)
+            group_font = group.font(0)
+            group_font.setBold(True)
+            group.setFont(0, group_font)
+            group.setToolTip(
+                0,
+                "Expand or collapse this type. Its checkbox selects every story "
+                "in the type, including stories hidden by a filter.",
+            )
+            group.setExpanded(
+                self._story_group_expansion.get(
+                    (content.story_index_sha256, selection.kind), True
+                )
+            )
+            self._story_groups[selection.kind] = group
+        return group
+
     def _populate_stories(self, content: GameContent | None) -> None:
         self._story_audio_changed()
         self.stories.blockSignals(True)
@@ -4353,26 +4385,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             self._story_job_statuses = story_statuses
             for selection in ordered_selections:
-                group = self._story_groups.get(selection.kind)
-                if group is None:
-                    group = QTreeWidgetItem(self.stories)
-                    group.setData(0, Qt.ItemDataRole.UserRole + 3, selection.kind)
-                    group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    group.setCheckState(0, Qt.CheckState.Unchecked)
-                    group_font = group.font(0)
-                    group_font.setBold(True)
-                    group.setFont(0, group_font)
-                    group.setToolTip(
-                        0,
-                        "Expand or collapse this type. Its checkbox selects every story "
-                        "in the type, including stories hidden by a filter.",
-                    )
-                    group.setExpanded(
-                        self._story_group_expansion.get(
-                            (content.story_index_sha256, selection.kind), True
-                        )
-                    )
-                    self._story_groups[selection.kind] = group
+                group = self._story_type_group(content, selection)
                 parent = group
                 if (
                     selection.parent_story_id is not None
@@ -4740,6 +4753,41 @@ class OfflineAudioPreparationDialog(QDialog):
             return True
         return False
 
+    def _append_saved_audio_summary(
+        self, selected: tuple[str, ...], summary_rows: list[tuple[str, str]]
+    ) -> None:
+        saved = original = remaining = checked_count = 0
+        for selection_id in selected:
+            result = self._story_audio_checks.get(self._story_audio_key(selection_id))
+            if result is None or result[2] is not None:
+                continue
+            coverage = result[0]
+            if coverage is None:
+                continue
+            saved += coverage.generated
+            original += coverage.original
+            remaining += coverage.missing + coverage.live
+            checked_count += 1
+        if checked_count:
+            summary_rows.insert(
+                1,
+                ("Saved audio", f"{saved} recordings; {original} original game lines"),
+            )
+            summary_rows.insert(
+                2,
+                (
+                    "To prepare" if checked_count == len(selected) else "Audio check",
+                    f"{remaining} lines; selected voices are checked before generation"
+                    if checked_count == len(selected)
+                    else f"{checked_count} of {len(selected)} stories checked; checking the rest...",
+                ),
+            )
+        elif self._checking_story is not None:
+            summary_rows[1] = (
+                "Audio check",
+                "Checking saved recordings; remaining work is not known yet",
+            )
+
     def _show_selection_summary(
         self,
         content: GameContent,
@@ -4783,37 +4831,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"About {disk_megabytes} MB for the full selection; saved recordings can be reused",
             ),
         ]
-        saved = original = remaining = checked_count = 0
-        for selection_id in selected:
-            result = self._story_audio_checks.get(self._story_audio_key(selection_id))
-            if result is None or result[2] is not None:
-                continue
-            coverage = result[0]
-            if coverage is None:
-                continue
-            saved += coverage.generated
-            original += coverage.original
-            remaining += coverage.missing + coverage.live
-            checked_count += 1
-        if checked_count:
-            summary_rows.insert(
-                1,
-                ("Saved audio", f"{saved} recordings; {original} original game lines"),
-            )
-            summary_rows.insert(
-                2,
-                (
-                    "To prepare" if checked_count == len(selected) else "Audio check",
-                    f"{remaining} lines; selected voices are checked before generation"
-                    if checked_count == len(selected)
-                    else f"{checked_count} of {len(selected)} stories checked; checking the rest...",
-                ),
-            )
-        elif self._checking_story is not None:
-            summary_rows[1] = (
-                "Audio check",
-                "Checking saved recordings; remaining work is not known yet",
-            )
+        self._append_saved_audio_summary(selected, summary_rows)
         if self.change_voices.isChecked():
             summary_rows.append(
                 (

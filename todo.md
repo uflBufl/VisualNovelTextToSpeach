@@ -1,14 +1,9 @@
 # TODO
 
-## Active - CI unit test repairs
+## Active - Remaining CI qualification
 
-- [ ] Verify the repaired model identity, offline warmup, Qwen persistence,
-      replacement-prompt keyboard default, calibration sizing and enlarged
-      Settings layout in the next hosted Windows/Linux CI run. Local native-route
-      and font/DPI checks do not establish those platform results.
-- [ ] Resolve the non-ignored OSV findings in the root and six backend lock files;
-      verify supported dependency compatibility and advisories without a fixed
-      release. Gate: `scripts/dependency_audit.py` passes without hiding findings.
+- [ ] Qualify the refactored capture, cancellation, voice and reading paths on
+      hosted Windows/Linux and packaged GPU runtimes after local gates pass.
 
 ## Native capture - remaining macOS qualification
 
@@ -861,25 +856,16 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       do not equate source verification with runtime compatibility or add an
       unproven ignore. Retain loaded-module provenance and actual model
       generation/voice checks for any upgrade, backport or replacement.
-- [ ] Resolve compatibility before updating root Coqui 0.27.5 (Transformers <5
-      and private generation API) or Chatterbox Nano's pinned Git package
-      (requires Transformers ==5.2.0). The supported UI/profile/CLI paths do not
-      supply remote custom_generate, but root's public Python synthesis kwargs
-      can; preserve that API while qualifying a compatible fix.
+- [ ] Qualify Coqui 0.28 with real pinned model weights and generated audio on
+      CPU/CUDA and packaged Windows. Check persisted voice reuse across upgrade;
+      tiny GPT generation and constructor/config checks do not qualify audio
+      quality, full checkpoint loading or packaged accelerator behavior.
 - [ ] Qualify the fixed candidate against MOSS Delay's trusted remote processor
       and model loading, including AutoModel's injected GenerationMixin and
       automatic custom-generation lookup. The captured default model snapshot
       has no custom_generate files; mutable/default or custom repositories are
       not a permanent reachability exemption. Preserve revision forwarding,
       CUDA/BF16 refusal, dtype/attention options and actual generated audio.
-- [ ] Qualify MOSS SoundEffect's pinned pipeline and local text-encoder forward
-      path against a compatible fixed Transformers build. Its exact model
-      snapshot has no custom_generate files and the normal pipeline does not
-      call HF generate; retain pinned source/model provenance, CUDA/BF16 and
-      audio-quality checks rather than generalizing to arbitrary custom models.
-      Qwen's remaining Accelerate, setuptools, Torch and Transformers findings
-      belong to the existing Qwen qualification task below, including this
-      custom-generation advisory.
 
 ## Validate OpenMOSS progress on Windows
 
@@ -1532,8 +1518,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
       activation scheduling and fixture contract; preserve the real fresh-install
       preparation/restart path rather than weakening its assertion.
-- [ ] Fix the existing mypy errors in `vntts/diagnostic_recording.py`, `vntts/reading_diagnostics_analysis.py`, `vntts/authoring/workbench_ui.py`, optional remediation lookup in `vntts/onboarding_ui.py` and the preview backend factory contract in `vntts/app.py`. Confirm the current baseline before each repair. Gate: the full configured mypy check passes without suppressing diagnostics.
-- [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
 ## Qualify SQLite-only storage
 

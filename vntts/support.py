@@ -1963,32 +1963,36 @@ class AudioLifecycleLog(RuntimeSupportLog):
         return {"schema_version": 1, "events": self.snapshot()}
 
 
+def _sanitize_audio_timing(value: object) -> SupportDocument | None:
+    if not isinstance(value, Mapping):
+        return None
+    safe: SupportDocument = {}
+    for field in (
+        "observation_count",
+        "unavailable_count",
+        "discontinuity_count",
+        "max_offset_position_frames",
+        "max_offset_output_frame",
+    ):
+        number = value.get(field)
+        if type(number) is int and 0 <= number < 2**64:
+            safe[field] = number
+    for field in ("max_gap_seconds", "max_offset_seconds"):
+        number = value.get(field)
+        if (
+            isinstance(number, (int, float))
+            and not isinstance(number, bool)
+            and (not isinstance(number, int) or number.bit_length() <= 64)
+            and math.isfinite(number)
+            and (field != "max_gap_seconds" or number >= 0)
+        ):
+            safe[field] = round(number, 9)
+    return safe
+
+
 def _sanitize_audio_lifecycle_value(value: object, key: str | None = None) -> object:
     if key in {"callback_timing", "dac_timing"}:
-        if not isinstance(value, Mapping):
-            return None
-        safe: SupportDocument = {}
-        for field in (
-            "observation_count",
-            "unavailable_count",
-            "discontinuity_count",
-            "max_offset_position_frames",
-            "max_offset_output_frame",
-        ):
-            number = value.get(field)
-            if type(number) is int and 0 <= number < 2**64:
-                safe[field] = number
-        for field in ("max_gap_seconds", "max_offset_seconds"):
-            number = value.get(field)
-            if (
-                isinstance(number, (int, float))
-                and not isinstance(number, bool)
-                and (not isinstance(number, int) or number.bit_length() <= 64)
-                and math.isfinite(number)
-                and (field != "max_gap_seconds" or number >= 0)
-            ):
-                safe[field] = round(number, 9)
-        return safe
+        return _sanitize_audio_timing(value)
     if key == "source_sha256":
         return value if is_lowercase_sha256(value) else None
     if value is None or isinstance(value, (bool, int)):

@@ -101,25 +101,7 @@ def build_voice_replacement_prompt(
 
 
 class VoiceImportDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Add character voice")
-        self.character = QLineEdit()
-        self.aliases = QLineEdit()
-        self.aliases.setPlaceholderText("Comma-separated names")
-        self.references: list[str] = []
-        self.reference_files = QPlainTextEdit(
-            "No files selected", readOnly=True, tabChangesFocus=True
-        )
-        self.reference_files.setFixedHeight(
-            self.reference_files.fontMetrics().lineSpacing() * 3 + 12
-        )
-        self.reference_files.installEventFilter(self)
-        self.reference_files.setAccessibleName("Selected audio references")
-        self.choose_button = QPushButton("Choose audio files...")
-        set_action_icon(self.choose_button, "folder-open")
-        self.choose_button.clicked.connect(self.choose_references)
-
+    def _create_import_form(self) -> tuple[QFormLayout, QHBoxLayout, QLabel]:
         form = QFormLayout()
         form.addRow("Character (required)", self.character)
         form.addRow("Other names (optional)", self.aliases)
@@ -139,6 +121,28 @@ class VoiceImportDialog(QDialog):
             "library window won't undo the import."
         )
         import_help.setWordWrap(True)
+        return form, picker_row, import_help
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Add character voice")
+        self.character = QLineEdit()
+        self.aliases = QLineEdit()
+        self.aliases.setPlaceholderText("Comma-separated names")
+        self.references: list[str] = []
+        self.reference_files = QPlainTextEdit(
+            "No files selected", readOnly=True, tabChangesFocus=True
+        )
+        self.reference_files.setFixedHeight(
+            self.reference_files.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.reference_files.installEventFilter(self)
+        self.reference_files.setAccessibleName("Selected audio references")
+        self.choose_button = QPushButton("Choose audio files...")
+        set_action_icon(self.choose_button, "folder-open")
+        self.choose_button.clicked.connect(self.choose_references)
+
+        form, picker_row, import_help = self._create_import_form()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -403,6 +407,35 @@ class AssetManagerDialog(QDialog):
             )
             self.download_button.setText("Download model")
 
+    def _layout_voice_controls(self, tab: QWidget) -> None:
+        manifest_selector = QHBoxLayout()
+        manifest_selector.addWidget(self.voice_manifest, 1)
+        manifest_selector.addWidget(self.browse_manifest_button)
+        validation = QHBoxLayout()
+        validation.addWidget(self.voice_status, 1)
+        validation.addWidget(
+            self.validate_manifest_button, 0, Qt.AlignmentFlag.AlignTop
+        )
+        actions = QHBoxLayout()
+        actions.addWidget(self.import_pack_button)
+        actions.addWidget(self.add_voice_button)
+        actions.addStretch()
+        layout = QVBoxLayout(tab)
+        manifest_label = QLabel("Selected voice library")
+        manifest_label.setBuddy(self.voice_manifest)
+        layout.addWidget(manifest_label)
+        layout.addLayout(manifest_selector)
+        layout.addLayout(validation)
+        layout.addWidget(self.voice_progress)
+        layout.addLayout(actions)
+        import_help = QLabel(
+            "Imports copy files into the app immediately, even if you cancel. "
+            "Save selection applies the selected library."
+        )
+        import_help.setWordWrap(True)
+        layout.addWidget(import_help)
+        layout.addStretch()
+
     def _create_voices_tab(self) -> QWidget:
         tab = QWidget()
         self.voice_manifest = QLineEdit(self.settings_value.voice_manifest or "")
@@ -441,33 +474,7 @@ class AssetManagerDialog(QDialog):
         self.browse_manifest_button.clicked.connect(self.browse_voice_manifest)
         self.validate_manifest_button.clicked.connect(self.validate_voice_manifest)
         self.voice_manifest.textChanged.connect(self._voice_manifest_edited)
-        manifest_selector = QHBoxLayout()
-        manifest_selector.addWidget(self.voice_manifest, 1)
-        manifest_selector.addWidget(self.browse_manifest_button)
-        validation = QHBoxLayout()
-        validation.addWidget(self.voice_status, 1)
-        validation.addWidget(
-            self.validate_manifest_button, 0, Qt.AlignmentFlag.AlignTop
-        )
-        actions = QHBoxLayout()
-        actions.addWidget(self.import_pack_button)
-        actions.addWidget(self.add_voice_button)
-        actions.addStretch()
-        layout = QVBoxLayout(tab)
-        manifest_label = QLabel("Selected voice library")
-        manifest_label.setBuddy(self.voice_manifest)
-        layout.addWidget(manifest_label)
-        layout.addLayout(manifest_selector)
-        layout.addLayout(validation)
-        layout.addWidget(self.voice_progress)
-        layout.addLayout(actions)
-        import_help = QLabel(
-            "Imports copy files into the app immediately, even if you cancel. "
-            "Save selection applies the selected library."
-        )
-        import_help.setWordWrap(True)
-        layout.addWidget(import_help)
-        layout.addStretch()
+        self._layout_voice_controls(tab)
         self.validate_manifest_button.setEnabled(
             bool(self.voice_manifest.text().strip())
         )

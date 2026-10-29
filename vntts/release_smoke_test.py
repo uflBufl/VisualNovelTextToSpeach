@@ -90,6 +90,25 @@ def _report_destination(
     return report_path
 
 
+def _validate_smoke_test_options(
+    image_path: PathInput | None,
+    window_title: str | None,
+    auto_advance_expected_text: str | None,
+    auto_advance_timeout_seconds: float,
+) -> None:
+    if not isfinite(auto_advance_timeout_seconds) or auto_advance_timeout_seconds < 0:
+        raise ValueError("Auto-advance timeout must be finite and nonnegative")
+    if bool(image_path) == bool(window_title):
+        raise ValueError("Provide exactly one smoke-test image or window title")
+    if auto_advance_expected_text and not window_title:
+        raise ValueError("Auto-advance verification requires a window title")
+    if (
+        auto_advance_expected_text is not None
+        and not auto_advance_expected_text.strip()
+    ):
+        raise ValueError("Auto-advance acknowledgement text must not be blank")
+
+
 def run_release_smoke_test(
     *,
     image_path: PathInput | None = None,
@@ -114,20 +133,12 @@ def run_release_smoke_test(
     auto_advance_acknowledged = False
     capture_target = WindowCaptureTarget(window_title) if window_title else None
     try:
-        if (
-            not isfinite(auto_advance_timeout_seconds)
-            or auto_advance_timeout_seconds < 0
-        ):
-            raise ValueError("Auto-advance timeout must be finite and nonnegative")
-        if bool(image_path) == bool(window_title):
-            raise ValueError("Provide exactly one smoke-test image or window title")
-        if auto_advance_expected_text and not window_title:
-            raise ValueError("Auto-advance verification requires a window title")
-        if (
-            auto_advance_expected_text is not None
-            and not auto_advance_expected_text.strip()
-        ):
-            raise ValueError("Auto-advance acknowledgement text must not be blank")
+        _validate_smoke_test_options(
+            image_path,
+            window_title,
+            auto_advance_expected_text,
+            auto_advance_timeout_seconds,
+        )
 
         if image_path:
             image_path = Path(image_path).expanduser().resolve()

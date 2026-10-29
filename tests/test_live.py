@@ -572,6 +572,16 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         self.assertEqual(harness.recognized_frames[-1]["text"], "partial")
         self.assertEqual(harness.errors, [])
 
+    def test_completion_only_frame_change_runs_ocr_without_a_stable_route(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "Same line.", background="first")
+        harness.push("Ada", "Same line.", background="with-cue", complete=True)
+
+        self.assertEqual(len(harness.recognized_frames), 2)
+        self.assertEqual(harness.errors, [])
+
     def test_pending_prefix_periodically_rechecks_same_fingerprint(self):
         pending = [True]
         canonical = "You DO have shillings, don't you, miss?"

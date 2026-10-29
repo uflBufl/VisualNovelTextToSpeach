@@ -1492,6 +1492,74 @@ def _store_successful_generation_attempt(
     remove_failed_audio(run.output_directory, plan.queue_id)
 
 
+def _retain_previous_failure(failure: JsonDocument, previous: object) -> None:
+    if isinstance(previous, dict) and generation_item_status(previous) == "cancelled":
+        stored = previous.get("failure")
+        previous = stored.get("previous_failure") if isinstance(stored, dict) else None
+    if isinstance(previous, dict) and previous.get("status") == "failed":
+        failure["previous_failure"] = copy.deepcopy(previous)
+
+
+def _retain_generation_failure_audio(
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
+    rendered: SynthesisResult | None,
+    partial: Path,
+    is_cancelled: bool,
+) -> JsonDocument:
+    diagnostic_source: Path | bytes = partial
+    if (
+        not is_cancelled
+        and rendered is not None
+        and type(rendered.sample_rate) is int
+        and 0 < rendered.sample_rate <= 0xFFFFFFFF
+        and not partial.exists()
+        and not partial.is_symlink()
+    ):
+        try:
+            with TemporaryDirectory(prefix="vntts-failed-audio-") as directory:
+                diagnostic = Path(directory) / "partial.wav"
+                write_pcm16_wav(
+                    diagnostic, _generated_mono_pcm(rendered.pcm), rendered.sample_rate
+                )
+                diagnostic_source = read_regular_bytes(diagnostic)
+        except Exception:
+            # Optional diagnostics must preserve the synthesis failure.
+            pass
+    return (
+        {"created": False}
+        if is_cancelled
+        else retain_failed_audio(run.output_directory, plan.queue_id, diagnostic_source)
+    )
+
+
+def _retain_failure_plan_metadata(
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
+    value: JsonDocument,
+    attempt_repair: JsonDocument | None,
+) -> None:
+    if plan.synthesis_fallback is not None:
+        value["synthesis_fallback"] = plan.synthesis_fallback
+        value["narrator_character"] = run.narrator_character
+    if plan.source_reference_binding is not None:
+        value["source_reference_binding"] = plan.source_reference_binding
+    if attempt_repair is not None:
+        value["failure_repair"] = attempt_repair
+    carry_forward = plan.existing.get("carry_forward")
+    if (
+        plan.repair_strategy
+        in {
+            SENTENCE_BOUNDARY_SEGMENTATION,
+            INLINE_PAUSE_MARKER,
+            BOUNDED_SEED_RETRY,
+        }
+        and _is_json_document(carry_forward)
+        and carry_forward.get("mode") == "failed-outcome"
+    ):
+        value["carry_forward"] = copy.deepcopy(carry_forward)
+
+
 def _store_failed_generation_attempt(
     run: _GenerationExecutionContext,
     plan: _PreparedGenerationItem,
@@ -1512,29 +1580,8 @@ def _store_failed_generation_attempt(
     is_cancelled = (
         completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
     )
-    diagnostic_source: Path | bytes = partial
-    if (
-        not is_cancelled
-        and rendered is not None
-        and type(rendered.sample_rate) is int
-        and 0 < rendered.sample_rate <= 0xFFFFFFFF
-        and not partial.exists()
-        and not partial.is_symlink()
-    ):
-        try:
-            with TemporaryDirectory(prefix="vntts-failed-audio-") as directory:
-                diagnostic = Path(directory) / "partial.wav"
-                write_pcm16_wav(
-                    diagnostic, _generated_mono_pcm(rendered.pcm), rendered.sample_rate
-                )
-                diagnostic_source = read_regular_bytes(diagnostic)
-        except Exception:
-            # Optional diagnostics must preserve the synthesis failure.
-            pass
-    failure_audio = (
-        {"created": False}
-        if is_cancelled
-        else retain_failed_audio(run.output_directory, plan.queue_id, diagnostic_source)
+    failure_audio = _retain_generation_failure_audio(
+        run, plan, rendered, partial, is_cancelled
     )
     if (
         run.evidence_directory is not None
@@ -1596,36 +1643,8 @@ def _store_failed_generation_attempt(
         failure = value["failure"]
         assert isinstance(failure, dict)
         failure["attempt_counted"] = False
-        previous: object = run.items.get(plan.queue_id, plan.existing)
-        if (
-            isinstance(previous, dict)
-            and generation_item_status(previous) == "cancelled"
-        ):
-            stored = previous.get("failure")
-            previous = (
-                stored.get("previous_failure") if isinstance(stored, dict) else None
-            )
-        if isinstance(previous, dict) and previous.get("status") == "failed":
-            failure["previous_failure"] = copy.deepcopy(previous)
-    if plan.synthesis_fallback is not None:
-        value["synthesis_fallback"] = plan.synthesis_fallback
-        value["narrator_character"] = run.narrator_character
-    if plan.source_reference_binding is not None:
-        value["source_reference_binding"] = plan.source_reference_binding
-    if attempt_repair is not None:
-        value["failure_repair"] = attempt_repair
-    carry_forward = plan.existing.get("carry_forward")
-    if (
-        plan.repair_strategy
-        in {
-            SENTENCE_BOUNDARY_SEGMENTATION,
-            INLINE_PAUSE_MARKER,
-            BOUNDED_SEED_RETRY,
-        }
-        and _is_json_document(carry_forward)
-        and carry_forward.get("mode") == "failed-outcome"
-    ):
-        value["carry_forward"] = copy.deepcopy(carry_forward)
+        _retain_previous_failure(failure, run.items.get(plan.queue_id, plan.existing))
+    _retain_failure_plan_metadata(run, plan, value, attempt_repair)
     run.items[plan.queue_id] = value
     if run_attempts < plan.attempt_limit and not is_cancelled:
         _write_active_phase(
@@ -1820,15 +1839,13 @@ def _prefetch_next_generation(
     )
 
 
-def _render_and_publish_generation_attempt(
+def _render_generation_attempt(
     run: _GenerationExecutionContext,
-    item_index: int,
     plan: _PreparedGenerationItem,
     attempt: _GenerationAttempt,
     prefetched_render: PrefetchedRender | None,
-    pipeline_enabled: bool,
-) -> PrefetchedRender | None:
-    final_key = _final_audio_key(run, attempt.request, plan.repair_document)
+    final_key: str | None,
+) -> tuple[SynthesisResult, Path | None, PrefetchedRender | None]:
     saved = None
     if final_key is not None and run.synthesis_cache_policy is SynthesisCachePolicy.USE:
         with measure_generation_phase("cached-wav-lookup"):
@@ -1859,45 +1876,16 @@ def _render_and_publish_generation_attempt(
                 )
             else:
                 attempt.rendered = run.render(attempt.request).collect()
-    rendered = attempt.rendered
-    worker_pid = _runtime_worker_pid(run.backend)
-    record_diagnostic_event(
-        "generation",
-        "generation-render-result",
-        line_id=plan.item.line_id,
-        process_id=os.getpid(),
-        worker_pid=worker_pid,
-        provider=rendered.diagnostics.backend,
-        cache_source=rendered.diagnostics.cache_source,
-        completion=rendered.completion.value,
-        synthesis_ms=rendered.timing.total_ms,
-        first_chunk_ms=rendered.timing.first_chunk_ms,
-        seed=rendered.diagnostics.seed,
-        sample_count=rendered.diagnostics.sample_count,
-        chunk_count=rendered.diagnostics.chunk_count,
-    )
-    active = run.state.get("active")
-    if _is_json_document(active):
-        active["runtime_status"] = speech_runtime_label(run.backend)
-        active["runtime_worker_pid"] = worker_pid
-    _validate_render_result(attempt.rendered, attempt.request, run.provider)
-    _assert_control_files_unchanged(run.controls)
-    if run.workspace_output_identity is not None:
-        _assert_workspace_output_identity(
-            run.output_argument, run.workspace_output_identity
-        )
-    run.lease.assert_owned()
-    _write_active_phase(
-        run.state_path,
-        run.state,
-        "validating",
-        controls_unchanged=run.progress_callback is None,
-    )
-    _notify_progress(run)
-    if pipeline_enabled:
-        prefetched_render = _prefetch_next_generation(
-            run, item_index, prefetched_render
-        )
+    return attempt.rendered, saved, prefetched_render
+
+
+def _validate_generation_wav(
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
+    attempt: _GenerationAttempt,
+    saved: Path | None,
+) -> tuple[AudioQuality, SpeechQuality, str]:
+    assert attempt.rendered is not None
     with measure_generation_phase("wav-quality"):
         output_pcm = _generated_mono_pcm(attempt.rendered.pcm)
         if plan.repair_strategy == EDGE_SILENCE_TRIM:
@@ -1925,6 +1913,62 @@ def _render_and_publish_generation_attempt(
             text=plan.synthesis_text,
         )
         file_sha256 = hashlib.sha256(payload).hexdigest()
+    return quality, speech_quality, file_sha256
+
+
+def _render_and_publish_generation_attempt(
+    run: _GenerationExecutionContext,
+    item_index: int,
+    plan: _PreparedGenerationItem,
+    attempt: _GenerationAttempt,
+    prefetched_render: PrefetchedRender | None,
+    pipeline_enabled: bool,
+) -> PrefetchedRender | None:
+    final_key = _final_audio_key(run, attempt.request, plan.repair_document)
+    rendered, saved, prefetched_render = _render_generation_attempt(
+        run, plan, attempt, prefetched_render, final_key
+    )
+    worker_pid = _runtime_worker_pid(run.backend)
+    record_diagnostic_event(
+        "generation",
+        "generation-render-result",
+        line_id=plan.item.line_id,
+        process_id=os.getpid(),
+        worker_pid=worker_pid,
+        provider=rendered.diagnostics.backend,
+        cache_source=rendered.diagnostics.cache_source,
+        completion=rendered.completion.value,
+        synthesis_ms=rendered.timing.total_ms,
+        first_chunk_ms=rendered.timing.first_chunk_ms,
+        seed=rendered.diagnostics.seed,
+        sample_count=rendered.diagnostics.sample_count,
+        chunk_count=rendered.diagnostics.chunk_count,
+    )
+    active = run.state.get("active")
+    if _is_json_document(active):
+        active["runtime_status"] = speech_runtime_label(run.backend)
+        active["runtime_worker_pid"] = worker_pid
+    _validate_render_result(rendered, attempt.request, run.provider)
+    _assert_control_files_unchanged(run.controls)
+    if run.workspace_output_identity is not None:
+        _assert_workspace_output_identity(
+            run.output_argument, run.workspace_output_identity
+        )
+    run.lease.assert_owned()
+    _write_active_phase(
+        run.state_path,
+        run.state,
+        "validating",
+        controls_unchanged=run.progress_callback is None,
+    )
+    _notify_progress(run)
+    if pipeline_enabled:
+        prefetched_render = _prefetch_next_generation(
+            run, item_index, prefetched_render
+        )
+    quality, speech_quality, file_sha256 = _validate_generation_wav(
+        run, plan, attempt, saved
+    )
     _write_active_phase(
         run.state_path,
         run.state,
@@ -3060,21 +3104,7 @@ def reconcile_generation_cancellation(
                 raise BulkGenerationError("Cancelled generation active owner changed")
             queue_id = _generation_text(active.get("queue_id"), "Cancelled queue ID")
             existing = _state_items(state).get(queue_id, {})
-            if active.get("phase") != "retrying" and existing.get("status") not in {
-                "generated",
-                "approved",
-            }:
-                voice = _generation_text(
-                    active.get("synthesis_voice_character"), "Cancelled synthesis voice"
-                )
-                audio = _within(
-                    witness.output,
-                    _audio_relative_path(voice, queue_id),
-                    "Cancelled audio",
-                )
-                for artifact in (audio.with_suffix(".partial.wav"), audio):
-                    if artifact.exists() or artifact.is_symlink():
-                        _archive_interrupted_artifact(witness.output, artifact)
+            _archive_cancelled_attempt_audio(witness.output, active, queue_id, existing)
             _reconcile_interrupted_attempt(
                 state_path,
                 state,
@@ -3094,6 +3124,29 @@ def reconcile_generation_cancellation(
             state, witness.output, witness.output / RUNTIME_PROGRESS_MANIFEST_NAME
         )
     return True
+
+
+def _archive_cancelled_attempt_audio(
+    output: Path,
+    active: JsonDocument,
+    queue_id: str,
+    existing: JsonDocument,
+) -> None:
+    if active.get("phase") != "retrying" and existing.get("status") not in {
+        "generated",
+        "approved",
+    }:
+        voice = _generation_text(
+            active.get("synthesis_voice_character"), "Cancelled synthesis voice"
+        )
+        audio = _within(
+            output,
+            _audio_relative_path(voice, queue_id),
+            "Cancelled audio",
+        )
+        for artifact in (audio.with_suffix(".partial.wav"), audio):
+            if artifact.exists() or artifact.is_symlink():
+                _archive_interrupted_artifact(output, artifact)
 
 
 def _load_or_create_state(
@@ -3125,6 +3178,103 @@ def _load_or_create_state(
 
 
 _validate_success_file = validate_success_file
+
+
+def _refund_cancelled_attempt(
+    active: JsonDocument,
+    existing: JsonDocument,
+    interrupted_result: JsonDocument,
+) -> None:
+    attempts = _nonnegative_int(active.get("total_attempts"), "Cancelled attempts")
+    provider = _generation_text(active.get("provider"), "Cancelled provider")
+    providers = _provider_attempts(active, attempts, default_provider=provider)
+    if attempts < 1 or providers.get(provider, 0) < 1:
+        raise BulkGenerationError("Cancelled generation attempt counts are unavailable")
+    attempts -= 1
+    providers[provider] -= 1
+    previous_total = _nonnegative_int(existing.get("attempts", 0), "Previous attempts")
+    previous_providers = _provider_attempts(
+        existing, previous_total, default_provider=provider
+    )
+    if completed_generation_attempts(existing) > attempts or any(
+        providers.get(name, 0) < count for name, count in previous_providers.items()
+    ):
+        raise BulkGenerationError(
+            "Cancelled generation cannot refund a completed failure"
+        )
+    failure: JsonDocument = {
+        "schema_version": 1,
+        "kind": "cancelled",
+        "completion": SynthesisCompletion.CANCELLED.value,
+        "error_type": "CancelledGenerationProcess",
+        "attempt_counted": False,
+        "text_features": _text_failure_features(
+            active["text"] if isinstance(active.get("text"), str) else ""
+        ),
+    }
+    _retain_previous_failure(failure, existing)
+    interrupted_result.update(
+        attempts=attempts,
+        attempts_by_provider=providers,
+        last_error="Generation cancelled by user",
+        failure=failure,
+    )
+    if _is_json_document(existing.get("carry_forward")):
+        interrupted_result["carry_forward"] = copy.deepcopy(existing["carry_forward"])
+
+
+def _interrupted_generation_result(
+    active: JsonDocument,
+    existing: JsonDocument,
+    cancellation: JsonDocument | None,
+) -> JsonDocument:
+    attempts = max(
+        _nonnegative_int(existing.get("attempts", 0), "Attempts"),
+        _nonnegative_int(active.get("total_attempts", 0), "Active attempts"),
+    )
+    interrupted_result = {
+        "status": "failed",
+        "attempts": attempts,
+        "seed": active.get("seed"),
+        "last_error": "Interrupted generation attempt",
+        "failure": {
+            "schema_version": 1,
+            "kind": "interrupted",
+            "error_type": "InterruptedGenerationAttempt",
+            "text_features": _text_failure_features(
+                active["text"] if isinstance(active.get("text"), str) else ""
+            ),
+        },
+        "updated_at": _now(),
+    }
+    if cancellation is not None:
+        _refund_cancelled_attempt(active, existing, interrupted_result)
+    for field in (
+        "provider",
+        "model",
+        "generation_profile",
+        "requested_voice_character",
+        "synthesis_voice_character",
+        "synthesis_fallback",
+        "narrator_character",
+        "prompt_sha256",
+        "prompt_applied",
+        "queue_annotations_sha256",
+        "synthesis_text_sha256",
+        "text_transform",
+        "synthesis_provenance_sha256",
+        "synthesis_configuration",
+        "source_reference_binding",
+        "failure_repair",
+        "seed_applied",
+    ):
+        if field in active:
+            interrupted_result[field] = active[field]
+    if "synthesis_voice_character" in interrupted_result:
+        interrupted_result["voice_character"] = interrupted_result.pop(
+            "synthesis_voice_character"
+        )
+    return interrupted_result
 
 
 def _reconcile_interrupted_attempt(
@@ -3183,103 +3333,9 @@ def _reconcile_interrupted_attempt(
         write_generation_state(state_path, state)
         return
     if existing.get("status") not in {"generated", "approved"}:
-        attempts = max(
-            _nonnegative_int(existing.get("attempts", 0), "Attempts"),
-            _nonnegative_int(active.get("total_attempts", 0), "Active attempts"),
+        interrupted_result = _interrupted_generation_result(
+            active, existing, cancellation
         )
-        interrupted_result = {
-            "status": "failed",
-            "attempts": attempts,
-            "seed": active.get("seed"),
-            "last_error": "Interrupted generation attempt",
-            "failure": {
-                "schema_version": 1,
-                "kind": "interrupted",
-                "error_type": "InterruptedGenerationAttempt",
-                "text_features": _text_failure_features(
-                    active["text"] if isinstance(active.get("text"), str) else ""
-                ),
-            },
-            "updated_at": _now(),
-        }
-        if cancellation is not None:
-            attempts = _nonnegative_int(
-                active.get("total_attempts"), "Cancelled attempts"
-            )
-            provider = _generation_text(active.get("provider"), "Cancelled provider")
-            providers = _provider_attempts(active, attempts, default_provider=provider)
-            if attempts < 1 or providers.get(provider, 0) < 1:
-                raise BulkGenerationError(
-                    "Cancelled generation attempt counts are unavailable"
-                )
-            attempts -= 1
-            providers[provider] -= 1
-            previous_total = _nonnegative_int(
-                existing.get("attempts", 0), "Previous attempts"
-            )
-            previous_providers = _provider_attempts(
-                existing, previous_total, default_provider=provider
-            )
-            if completed_generation_attempts(existing) > attempts or any(
-                providers.get(name, 0) < count
-                for name, count in previous_providers.items()
-            ):
-                raise BulkGenerationError(
-                    "Cancelled generation cannot refund a completed failure"
-                )
-            failure: JsonDocument = {
-                "schema_version": 1,
-                "kind": "cancelled",
-                "completion": SynthesisCompletion.CANCELLED.value,
-                "error_type": "CancelledGenerationProcess",
-                "attempt_counted": False,
-                "text_features": _text_failure_features(
-                    active["text"] if isinstance(active.get("text"), str) else ""
-                ),
-            }
-            previous: object = existing
-            if generation_item_status(existing) == "cancelled":
-                stored = existing.get("failure")
-                previous = (
-                    stored.get("previous_failure") if isinstance(stored, dict) else None
-                )
-            if isinstance(previous, dict) and previous.get("status") == "failed":
-                failure["previous_failure"] = copy.deepcopy(previous)
-            interrupted_result.update(
-                attempts=attempts,
-                attempts_by_provider=providers,
-                last_error="Generation cancelled by user",
-                failure=failure,
-            )
-            if _is_json_document(existing.get("carry_forward")):
-                interrupted_result["carry_forward"] = copy.deepcopy(
-                    existing["carry_forward"]
-                )
-        for field in (
-            "provider",
-            "model",
-            "generation_profile",
-            "requested_voice_character",
-            "synthesis_voice_character",
-            "synthesis_fallback",
-            "narrator_character",
-            "prompt_sha256",
-            "prompt_applied",
-            "queue_annotations_sha256",
-            "synthesis_text_sha256",
-            "text_transform",
-            "synthesis_provenance_sha256",
-            "synthesis_configuration",
-            "source_reference_binding",
-            "failure_repair",
-            "seed_applied",
-        ):
-            if field in active:
-                interrupted_result[field] = active[field]
-        if "synthesis_voice_character" in interrupted_result:
-            interrupted_result["voice_character"] = interrupted_result.pop(
-                "synthesis_voice_character"
-            )
         items[queue_id] = interrupted_result
     state["active"] = None
     write_generation_state(state_path, state)

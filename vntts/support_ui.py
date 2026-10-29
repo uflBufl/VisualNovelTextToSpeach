@@ -42,29 +42,7 @@ class SupportCenterDialog(QDialog):
     reading_history_requested = Signal()
     reading_folder_requested = Signal()
 
-    def __init__(
-        self,
-        event_log: support.RuntimeSupportLog,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.event_log = event_log
-        self.reading_status_provider: Callable[[], dict[str, object] | None] | None = (
-            None
-        )
-        self.setWindowTitle("Support and logs")
-        self.setMinimumSize(620, 600)
-        self.resize(940, 760)
-        self._diagnostic_sessions: dict[str, DiagnosticSessionEntry] = {}
-        self._reading_report: dict[str, object] | None = None
-        self._pending_history_selection: str | None = None
-        self._history_busy = False
-        self._export_busy = False
-        self._history_status = ""
-        self._history_retry = QTimer(self)
-        self._history_retry.setSingleShot(True)
-        self._history_retry.timeout.connect(self.reading_history_requested.emit)
-
+    def _create_event_view(self) -> None:
         self.events = QTextEdit()
         self.events.setReadOnly(True)
         self.events.setAccessibleName("Runtime events")
@@ -82,6 +60,8 @@ class SupportCenterDialog(QDialog):
         policy.setRetainSizeWhenHidden(True)
         self.new_events_button.setSizePolicy(policy)
         self.new_events_button.hide()
+
+    def _create_support_actions(self) -> QHBoxLayout:
         self.privacy_note = QLabel(
             "Export report includes technical logs. Session exports can also include "
             "game media and dialogue text when recording is selected. Paths and log "
@@ -137,40 +117,9 @@ class SupportCenterDialog(QDialog):
         actions.addWidget(self.diagnostics_button)
         actions.addWidget(self.settings_button)
         actions.addStretch()
-        self._export_status = ""
-        self._launcher_status = ""
-        self._reading_start_error = ""
-        self.operation_status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
-        self.operation_status.setAccessibleName("Support operation status")
-        self.operation_status.setFrameShape(QFrame.Shape.NoFrame)
-        self.operation_status.viewport().setAutoFillBackground(False)
-        self.operation_status.setWordWrapMode(
-            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
-        )
-        self.operation_status.setFixedHeight(
-            self.operation_status.fontMetrics().lineSpacing() * 3 + 12
-        )
-        self.operation_status.installEventFilter(self)
-        self.reading_media = QCheckBox("Record game video and audio (macOS)")
-        self.reading_media.setToolTip(
-            "Opt-in: includes selected game video, game and speech audio, used source "
-            "WAVs, recognized text and matched story dialogue in the session export. "
-            "Dialogue text may be retained even if media recording fails. "
-            "Never records the desktop or microphone."
-        )
-        self.reading_seconds = QSpinBox()
-        self.reading_seconds.setRange(1, MAX_DIAGNOSTIC_SECONDS)
-        self.reading_seconds.setValue(600)
-        self.reading_seconds.setSuffix(" s")
-        self.reading_seconds.setAccessibleName("Diagnostic session duration limit")
-        self.reading_seconds.setToolTip(
-            "Required duration, up to 3600 seconds (1 hour). Recording stops automatically at this limit or when disk space runs low."
-        )
-        self.reading_start = QPushButton("Start session")
-        self.reading_stop = QPushButton("Stop")
-        self.reading_export = QPushButton("Export selected")
-        self.reading_delete = QPushButton("Delete selected")
-        self.reading_folder = QPushButton("Sessions folder")
+        return actions
+
+    def _create_session_history(self) -> None:
         self.reading_history = QTreeWidget()
         self.reading_history.setAccessibleName("Saved diagnostic sessions")
         self.reading_history.setRootIsDecorated(False)
@@ -202,6 +151,29 @@ class SupportCenterDialog(QDialog):
             self.reading_history_detail.fontMetrics().lineSpacing() * 3 + 12
         )
         self.reading_history_detail.installEventFilter(self)
+
+    def _create_session_controls(self) -> None:
+        self.reading_media = QCheckBox("Record game video and audio (macOS)")
+        self.reading_media.setToolTip(
+            "Opt-in: includes selected game video, game and speech audio, used source "
+            "WAVs, recognized text and matched story dialogue in the session export. "
+            "Dialogue text may be retained even if media recording fails. "
+            "Never records the desktop or microphone."
+        )
+        self.reading_seconds = QSpinBox()
+        self.reading_seconds.setRange(1, MAX_DIAGNOSTIC_SECONDS)
+        self.reading_seconds.setValue(600)
+        self.reading_seconds.setSuffix(" s")
+        self.reading_seconds.setAccessibleName("Diagnostic session duration limit")
+        self.reading_seconds.setToolTip(
+            "Required duration, up to 3600 seconds (1 hour). Recording stops automatically at this limit or when disk space runs low."
+        )
+        self.reading_start = QPushButton("Start session")
+        self.reading_stop = QPushButton("Stop")
+        self.reading_export = QPushButton("Export selected")
+        self.reading_delete = QPushButton("Delete selected")
+        self.reading_folder = QPushButton("Sessions folder")
+        self._create_session_history()
         self.reading_status = QLabel("No current diagnostic session.")
         self.reading_status.setWordWrap(True)
         self.reading_status.setTextFormat(Qt.TextFormat.PlainText)
@@ -228,10 +200,67 @@ class SupportCenterDialog(QDialog):
         self.reading_stop.setEnabled(False)
         self.reading_export.setEnabled(False)
         self.reading_delete.setEnabled(False)
+
+    def __init__(
+        self,
+        event_log: support.RuntimeSupportLog,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.event_log = event_log
+        self.reading_status_provider: Callable[[], dict[str, object] | None] | None = (
+            None
+        )
+        self.setWindowTitle("Support and logs")
+        self.setMinimumSize(620, 600)
+        self.resize(940, 760)
+        self._diagnostic_sessions: dict[str, DiagnosticSessionEntry] = {}
+        self._reading_report: dict[str, object] | None = None
+        self._pending_history_selection: str | None = None
+        self._history_busy = False
+        self._export_busy = False
+        self._history_status = ""
+        self._history_retry = QTimer(self)
+        self._history_retry.setSingleShot(True)
+        self._history_retry.timeout.connect(self.reading_history_requested.emit)
+
+        self._create_event_view()
+        actions = self._create_support_actions()
+        self._export_status = ""
+        self._launcher_status = ""
+        self._reading_start_error = ""
+        self.operation_status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.operation_status.setAccessibleName("Support operation status")
+        self.operation_status.setFrameShape(QFrame.Shape.NoFrame)
+        self.operation_status.viewport().setAutoFillBackground(False)
+        self.operation_status.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+        )
+        self.operation_status.setFixedHeight(
+            self.operation_status.fontMetrics().lineSpacing() * 3 + 12
+        )
+        self.operation_status.installEventFilter(self)
+        self._create_session_controls()
         self._create_layout(actions)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
+
+    def _set_focus_order(self) -> None:
+        self.setTabOrder(self.events, self.new_events_button)
+        self.setTabOrder(self.new_events_button, self.diagnostics_button)
+        self.setTabOrder(self.diagnostics_button, self.settings_button)
+        self.setTabOrder(self.settings_button, self.reading_media)
+        self.setTabOrder(self.reading_media, self.reading_seconds)
+        self.setTabOrder(self.reading_seconds, self.reading_start)
+        self.setTabOrder(self.reading_start, self.reading_stop)
+        self.setTabOrder(self.reading_stop, self.reading_folder)
+        self.setTabOrder(self.reading_folder, self.reading_history)
+        self.setTabOrder(self.reading_history, self.reading_export)
+        self.setTabOrder(self.reading_export, self.reading_delete)
+        self.setTabOrder(self.reading_delete, self.reading_history_detail)
+        self.setTabOrder(self.reading_history_detail, self.operation_status)
+        self.setTabOrder(self.operation_status, self.export_button)
 
     def _create_layout(self, actions: QHBoxLayout) -> None:
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -285,20 +314,7 @@ class SupportCenterDialog(QDialog):
         shell.setSpacing(10)
         shell.addWidget(self.body_scroll, 1)
         shell.addLayout(footer)
-        self.setTabOrder(self.events, self.new_events_button)
-        self.setTabOrder(self.new_events_button, self.diagnostics_button)
-        self.setTabOrder(self.diagnostics_button, self.settings_button)
-        self.setTabOrder(self.settings_button, self.reading_media)
-        self.setTabOrder(self.reading_media, self.reading_seconds)
-        self.setTabOrder(self.reading_seconds, self.reading_start)
-        self.setTabOrder(self.reading_start, self.reading_stop)
-        self.setTabOrder(self.reading_stop, self.reading_folder)
-        self.setTabOrder(self.reading_folder, self.reading_history)
-        self.setTabOrder(self.reading_history, self.reading_export)
-        self.setTabOrder(self.reading_export, self.reading_delete)
-        self.setTabOrder(self.reading_delete, self.reading_history_detail)
-        self.setTabOrder(self.reading_history_detail, self.operation_status)
-        self.setTabOrder(self.operation_status, self.export_button)
+        self._set_focus_order()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (

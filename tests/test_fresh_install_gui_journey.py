@@ -168,18 +168,7 @@ def _wait_until(application, predicate, message, timeout_ms=10_000):
         raise AssertionError(message)
 
 
-def _first_process(root):
-    application = QApplication.instance() or QApplication([])
-    content = inspect_story_index(_write_content(root / "imported"))
-    manifest = _write_valid_manifest(root / "voices")
-    settings = AppSettings(
-        speech_backend="pocket-tts",
-        tts_profile="default",
-        pocket_gated_model_accepted=True,
-        voice_manifest=str(manifest),
-        game_window_title="Reverse: 1999",
-    )
-
+def _complete_fresh_onboarding(application, settings):
     onboarding_controller = Mock(is_ready=False, is_live_running=False)
     onboarding_controller.apply_settings.return_value = True
     onboarding_controller.start.return_value = True
@@ -234,6 +223,44 @@ def _first_process(root):
     finally:
         onboarding.shutdown()
 
+
+def _choose_fresh_pack_narrator(dialog, pool, application, player):
+    dialog.continue_button.click()
+    for _ in range(4):
+        if dialog._awaiting_voice_confirmation:
+            break
+        _run_next(pool, application)
+    if not dialog._awaiting_voice_confirmation:
+        raise AssertionError("Voice confirmation did not open")
+    narrator_index = dialog.narrator_choice.findData("character:centurion")
+    if narrator_index < 0:
+        raise AssertionError("Centurion was not offered as a game narrator")
+    dialog.narrator_choice.setCurrentIndex(narrator_index)
+    dialog.play_narrator_reference.click()
+    player.play_bytes.assert_called_once()
+    if not player.play_bytes.call_args.args[0]:
+        raise AssertionError("Narrator playback did not receive reference bytes")
+    if "Centurion" not in dialog.voice_confirmation_status.text():
+        raise AssertionError("Narrator playback status hid the selected voice")
+    if dialog.engine_choice.currentData() != "pocket-tts":
+        raise AssertionError("The selected generation engine was not retained")
+    if "Pocket TTS" not in dialog._full_narrator_configuration():
+        raise AssertionError("The full preparation details hid the generation engine")
+
+
+def _first_process(root):
+    application = QApplication.instance() or QApplication([])
+    content = inspect_story_index(_write_content(root / "imported"))
+    manifest = _write_valid_manifest(root / "voices")
+    settings = AppSettings(
+        speech_backend="pocket-tts",
+        tts_profile="default",
+        pocket_gated_model_accepted=True,
+        voice_manifest=str(manifest),
+        game_window_title="Reverse: 1999",
+    )
+
+    _complete_fresh_onboarding(application, settings)
     saved = load_app_settings()
     if not saved.onboarding_completed:
         raise AssertionError("Onboarding completion was not persisted")
@@ -289,30 +316,7 @@ def _first_process(root):
         if dialog.selected_story_ids() != ("selected-story",):
             raise AssertionError("The unprepared story was not left unselected")
 
-        dialog.continue_button.click()
-        for _ in range(4):
-            if dialog._awaiting_voice_confirmation:
-                break
-            _run_next(pool, application)
-        if not dialog._awaiting_voice_confirmation:
-            raise AssertionError("Voice confirmation did not open")
-        narrator_index = dialog.narrator_choice.findData("character:centurion")
-        if narrator_index < 0:
-            raise AssertionError("Centurion was not offered as a game narrator")
-        dialog.narrator_choice.setCurrentIndex(narrator_index)
-        dialog.play_narrator_reference.click()
-        player.play_bytes.assert_called_once()
-        if not player.play_bytes.call_args.args[0]:
-            raise AssertionError("Narrator playback did not receive reference bytes")
-        if "Centurion" not in dialog.voice_confirmation_status.text():
-            raise AssertionError("Narrator playback status hid the selected voice")
-        if dialog.engine_choice.currentData() != "pocket-tts":
-            raise AssertionError("The selected generation engine was not retained")
-        if "Pocket TTS" not in dialog._full_narrator_configuration():
-            raise AssertionError(
-                "The full preparation details hid the generation engine"
-            )
-
+        _choose_fresh_pack_narrator(dialog, pool, application, player)
         dialog.continue_button.click()
         for _ in range(20):
             if dialog._awaiting_voice_confirmation and not pool.tasks:
@@ -360,6 +364,16 @@ def _first_process(root):
         tray.shutdown()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         application.processEvents()
+
+
+def _assert_restored_voice_bindings(settings):
+    registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
+    narrator = registry.resolve("Narrator")
+    rhiannon = registry.resolve("Rhiannon")
+    if narrator is None or narrator.source_character != "Centurion":
+        raise AssertionError("Restart lost the Centurion narrator binding")
+    if rhiannon is None or rhiannon.source_character != "Rhiannon":
+        raise AssertionError("Restart replaced the independent Rhiannon voice")
 
 
 def _second_process(root):
@@ -429,14 +443,7 @@ def _second_process(root):
                 raise AssertionError("Restart opened onboarding again")
             controller.start.assert_called_once()
 
-        registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
-        narrator = registry.resolve("Narrator")
-        rhiannon = registry.resolve("Rhiannon")
-        if narrator is None or narrator.source_character != "Centurion":
-            raise AssertionError("Restart lost the Centurion narrator binding")
-        if rhiannon is None or rhiannon.source_character != "Rhiannon":
-            raise AssertionError("Restart replaced the independent Rhiannon voice")
-
+        _assert_restored_voice_bindings(settings)
         live = Mock()
         live.name = "forbidden-live-tts"
         live.capabilities = Mock()

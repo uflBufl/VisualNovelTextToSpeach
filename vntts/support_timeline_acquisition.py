@@ -214,6 +214,28 @@ def _line(value: dict[str, object]) -> bytes:
     return (json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n").encode()
 
 
+def _record_symbolic_event_field(
+    safe: dict[str, object], key: str, value: object
+) -> None:
+    if key == "reason" and isinstance(value, str):
+        if value in CONTINUATION_GATE_REASONS:
+            safe[key] = value
+    elif key == "source_sha256" and isinstance(value, str):
+        if re.fullmatch(r"[a-f0-9]{64}", value):
+            safe[key] = value
+    elif key == "fingerprint" and isinstance(value, str):
+        if re.fullmatch(r"[a-f0-9]{16}", value):
+            safe[key] = value
+    elif key == "owner" and isinstance(value, str) and len(value) <= 160:
+        safe[key] = sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+    elif (
+        key in _IDENTITY_FIELDS
+        and isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value)
+    ):
+        safe[key] = value
+
+
 class TimelineAcquisition:
     """One new file per opt-in acquisition; record never waits for disk I/O."""
 
@@ -320,25 +342,8 @@ class TimelineAcquisition:
                 and math.isfinite(value)
             ):
                 safe[key] = value
-            elif key == "reason" and isinstance(value, str):
-                if value in CONTINUATION_GATE_REASONS:
-                    safe[key] = value
-            elif key == "source_sha256" and isinstance(value, str):
-                if re.fullmatch(r"[a-f0-9]{64}", value):
-                    safe[key] = value
-            elif key == "fingerprint" and isinstance(value, str):
-                if re.fullmatch(r"[a-f0-9]{16}", value):
-                    safe[key] = value
-            elif key == "owner" and isinstance(value, str) and len(value) <= 160:
-                safe[key] = sha256(value.encode("utf-8", errors="replace")).hexdigest()[
-                    :16
-                ]
-            elif (
-                key in _IDENTITY_FIELDS
-                and isinstance(value, str)
-                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value)
-            ):
-                safe[key] = value
+            else:
+                _record_symbolic_event_field(safe, key, value)
         payload = _line(
             {
                 "kind": "event",

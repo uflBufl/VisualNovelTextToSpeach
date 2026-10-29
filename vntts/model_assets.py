@@ -15,6 +15,7 @@ from durable_file import atomic_write_json
 
 from vntts.asset_integrity import AssetError, ModelIntegrityError, asset_manifest_name
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
+from vntts.coqui_models import COQUI_MODEL_SOURCES
 from vntts.document_identity import file_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary, read_regular_text
@@ -60,6 +61,9 @@ def _model_directory_name(model_name: str) -> str:
     directory = model_name.replace("/", "--")
     if not _is_flat_storage_name(directory):
         raise ModelIntegrityError("Model name must resolve to one cache directory")
+    if source := COQUI_MODEL_SOURCES.get(model_name):
+        # Keep old verified checkpoints intact; Coqui 0.28 can rewrite them.
+        directory += f"--{source.repo_id.replace('/', '--')}--{source.revision}"
     return directory
 
 
@@ -505,22 +509,16 @@ class ModelAssetManager:
 
 
 def load_coqui_model_asset(model_name: str) -> ModelAsset:
-    from TTS.utils.manage import ModelManager
-
     try:
-        model_type, language, dataset, model = model_name.split("/")
-        item = ModelManager().models_dict[model_type][language][dataset][model]
-    except (KeyError, ValueError) as error:
-        raise UnsupportedModelError(f"Unknown Coqui model: {model_name}") from error
-    urls = item.get("hf_url")
-    if isinstance(urls, str):
-        urls = [urls]
-    if not urls:
+        source = COQUI_MODEL_SOURCES[model_name]
+    except KeyError as error:
         raise UnsupportedModelError(
             f"In-app download is not supported for {model_name}"
-        )
+        ) from error
     return ModelAsset(
         name=model_name,
-        urls=tuple(urls),
-        expected_hash=item.get("model_hash"),
+        urls=tuple(
+            f"https://huggingface.co/{source.repo_id}/resolve/{source.revision}/{name}"
+            for name in source.files
+        ),
     )

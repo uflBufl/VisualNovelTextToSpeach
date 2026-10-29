@@ -1491,36 +1491,9 @@ class AudioRoutePlaybackOwner:
                         sample_count=sample_count,
                         expected_playback_ms=expected_playback_ms,
                     )
-                stream_factory = getattr(self.router.audio_output, "OutputStream", None)
-                if callable(stream_factory):
-                    with prepared_output_stream(
-                        self.router.audio_output,
-                        samplerate=sample_rate,
-                        channels=1,
-                        dtype="float32",
-                        latency=self.router.playback_latency,
-                    ) as stream:
-                        completed, underflowed = write_pcm_chunks(
-                            stream,
-                            samples,
-                            sample_rate,
-                            lambda: playback_cancelled(
-                                self.generated_audio_stop, playback_guard
-                            ),
-                            first_write=first_write,
-                            stop_requested=self.generated_audio_stop,
-                        )
-                else:
-                    audio_output = resolve_audio_output(self.router.audio_output)
-                    audio_output.play(
-                        samples,
-                        sample_rate,
-                        latency=self.router.playback_latency,
-                    )
-                    # The compatibility play API exposes submission, not PCM onset.
-                    status = audio_output.wait()
-                    underflowed = bool(getattr(status, "output_underflow", False))
-                    completed = not self.generated_audio_stop.is_set()
+                completed, underflowed = self._write_generated_pcm(
+                    samples, sample_rate, playback_guard, first_write
+                )
                 playback_status = (
                     PlaybackStatus.INTERRUPTED
                     if not completed
@@ -1567,6 +1540,45 @@ class AudioRoutePlaybackOwner:
                 )
             finally:
                 self._deactivate()
+
+    def _write_generated_pcm(
+        self,
+        samples: NDArray[np.float32],
+        sample_rate: int,
+        playback_guard: PlaybackGuard,
+        first_write: Callable[[], None],
+    ) -> tuple[bool, bool]:
+        stream_factory = getattr(self.router.audio_output, "OutputStream", None)
+        if callable(stream_factory):
+            with prepared_output_stream(
+                self.router.audio_output,
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                latency=self.router.playback_latency,
+            ) as stream:
+                completed, underflowed = write_pcm_chunks(
+                    stream,
+                    samples,
+                    sample_rate,
+                    lambda: playback_cancelled(
+                        self.generated_audio_stop, playback_guard
+                    ),
+                    first_write=first_write,
+                    stop_requested=self.generated_audio_stop,
+                )
+        else:
+            audio_output = resolve_audio_output(self.router.audio_output)
+            audio_output.play(
+                samples,
+                sample_rate,
+                latency=self.router.playback_latency,
+            )
+            # The compatibility play API exposes submission, not PCM onset.
+            status = audio_output.wait()
+            underflowed = bool(getattr(status, "output_underflow", False))
+            completed = not self.generated_audio_stop.is_set()
+        return completed, underflowed
 
     def _play_live_route(
         self,

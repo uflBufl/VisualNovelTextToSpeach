@@ -32,6 +32,30 @@ from vntts.versioned_json import StaleDocumentError
 
 
 class OCRReviewDialog(CloseGuardedDialog):
+    def _create_correction_actions(self) -> None:
+        self.save_button = QPushButton("Save rule")
+        set_action_icon(self.save_button, "save")
+        self.save_button.setDefault(True)
+        self.save_button.setAccessibleDescription(
+            "Enabled after the detected speaker or dialogue text is corrected"
+        )
+        self.save_button.setToolTip(
+            "Change the detected speaker or text before saving a correction."
+        )
+        self.resolve_button = QPushButton("Dismiss without rule")
+        set_action_icon(self.resolve_button, "skip-forward")
+        self.resolve_button.setToolTip(
+            "Dismiss the selected line without saving a new OCR rule"
+        )
+        self.resolve_button.setAutoDefault(False)
+        self.save_button.clicked.connect(self.save_correction)
+        self.resolve_button.clicked.connect(self.resolve_without_correction)
+        self.corrected_character.textChanged.connect(self._update_save_enabled)
+        self.corrected_text.textChanged.connect(self._update_save_enabled)
+        self.corrected_character.textChanged.connect(self._remember_draft)
+        self.corrected_text.textChanged.connect(self._remember_draft)
+        self.scope.currentIndexChanged.connect(self._update_save_enabled)
+
     def __init__(
         self,
         directory: str | Path,
@@ -88,28 +112,7 @@ class OCRReviewDialog(CloseGuardedDialog):
         self.impact = QLabel()
         self.impact.setWordWrap(True)
         self.impact.setTextFormat(Qt.TextFormat.PlainText)
-        self.save_button = QPushButton("Save rule")
-        set_action_icon(self.save_button, "save")
-        self.save_button.setDefault(True)
-        self.save_button.setAccessibleDescription(
-            "Enabled after the detected speaker or dialogue text is corrected"
-        )
-        self.save_button.setToolTip(
-            "Change the detected speaker or text before saving a correction."
-        )
-        self.resolve_button = QPushButton("Dismiss without rule")
-        set_action_icon(self.resolve_button, "skip-forward")
-        self.resolve_button.setToolTip(
-            "Dismiss the selected line without saving a new OCR rule"
-        )
-        self.resolve_button.setAutoDefault(False)
-        self.save_button.clicked.connect(self.save_correction)
-        self.resolve_button.clicked.connect(self.resolve_without_correction)
-        self.corrected_character.textChanged.connect(self._update_save_enabled)
-        self.corrected_text.textChanged.connect(self._update_save_enabled)
-        self.corrected_character.textChanged.connect(self._remember_draft)
-        self.corrected_text.textChanged.connect(self._remember_draft)
-        self.scope.currentIndexChanged.connect(self._update_save_enabled)
+        self._create_correction_actions()
         self.status = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         self.status.setAccessibleName("OCR review save status")
         self.status.setFrameShape(QFrame.Shape.NoFrame)

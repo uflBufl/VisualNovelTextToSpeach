@@ -329,232 +329,8 @@ class NativeDiagnosticRecording:
             )
             if self.cancelled.is_set():
                 return
-            if shutil.disk_usage(self.directory).free < 2 * 1024**3:
-                raise RuntimeError(
-                    "At least 2 GiB free space is required for native recording"
-                )
-            pid, window = (
-                int(str(self.target["pid"])),
-                int(str(self.target["window_id"])),
-            )
-            if not 0 < pid <= 2**31 - 1 or not 0 < window <= 2**32 - 1:
-                raise ValueError("Explicit positive process and window IDs required")
-            executable = process_executable(pid)
-            if executable != self.target["executable"]:
-                raise RuntimeError("Selected game process changed before recording")
-            self.started_monotonic = monotonic()
-            if deadline is None:
-                deadline = self.started_monotonic + self.seconds
-            self.deadline = deadline
-            remaining_seconds = min(self.seconds, deadline - self.started_monotonic)
-            if remaining_seconds < 1:
-                raise TimeoutError(
-                    "Diagnostic session deadline leaves no capture window"
-                )
-            for name, command in (
-                (
-                    "window",
-                    [
-                        str(video),
-                        "--video-only",
-                        str(pid),
-                        str(window),
-                        str(remaining_seconds),
-                    ],
-                ),
-                (
-                    "game-audio",
-                    [
-                        str(audio),
-                        "--capture",
-                        str(pid),
-                        executable,
-                        str(remaining_seconds),
-                    ],
-                ),
-            ):
-                output = self.directory / name
-                try:
-                    self._launch(
-                        command
-                        + [str(output)]
-                        + ([] if name == "window" else ["--allow-audio-capture"]),
-                        output,
-                    )
-                except Exception as error:
-                    self._fail_capture(name, error)
-            seen: dict[tuple[int, str, str], str] = {}
-            previous: set[tuple[int, str, str]] = set()
-            self.status = "degraded" if self.error_type else "starting"
-            last_budget_check = 0.0
-            while not self.cancelled.is_set() and monotonic() < deadline:
-                current: set[tuple[int, str, str]] = set()
-                try:
-                    workers = tuple(islice(self.workers(), 9))
-                except Exception as error:
-                    self._fail_capture("worker-discovery", error)
-                    workers = ()
-                    current.update(previous)
-                for worker in workers:
-                    try:
-                        worker_pid = int(str(worker["worker_pid"]))
-                        worker_path = str(worker["worker_path"])
-                        worker_id = str(worker.get("worker_id", worker_pid))
-                        if (
-                            not 0 < worker_pid <= 2**31 - 1
-                            or not Path(worker_path).is_absolute()
-                            or not 1 <= len(worker_id) <= 160
-                        ):
-                            raise ValueError("Invalid explicit audio worker identity")
-                    except (KeyError, TypeError, ValueError) as error:
-                        self._fail_capture("worker-discovery", error)
-                        continue
-                    identity = (worker_pid, worker_path, worker_id)
-                    current.add(identity)
-                    if identity in seen:
-                        continue
-                    if len(seen) >= 8:
-                        self._fail_capture(
-                            "worker-limit",
-                            RuntimeError(
-                                "Audio worker recording limit reached; session is incomplete"
-                            ),
-                        )
-                        continue
-                    ordinal = 1 + sum(key[0] == worker_pid for key in seen)
-                    name = f"rust-{worker_pid}" + (f"-{ordinal}" if ordinal > 1 else "")
-                    seen[identity] = name
-                    self._identities[name] = {
-                        "worker_pid": worker_pid,
-                        "worker_path": worker_path,
-                        "worker_id": worker_id,
-                    }
-                    lifetime = {
-                        **self._identities[name],
-                        "capture": name,
-                        "observed_monotonic": monotonic(),
-                    }
-                    self._worker_lifetimes.append(lifetime)
-                    remaining = max(
-                        1,
-                        min(MAX_DIAGNOSTIC_SECONDS, math.ceil(deadline - monotonic())),
-                    )
-                    output = self.directory / name
-                    try:
-                        self._launch(
-                            [
-                                str(audio),
-                                "--capture",
-                                str(worker_pid),
-                                worker_path,
-                                str(remaining),
-                                str(output),
-                                "--allow-audio-capture",
-                            ],
-                            output,
-                        )
-                    except Exception as error:
-                        self._fail_capture(name, error)
-                for identity in previous - current:
-                    retired_name = seen.get(identity)
-                    if retired_name is None:
-                        continue
-                    for lifetime in self._worker_lifetimes:
-                        if lifetime["capture"] == retired_name:
-                            lifetime["retired_observed_monotonic"] = monotonic()
-                    self._fail_capture(
-                        retired_name,
-                        RuntimeError(
-                            "Audio worker retired; process capture is partial"
-                        ),
-                    )
-                previous = current
-                ready = not self.error_type
-                for process, output in self.processes:
-                    if output.name in self._failures:
-                        self._stop_failed_capture(process, output)
-                        continue
-                    try:
-                        if process.poll() not in (None, 0):
-                            raise RuntimeError(
-                                f"Recorder failed for {output.name}; inspect its session.json"
-                            )
-                        if (
-                            self.directory / (output.name + "-launcher.log")
-                        ).stat().st_size > 2 * 1024**2:
-                            raise RuntimeError("Recorder log exceeded its limit")
-                        try:
-                            metadata = _session(output)
-                        except FileNotFoundError:
-                            metadata = {}
-                        expected = (
-                            "succeeded"
-                            if output.name == "window"
-                            else "captured_unqualified"
-                        )
-                        if (
-                            metadata.get("status") in {"failed", "incomplete"}
-                            or metadata.get("errors")
-                            or (
-                                process.poll() is not None
-                                and metadata.get("status") != expected
-                            )
-                        ):
-                            raise RuntimeError(
-                                f"Recorder failed for {output.name}; inspect its session.json"
-                            )
-                        identity = self._identities.get(output.name)
-                        if identity is not None:
-                            worker_key = (
-                                identity["worker_pid"],
-                                identity["worker_path"],
-                                identity["worker_id"],
-                            )
-                            target = metadata.get("target")
-                            started = metadata.get("capture_started_monotonic_s")
-                            if (
-                                process.poll() is None
-                                and metadata.get("status") == "in_progress"
-                                and isinstance(target, dict)
-                                and target.get("pid") == identity["worker_pid"]
-                                and target.get("executable") == identity["worker_path"]
-                                and type(started) in (int, float)
-                                and math.isfinite(started)
-                                and started > 0
-                            ):
-                                with self._arming:
-                                    self._worker_arms[worker_key] = "armed"
-                                    self._arming.notify_all()
-                            elif process.poll() is not None:
-                                with self._arming:
-                                    self._worker_arms[worker_key] = "failed"
-                                    self._arming.notify_all()
-                        observed = _has_sample(output, output.name == "window")
-                        ready &= observed
-                        if observed:
-                            self._sample_observed_at.setdefault(
-                                output.name, monotonic()
-                            )
-                        if (
-                            not observed
-                            and monotonic() - self._launched_at[output.name] > 10
-                        ):
-                            raise RuntimeError(
-                                f"Recorder readiness unverified for {output.name}"
-                            )
-                    except Exception as error:
-                        ready = False
-                        self._fail_capture(output.name, error)
-                        self._stop_failed_capture(process, output)
-                if ready and self.ready_monotonic is None:
-                    self.ready_monotonic = monotonic()
-                    self.status = "recording"
-                if monotonic() - last_budget_check >= 1:
-                    self._check_media_budget()
-                    last_budget_check = monotonic()
-                if shutil.disk_usage(self.directory).free < 512 * 1024**2:
-                    raise RuntimeError("Recording stopped because free space is low")
-                self.cancelled.wait(0.1)
+            deadline = self._start_target_captures(video, audio, deadline)
+            self._record_workers(audio, deadline)
             self.status = "degraded" if self.error_type else "stopping"
             requested = self.cancelled.requested_monotonic
             self.stop_reason = (
@@ -573,55 +349,309 @@ class NativeDiagnosticRecording:
                 self._stop_processes()
                 if self.stop_reason is not None:
                     assert deadline is not None
-                    for process, output in self.processes:
-                        if output.name in self._failures:
-                            continue
-                        try:
-                            metadata = _session(output)
-                            expected = (
-                                "succeeded"
-                                if output.name == "window"
-                                else "captured_unqualified"
-                            )
-                            if (
-                                process.returncode != 0
-                                or metadata.get("status") != expected
-                                or metadata.get("errors")
-                            ):
-                                raise RuntimeError(
-                                    f"Recorder evidence incomplete for {output.name}"
-                                )
-                            if output.name != "window" and metadata.get(
-                                "stop_requested"
-                            ):
-                                stopped = metadata.get("capture_stopped_monotonic_s")
-                                cutoff = min(
-                                    deadline,
-                                    self.cancelled.requested_monotonic
-                                    if self.cancelled.requested_monotonic is not None
-                                    else deadline,
-                                )
-                                if (
-                                    not isinstance(stopped, (int, float))
-                                    or isinstance(stopped, bool)
-                                    or not math.isfinite(stopped)
-                                    or stopped < cutoff
-                                ):
-                                    raise RuntimeError(
-                                        f"Recorder stopped before owned cutoff for {output.name}"
-                                    )
-                            if not _has_sample(output, output.name == "window"):
-                                raise RuntimeError(
-                                    f"Recorder has no samples for {output.name}"
-                                )
-                        except Exception as error:
-                            self._fail_capture(output.name, error)
+                    self._verify_final_captures(deadline)
             except Exception as error:
                 self.error_type, self.error_message = type(error).__name__, str(error)
             self.status = "failed" if self.error_type or self._arm_gaps else "stopped"
             self._finished.set()
             with self._arming:
                 self._arming.notify_all()
+
+    def _start_target_captures(
+        self, video: Path, audio: Path, deadline: float | None
+    ) -> float:
+        if shutil.disk_usage(self.directory).free < 2 * 1024**3:
+            raise RuntimeError(
+                "At least 2 GiB free space is required for native recording"
+            )
+        pid, window = (
+            int(str(self.target["pid"])),
+            int(str(self.target["window_id"])),
+        )
+        if not 0 < pid <= 2**31 - 1 or not 0 < window <= 2**32 - 1:
+            raise ValueError("Explicit positive process and window IDs required")
+        executable = process_executable(pid)
+        if executable != self.target["executable"]:
+            raise RuntimeError("Selected game process changed before recording")
+        self.started_monotonic = monotonic()
+        if deadline is None:
+            deadline = self.started_monotonic + self.seconds
+        self.deadline = deadline
+        remaining_seconds = min(self.seconds, deadline - self.started_monotonic)
+        if remaining_seconds < 1:
+            raise TimeoutError("Diagnostic session deadline leaves no capture window")
+        for name, command in (
+            (
+                "window",
+                [
+                    str(video),
+                    "--video-only",
+                    str(pid),
+                    str(window),
+                    str(remaining_seconds),
+                ],
+            ),
+            (
+                "game-audio",
+                [
+                    str(audio),
+                    "--capture",
+                    str(pid),
+                    executable,
+                    str(remaining_seconds),
+                ],
+            ),
+        ):
+            output = self.directory / name
+            try:
+                self._launch(
+                    command
+                    + [str(output)]
+                    + ([] if name == "window" else ["--allow-audio-capture"]),
+                    output,
+                )
+            except Exception as error:
+                self._fail_capture(name, error)
+        return deadline
+
+    def _record_workers(self, audio: Path, deadline: float) -> None:
+        seen: dict[tuple[int, str, str], str] = {}
+        previous: set[tuple[int, str, str]] = set()
+        self.status = "degraded" if self.error_type else "starting"
+        last_budget_check = 0.0
+        while not self.cancelled.is_set() and monotonic() < deadline:
+            current = self._discover_worker_captures(audio, deadline, seen, previous)
+            self._retire_worker_captures(seen, previous - current)
+            previous = current
+            ready = self._check_capture_readiness()
+            if ready and self.ready_monotonic is None:
+                self.ready_monotonic = monotonic()
+                self.status = "recording"
+            if monotonic() - last_budget_check >= 1:
+                self._check_media_budget()
+                last_budget_check = monotonic()
+            if shutil.disk_usage(self.directory).free < 512 * 1024**2:
+                raise RuntimeError("Recording stopped because free space is low")
+            self.cancelled.wait(0.1)
+
+    def _discover_worker_captures(
+        self,
+        audio: Path,
+        deadline: float,
+        seen: dict[tuple[int, str, str], str],
+        previous: set[tuple[int, str, str]],
+    ) -> set[tuple[int, str, str]]:
+        current: set[tuple[int, str, str]] = set()
+        try:
+            workers = tuple(islice(self.workers(), 9))
+        except Exception as error:
+            self._fail_capture("worker-discovery", error)
+            workers = ()
+            current.update(previous)
+        for worker in workers:
+            self._start_worker_capture(worker, audio, deadline, seen, current)
+        return current
+
+    def _start_worker_capture(
+        self,
+        worker: dict[str, object],
+        audio: Path,
+        deadline: float,
+        seen: dict[tuple[int, str, str], str],
+        current: set[tuple[int, str, str]],
+    ) -> None:
+        try:
+            worker_pid = int(str(worker["worker_pid"]))
+            worker_path = str(worker["worker_path"])
+            worker_id = str(worker.get("worker_id", worker_pid))
+            if (
+                not 0 < worker_pid <= 2**31 - 1
+                or not Path(worker_path).is_absolute()
+                or not 1 <= len(worker_id) <= 160
+            ):
+                raise ValueError("Invalid explicit audio worker identity")
+        except (KeyError, TypeError, ValueError) as error:
+            self._fail_capture("worker-discovery", error)
+            return
+        identity = (worker_pid, worker_path, worker_id)
+        current.add(identity)
+        if identity in seen:
+            return
+        if len(seen) >= 8:
+            self._fail_capture(
+                "worker-limit",
+                RuntimeError(
+                    "Audio worker recording limit reached; session is incomplete"
+                ),
+            )
+            return
+        ordinal = 1 + sum(key[0] == worker_pid for key in seen)
+        name = f"rust-{worker_pid}" + (f"-{ordinal}" if ordinal > 1 else "")
+        seen[identity] = name
+        self._identities[name] = {
+            "worker_pid": worker_pid,
+            "worker_path": worker_path,
+            "worker_id": worker_id,
+        }
+        lifetime = {
+            **self._identities[name],
+            "capture": name,
+            "observed_monotonic": monotonic(),
+        }
+        self._worker_lifetimes.append(lifetime)
+        remaining = max(
+            1,
+            min(MAX_DIAGNOSTIC_SECONDS, math.ceil(deadline - monotonic())),
+        )
+        output = self.directory / name
+        try:
+            self._launch(
+                [
+                    str(audio),
+                    "--capture",
+                    str(worker_pid),
+                    worker_path,
+                    str(remaining),
+                    str(output),
+                    "--allow-audio-capture",
+                ],
+                output,
+            )
+        except Exception as error:
+            self._fail_capture(name, error)
+
+    def _retire_worker_captures(
+        self,
+        seen: dict[tuple[int, str, str], str],
+        retired: set[tuple[int, str, str]],
+    ) -> None:
+        for identity in retired:
+            retired_name = seen.get(identity)
+            if retired_name is None:
+                continue
+            for lifetime in self._worker_lifetimes:
+                if lifetime["capture"] == retired_name:
+                    lifetime["retired_observed_monotonic"] = monotonic()
+            self._fail_capture(
+                retired_name,
+                RuntimeError("Audio worker retired; process capture is partial"),
+            )
+
+    def _check_capture_readiness(self) -> bool:
+        ready = not self.error_type
+        for process, output in self.processes:
+            if output.name in self._failures:
+                self._stop_failed_capture(process, output)
+                continue
+            try:
+                ready &= self._check_capture(process, output)
+            except Exception as error:
+                ready = False
+                self._fail_capture(output.name, error)
+                self._stop_failed_capture(process, output)
+        return ready
+
+    def _check_capture(self, process: subprocess.Popen, output: Path) -> bool:
+        if process.poll() not in (None, 0):
+            raise RuntimeError(
+                f"Recorder failed for {output.name}; inspect its session.json"
+            )
+        if (
+            self.directory / (output.name + "-launcher.log")
+        ).stat().st_size > 2 * 1024**2:
+            raise RuntimeError("Recorder log exceeded its limit")
+        try:
+            metadata = _session(output)
+        except FileNotFoundError:
+            metadata = {}
+        expected = "succeeded" if output.name == "window" else "captured_unqualified"
+        if (
+            metadata.get("status") in {"failed", "incomplete"}
+            or metadata.get("errors")
+            or (process.poll() is not None and metadata.get("status") != expected)
+        ):
+            raise RuntimeError(
+                f"Recorder failed for {output.name}; inspect its session.json"
+            )
+        self._update_capture_arming(process, output, metadata)
+        observed = _has_sample(output, output.name == "window")
+        if observed:
+            self._sample_observed_at.setdefault(output.name, monotonic())
+        if not observed and monotonic() - self._launched_at[output.name] > 10:
+            raise RuntimeError(f"Recorder readiness unverified for {output.name}")
+        return observed
+
+    def _update_capture_arming(
+        self,
+        process: subprocess.Popen,
+        output: Path,
+        metadata: dict,
+    ) -> None:
+        worker_identity = self._identities.get(output.name)
+        if worker_identity is not None:
+            worker_key = (
+                worker_identity["worker_pid"],
+                worker_identity["worker_path"],
+                worker_identity["worker_id"],
+            )
+            target = metadata.get("target")
+            started = metadata.get("capture_started_monotonic_s")
+            if (
+                process.poll() is None
+                and metadata.get("status") == "in_progress"
+                and isinstance(target, dict)
+                and target.get("pid") == worker_identity["worker_pid"]
+                and target.get("executable") == worker_identity["worker_path"]
+                and (type(started) is int or type(started) is float)
+                and math.isfinite(started)
+                and started > 0
+            ):
+                with self._arming:
+                    self._worker_arms[worker_key] = "armed"
+                    self._arming.notify_all()
+            elif process.poll() is not None:
+                with self._arming:
+                    self._worker_arms[worker_key] = "failed"
+                    self._arming.notify_all()
+
+    def _verify_final_captures(self, deadline: float) -> None:
+        for process, output in self.processes:
+            if output.name in self._failures:
+                continue
+            try:
+                metadata = _session(output)
+                expected = (
+                    "succeeded" if output.name == "window" else "captured_unqualified"
+                )
+                if (
+                    process.returncode != 0
+                    or metadata.get("status") != expected
+                    or metadata.get("errors")
+                ):
+                    raise RuntimeError(
+                        f"Recorder evidence incomplete for {output.name}"
+                    )
+                if output.name != "window" and metadata.get("stop_requested"):
+                    stopped = metadata.get("capture_stopped_monotonic_s")
+                    cutoff = min(
+                        deadline,
+                        self.cancelled.requested_monotonic
+                        if self.cancelled.requested_monotonic is not None
+                        else deadline,
+                    )
+                    if (
+                        not isinstance(stopped, (int, float))
+                        or isinstance(stopped, bool)
+                        or not math.isfinite(stopped)
+                        or stopped < cutoff
+                    ):
+                        raise RuntimeError(
+                            f"Recorder stopped before owned cutoff for {output.name}"
+                        )
+                if not _has_sample(output, output.name == "window"):
+                    raise RuntimeError(f"Recorder has no samples for {output.name}")
+            except Exception as error:
+                self._fail_capture(output.name, error)
 
     def _fail_capture(self, name: str, error: Exception) -> None:
         identity = self._identities.get(name)
