@@ -963,7 +963,7 @@ class LiveReplayRunner:
             playback_started = monotonic()
             outcome = router.play_route(
                 prepared,
-                playback_guard=lambda: reader.wait_until_playable(chunk),
+                playback_guard=lambda: reader.is_playback_current(chunk),
             )
             if (
                 isinstance(prepared, SourceAudioRoute)

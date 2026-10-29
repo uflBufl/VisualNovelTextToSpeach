@@ -1578,7 +1578,6 @@ class IsolatedSpeechBackend:
                     continue
                 message_type = document.get("type")
                 if message_type == "chunk":
-                    deadline = monotonic() + self.request_timeout
                     pcm: NDArray[np.float32] = (
                         np.frombuffer(payload, dtype=np.float32)
                         .copy()
@@ -1591,6 +1590,8 @@ class IsolatedSpeechBackend:
                         index=_required_integer(document, "index"),
                         elapsed_ms=_required_float(document, "elapsed_ms"),
                     )
+                    # Consumer backpressure, including Pause, is not worker silence.
+                    deadline = monotonic() + self.request_timeout
                 elif message_type == "result":
                     result = _result_from_document(
                         _result_document_value(document["result"]), chunks

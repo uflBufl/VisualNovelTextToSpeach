@@ -23,6 +23,40 @@ from vntts.playback import (
 AudioData: TypeAlias = NDArray[np.float32]
 
 
+class PlaybackPause:
+    """Keep one playback's pause state and deadlines independent of other outputs."""
+
+    def __init__(self) -> None:
+        self.lock = Lock()
+        self.paused_at: float | None = None
+        self.paused_seconds = 0.0
+
+    def set_paused(self, paused: bool) -> None:
+        with self.lock:
+            now = monotonic()
+            if paused and self.paused_at is None:
+                self.paused_at = now
+            elif not paused and self.paused_at is not None:
+                self.paused_seconds += now - self.paused_at
+                self.paused_at = None
+
+    def is_paused(self) -> bool:
+        with self.lock:
+            return self.paused_at is not None
+
+    def active_time(self) -> float:
+        with self.lock:
+            now = monotonic()
+            return (
+                self.paused_at if self.paused_at is not None else now
+            ) - self.paused_seconds
+
+
+playback_pause_context: ContextVar[PlaybackPause | None] = ContextVar(
+    "playback_pause_context", default=None
+)
+
+
 class PcmAdmissionRejected(RuntimeError):
     """The playback owner was replaced before its first PCM admission."""
 
@@ -561,10 +595,15 @@ def write_pcm_chunks(
     wrote = False
     diagnostics = _PcmWriteDiagnostics()
     outcome = "failed"
+    pause = playback_pause_context.get()
+    wake = stop_requested or Event()
 
     def is_cancelled() -> bool:
         started = monotonic()
         result = cancelled()
+        while not result and pause is not None and pause.is_paused():
+            wake.wait(0.02)
+            result = wake.is_set() or cancelled()
         diagnostics.guard_ms = (monotonic() - started) * 1000
         diagnostics.max_guard_ms = max(diagnostics.max_guard_ms, diagnostics.guard_ms)
         return result
@@ -732,6 +771,8 @@ class SynchronousPcmPlaybackMixin:
 __all__ = [
     "AudioOutput",
     "PlaybackAudioOutput",
+    "PlaybackPause",
+    "playback_pause_context",
     "PcmAdmission",
     "PcmAdmissionRejected",
     "StreamingAudioStream",

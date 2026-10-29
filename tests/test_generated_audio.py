@@ -1087,6 +1087,64 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
         self.assertEqual(guard.call_count, 2)
 
+    def test_ready_pending_route_waits_for_resume_or_cancellation(self):
+        from vntts.audio_output import PlaybackPause, playback_pause_context
+
+        for action in ("resume", "stop", "scene-change"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                manifest = Path(directory) / "generated-audio.json"
+                write_generated_audio_manifest(
+                    manifest, {"vntts.runtime.progress": True}, []
+                )
+                backend = GeneratedAudioFallbackBackend(
+                    self.create_live_backend(),
+                    GeneratedAudioLibrary.load_optional(manifest),
+                    self.create_resolver(),
+                    audio_output=FakeAudioOutput(),
+                )
+                pending = backend.prepare_route("Ada", "Hello.")
+                self.publish_omission(manifest)
+                pause = PlaybackPause()
+                pause.set_paused(True)
+                current = [True]
+
+                def waiting(_seconds):
+                    resolve.assert_not_called()
+                    if action == "resume":
+                        pause.set_paused(False)
+                    elif action == "stop":
+                        backend.stop()
+                    else:
+                        current[0] = False
+                    return action == "stop"
+
+                token = playback_pause_context.set(pause)
+                try:
+                    with (
+                        patch.object(
+                            backend,
+                            "resolved_pending_route",
+                            wraps=backend.resolved_pending_route,
+                        ) as resolve,
+                        patch.object(
+                            backend.playback_owner.progress_wait_stop,
+                            "wait",
+                            side_effect=waiting,
+                        ),
+                    ):
+                        outcome = backend.play_route(
+                            pending, playback_guard=lambda: current[0]
+                        )
+                        self.assertEqual(resolve.call_count, int(action == "resume"))
+                finally:
+                    playback_pause_context.reset(token)
+                self.assertEqual(
+                    outcome.status,
+                    PlaybackStatus.COMPLETED
+                    if action == "resume"
+                    else PlaybackStatus.INTERRUPTED,
+                )
+
     def test_pending_fallback_backend_mismatch_uses_frozen_live_voice(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

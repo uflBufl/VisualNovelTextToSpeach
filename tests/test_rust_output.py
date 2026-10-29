@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from vntts.audio_output import PlaybackPause, playback_pause_context
 from vntts.rust_audio import RustAudioWorker
 from vntts.rust_output import RustAudioFormatError, RustAudioModule
 
@@ -67,7 +68,8 @@ for line in sys.stdin.buffer:
         digest.update(payload(frames * clip["channels"] * 4))
         if count == 0:
             emit(event="started", id=clip_id)
-            emit(event="first_callback", id=clip_id, frames_written=1)
+            if not clip.get("paused", False):
+                emit(event="first_callback", id=clip_id, frames_written=1)
         count += frames
         emit(event="appended", id=clip_id, frames=frames,
              underflow_count=0, producer_starvation_count=0)
@@ -86,8 +88,13 @@ for line in sys.stdin.buffer:
         emit(event="finished", id=clip_id, outcome="complete", frames_played=count - (mode == "bad-count"),
              total_frames=count, underflow_count=3, producer_starvation_count=2,
              callback_count=4, sample_rate=clip["sample_rate"], channels=clip["channels"])
+    elif op in ("pause", "resume"):
+        clip["paused"] = op == "pause"
+        emit(event="paused" if op == "pause" else "resumed", id=clip_id)
+        if op == "resume" and count:
+            emit(event="first_callback", id=clip_id, frames_written=1)
     elif op == "stop":
-        emit(event="finished", id=clip_id, outcome="interrupted", frames_played=count,
+        emit(event="finished", id=clip_id, outcome="interrupted", frames_played=count, total_frames=count,
              underflow_count=0, producer_starvation_count=0, callback_count=0,
              sample_rate=clip["sample_rate"], channels=clip["channels"])
 """
@@ -294,6 +301,59 @@ class RustOutputProtocolTest(unittest.TestCase):
         first.assert_called_once_with()
         self.assertEqual([c["op"] for c in self.commands()], ["load", "start"])
         self.assertFalse(self.workers[0].closed.is_set())
+
+    def test_prepaused_stream_resumes_or_stops_without_reopening_or_reappending(self):
+        for abort in (False, True):
+            with self.subTest(abort=abort):
+                self.trace.unlink(missing_ok=True)
+                pcm = np.ones((10, 2), dtype=np.float32)
+                module = self.module(pcm)
+                pause = PlaybackPause()
+                pause.set_paused(True)
+                token = playback_pause_context.set(pause)
+                try:
+                    stream = self.stream(module)
+                finally:
+                    playback_pause_context.reset(token)
+                failures = []
+                completed = threading.Event()
+
+                def write():
+                    try:
+                        with stream:
+                            stream.write(pcm)
+                        completed.set()
+                    except RuntimeError as error:
+                        failures.append(error)
+
+                owner = threading.Thread(target=write)
+                owner.start()
+                try:
+                    deadline = time.monotonic() + 2
+                    while not any(c["op"] == "append" for c in self.commands()):
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(0.005)
+                    self.assertTrue(owner.is_alive())
+                    self.assertFalse(stream.first_callback)
+                    self.assertFalse(completed.is_set())
+                    if abort:
+                        stream.abort()
+                    else:
+                        pause.set_paused(False)
+                    owner.join(3)
+                    self.assertFalse(owner.is_alive())
+                    self.assertEqual(bool(failures), abort)
+                    self.assertEqual(completed.is_set(), not abort)
+                    commands = self.commands()
+                    self.assertEqual(sum(c["op"] == "open_stream" for c in commands), 1)
+                    self.assertEqual(sum(c["op"] == "append" for c in commands), 1)
+                    self.assertTrue(commands[0]["paused"])
+                    self.assertEqual({c["id"] for c in commands}, {1})
+                finally:
+                    stream.abort()
+                    stream.close()
+                    owner.join(3)
+                    module._terminate()
 
     def test_device_query_and_format_error_preserve_portaudio_code(self):
         module = self.module()

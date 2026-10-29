@@ -3323,7 +3323,7 @@ class AppController:
             prepared,
             cancellation=lambda: (
                 self.live_reader is not None
-                and not self.live_reader.wait_until_playable(chunk)
+                and not self.live_reader.is_playback_current(chunk)
             ),
         )
         if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
@@ -3340,8 +3340,6 @@ class AppController:
         self,
         lease: SequenceEventLease | None,
         outcome: PlaybackOutcome | None,
-        *,
-        interrupted_for_pause: bool = False,
     ) -> bool:
         with self.story_cursor_lock:
             if not isinstance(lease, SequenceEventLease):
@@ -3362,7 +3360,7 @@ class AppController:
                 and isinstance(outcome.first_audio_ms, (int, float))
                 and not isinstance(outcome.first_audio_ms, bool)
             )
-            terminal = (successful or audible) and not interrupted_for_pause
+            terminal = successful or audible
             if terminal and isinstance(outcome, PlaybackOutcome):
                 route = str(outcome.audio_source or "unknown")
                 if cursor is None:
@@ -4090,6 +4088,9 @@ class AppController:
                         "Speaker announcement failed; continuing dialogue"
                     )
             audio = audio.dialogue
+            if not reader.wait_until_playable(chunk):
+                self._finish_sequence_playback(sequence_lease, None)
+                return False
         source = self._describe_audio_source(audio)
         source_audio_lead_seconds = float(
             getattr(audio, "source_audio_lead_seconds", 0.0) or 0.0
@@ -4126,7 +4127,6 @@ class AppController:
                 self.status_handler(reason)
         playback_started = monotonic()
         outcome = None
-        interrupted_for_pause = False
         context_token = audio_lifecycle_context.set(
             {
                 "session_id": self.live_reader_session_id,
@@ -4143,15 +4143,13 @@ class AppController:
         )
         try:
             outcome = self._dispatch_live_playback(reader, chunk, audio)
+            if outcome.successful and not reader.wait_until_playable(chunk):
+                outcome = replace(outcome, status=PlaybackStatus.INTERRUPTED)
             result = outcome.successful
-            interrupted_for_pause = (
-                outcome.status is PlaybackStatus.INTERRUPTED
-                and reader.was_playback_paused(chunk) is True
-            )
             audible = isinstance(
                 outcome.first_audio_ms, (int, float)
             ) and not isinstance(outcome.first_audio_ms, bool)
-            if not result and not chunk.explicit_replay and not interrupted_for_pause:
+            if not result and not chunk.explicit_replay:
                 reader.block_auto_advance_for_generation(
                     chunk.generation,
                     "Playback was interrupted; retry or wait for a new dialogue",
@@ -4159,7 +4157,6 @@ class AppController:
             if (
                 (result or audible)
                 and not chunk.explicit_replay
-                and not interrupted_for_pause
                 and (
                     self._live_sequence_audio_active()
                     or isinstance(
@@ -4193,9 +4190,7 @@ class AppController:
             return bool(result)
         finally:
             audio_lifecycle_context.reset(context_token)
-            self._finish_sequence_playback(
-                sequence_lease, outcome, interrupted_for_pause=interrupted_for_pause
-            )
+            self._finish_sequence_playback(sequence_lease, outcome)
             self._refresh_diagnostic_metrics(outcome, source)
 
     def _live_sequence_playback_suppressed(
@@ -4227,15 +4222,7 @@ class AppController:
     def _live_playback_guard(
         self, reader: LiveDialogReader, chunk: SpeechChunk, audio: object
     ) -> bool:
-        if isinstance(audio, PendingGeneratedAudioRoute):
-            if not reader.wait_until_playable(
-                chunk,
-                cancellation=lambda: (
-                    not self._live_visible_occurrence_current(reader, chunk)
-                ),
-            ):
-                return False
-        elif not reader.wait_until_playable(chunk):
+        if not reader.is_playback_current(chunk):
             return False
         if not isinstance(
             audio,
@@ -4273,7 +4260,7 @@ class AppController:
 
         def playback_guard() -> bool:
             if pending_dispatched:
-                return reader.wait_until_playable(chunk)
+                return reader.is_playback_current(chunk)
             return self._live_playback_guard(reader, chunk, audio)
 
         def pending_dispatch(_route: RouteDecision) -> bool:
@@ -4510,13 +4497,13 @@ class AppController:
             if callable(play_route):
                 outcome = play_route(
                     route,
-                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                    playback_guard=lambda: reader.is_playback_current(chunk),
                 )
             else:
                 assert callable(play_prepared)
                 outcome = play_prepared(
                     route.prepared,
-                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                    playback_guard=lambda: reader.is_playback_current(chunk),
                 )
         except PcmAdmissionRejected:
             outcome = PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)

@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from vntts.audio_output import PlaybackPause, playback_pause_context
 from vntts.audio_store import AudioCatalogError
 from vntts.playback import PlaybackStatus
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
@@ -829,6 +830,40 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertTrue(backend.stop())
 
         self.assertTrue(stream.aborted)
+
+    def test_stream_drain_timeout_excludes_a_long_pause(self):
+        backend, model, _output = self.create_backend()
+        prepared = backend.prepare_playback("Narrator", "Keep the buffered ending.")
+        now = [0.0]
+        pause = PlaybackPause()
+        consumer = Mock()
+        consumer.is_alive.side_effect = (True, True, False, False)
+
+        with (
+            patch("vntts.audio_output.monotonic", side_effect=lambda: now[0]),
+            patch("vntts.speech_backend.Thread", return_value=consumer) as thread,
+        ):
+            pause.set_paused(True)
+
+            def join(*, timeout):
+                self.assertLessEqual(timeout, 0.1)
+                if now[0] == 0:
+                    now[0] = 3600.0
+                else:
+                    pause.set_paused(False)
+                    thread.call_args.kwargs["args"][5]["completed"] = True
+
+            consumer.join.side_effect = join
+            token = playback_pause_context.set(pause)
+            try:
+                outcome = backend.play_prepared(prepared)
+            finally:
+                playback_pause_context.reset(token)
+
+        self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+        self.assertEqual(consumer.join.call_count, 2)
+        self.assertFalse(backend.playback_stop.is_set())
+        self.assertEqual(len(model.generate_calls), 1)
 
     def test_stop_unblocks_the_owner_of_a_blocked_stream(self):
         output = BlockingAudioOutput()

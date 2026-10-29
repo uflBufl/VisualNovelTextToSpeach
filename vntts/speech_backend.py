@@ -20,6 +20,7 @@ from vntts.audio_output import (
     AudioOutput,
     StreamingAudioStream,
     SynchronousPcmPlaybackMixin,
+    playback_pause_context,
     resolve_audio_output,
     sanitize_playback_audio,
     stream_underflowed,
@@ -2475,7 +2476,14 @@ class MossTTSVoiceRouterBackend:
                 rendered.close()
             if not self.playback_stop.is_set():
                 self._enqueue_stream_chunk(chunk_queue, playback_finished)
-            consumer.join(timeout=self.playback_consumer_join_timeout)
+            pause = playback_pause_context.get()
+            wait_clock = monotonic if pause is None else pause.active_time
+            deadline = wait_clock() + self.playback_consumer_join_timeout
+            while consumer.is_alive() and not self.playback_stop.is_set():
+                remaining = deadline - wait_clock()
+                if remaining <= 0:
+                    break
+                consumer.join(timeout=min(0.1, remaining))
             if consumer.is_alive():
                 self.playback_stop.set()
                 consumer.join(timeout=self.playback_consumer_join_timeout)

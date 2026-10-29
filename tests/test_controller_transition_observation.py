@@ -137,15 +137,22 @@ class ControllerTransitionObservationTest(unittest.TestCase):
         lease = controller._begin_sequence_playback(chunk)
         self.accept(controller, lines[-1], 3)
         visible = controller.story_cursor.snapshot()
+        reader = self.reader_harness(controller).reader
+        reader.active_generation = chunk.generation
+        reader.accepted_chunks[chunk.playback_id] = chunk
+        reader.current_chunk = chunk
+        self.assertTrue(reader.toggle_pause())
+        self.assertIn(lease, controller.sequence_playback_leases)
+        self.assertNotIn(lease, controller.sequence_event_terminal_routes)
+        self.assertEqual(controller.story_cursor.snapshot(), visible)
+        self.assertFalse(reader.toggle_pause())
         self.assertFalse(
             controller._finish_sequence_playback(
                 lease,
-                PlaybackOutcome(PlaybackStatus.INTERRUPTED, 1.0, first_audio_ms=0),
-                interrupted_for_pause=True,
+                PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0, audio_source="live"),
             )
         )
-        self.assertNotIn(lease, controller.sequence_event_terminal_routes)
-        self.assertEqual(controller._begin_sequence_playback(chunk), lease)
+        self.assertEqual(controller.sequence_event_terminal_routes[lease], "live")
         self.assertEqual(controller.story_cursor.snapshot(), visible)
 
     def test_clear_during_admission_releases_rejected_occurrence_for_explicit_retry(
@@ -248,7 +255,7 @@ class ControllerTransitionObservationTest(unittest.TestCase):
             Mock(), AudioRouteTrace(None, "game", "exact", None, None, "line-1", "test")
         )
         reader = Mock(active_generation=1)
-        reader.wait_until_playable.return_value = True
+        reader.is_playback_current.return_value = True
 
         def play(_route, *, playback_guard):
             self.assertTrue(playback_guard())
@@ -320,37 +327,16 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                 None, "preparing", "exact", None, None, chunk.line_id, "test"
             ),
         )
-        waiting = Event()
-        results = []
-        original_wait = reader.pause_condition.wait
-
-        def pause_wait(timeout=None):
-            waiting.set()
-            return original_wait(timeout)
-
-        worker = Thread(
-            target=lambda: results.append(
-                controller._live_playback_guard(reader, chunk, pending)
-            )
-        )
-        with patch.object(reader.pause_condition, "wait", side_effect=pause_wait):
-            worker.start()
-            try:
-                self.assertTrue(waiting.wait(timeout=1))
-                newer = self.accept(controller, lines[-1], 2)
-                reader.accepted_chunks[newer.playback_id] = newer
-                visible = controller.story_cursor.snapshot()
-                worker.join(timeout=1)
-                self.assertFalse(worker.is_alive())
-                self.assertEqual(results, [False])
-                self.assertTrue(reader.paused)
-                self.assertEqual(controller.story_cursor.snapshot(), visible)
-                self.assertIn(newer.playback_id, reader.accepted_chunks)
-            finally:
-                with reader.pause_condition:
-                    reader.paused = False
-                    reader.pause_condition.notify_all()
-                worker.join(timeout=1)
+        with patch.object(reader.pause_condition, "wait") as wait:
+            self.assertTrue(controller._live_playback_guard(reader, chunk, pending))
+            newer = self.accept(controller, lines[-1], 2)
+            reader.accepted_chunks[newer.playback_id] = newer
+            visible = controller.story_cursor.snapshot()
+            self.assertFalse(controller._live_playback_guard(reader, chunk, pending))
+            wait.assert_not_called()
+        self.assertTrue(reader.paused)
+        self.assertEqual(controller.story_cursor.snapshot(), visible)
+        self.assertIn(newer.playback_id, reader.accepted_chunks)
 
     def test_pending_dispatch_checks_lease_then_preserves_ready_playback_ownership(
         self,
@@ -369,7 +355,7 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                     ),
                 )
                 reader = Mock(active_generation=1)
-                reader.wait_until_playable.return_value = True
+                reader.is_playback_current.return_value = True
 
                 def play(_route, *, playback_guard, on_playback_dispatch):
                     self.assertTrue(playback_guard())

@@ -3982,7 +3982,7 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertTrue(reader.emergency_stop())
         interrupt_speech.assert_called_once_with()
 
-    def test_pausing_current_speech_interrupts_and_replays_it_on_resume(self):
+    def test_pausing_current_speech_retains_it_without_replay(self):
         speech_executor = Mock()
         speech_executor.submit.return_value = Future()
         interrupt_speech = Mock()
@@ -3995,15 +3995,22 @@ class LiveDialogReaderTest(unittest.TestCase):
         chunk = reader._admit_chunk(chunk)
         reader.current_chunk = chunk
 
+        pending = Future()
+        reader.speech_futures[pending] = chunk
+        reader.playback_future = pending
         self.assertTrue(reader.toggle_pause())
+        self.assertTrue(reader.playback_pause.is_paused())
+        self.assertTrue(reader.is_playback_current(chunk))
+        self.assertIs(reader.current_chunk, chunk)
+        self.assertIs(reader.playback_future, pending)
         self.assertFalse(reader.toggle_pause())
+        self.assertFalse(reader.playback_pause.is_paused())
 
-        interrupt_speech.assert_called_once_with()
-        speech_executor.submit.assert_called_once_with(
-            reader._prepare_if_current, chunk
-        )
+        interrupt_speech.assert_not_called()
+        speech_executor.submit.assert_not_called()
+        self.assertEqual(reader.speech_futures, {pending: chunk})
 
-    def test_pause_retry_survives_visible_change_but_not_explicit_cancellation(
+    def test_paused_playback_survives_visible_change_but_not_explicit_cancellation(
         self,
     ):
         for action in ("skip", "clear", "replace", "stop"):
@@ -4016,7 +4023,7 @@ class LiveDialogReaderTest(unittest.TestCase):
                 reader.speech_futures[Future()] = chunk
                 reader.prepared_chunk_ids.add(chunk.chunk_id)
                 reader.toggle_pause()
-                self.assertTrue(reader.was_playback_paused(chunk))
+                self.assertTrue(reader.is_playback_current(chunk))
                 if action == "skip":
                     reader.skip_current()
                 elif action == "clear":
@@ -4025,7 +4032,47 @@ class LiveDialogReaderTest(unittest.TestCase):
                     reader._set_generation(2)
                 else:
                     reader.emergency_stop()
-                self.assertEqual(reader.was_playback_paused(chunk), action == "replace")
+                self.assertEqual(reader.is_playback_current(chunk), action == "replace")
+
+    def test_failed_playback_during_pause_finishes_without_waiting_for_resume(self):
+        reader = self.create_reader()
+        reader.active_generation = 1
+        chunk = reader._admit_chunk(SpeechChunk(1, "Alice", "Device failed."))
+
+        def play(_chunk, _prepared):
+            reader.toggle_pause()
+            return False
+
+        reader.play_prepared = play
+        with patch.object(reader.pause_condition, "wait") as wait:
+            reader._play_if_current(chunk, "audio")
+        wait.assert_not_called()
+        self.assertIsNone(reader.current_chunk)
+        self.assertTrue(reader.paused)
+        reader.release_waiters()
+
+    def test_emergency_stop_releases_paused_playback_completion(self):
+        reader = self.create_reader()
+        reader.active_generation = 1
+        chunk = reader._admit_chunk(SpeechChunk(1, "Alice", "Completing."))
+        observed = []
+
+        def play(_chunk, _prepared):
+            reader.toggle_pause()
+
+        def stop_at_wait():
+            observed.append(reader.current_chunk)
+            reader.emergency_stop()
+
+        reader.play_prepared = play
+        with patch.object(reader.pause_condition, "wait", side_effect=stop_at_wait):
+            reader._play_if_current(chunk, "audio")
+
+        self.assertEqual(observed, [chunk])
+        self.assertIsNone(reader.current_chunk)
+        self.assertFalse(reader.paused)
+        self.assertFalse(reader.playback_pause.is_paused())
+        self.assertFalse(reader.is_playback_current(chunk))
 
     def test_pausing_during_synthesis_resumes_without_duplicate_replay(self):
         speech_executor = Mock()

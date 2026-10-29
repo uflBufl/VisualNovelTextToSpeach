@@ -101,36 +101,37 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["Again.", "Again.", "Again."])
 
-    def test_interrupted_first_line_retries_before_prepared_second_line(self):
-        started, interrupted = Event(), Event()
+    def test_paused_first_line_retains_playback_ahead_of_prepared_second_line(self):
+        from vntts.audio_output import playback_pause_context
+
+        interrupt = Mock()
         starts = []
 
         def play(chunk, _prepared):
             starts.append(chunk.text)
             if len(starts) == 1:
-                started.set()
-                if not interrupted.wait(2):
-                    raise AssertionError("Pause did not interrupt playback")
+                lease = reader.playback_future
+                token = playback_pause_context.get()
+                self.assertIs(token, reader.playback_pause)
+                self.assertTrue(reader.toggle_pause())
+                self.assertTrue(token.is_paused())
+                self.assertIs(reader.current_chunk, chunk)
+                self.assertIs(reader.playback_future, lease)
+                self.assertFalse(lease.done())
+                self.assertEqual(self.playback.jobs, [])
+                self.assertEqual(reader.completed_playback_ids, set())
+                reader._set_generation(3)
+                self.assertTrue(reader.is_playback_current(chunk))
+                self.assertFalse(reader.toggle_pause())
+                self.assertIs(reader.playback_future, lease)
 
-        reader = self.create_reader(
-            play_prepared=play,
-            interrupt_speech=lambda: interrupted.set() or True,
-        )
+        reader = self.create_reader(play_prepared=play, interrupt_speech=interrupt)
         reader.enqueue("Ada", "First.")
         reader.enqueue("Ada", "Second.")
-        self.speech.run_next()
-        self.speech.run_next()
-        worker = Thread(target=self.playback.run_next)
-        worker.start()
-        self.assertTrue(started.wait(2))
-        reader.toggle_pause()
-        worker.join(2)
-        self.assertFalse(worker.is_alive())
-
-        reader.toggle_pause()
         self.drain()
 
-        self.assertEqual(starts, ["First.", "First.", "Second."])
+        self.assertEqual(starts, ["First.", "Second."])
+        interrupt.assert_not_called()
 
     def test_running_preparation_finishes_during_pause_without_losing_fifo(self):
         started, finish = Event(), Event()

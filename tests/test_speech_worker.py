@@ -1935,6 +1935,48 @@ print("worker-import-ready")
 
         self.assertEqual(process.returncode, -15)
 
+    def test_render_timeout_excludes_consumer_backpressure(self):
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), request_timeout=1
+            )
+        process = FakeProcess(None)
+        now = [0.0]
+        payload = np.zeros((1, 1), dtype=np.float32).tobytes()
+        chunks = [
+            (
+                {
+                    "type": "chunk",
+                    "shape": [1, 1],
+                    "sample_rate": 24_000,
+                    "index": index,
+                    "elapsed_ms": 0.0,
+                },
+                payload,
+            )
+            for index in range(2)
+        ]
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send"),
+            patch.object(backend, "_next_frame", side_effect=chunks),
+            patch("vntts.speech_worker.monotonic", side_effect=lambda: now[0]),
+        ):
+            rendered = backend.render(SynthesisRequest("Narrator", "Hello"))
+            try:
+                self.assertEqual(next(rendered).index, 0)
+                now[0] = 3600.0
+                self.assertEqual(next(rendered).index, 1)
+                self.assertIsNone(process.returncode)
+            finally:
+                rendered.close()
+
     def test_startup_failures_have_one_cleanup_owner(self):
         for failure in (
             "cancelled",

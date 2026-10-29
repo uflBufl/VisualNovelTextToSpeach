@@ -312,32 +312,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Proposed implementation order, pending user approval: RUN-29-01, UX-29-01,
-UX-29-03, then REC-29-01 before combined acceptance.
+Remaining implementation order, pending user approval: UX-29-01, UX-29-03,
+then REC-29-01 before combined acceptance.
 UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
-
-- [ ] **RUN-29-01 - Pause/Resume repeats the beginning of the current line.**
-      Native trial314001:18: Pause interrupted after153088 of490392 frames
-      (~3.47 seconds); Resume started the same source WAV from offset0 and played
-      all490392 frames. Existing pause-retry policy requeues the whole chunk;
-      the Pause/Resume UI does not explain this replay. Proposed behavior is true
-      pause at the current playback position, including prepared and streamed PCM.
-      Session `d8f1c1208ebf4d7fa10353e8b7145f6c`, run `edcb5837d9bc41009c909d7bbde8ff50`.
-      Check auto-advance stays blocked during pause and occurs once after resumed
-      completion; preserve scene-change and Stop cancellation semantics.
-      Connect the existing native Pause/Resume commands through the shared Python
-      output/clip owner; retain its stream, buffer, chunk and occurrence lease.
-      Keep one native-event consumer; make completion deadlines/backpressure pause
-      aware, and wake paused waits on Stop/shutdown. Remove the superseded whole
-      chunk pause-retry path and migrate its callers/tests in this same change.
-      Preserve announcement position, do not repeat it on dialogue Resume, and
-      do not claim to pause the game's own audio. Original-audio completion waits
-      must not restart their full duration on Resume.
-      Gate: one load/synthesis, unchanged paused cursor, remaining PCM only after
-      Resume, no early advance, and Stop/focus/device failure/announcement/streaming
-      cancellation tests; use simulated time for long pauses, not timed live waits.
 
 - [ ] **UX-29-01 - Voice confirmation clips multiline voice names.**
       Observed during the native chapter acceptance at the default window size:
@@ -431,6 +410,15 @@ is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **True Pause/Resume (RUN-29-01):** pause a prepared clip, streamed live
+     synthesis and a speaker announcement mid-audio. Verify unchanged playback
+     position during Pause, only remaining audio after Resume, one load/synthesis
+     and one automatic transition after completion. Include an already paused
+     start, ready pending audio, Stop and device/focus changes while paused.
+     Original game audio continues independently; its completion wait must not
+     restart or advance the game while Reading remains paused. Keep one native
+     session/clip identity and compare retained audio with the source around the
+     pause boundary. Previous failure: trial314001:18 repeated all490392 frames.
    - **Punctuation-only dialogue (RUN-29-04):** Cornerstone's `...` after314001:66
      must admit one canonical silent occurrence and continue once in automatic
      mode; manual mode must not dispatch a key. Include other encountered

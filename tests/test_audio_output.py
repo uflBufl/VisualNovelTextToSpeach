@@ -11,6 +11,7 @@ from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import (
     PcmAdmission,
     PcmAdmissionRejected,
+    PlaybackPause,
     match_output_sample_rate,
     pcm_admission_context,
     resolve_audio_output,
@@ -18,6 +19,30 @@ from vntts.audio_output import (
     write_pcm_chunks,
 )
 from vntts.support import configure_audio_lifecycle_log
+
+
+class PlaybackPauseTest(unittest.TestCase):
+    def test_deadlines_exclude_repeated_pause_and_resume_intervals(self):
+        pause = PlaybackPause()
+        with patch("vntts.audio_output.monotonic") as clock:
+            clock.return_value = 10
+            self.assertEqual(pause.active_time(), 10)
+            pause.set_paused(True)
+            clock.return_value = 100
+            pause.set_paused(True)
+            self.assertTrue(pause.is_paused())
+            self.assertEqual(pause.active_time(), 10)
+            pause.set_paused(False)
+            clock.return_value = 105
+            pause.set_paused(False)
+            self.assertFalse(pause.is_paused())
+            self.assertEqual(pause.active_time(), 15)
+            pause.set_paused(True)
+            clock.return_value = 1000
+            self.assertEqual(pause.active_time(), 15)
+            pause.set_paused(False)
+            clock.return_value = 1002
+            self.assertEqual(pause.active_time(), 17)
 
 
 class PlaybackSanitizationTest(unittest.TestCase):

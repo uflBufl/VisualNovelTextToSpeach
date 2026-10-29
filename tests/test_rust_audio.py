@@ -14,6 +14,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from vntts.audio_output import (
+    PlaybackPause,
+    playback_pause_context,
     prepared_output_stream,
     resolve_audio_output,
     write_pcm_chunks,
@@ -21,6 +23,7 @@ from vntts.audio_output import (
 from vntts.rust_audio import (
     AudioRuntimeUnavailable,
     RustAudioWorker,
+    _ClipPlayback,
     check_audio_runtime,
     portaudio_library,
     worker_executable,
@@ -55,12 +58,23 @@ for line in sys.stdin.buffer:
         if mode == "exit":
             sys.exit(3)
         emit(event="started", id=clip_id)
-        emit(event="first_callback", id=clip_id, frames_written=0 if mode == "zero-first" else 1)
+        if not command.get("paused", False):
+            emit(event="first_callback", id=clip_id, frames_written=0 if mode == "zero-first" else 1)
         if mode in ("normal", "bad-count", "stale-id", "zero-first", "bad-outcome", "bad-underflow") or (mode == "pause-first" and clip_id > 1):
             emit(event="finished", id=clip_id + (mode == "stale-id"), outcome="invalid" if mode == "bad-outcome" else "complete",
                  frames_played=clip["frames"] - (mode == "bad-count"),
                  underflow_count="0" if mode == "bad-underflow" else 0, callback_count=1,
                  sample_rate=clip["sample_rate"], channels=clip["channels"])
+    elif op == "pause":
+        if marker:
+            open(marker, "w").write("paused")
+        emit(event="paused", id=clip_id)
+    elif op == "resume":
+        emit(event="resumed", id=clip_id)
+        if mode == "pause-first":
+            emit(event="first_callback", id=clip_id, frames_written=1)
+            emit(event="finished", id=clip_id, outcome="complete", frames_played=clip["frames"],
+                 underflow_count=0, callback_count=1, sample_rate=clip["sample_rate"], channels=clip["channels"])
     elif op == "stop":
         if mode == "ignore-stop":
             continue
@@ -231,6 +245,96 @@ class RustAudioProtocolTest(unittest.TestCase):
             worker.play_buffer(bad, 24000, 2, "low", lambda: False, None, None)
         self.assertEqual(worker.next_id, 0)
 
+    def test_completion_excludes_virtual_pause_but_stop_deadline_remains_bounded(self):
+        for stopped in (False, True):
+            with self.subTest(stopped=stopped):
+                now = [0.0]
+                pause = PlaybackPause()
+                worker = Mock()
+                clip = _ClipPlayback(
+                    worker,
+                    self.pcm,
+                    24000,
+                    2,
+                    "low",
+                    lambda: False,
+                    None,
+                    None,
+                    pause=pause,
+                )
+                clip.clip_id = 1
+                if stopped:
+                    clip.stop_sent.set()
+
+                def receive(_timeout):
+                    if now[0] == 0:
+                        now[0] = 100
+                        raise queue.Empty
+                    pause.set_paused(False)
+                    return {"event": "finished", "id": 1}
+
+                worker.receive.side_effect = receive
+                with (
+                    patch("vntts.audio_output.monotonic", side_effect=lambda: now[0]),
+                    patch("vntts.rust_audio.monotonic", side_effect=lambda: now[0]),
+                    patch.object(clip, "_handle_event", return_value=(True, False)),
+                ):
+                    pause.set_paused(True)
+                    if stopped:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "completion timed out"
+                        ):
+                            clip._wait_for_completion()
+                    else:
+                        self.assertEqual(clip._wait_for_completion(), (True, False))
+
+    def test_prepaused_buffer_resumes_without_loading_another_clip(self):
+        worker = self.worker("pause-first")
+        pause = PlaybackPause()
+        pause.set_paused(True)
+        started = threading.Event()
+        first = Mock()
+        results, errors = [], []
+        send = worker.send
+
+        def observe(message, payload=b"", **options):
+            send(message, payload, **options)
+            if message["op"] == "start":
+                self.assertTrue(message["paused"])
+                started.set()
+
+        def play():
+            token = playback_pause_context.set(pause)
+            try:
+                results.append(
+                    worker.play_buffer(
+                        self.pcm, 24000, 2, "low", lambda: False, first, None
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                playback_pause_context.reset(token)
+
+        with patch.object(worker, "send", side_effect=observe):
+            owner = threading.Thread(target=play)
+            owner.start()
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertTrue(owner.is_alive())
+                first.assert_not_called()
+                pause.set_paused(False)
+                owner.join(3)
+                self.assertFalse(owner.is_alive())
+                self.assertEqual(results, [(True, False)])
+                self.assertEqual(errors, [])
+                first.assert_called_once_with()
+                self.assertEqual(worker.next_id, 1)
+            finally:
+                if owner.is_alive():
+                    worker.close()
+                    owner.join(3)
+
     def test_child_exit_stale_id_and_truncated_completion_fail_closed(self):
         for mode in ("exit", "stale-id", "bad-count", "bad-outcome", "bad-underflow"):
             with self.subTest(mode=mode):
@@ -276,7 +380,7 @@ class RustAudioProtocolTest(unittest.TestCase):
             self.assertFalse(owner.is_alive())
             self.assertEqual(result, [(False, False)])
 
-    def test_reading_pause_stops_prepared_rust_pcm_and_resume_replays_once(self):
+    def test_reading_pause_resumes_same_prepared_rust_clip(self):
         from concurrent.futures import ThreadPoolExecutor
         from queue import Queue
 
@@ -351,14 +455,14 @@ class RustAudioProtocolTest(unittest.TestCase):
                         marker.exists(), "Pause did not reach the prepared PCM owner"
                     )
                     self.assertEqual(worker.next_id, 1)
-                    self.assertTrue(reader.runtime_control_snapshot()["queued"])
+                    self.assertEqual(marker.read_text(), "paused")
+                    self.assertTrue(finished.empty())
                     self.assertFalse(reader.toggle_pause())
-                    self.assertFalse(finished.get(timeout=2))
                     self.assertTrue(finished.get(timeout=2))
-                    self.assertEqual(worker.next_id, 2)
+                    self.assertTrue(finished.empty())
+                    self.assertEqual(worker.next_id, 1)
                     self.assertIn(1, reader.sealed_generations)
                     self.assertIsNone(reader.auto_advance_blocked_generation)
-                    self.assertFalse(reader.pause_interrupted_chunk_ids)
                     self.assertEqual(errors, [])
                 finally:
                     reader.emergency_stop()

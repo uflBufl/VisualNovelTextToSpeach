@@ -25,6 +25,7 @@ from weakref import WeakSet
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
+from vntts.audio_output import PlaybackPause, playback_pause_context
 
 MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
@@ -328,7 +329,12 @@ class RustAudioWorker:
                 self._diagnostic_clip = {}
 
     def _send_bounded(
-        self, message: dict[str, Any], payload: bytes, stop_requested: Event | None
+        self,
+        message: dict[str, Any],
+        payload: bytes,
+        stop_requested: Event | None,
+        *,
+        pause: PlaybackPause | None = None,
     ) -> None:
         done = Event()
         failure: list[BaseException] = []
@@ -346,16 +352,63 @@ class RustAudioWorker:
             target=context.run, args=(write,), name="vntts-rust-upload", daemon=True
         )
         writer.start()
-        deadline = monotonic() + 10
+        pause = pause or playback_pause_context.get()
+        clock = (
+            pause.active_time
+            if pause is not None and message.get("op") == "append"
+            else monotonic
+        )
+        deadline = clock() + 10
         while not done.wait(0.02):
-            if monotonic() >= deadline or (
-                stop_requested is not None and stop_requested.is_set()
+            if (
+                clock() >= deadline
+                or self.device_changed.is_set()
+                or (stop_requested is not None and stop_requested.is_set())
             ):
                 self.close()
                 writer.join(timeout=1)
                 raise RuntimeError("Rust PCM upload interrupted or timed out")
         if failure:
             raise RuntimeError("Rust PCM upload failed") from failure[0]
+
+    def watch_pause(
+        self,
+        clip_id: int,
+        pause: PlaybackPause | None,
+        finished: Event,
+        initially_paused: bool,
+        stop_requested: Event | None,
+    ) -> Thread | None:
+        if pause is None:
+            return None
+
+        def watch() -> None:
+            paused = initially_paused
+            while not finished.wait(0.01):
+                if (
+                    self.active_id != clip_id
+                    or self.closed.is_set()
+                    or (stop_requested is not None and stop_requested.is_set())
+                ):
+                    return
+                if self.device_changed.is_set():
+                    self.cancel_active()
+                    return
+                current = pause.is_paused()
+                if current != paused:
+                    try:
+                        self.send(
+                            {"op": "pause" if current else "resume", "id": clip_id},
+                            only_active=clip_id,
+                        )
+                    except Exception:
+                        self.close()
+                        return
+                    paused = current
+
+        thread = Thread(target=watch, name="vntts-rust-pause", daemon=True)
+        thread.start()
+        return thread
 
     def cancel_active(self) -> None:
         """Stop outside the playback/ingress locks, with a bounded watchdog."""
@@ -417,6 +470,8 @@ class RustAudioWorker:
         cancelled: Any,
         first_write: Any,
         stop_requested: Event | None,
+        *,
+        pause: PlaybackPause | None = None,
     ) -> tuple[bool, bool]:
         pcm = np.ascontiguousarray(samples, dtype="<f4")
         if (
@@ -445,13 +500,23 @@ class RustAudioWorker:
                 cancelled,
                 first_write,
                 stop_requested,
+                pause=pause or playback_pause_context.get(),
             ).run()
 
     def _expect(self, event: str, clip_id: int, timeout: float) -> dict[str, Any]:
-        try:
-            value = self.receive(timeout)
-        except queue.Empty:
-            raise RuntimeError(f"Rust audio {event} timed out") from None
+        deadline = monotonic() + timeout
+        while True:
+            try:
+                value = self.receive(max(0, deadline - monotonic()))
+            except queue.Empty:
+                raise RuntimeError(f"Rust audio {event} timed out") from None
+            # A control sent at completion can acknowledge after its finished event.
+            if (
+                value.get("event") in {"paused", "resumed"}
+                and value.get("id", clip_id) < clip_id
+            ):
+                continue
+            break
         if value.get("event") != event or value.get("id") != clip_id:
             raise RuntimeError(
                 str(value.get("error", f"Unexpected Rust audio event: {value}"))
@@ -476,12 +541,14 @@ class _ClipPlayback:
     preload_ms: float = field(default=0.0, init=False)
     first_reported: bool = field(default=False, init=False)
     first_callback_received_ms: float | None = field(default=None, init=False)
+    pause: PlaybackPause | None = field(default_factory=playback_pause_context.get)
 
     def run(self) -> tuple[bool, bool]:
         self.worker.next_id += 1
         self.clip_id = self.worker.next_id
         self.worker.active_id = self.clip_id
         watcher: Thread | None = None
+        pause_watcher: Thread | None = None
 
         def interrupted() -> bool:
             return bool(
@@ -501,7 +568,18 @@ class _ClipPlayback:
                     self.worker._expect("finished", self.clip_id, 3)
                 )
                 return False, False
-            self.worker.send({"op": "start", "id": self.clip_id})
+            initially_paused = self.pause is not None and self.pause.is_paused()
+            start = {"op": "start", "id": self.clip_id}
+            if self.pause is not None:
+                start["paused"] = initially_paused
+            self.worker.send(start)
+            pause_watcher = self.worker.watch_pause(
+                self.clip_id,
+                self.pause,
+                self.finished,
+                initially_paused,
+                self.stop_requested,
+            )
             watcher = Thread(
                 target=self._watch_stop, name="vntts-rust-stop", daemon=True
             )
@@ -515,6 +593,8 @@ class _ClipPlayback:
             self.finished.set()
             if watcher is not None:
                 watcher.join(timeout=1)
+            if pause_watcher is not None:
+                pause_watcher.join(timeout=1)
             self.worker.active_id = None
 
     def _load(self) -> None:
@@ -529,6 +609,7 @@ class _ClipPlayback:
             },
             self.pcm.tobytes(),
             self.stop_requested,
+            pause=self.pause,
         )
         self.worker._expect("loaded", self.clip_id, 10)
         self.preload_ms = (monotonic() - self.started) * 1000
@@ -553,12 +634,15 @@ class _ClipPlayback:
                 return
 
     def _wait_for_completion(self) -> tuple[bool, bool]:
-        deadline = monotonic() + len(self.pcm) / self.sample_rate + 10
+        clock = self.pause.active_time if self.pause is not None else monotonic
+        deadline = clock() + len(self.pcm) / self.sample_rate + 10
         stop_deadline: float | None = None
         while True:
             if self.stop_sent.is_set() and stop_deadline is None:
                 stop_deadline = monotonic() + 3
-            if monotonic() >= min(deadline, stop_deadline or deadline):
+            if clock() >= deadline or (
+                stop_deadline is not None and monotonic() >= stop_deadline
+            ):
                 raise RuntimeError("Rust audio completion timed out")
             if not self.stop_sent.is_set() and self.cancelled():
                 self.stop_sent.set()

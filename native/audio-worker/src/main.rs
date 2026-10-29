@@ -494,6 +494,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                 channels,
                 latency,
                 capacity_frames,
+                paused,
             }) => {
                 if active.is_some() || loaded.is_some() || id <= last_id {
                     reject(
@@ -514,6 +515,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     };
                     match Active::open(pa, clip, Some(capacity_frames)) {
                         Ok(playing) => {
+                            playing.state.paused.store(paused, Ordering::Release);
                             emit(playing.metadata("opened"))?;
                             active = Some(playing);
                         }
@@ -563,11 +565,12 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     reject(id, "end requires the current open stream")?;
                 }
             }
-            Input::Control(Command::Start { id }) => {
+            Input::Control(Command::Start { id, paused }) => {
                 if loaded.as_ref().is_some_and(|clip| clip.id == id) {
                     let clip = loaded.take().unwrap();
                     let mut failed_status = unstarted_status(&clip, true, None);
                     match Active::open(pa, clip, None).and_then(|mut playing| {
+                        playing.state.paused.store(paused, Ordering::Release);
                         playing.start()?;
                         Ok(playing)
                     }) {
@@ -835,6 +838,25 @@ mod tests {
             Some(Input::Control(Command::Stop { id: 7 }))
         ));
         assert!(read_input(&mut input, &mut format).is_err());
+    }
+
+    #[test]
+    fn activation_accepts_initial_pause_without_changing_legacy_commands() {
+        for (header, expected) in [
+            (r#"{"op":"start","id":1}"#, false),
+            (r#"{"op":"start","id":1,"paused":true}"#, true),
+        ] {
+            let input = format!("{header}\n");
+            assert!(matches!(
+                read_input(&mut Cursor::new(input.as_bytes()), &mut None).unwrap(),
+                Some(Input::Control(Command::Start { id: 1, paused })) if paused == expected
+            ));
+        }
+        let input = b"{\"op\":\"open_stream\",\"id\":1,\"sample_rate\":24000,\"channels\":1,\"latency\":\"low\",\"capacity_frames\":1,\"paused\":true}\n";
+        assert!(matches!(
+            read_input(&mut Cursor::new(input), &mut None).unwrap(),
+            Some(Input::Control(Command::OpenStream { paused: true, .. }))
+        ));
     }
 
     #[test]

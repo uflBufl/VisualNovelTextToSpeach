@@ -30,6 +30,7 @@ from vntts.audio_output import (
     PlaybackAudioOutput,
     match_output_sample_rate,
     playback_cancelled,
+    playback_pause_context,
     prepared_output_stream,
     resolve_audio_output,
     write_pcm_chunks,
@@ -1362,6 +1363,13 @@ class AudioRoutePlaybackOwner:
             )
             self.router.progress_wait_status(last_status)
             while playback_guard is None or playback_guard():
+                if self.progress_wait_stop.is_set():
+                    break
+                pause = playback_pause_context.get()
+                if pause is not None and pause.is_paused():
+                    if self.progress_wait_stop.wait(0.05):
+                        break
+                    continue
                 resolved = self.router.resolved_pending_route(route)
                 if resolved is not None:
                     if self.progress_wait_stop.is_set():

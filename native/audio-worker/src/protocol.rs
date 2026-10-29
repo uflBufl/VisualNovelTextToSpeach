@@ -32,6 +32,8 @@ pub(super) enum Command {
     },
     Start {
         id: u64,
+        #[serde(default)]
+        paused: bool,
     },
     Stop {
         id: u64,
@@ -60,6 +62,8 @@ pub(super) enum Command {
         channels: u8,
         latency: Latency,
         capacity_frames: u64,
+        #[serde(default)]
+        paused: bool,
     },
     Append {
         id: u64,
@@ -171,6 +175,7 @@ pub(super) fn read_input(
             channels,
             ref latency,
             capacity_frames,
+            ..
         } => {
             pcm_samples(id, sample_rate, channels, capacity_frames, latency)?;
             if capacity_frames > u64::from(sample_rate) * 2 {

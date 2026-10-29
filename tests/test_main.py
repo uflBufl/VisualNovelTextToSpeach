@@ -4086,38 +4086,99 @@ class MainTest(unittest.TestCase):
                 if not completed:
                     self.assertFalse(controller.story_cursor.can_auto_advance)
 
-    def test_pause_interruption_keeps_the_sequence_occurrence_replayable(self):
+    def test_source_completion_while_paused_keeps_sequence_lease_until_resume(self):
         controller, lines, _pipeline = self._sequence_controller()
+        reader = self._sequence_reader(controller)
         controller.story_cursor.anchor_event("event-1")
         chunk = SpeechChunk(
             1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id
         )
-        lease = controller._begin_sequence_playback(chunk)
-        interrupted = PlaybackOutcome(
-            PlaybackStatus.INTERRUPTED,
-            1.0,
-            first_audio_ms=0.0,
-            audio_source="generated",
+        reader.active_generation = 1
+        chunk = reader._admit_chunk(chunk)
+        reader.current_chunk = chunk
+        route = SourceAudioRoute(
+            PreparedSourceAudioPassThrough(
+                lines[0].line_id, text_sha256(lines[0].text), completion_seconds=1.0
+            ),
+            stub_route_trace("source-game", lines[0].line_id),
+        )
+        outcome = PlaybackOutcome(
+            PlaybackStatus.COMPLETED, 1.0, first_audio_ms=0.0, audio_source="source-game"
         )
 
-        self.assertFalse(
-            controller._finish_sequence_playback(
-                lease, interrupted, interrupted_for_pause=True
+        def dispatch(*_args):
+            reader.toggle_pause()
+            return outcome
+
+        def resume(completing):
+            self.assertIs(completing, chunk)
+            self.assertTrue(reader.paused)
+            self.assertEqual(len(controller.sequence_playback_leases), 1)
+            self.assertEqual(controller.sequence_event_terminal_routes, {})
+            self.assertFalse(controller.story_cursor.can_auto_advance)
+            self.assertIs(reader.current_chunk, chunk)
+            self.assertNotIn(chunk.playback_id, reader.completed_playback_ids)
+            reader.toggle_pause()
+            return True
+
+        with (
+            patch.object(controller, "_dispatch_live_playback", side_effect=dispatch),
+            patch.object(reader, "wait_until_playable", side_effect=resume),
+        ):
+            self.assertTrue(controller._play_live_chunk(chunk, route))
+        self.assertFalse(controller.sequence_playback_leases)
+        self.assertEqual(len(controller.sequence_event_terminal_routes), 1)
+        self.assertTrue(controller.story_cursor.can_auto_advance)
+
+    def test_pause_after_announcement_retains_lease_and_dispatches_dialogue_once(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        reader = self._sequence_reader(controller)
+        controller.story_cursor.anchor_event("event-1")
+        reader.active_generation = 1
+        chunk = reader._admit_chunk(
+            SpeechChunk(1, lines[0].speaker, lines[0].text, line_id=lines[0].line_id)
+        )
+        reader.current_chunk = chunk
+        announcement = LiveTTSRoute(
+            PreparedPlayback("announcement", None, None, None, "live:test"),
+            stub_route_trace("live-accessibility-announcement"),
+            None,
+            None,
+        )
+        dialogue = PreparedPlayback("dialogue", None, None, None, "live:test")
+        played = []
+
+        def play(prepared, *, playback_guard):
+            self.assertTrue(playback_guard())
+            played.append(prepared.payload)
+            if prepared.payload == "announcement":
+                reader.toggle_pause()
+            else:
+                self.assertFalse(reader.paused)
+            return PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0, audio_source="live")
+
+        controller.speech_backend = SimpleNamespace(play_prepared=play)
+        wait = reader.wait_until_playable
+
+        def resume(completing):
+            if reader.paused:
+                self.assertEqual(played, ["announcement"])
+                self.assertEqual(len(controller.sequence_playback_leases), 1)
+                self.assertEqual(controller.sequence_event_terminal_routes, {})
+                self.assertIs(reader.current_chunk, chunk)
+                self.assertFalse(controller.story_cursor.can_auto_advance)
+                reader.toggle_pause()
+            return wait(completing)
+
+        with patch.object(reader, "wait_until_playable", side_effect=resume):
+            self.assertTrue(
+                controller._play_live_chunk(
+                    chunk, PreparedLiveChunkRoutes(dialogue, announcement, chunk.character)
+                )
             )
-        )
-        self.assertEqual(controller.sequence_event_terminal_routes, {})
-        self.assertEqual(controller._begin_sequence_playback(chunk), lease)
-        self.assertTrue(
-            controller._finish_sequence_playback(
-                lease,
-                PlaybackOutcome(
-                    PlaybackStatus.COMPLETED, 1.0, audio_source="generated"
-                ),
-            )
-        )
-        self.assertEqual(
-            controller.sequence_event_terminal_routes, {lease: "generated"}
-        )
+        self.assertEqual(played, ["announcement", "dialogue"])
+        self.assertFalse(controller.sequence_playback_leases)
+        self.assertTrue(controller.story_cursor.can_auto_advance)
 
     def test_terminal_route_conflicts_keep_the_first_route_and_desynchronize(self):
         for silent in (True, False):
@@ -8153,6 +8214,7 @@ class MainTest(unittest.TestCase):
                 )
                 reader = Mock(active_generation=1)
                 reader.wait_until_playable.return_value = True
+                reader.is_playback_current.return_value = True
                 controller.live_reader = reader
                 chunk = IncrementalDialogTracker().observe_identified(
                     "Ada", "?!", "symbol", exact=True
@@ -8186,7 +8248,7 @@ class MainTest(unittest.TestCase):
                         ),
                         "prepared",
                     )
-                reader.wait_until_playable.return_value = False
+                reader.is_playback_current.return_value = False
                 outcome = controller._dispatch_live_playback(reader, chunk, prepared)
                 self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
                 self.assertEqual(backend.prepare_calls, [])
@@ -8293,6 +8355,7 @@ class MainTest(unittest.TestCase):
                         active_generation=1, max_speech_jobs=2
                     )
                     controller.live_reader.wait_until_playable.return_value = True
+                    controller.live_reader.is_playback_current.return_value = True
                     if wrapped:
                         wrapper = GeneratedAudioFallbackBackend(
                             lease,
@@ -8326,12 +8389,12 @@ class MainTest(unittest.TestCase):
                         )
                         self.assertEqual(wrapper.play_route.call_count, 2)
                     controller.error_handler.assert_not_called()
-                    controller.live_reader.wait_until_playable.return_value = False
+                    controller.live_reader.is_playback_current.return_value = False
                     cancelled = controller._dispatch_live_playback(
                         controller.live_reader, chunk, prepared.dialogue
                     )
                     self.assertEqual(cancelled.status, PlaybackStatus.INTERRUPTED)
-                    controller.live_reader.wait_until_playable.assert_called_with(chunk)
+                    controller.live_reader.is_playback_current.assert_called_with(chunk)
 
     def test_retained_leases_reject_untyped_preparation_and_playback(self):
         for kind in ("worker", "native"):

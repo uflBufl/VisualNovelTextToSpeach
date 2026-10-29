@@ -13,6 +13,7 @@ from weakref import WeakSet
 import numpy as np
 
 from vntts.audio_lifecycle import record_audio_lifecycle
+from vntts.audio_output import playback_pause_context
 from vntts.rust_audio import RustAudioWorker
 
 
@@ -194,6 +195,8 @@ class RustOutputStream:
         self.worker: RustAudioWorker | None = None
         self.clip_id: int | None = None
         self.started = self.opened = self.first_callback = self.closed = False
+        self.pause = playback_pause_context.get()
+        self.pause_watcher: Thread | None = None
         self.finished = Event()
         self.aborted = Event()
         self.write_lock = Lock()
@@ -234,8 +237,11 @@ class RustOutputStream:
         if not worker._arm_recording(self.aborted.is_set) or self.aborted.is_set():
             worker.active_id = None
             raise RuntimeError("Rust output stream is interrupted")
+        initially_paused = self.pause is not None and self.pause.is_paused()
+        options = {"paused": initially_paused} if self.pause is not None else {}
         worker.send(
             {
+                **options,
                 "op": "open_stream",
                 "id": self.clip_id,
                 "sample_rate": self.sample_rate,
@@ -246,10 +252,18 @@ class RustOutputStream:
         )
         self._until("opened", 5)
         self.opened = True
+        self.pause_watcher = worker.watch_pause(
+            self.clip_id, self.pause, self.finished, initially_paused, self.aborted
+        )
 
     def _event(self, timeout: float) -> dict[str, Any]:
         worker = self._worker()
         event = worker.receive(timeout)
+        while (
+            event.get("event") in {"paused", "resumed"}
+            and event.get("id", self.clip_id) < self.clip_id
+        ):
+            event = worker.receive(timeout)
         if event.get("id") != self.clip_id:
             raise RuntimeError("Rust stream returned another owner's event")
         if event["event"] == "error":
@@ -305,10 +319,16 @@ class RustOutputStream:
             )
 
     def _until(self, kind: str, timeout: float) -> dict[str, Any]:
-        deadline = monotonic() + timeout
-        while monotonic() < deadline:
+        clock = (
+            self.pause.active_time
+            if self.pause is not None
+            and kind in {"appended", "first_callback", "finished"}
+            else monotonic
+        )
+        deadline = clock() + timeout
+        while clock() < deadline:
             try:
-                event = self._event(min(0.05, max(0.001, deadline - monotonic())))
+                event = self._event(min(0.05, max(0.001, deadline - clock())))
             except queue.Empty:
                 continue
             if event["event"] == kind:
@@ -345,6 +365,7 @@ class RustOutputStream:
                     {"op": "append", "id": self.clip_id, "frames": len(chunk)},
                     chunk.tobytes(),
                     self.aborted,
+                    pause=self.pause,
                 )
                 ack = self._until("appended", len(chunk) / self.sample_rate + 5)
                 if ack.get("frames") != len(chunk):
@@ -377,6 +398,7 @@ class RustOutputStream:
                 lambda: self.aborted.is_set() or cancelled(),
                 first_write,
                 stop_requested,
+                pause=self.pause,
             )
         finally:
             self.finished.set()
@@ -405,6 +427,9 @@ class RustOutputStream:
         if self.closed:
             return
         self.closed = True
+        self.finished.set()
+        if self.pause_watcher is not None:
+            self.pause_watcher.join(timeout=1)
         worker = self.worker
         if worker is not None:
             if worker.active_id is not None or (

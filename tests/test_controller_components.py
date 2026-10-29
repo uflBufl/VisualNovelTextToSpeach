@@ -48,7 +48,8 @@ class ControllerComponentsTest(unittest.TestCase):
                     controller._dispatch_live_playback(reader, chunk, prepared), outcome
                 )
                 backend.guard()
-                reader.wait_until_playable.assert_called_with(chunk)
+                reader.is_playback_current.assert_called_with(chunk)
+                reader.wait_until_playable.assert_not_called()
 
     def test_interruption_uses_the_playback_backend_before_the_synthesis_engine(self):
         controller = AppController(AppSettings())
