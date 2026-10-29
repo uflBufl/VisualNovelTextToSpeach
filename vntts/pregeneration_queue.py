@@ -93,6 +93,7 @@ from vntts.source_audio_semantics import (
     project_source_audio_semantics,
 )
 from vntts.support import record_background_operation
+from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -154,6 +155,29 @@ class PregenerationInput:
 class PregenerationInputStore:
     def __init__(self, job_store: PregenerationJobStore) -> None:
         self.job_store = job_store
+
+    def was_confirmed(self, prepared: PregenerationInput) -> bool:
+        """Match explicit voice approval against already validated inputs."""
+        try:
+            receipt = read_versioned_json(
+                prepared.directory / "voice-confirmation.json",
+                schema_version=1,
+                document_name="voice confirmation",
+            )
+        except OSError, ValueError:
+            return False
+        return receipt.get("confirmed") is True and receipt == _voice_confirmation(
+            prepared
+        )
+
+    def confirm(self, prepared: PregenerationInput) -> None:
+        """Persist explicit approval separately from immutable input metadata."""
+        if not self.was_confirmed(prepared):
+            write_versioned_json(
+                prepared.directory / "voice-confirmation.json",
+                1,
+                _voice_confirmation(prepared),
+            )
 
     def materialize(
         self,
@@ -342,6 +366,20 @@ class PregenerationInputStore:
         result = _load_existing(destination, identity, effective)
         _record_input_phase("reuse", phase_started, cpu_started, cache_state="disk")
         return result
+
+
+def _voice_confirmation(prepared: PregenerationInput) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "confirmed": True,
+        "identity": prepared.identity,
+        "story_index_sha256": prepared.story_index_sha256,
+        "voice_manifest_sha256": prepared.voice_manifest_sha256,
+        "queue_sha256": prepared.queue_sha256,
+        "source_audio_semantic_evidence_sha256": (
+            prepared.source_audio_semantic_evidence_sha256
+        ),
+    }
 
 
 def _validate_plan_for_job(job: PregenerationJob, plan: VoicePlan) -> None:

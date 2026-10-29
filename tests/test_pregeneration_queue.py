@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -532,6 +533,155 @@ class PregenerationInputStoreTest(unittest.TestCase):
             job, settings, manifest_path=manifest
         )
         return job, jobs, voice_plan, manifest
+
+    def test_voice_confirmation_survives_reopen_without_changing_input_metadata(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory))
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            metadata = load_generation_input_metadata(prepared.directory)
+            self.assertFalse(store.was_confirmed(prepared))
+            store.confirm(prepared)
+
+            restarted = PregenerationInputStore(PregenerationJobStore(jobs.root))
+            reopened = restarted.materialize(job, plan)
+            self.assertTrue(restarted.was_confirmed(reopened))
+            with patch("vntts.pregeneration_queue.write_versioned_json") as write:
+                restarted.confirm(reopened)
+            write.assert_not_called()
+            self.assertEqual(
+                load_generation_input_metadata(prepared.directory), metadata
+            )
+            receipt = json.loads(
+                (prepared.directory / "voice-confirmation.json").read_bytes()
+            )
+            self.assertEqual(
+                receipt,
+                {
+                    "schema_version": 1,
+                    "confirmed": True,
+                    "identity": prepared.identity,
+                    "story_index_sha256": prepared.story_index_sha256,
+                    "voice_manifest_sha256": prepared.voice_manifest_sha256,
+                    "queue_sha256": prepared.queue_sha256,
+                    "source_audio_semantic_evidence_sha256": None,
+                },
+            )
+
+    def test_voice_confirmation_binds_every_input_identity_and_digest(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory))
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            for evidence in (None, "e" * 64):
+                prepared = replace(
+                    prepared, source_audio_semantic_evidence_sha256=evidence
+                )
+                store.confirm(prepared)
+                self.assertTrue(store.was_confirmed(prepared))
+                for field in (
+                    "identity",
+                    "story_index_sha256",
+                    "voice_manifest_sha256",
+                    "queue_sha256",
+                    "source_audio_semantic_evidence_sha256",
+                ):
+                    with self.subTest(evidence=evidence, field=field):
+                        self.assertFalse(
+                            store.was_confirmed(replace(prepared, **{field: "0" * 64}))
+                        )
+
+    def test_voice_confirmation_is_portable_with_identical_input_files(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            store.confirm(prepared)
+            copied = root / "copied-input"
+            shutil.copytree(prepared.directory, copied)
+            relocated = replace(
+                prepared,
+                directory=copied,
+                story_index=copied / prepared.story_index.name,
+                voice_manifest=copied / prepared.voice_manifest.name,
+                queue=copied / prepared.queue.name,
+            )
+            self.assertTrue(store.was_confirmed(relocated))
+
+    def test_damaged_voice_confirmation_requires_explicit_confirmation(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory))
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            store.confirm(prepared)
+            path = prepared.directory / "voice-confirmation.json"
+            accepted = json.loads(path.read_bytes())
+            damaged = [b"{", b"\xff", b"[]", b"null", b"{}"]
+            for version in (None, True, 0, 2, "1"):
+                damaged.append(
+                    json.dumps({**accepted, "schema_version": version}).encode()
+                )
+            for confirmed in (False, 1, "true", None):
+                damaged.append(
+                    json.dumps({**accepted, "confirmed": confirmed}).encode()
+                )
+            for field in accepted:
+                damaged.append(
+                    json.dumps(
+                        {key: value for key, value in accepted.items() if key != field}
+                    ).encode()
+                )
+            for raw in damaged:
+                with self.subTest(raw=raw):
+                    path.write_bytes(raw)
+                    self.assertFalse(store.was_confirmed(prepared))
+                    self.assertEqual(path.read_bytes(), raw)
+                    store.confirm(prepared)
+                    self.assertTrue(store.was_confirmed(prepared))
+
+    def test_voice_confirmation_read_errors_and_special_files_are_unconfirmed(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory))
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            store.confirm(prepared)
+            with patch(
+                "vntts.versioned_json.open_regular_binary",
+                side_effect=PermissionError("blocked"),
+            ):
+                self.assertFalse(store.was_confirmed(prepared))
+            with patch("vntts.versioned_json._DOCUMENT_READ_LIMIT", 32):
+                self.assertFalse(store.was_confirmed(prepared))
+            path = prepared.directory / "voice-confirmation.json"
+            path.unlink()
+            path.mkdir()
+            self.assertFalse(store.was_confirmed(prepared))
+            path.rmdir()
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(path)
+                self.assertFalse(store.was_confirmed(prepared))
+
+    def test_voice_confirmation_write_failure_preserves_accepted_receipt(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory))
+            store = PregenerationInputStore(jobs)
+            prepared = store.materialize(job, plan)
+            store.confirm(prepared)
+            path = prepared.directory / "voice-confirmation.json"
+            accepted = path.read_bytes()
+            changed = replace(prepared, queue_sha256="0" * 64)
+            with (
+                patch(
+                    "vntts.versioned_json.atomic_write_bytes",
+                    side_effect=OSError("blocked"),
+                ),
+                self.assertRaisesRegex(OSError, "blocked"),
+            ):
+                store.confirm(changed)
+            self.assertEqual(path.read_bytes(), accepted)
+            self.assertTrue(store.was_confirmed(prepared))
+            self.assertFalse(store.was_confirmed(changed))
 
     def test_generation_input_inventory_uses_sql_without_scans_and_sees_new_rows(
         self,

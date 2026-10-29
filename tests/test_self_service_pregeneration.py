@@ -1807,7 +1807,14 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 recovery=OfflineRecoveryWorker(resumed),
                 thread_pool=pool,
             )
-            with patch.object(resumed, "generate", wraps=resumed.generate) as generate:
+            with (
+                patch.object(resumed, "generate", wraps=resumed.generate) as generate,
+                patch.object(
+                    second,
+                    "_show_voice_confirmation",
+                    wraps=second._show_voice_confirmation,
+                ) as review,
+            ):
                 second.continue_button.click()
                 for _step in range(8):
                     if second.pack_result() is not None:
@@ -1821,6 +1828,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     pool.tasks.pop(0).run()
                     self.application.processEvents()
             generate.assert_called_once()
+            review.assert_not_called()
 
             self.assertEqual(second.progress_phase.text(), "Offline audio is ready")
             second.continue_button.click()

@@ -3964,6 +3964,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.planning_voices)
             self.assertFalse(dialog.stories.isEnabled())
             self.assertEqual(dialog.cancel_button.text(), "Cancel voice matching")
+            self.assertEqual(dialog.progress_phase.text(), "Checking saved preparation")
             self.run_next_task(pool)
 
             self.assertFalse(dialog.planning_voices)
@@ -3977,6 +3978,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "To generate: 2 lines", plain_label_text(dialog.change_summary)
             )
             generator.generate.assert_not_called()
+            with patch.object(
+                dialog.input_store, "confirm", side_effect=OSError("Disk is full")
+            ):
+                dialog.continue_button.click()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.generating)
+            self.assertIn("Disk is full", dialog.voice_confirmation_status.text())
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)
             self.assertEqual(dialog.cancel_button.text(), "Cancel generation")
@@ -3998,6 +4006,99 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(store.load(dialog.job().job_id), dialog.job())
             self.assertTrue(store.catalog.has_plan(dialog.job().job_id))
             dialog.deleteLater()
+
+    def test_reopened_preparation_reuses_only_confirmed_unchanged_inputs(self):
+        for reason in (
+            "unchanged",
+            "unconfirmed",
+            "missing",
+            "damaged",
+            "settings",
+            "voice",
+            "content",
+            "prepare-again",
+            "rematch",
+        ):
+            with self.subTest(reason=reason), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = write_story_index(root / "content")
+                content = inspect_story_index(source)
+                jobs = PregenerationJobStore(root / "jobs")
+                settings = AppSettings(audio_source_policy="prefer-game-audio")
+
+                def open_preparation(content, settings, *, again=False, rematch=False):
+                    pool = ManualThreadPool()
+                    recovery = Mock()
+                    recovery.generate_and_recover.side_effect = (
+                        OfflineGenerationCancelled("cancelled")
+                    )
+                    dialog = OfflineAudioPreparationDialog(
+                        settings,
+                        discovery=lambda: ContentDiscovery((content,)),
+                        job_store=jobs,
+                        recovery=recovery,
+                        thread_pool=pool,
+                    )
+                    self.addCleanup(dialog.deleteLater)
+                    dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+                    dialog.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
+                    with patch.object(dialog.summary_voice_preview, "prepare"):
+                        if again:
+                            ready = StoryAudioCoverage(
+                                "Main story", None, original=1, generated=1
+                            )
+                            dialog._story_audio_checks[
+                                dialog._story_audio_key("main-1")
+                            ] = (ready, ready, None)
+                            dialog._selection_changed()
+                            self.assertEqual(
+                                dialog.continue_button.text(), "Start reading"
+                            )
+                            dialog.prepare_again.click()
+                        else:
+                            dialog.change_voices.setChecked(rematch)
+                            dialog.continue_button.click()
+                        self.run_next_task(pool)
+                        self.run_next_task(pool)
+                    return dialog, pool
+
+                first, _ = open_preparation(content, settings)
+                self.assertTrue(first._awaiting_voice_confirmation)
+                prepared = first.generation_input()
+                if reason != "unconfirmed":
+                    first.input_store.confirm(prepared)
+                first.close()
+                receipt = prepared.directory / "voice-confirmation.json"
+                if reason == "missing":
+                    receipt.unlink()
+                elif reason == "damaged":
+                    receipt.write_bytes(b"invalid")
+                elif reason == "settings":
+                    settings = settings.updated(narrator_speaker="marius")
+                elif reason == "voice":
+                    self._voice_library.select(
+                        "Rhiannon", route="voice", source_id="preset:jean"
+                    )
+                elif reason == "content":
+                    write_story_index(
+                        root / "content", generated_text="Changed dialogue."
+                    )
+                    content = inspect_story_index(source)
+                second, second_pool = open_preparation(
+                    content,
+                    settings,
+                    again=reason == "prepare-again",
+                    rematch=reason == "rematch",
+                )
+                self.assertEqual(
+                    second._awaiting_voice_confirmation, reason != "unchanged"
+                )
+                self.assertEqual(second.generating, reason == "unchanged")
+                if second.generating:
+                    second.cancel_button.click()
+                    self.run_next_task(second_pool)
+                second.close()
+                self._voice_library.clear("Rhiannon")
 
     def test_app_import_and_story_selection_restore_after_restart(self):
         with TemporaryDirectory() as temporary_directory:
@@ -5434,6 +5535,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             input_store = Mock()
             input_store.materialize.return_value = generation_input
+            input_store.was_confirmed.return_value = False
             generator = Mock()
 
             def generate(selected_input, selected_plan, cancellation):

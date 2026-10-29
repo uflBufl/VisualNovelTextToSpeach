@@ -88,6 +88,7 @@ from vntts.pregeneration_queue import (
     PregenerationInput,
     PregenerationInputStore,
     PregenerationQueueCancelled,
+    PregenerationQueueError,
 )
 from vntts.pregeneration_recovery import OfflineRecoveryResult, OfflineRecoveryWorker
 from vntts.pregeneration_setup import (
@@ -479,6 +480,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.replanning_voice_decisions = False
         self._semantic_preparation_enabled = False
         self._generate_after_input = False
+        self._reuse_voice_confirmation = False
         self.preparing_inputs = False
         self.generating = False
         self.recovering = False
@@ -2076,6 +2078,7 @@ class OfflineAudioPreparationDialog(QDialog):
         return tuple(choices)
 
     def _show_voice_confirmation(self, plan: VoicePlan) -> None:
+        self._reuse_voice_confirmation = False
         self.continue_button.setDefault(True)
         self.cancel_button.setAutoDefault(True)
         self.step.setText("Step 2 of 4 - Choose and confirm voices")
@@ -4968,7 +4971,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 manifest,
             )
             return
-        self._save_selection()
+        self._save_selection(reuse_confirmation=True)
 
     def _save_story_selection_drafts(self) -> bool:
         for checksum, (content, selected) in tuple(
@@ -4984,7 +4987,7 @@ class OfflineAudioPreparationDialog(QDialog):
             del self._unsaved_story_selections[checksum]
         return True
 
-    def _save_selection(self) -> None:
+    def _save_selection(self, *, reuse_confirmation: bool = False) -> None:
         if self._pack_result is not None:
             self.accept()
             return
@@ -4994,6 +4997,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if not self._generation_engine_available():
             self._selection_changed()
             return
+        self._reuse_voice_confirmation = (
+            reuse_confirmation and not self.change_voices.isChecked()
+        )
         self._stale_job_retry_attempted = False
         self._cancel_story_audio_check()
         content = self.current_content()
@@ -5026,13 +5032,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
         self._show_waiting_phase(
-            "Classifying selected game speech"
-            if self._semantic_preparation_enabled
-            else "Matching character voices",
-            "Measuring and classifying selected game speech before matching voices. "
-            "A pinned offline model may be installed once; this uses CPU."
-            if self._semantic_preparation_enabled
-            else "Preparing and matching character voices...",
+            "Checking saved preparation",
+            "Checking saved story analysis and voice choices...",
             "Cancel stops voice matching and closes this window. Reopen it to "
             "reuse the saved story selection.",
         )
@@ -5518,12 +5519,26 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self._set_import_controls(False)
         assert self._voice_plan is not None
-        if generate_after_input:
+        if generate_after_input or (
+            self._reuse_voice_confirmation
+            and self.input_store.was_confirmed(self._generation_input)
+        ):
             self._start_generation()
             return
         self._show_voice_confirmation(self._voice_plan)
 
     def _start_generation(self) -> None:
+        assert self._generation_input is not None
+        try:
+            self.input_store.confirm(self._generation_input)
+        except (OSError, ValueError, PregenerationQueueError) as error:
+            logging.getLogger(__name__).exception("Unable to save voice confirmation")
+            assert self._voice_plan is not None
+            self._show_voice_confirmation(self._voice_plan)
+            self.voice_confirmation_status.setText(
+                f"Unable to save voice confirmation: {error}"
+            )
+            return
         self.step.setText("Step 3 of 4 - Generate and check audio")
         self.summary_voice_preview.close()
         if self._narrator_player is not None:

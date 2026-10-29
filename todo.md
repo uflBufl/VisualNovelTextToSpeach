@@ -314,7 +314,6 @@ complete. Do not change recognition or playback policy on an unverified hypothes
 
 REC-29-01 needs measurements from the next agreed load run before selecting the
 actual stall correction; continuous capture remains a combined acceptance gate.
-UX-29-02 remains a discussion item, not a confirmed defect or a mandatory redesign.
 Each coherent fix gets its own commit and focused checks; the full native chapter
 is still one final gate, not a per-fix test.
 
@@ -353,25 +352,8 @@ is still one final gate, not a per-fix test.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
-- [ ] **UX-29-02 - Review resume-flow friction observed in the native trial.**
-      Proposed implementation, awaiting agreement:
-      - Use an initial checking/preparation status before reuse is known; show
-        classification only when that actual stage reports progress. Retain
-        existing semantic evidence/successor and voice-candidate cache checks.
-      - Persist explicit confirmation of the validated generation input when
-        the user chooses `Generate with these voices`, separately from immutable
-        input metadata. Bind it to existing input identity and content hashes;
-        do not infer approval merely from a saved voice plan or input directory.
-      - On `Continue preparation`, run existing validation and resume generation
-        directly only for that same confirmed input. First preparation, changed
-        content/voices/references/synthesis controls, missing confirmation and
-        explicit `Prepare again` must still show voice confirmation.
-      - Check reopen/resume, changed input and reference invalidation, cancellation
-        before confirmation, missing/damaged confirmation, and existing damaged
-        audio failures. Preserve saved recordings and pending-work cancellation.
-
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
-   First resolve the RUN/REC/UX-29 findings above with agreed implementation plans.
+   First resolve REC-29-01 above with an agreed implementation plan.
    The native attempt reached104 with manual recoveries; autonomous continuation
    and continuous audio evidence failed, so those gates remain open.
    Include native confirmation that authorized silent events do not wait for a
@@ -389,6 +371,10 @@ is still one final gate, not a per-fix test.
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Preparation resume (UX-29-02):** cancel confirmed generation, reopen it and
+     continue the same input without another voice-confirmation screen. Changed
+     voices/settings/content and explicit `Prepare again` must still require
+     review. Check truthful phase labels, saved-recording reuse and cancellation.
    - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
      and aligned Play buttons in the actual chapter at compact size and enlarged
      font, including `Narrator (Centurion)` substitutions and preview messages.
