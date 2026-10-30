@@ -1309,12 +1309,17 @@ class AppController:
             return result
         with self.story_cursor_lock:
             expected_prefix = self._expected_sequence_prefix_line_locked()
-            if expected_prefix is not None and _normalize_story_text(
-                expected_prefix.text
-            ).startswith(_normalize_story_text(result.text)):
-                if resolution is not None:
-                    resolution["match_result"] = "owned-prefix"
-                return result
+            if expected_prefix is not None:
+                expected_text = _normalize_story_text(expected_prefix.text)
+                observed_text = _normalize_story_text(result.text)
+                if (
+                    observed_text
+                    and len(observed_text) < len(expected_text)
+                    and expected_text.startswith(observed_text)
+                ):
+                    if resolution is not None:
+                        resolution["match_result"] = "owned-prefix"
+                    return result
             preloader = self.chapter_voice_preloader
             plan, cursor = self.live_sequence_plan, self.story_cursor
             if plan is not None and self.settings.live_sequence_mode != "off":

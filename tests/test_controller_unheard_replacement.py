@@ -51,6 +51,8 @@ class ControllerUnheardReplacementTest(unittest.TestCase):
             (False, text, False, False),
             (True, "Unrelated text.", False, False),
             (True, text, True, False),
+            (False, text, True, False),
+            (True, "The prepared story contains", True, False),
             (True, text, False, True),
         ):
             with self.subTest(ready=ready, observed=observed_text):
@@ -80,9 +82,7 @@ class ControllerUnheardReplacementTest(unittest.TestCase):
                     return_value=raw,
                 ):
                     actual = controller._recognize_live_frame(frame)
-                qualified = (
-                    observed_text == text and not owned_prefix and not changed_speaker
-                )
+                qualified = observed_text == text and not changed_speaker
                 if qualified:
                     self.assertEqual(
                         actual,

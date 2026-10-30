@@ -316,13 +316,6 @@ chapter remains a final gate, not a per-fix test.
 
 Next code changes proposed for agreement (do not implement before approval):
 
-- [ ] **OCR-29-01 correction:** in `_resolve_story_ocr_result`, preserve the fast
-      owned-prefix path only for a nonempty, strictly shorter normalized prefix.
-      Equal full text must use the existing bounded complete matcher and its
-      ambiguity/completeness protections before the aggregate confidence gate.
-      Cover the real Duvalle full text with speaker0%/dialogue96%, genuine partial
-      text, duplicate speakers, low dialogue confidence and symbols. Keep existing
-      matching policy and early generated playback; do not add name guessing.
 - [ ] **RUN-29-02 rejection evidence:** split generic `ocr-not-current` into the
       actual refused barriers (purpose/owner/run/epoch/focus/visibility/control,
       failed frame comparison, or capture replaced during validation). Retain
@@ -412,23 +405,13 @@ Next code changes proposed for agreement (do not implement before approval):
       the game without speech. Gate: prepared mono playback starts and completes
       under the real generation/recording load, with truthful failure recovery.
 
-- [ ] **OCR-29-01 - Visible Duvalle nameplate blocks admission with zero confidence.**
-      In follow-up session09406def638a43caaf28b2de23f07bf1, run9fae902c7ad14a32a5f0123f285f4fda,
-      42 completed and advanced normally at407658, but visible43 (`Thank you ever
-      so much, madam.`, Duvalle) stayed unadmitted for over90s. Dialogue OCR is
-      correct at95-96%; speaker confidence is0%, raw character becomes Narrator,
-      and match_result is owned-prefix. It eventually admitted43 by itself at
-      407760.202, about102s after the game transition; no manual key caused that
-      recovery. Retained native frame shows an unobscured
-      Duvalle nameplate and text. The cause is reproduced offline: the early
-      `_resolve_story_ocr_result` startswith branch also catches full equality,
-      returns raw speaker0% unchanged, and blocks the ordinary full matcher.
-      The same full observation through existing complete matching resolves
-      Duvalle at96%;206 owned-prefix observations were rejected as uncertain.
-      Apply the strict-prefix correction above, without lowering confidence or
-      inventing a narrator/speaker from a timeout. Gate:43 admits once with correct speaker
-      without this long wait, preserving uncertainty guards elsewhere.
-      Evidence: native-trial-20261029-followup/line42-wait/frame-001.png.
+- [ ] **OCR-29-01 native acceptance:** in the combined chapter rerun, verify
+      visible43 (`Thank you ever so much, madam.`, Duvalle) admits once with
+      prepared audio and no prolonged wait when the dialogue is complete but
+      the OCR name remains unreadable. Include a genuine typewriter prefix and
+      ambiguous same-text speakers; neither may gain full-line authority.
+      Preserve native crop, speaker/dialogue confidence and actual playback
+      evidence. Keep this gate until the real-game check, not just unit tests.
 
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    The user approved one combined game campaign covering all accumulated fixes

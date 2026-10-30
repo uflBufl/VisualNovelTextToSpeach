@@ -149,6 +149,7 @@ class ReadingOCREvidenceTest(unittest.TestCase):
     def test_native_capture_retains_actual_raw_ocr_and_canonical_line_identity(self):
         line = story_line()
         controller = self.controller((line,))
+        controller._expected_sequence_prefix_line_locked = Mock(return_value=line)
         controller.correction_dictionary = OCRCorrectionDictionary({"Helo": "Hello"})
         self.raw = replace(
             self.raw, confidence=26, speaker_confidence=26, dialogue_confidence=95

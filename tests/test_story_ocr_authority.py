@@ -149,6 +149,69 @@ class StoryOCRAuthorityTest(unittest.TestCase):
 
                 self.assert_generated_route(controller, line, actual)
 
+    def test_full_owned_successor_recovers_unreadable_speaker(self):
+        line = story_line("Thank you ever so much, madam.", "Duvalle")
+        for text in (line.text, line.text.upper()):
+            with self.subTest(text=text):
+                controller = self.controller((line,))
+                controller._expected_sequence_prefix_line_locked = Mock(
+                    return_value=line
+                )
+                raw = replace(
+                    observed(text, "Narrator", dialogue_confidence=96),
+                    confidence=0,
+                    speaker_confidence=0,
+                    speaker_note="Visible name could not be read",
+                )
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    actual = controller._recognize_live_frame(
+                        CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                    )
+                self.assertEqual(
+                    actual,
+                    RecognizedDialog(
+                        line.speaker,
+                        line.text,
+                        line.line_id,
+                        exact_match=True,
+                        allow_unheard_replacement=False,
+                    ),
+                )
+                self.assert_generated_route(controller, line, actual)
+
+    def test_full_owned_successor_preserves_complete_match_guards(self):
+        line = story_line("Thank you ever so much, madam.", "Duvalle")
+        raw = observed(line.text, "Narrator")
+        for rows, result in (
+            ((line, story_line(line.text, "Other", "line-2")), raw),
+            ((line, story_line(line.text + " More words.", "Other", "line-2")), raw),
+            ((line,), replace(raw, dialogue_confidence=35)),
+        ):
+            with self.subTest(rows=rows, confidence=result.dialogue_confidence):
+                controller = self.controller(rows)
+                controller._expected_sequence_prefix_line_locked = Mock(
+                    return_value=line
+                )
+                self.assertIs(controller._resolve_story_ocr_result(result), result)
+
+    def test_owned_symbol_successor_uses_complete_source_match(self):
+        line = story_line("...", "Duvalle")
+        controller = self.controller((line,))
+        controller._expected_sequence_prefix_line_locked = Mock(return_value=line)
+        raw = replace(
+            observed(line.text, "Narrator", dialogue_confidence=96),
+            confidence=0,
+            speaker_confidence=0,
+        )
+        resolution = {}
+        resolved = controller._resolve_story_ocr_result(raw, resolution=resolution)
+        self.assertEqual((resolved.character, resolved.text), (line.speaker, line.text))
+        self.assertEqual(resolved.confidence, 96)
+        self.assertEqual(resolution["match_result"], "expected-text-only")
+
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_retained_frames_reach_the_canonical_generated_recording(self):
         fixtures = Path(__file__).resolve().parent / "fixtures" / "ocr-prepared-lines"
