@@ -336,6 +336,31 @@ fn emit(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
+fn emit_query(
+    operation: &str,
+    trace: bool,
+    query: impl FnOnce(&mut dyn FnMut(&'static str) -> Result<(), String>) -> Result<Value, String>,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let mut phase = |phase| {
+        if trace {
+            emit(
+                json!({"event":"query_phase", "operation":operation, "phase":phase,
+                "native_elapsed_ms":started.elapsed().as_secs_f64() * 1000.0}),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    };
+    phase("dispatch").map_err(io::Error::other)?;
+    let result = query(&mut phase);
+    phase("return").map_err(io::Error::other)?;
+    emit(match result {
+        Ok(event) => event,
+        Err(error) => json!({"event":"error", "fatal":false, "error":error}),
+    })
+}
+
 fn unstarted_status(clip: &Clip, finished: bool, error: Option<String>) -> Value {
     let mut status = json!({"event":"status", "id":clip.id, "position_frames":clip.position,
         "audible_position_frames":clip.position, "frames_played":clip.position,
@@ -417,7 +442,8 @@ fn admit_pending(
 
 fn run(pa: &PortAudio) -> io::Result<()> {
     emit(
-        json!({"event":"ready", "protocol":2, "pid":std::process::id(), "max_pcm_bytes":MAX_PCM_BYTES}),
+        json!({"event":"ready", "protocol":2, "pid":std::process::id(), "max_pcm_bytes":MAX_PCM_BYTES,
+            "query_trace":true}),
     )?;
     let input = input_channel();
     let mut loaded: Option<Clip> = None;
@@ -661,17 +687,18 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     reject(id, "status id is stale or unknown")?;
                 }
             }
-            Input::Control(Command::QueryDevice) => match pa.device_event() {
-                Ok(event) => emit(event)?,
-                Err(error) => emit(json!({"event":"error", "fatal":false, "error":error}))?,
-            },
+            Input::Control(Command::QueryDevice { trace }) => {
+                emit_query("query_device", trace, |phase| pa.device_event(phase))?;
+            }
             Input::Control(Command::CheckFormat {
                 sample_rate,
                 channels,
-            }) => match pa.check_format(sample_rate, channels) {
-                Ok(event) => emit(event)?,
-                Err(error) => emit(json!({"event":"error", "fatal":false, "error":error}))?,
-            },
+                trace,
+            }) => {
+                emit_query("check_format", trace, |phase| {
+                    pa.check_format(sample_rate, channels, phase)
+                })?;
+            }
             Input::End | Input::Fatal(_) | Input::Control(Command::Shutdown) => {
                 let error = if let Input::Fatal(error) = message {
                     Some(error)
@@ -720,6 +747,25 @@ mod tests {
 
     fn load_header(frames: u64) -> Vec<u8> {
         format!("{{\"op\":\"load\",\"id\":1,\"sample_rate\":24000,\"channels\":1,\"frames\":{frames},\"latency\":\"low\"}}\n").into_bytes()
+    }
+
+    #[test]
+    fn query_tracing_is_opt_in_without_changing_legacy_commands() {
+        for trace in [false, true] {
+            let suffix = if trace { ",\"trace\":true" } else { "" };
+            let device = format!("{{\"op\":\"query_device\"{suffix}}}\n");
+            assert!(matches!(
+                read_input(&mut Cursor::new(device), &mut None).unwrap(),
+                Some(Input::Control(Command::QueryDevice { trace: actual })) if actual == trace
+            ));
+            let format = format!(
+                "{{\"op\":\"check_format\",\"sample_rate\":24000,\"channels\":2{suffix}}}\n"
+            );
+            assert!(matches!(
+                read_input(&mut Cursor::new(format), &mut None).unwrap(),
+                Some(Input::Control(Command::CheckFormat { trace: actual, .. })) if actual == trace
+            ));
+        }
     }
 
     #[test]

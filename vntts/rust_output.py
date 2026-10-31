@@ -5,16 +5,108 @@ from __future__ import annotations
 import atexit
 import queue
 from collections.abc import Callable
+from math import isfinite
 from threading import Event, Lock, RLock, Thread
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 from weakref import WeakSet
 
 import numpy as np
 
 from vntts.audio_lifecycle import record_audio_lifecycle
 from vntts.audio_output import playback_pause_context
+from vntts.cleanup import attempt_cleanup
 from vntts.rust_audio import RustAudioWorker
+
+_QUERY_PHASES = frozenset(
+    {
+        "dispatch",
+        "default_output_enter",
+        "default_output_return",
+        "device_info_enter",
+        "device_info_return",
+        "host_api_info_enter",
+        "host_api_info_return",
+        "default_output_parameters_enter",
+        "default_output_parameters_return",
+        "format_supported_enter",
+        "format_supported_return",
+        "return",
+    }
+)
+
+
+def _validate_query_response(result: dict[str, Any], event: str) -> None:
+    if result.get("event") != event:
+        raise RuntimeError(str(result.get("error", "Invalid Rust device response")))
+    if event == "format":
+        if (
+            not isinstance(result.get("supported"), bool)
+            or type(result.get("code")) is not int
+            or result["supported"] != (result["code"] == 0)
+            or not isinstance(result.get("error"), (str, type(None)))
+        ):
+            raise RuntimeError("Invalid Rust format response")
+    elif event == "device":
+        rate = result.get("default_samplerate")
+        if (
+            not isinstance(rate, (int, float))
+            or isinstance(rate, bool)
+            or (isinstance(rate, int) and rate.bit_length() > 64)
+            or not isfinite(rate)
+            or rate <= 0
+            or type(result.get("max_output_channels")) is not int
+            or result["max_output_channels"] <= 0
+            or type(result.get("hostapi")) is not int
+            or result["hostapi"] < 0
+            or not isinstance(result.get("name"), (str, type(None)))
+            or not isinstance(result.get("host_api"), (str, type(None)))
+        ):
+            raise RuntimeError("Invalid Rust device response")
+
+
+def _query_response(
+    worker: RustAudioWorker,
+    message: dict[str, Any],
+    event: str,
+    record: Callable[..., None],
+) -> dict[str, Any]:
+    deadline = monotonic() + 3
+    phases = 0
+    try:
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            result = worker.receive(remaining)
+            if result.get("event") != "query_phase":
+                break
+            phases += 1
+            elapsed = result.get("native_elapsed_ms")
+            if (
+                phases > 16
+                or result.get("operation") != message["op"]
+                or not isinstance(result.get("phase"), str)
+                or result["phase"] not in _QUERY_PHASES
+                or isinstance(elapsed, bool)
+                or not isinstance(elapsed, (int, float))
+                or (isinstance(elapsed, int) and elapsed.bit_length() > 64)
+                or not isfinite(elapsed)
+                or elapsed < 0
+            ):
+                raise RuntimeError("Invalid Rust query phase response")
+            record(result["phase"], native_elapsed_ms=elapsed)
+    except queue.Empty:
+        operation = message["op"]
+        details = (
+            f" ({message['sample_rate']} Hz, {message['channels']} channels)"
+            if operation == "check_format"
+            else ""
+        )
+        raise RuntimeError(f"Rust audio {operation} timed out{details}") from None
+    _validate_query_response(result, event)
+    return result
 
 
 class RustAudioFormatError(RuntimeError):
@@ -42,29 +134,56 @@ class RustAudioModule:
                 self.query_worker.closed.is_set()
                 or self.query_worker.device_changed.is_set()
             ):
-                self.query_worker.close()
+                worker = self.query_worker
                 self.query_worker = None
+                worker.close()
             if self.query_worker is None:
                 self.query_worker = RustAudioWorker()
-            self.query_worker.send(message)
+            worker = self.query_worker
+            started = monotonic()
+            trace = worker.ready.get("query_trace") is True
+            details: dict[str, object] = {
+                "query_id": uuid4().hex,
+                "query_operation": message["op"],
+                "worker_pid": worker.process.pid,
+                "worker_id": worker.diagnostic_worker_id,
+                "worker_startup_ms": worker.startup_ms,
+                "query_trace": trace,
+                **{
+                    key: message[key]
+                    for key in ("sample_rate", "channels")
+                    if key in message
+                },
+            }
+
+            def record(phase: str, **extra: object) -> None:
+                record_audio_lifecycle(
+                    "rust-query",
+                    **details,
+                    phase=phase,
+                    elapsed_ms=(monotonic() - started) * 1000,
+                    **extra,
+                )
+
             try:
-                result = self.query_worker.receive(3)
-            except queue.Empty:
-                self.query_worker.close()
-                operation = message["op"]
-                details = (
-                    f" ({message['sample_rate']} Hz, {message['channels']} channels)"
-                    if operation == "check_format"
-                    else ""
+                record("send-started")
+                command = dict(message)
+                if trace:
+                    command["trace"] = True
+                worker.send(command)
+                record("send-complete")
+                result = _query_response(worker, message, event, record)
+                record("reply", outcome="received")
+                return result
+            except BaseException as error:
+                self.query_worker = None
+                record("failed", error_type=type(error).__name__)
+                attempt_cleanup(
+                    worker.close,
+                    description="Rust query worker cleanup",
+                    primary_error=error,
                 )
-                raise RuntimeError(
-                    f"Rust audio {operation} timed out{details}"
-                ) from None
-            if result.get("event") != event:
-                raise RuntimeError(
-                    str(result.get("error", "Invalid Rust device response"))
-                )
-            return result
+                raise
 
     def query_devices(self, *, kind: str) -> dict[str, Any]:
         if kind != "output":

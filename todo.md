@@ -316,15 +316,6 @@ chapter remains a final gate, not a per-fix test.
 
 Next code changes proposed for agreement (do not implement before approval):
 
-- [ ] **AUDIO-29-01 recovery and evidence:** retire and clear the query worker
-      after send/receive/protocol failures, preserving the primary exception.
-      A valid unsupported-format reply remains ordinary format negotiation.
-      Retain bounded query operation/format/worker identity and send/native-entry/
-      native-call/reply boundaries before cleanup; extend support allowlists so
-      these fields survive. Real-pipe tests cover child exit, malformed response,
-      timeout then recovery and healthy unsupported-format responses. This fixes
-      a proven adjacent recovery defect; the historical format-check stall still
-      needs its native boundary before a root-cause correction is selected.
 - [ ] **REC-29-01/02 failure evidence:** retain both sides of the first sample/
       host-clock violation, timestamp validity/rate flags, callback receipt and
       file offset before raising. Add start/end context to phase maxima and the
@@ -390,9 +381,10 @@ Next code changes proposed for agreement (do not implement before approval):
       at407105.493 but reported `Rust audio check_format timed out (44100 Hz,
       1 channels)`. No PCM completion, speech tap or game key followed. Game-audio
       and window recording remained active while fresh MOSS generation continued.
-      Preserve worker startup/protocol/device evidence, check ordinary recovery
-      and distinguish a real worker/device stall from a stale local executable
-      before choosing a fix. Do not mask it by extending timeouts or advancing
+      Rebuild the native worker with query tracing before the combined run.
+      Correlate query/worker IDs and parent/native phase times to identify the
+      last completed boundary before choosing a fix. Check ordinary recovery
+      under load. Do not mask it by extending timeouts or advancing
       the game without speech. Gate: prepared mono playback starts and completes
       under the real generation/recording load, with truthful failure recovery.
 

@@ -32,7 +32,7 @@ def payload(size):
             raise EOFError("incomplete payload")
         data.extend(part)
     return data
-emit(event="ready", protocol=2)
+emit(event="ready", protocol=2, **({"query_trace":True} if mode != "query-legacy" else {}))
 clip = None
 count = 0
 digest = hashlib.sha256()
@@ -41,6 +41,35 @@ for line in sys.stdin.buffer:
     op = command["op"]
     clip_id = command.get("id")
     trace(command)
+    if op in ("query_device", "check_format"):
+        if mode == "query-legacy" and "trace" in command:
+            emit(event="error", error="unknown field trace")
+            continue
+        if mode == "query-exit":
+            sys.exit(0)
+        if mode == "query-malformed":
+            print("{broken-json", flush=True)
+            continue
+        if mode == "query-unexpected":
+            emit(event="unexpected")
+            continue
+        if mode == "query-device-incomplete":
+            emit(event="device")
+            continue
+        if mode == "query-format-incomplete":
+            emit(event="format", supported=False)
+            continue
+        if mode == "query-stall":
+            time.sleep(30)
+            continue
+        if mode.startswith("query-phase"):
+            phases = 17 if mode == "query-phase-overflow" else 1
+            for _ in range(phases):
+                emit(event="query_phase", operation=op,
+                     phase="dispatch" if mode != "query-phase-invalid" else "PRIVATE text",
+                     native_elapsed_ms=.125)
+            if mode == "query-phase-exit":
+                sys.exit(0)
     if op == "query_device":
         emit(event="device", name="Fake output", default_samplerate=48000,
              max_output_channels=2, hostapi=0, host_api="Fake API")
@@ -117,6 +146,7 @@ class RustOutputProtocolTest(unittest.TestCase):
         expected = hashlib.sha256(
             b"" if pcm is None else np.asarray(pcm, dtype="<f4").tobytes()
         ).hexdigest()
+        modes = iter(mode) if isinstance(mode, list) else None
 
         def create():
             worker = RustAudioWorker(
@@ -125,7 +155,7 @@ class RustOutputProtocolTest(unittest.TestCase):
                     "-u",
                     "-c",
                     PEER,
-                    mode,
+                    next(modes) if modes is not None else mode,
                     expected,
                     str(self.trace),
                     str(self.drain),
@@ -363,11 +393,154 @@ class RustOutputProtocolTest(unittest.TestCase):
         with self.assertRaises(RustAudioFormatError) as caught:
             module.check_output_settings(samplerate=24000, channels=2, dtype="float32")
         self.assertEqual(caught.exception.args[-1], -9997)
+        module.check_output_settings(samplerate=48000, channels=2, dtype="float32")
         self.assertEqual(len(self.workers), 1)
+        self.assertFalse(self.workers[0].closed.is_set())
         self.assertEqual(
             [c["op"] for c in self.commands()],
-            ["query_device", "query_device", "check_format", "check_format"],
+            [
+                "query_device",
+                "query_device",
+                "check_format",
+                "check_format",
+                "check_format",
+            ],
         )
+
+    def test_failed_query_retires_real_pipe_peer_and_next_request_recovers(self):
+        for mode, error in (
+            ("query-exit", "exited before completion"),
+            ("query-malformed", "Expecting property name"),
+            ("query-unexpected", "Invalid Rust device response"),
+            ("query-device-incomplete", "Invalid Rust device response"),
+            ("query-format-incomplete", "Invalid Rust format response"),
+            ("query-stall", "check_format timed out"),
+            ("query-phase-invalid", "Invalid Rust query phase response"),
+            ("query-phase-overflow", "Invalid Rust query phase response"),
+        ):
+            with self.subTest(mode=mode):
+                start = len(self.workers)
+                module = self.module(mode=[mode, "stream"])
+                with self.assertRaisesRegex(RuntimeError, error):
+                    if mode == "query-device-incomplete":
+                        module.query_devices(kind="output")
+                    else:
+                        module.check_output_settings(
+                            samplerate=48000, channels=2, dtype="float32"
+                        )
+                failed = self.workers[start]
+                self.assertIsNone(module.query_worker)
+                self.assertTrue(failed.closed.is_set())
+                self.assertIsNotNone(failed.process.poll())
+                module.check_output_settings(
+                    samplerate=48000, channels=2, dtype="float32"
+                )
+                self.assertIs(module.query_worker, self.workers[start + 1])
+                self.assertEqual(len(self.workers), start + 2)
+
+    def test_send_failure_clears_owner_and_preserves_error_if_cleanup_fails(self):
+        module = self.module()
+        module.query_devices(kind="output")
+        failed = self.workers[0]
+        error = BrokenPipeError("query pipe broke")
+        close = failed.close
+
+        def broken_close():
+            close()
+            raise OSError("cleanup failed")
+
+        with (
+            patch.object(failed, "send", side_effect=error),
+            patch.object(failed, "close", side_effect=broken_close),
+            self.assertLogs("vntts.cleanup", "ERROR"),
+            self.assertRaises(BrokenPipeError) as caught,
+        ):
+            module.query_devices(kind="output")
+        self.assertIs(caught.exception, error)
+        self.assertIn("cleanup failed", error.__notes__[0])
+        self.assertIsNone(module.query_worker)
+        self.assertIsNotNone(failed.process.poll())
+        module.query_devices(kind="output")
+        self.assertEqual(len(self.workers), 2)
+
+    def test_native_query_phases_keep_real_worker_identity_and_request_context(self):
+        module = self.module(mode="query-phases")
+        with patch("vntts.rust_output.record_audio_lifecycle") as record:
+            module.check_output_settings(samplerate=48000, channels=2, dtype="float32")
+            module.check_output_settings(samplerate=48000, channels=2, dtype="float32")
+        events = [call.kwargs for call in record.call_args_list]
+        self.assertEqual(
+            [event["phase"] for event in events],
+            ["send-started", "send-complete", "dispatch", "reply"] * 2,
+        )
+        self.assertEqual(events[2]["native_elapsed_ms"], 0.125)
+        worker = self.workers[0]
+        for event in events:
+            self.assertEqual(event["query_operation"], "check_format")
+            self.assertEqual(event["worker_id"], worker.diagnostic_worker_id)
+            self.assertEqual(event["worker_pid"], worker.process.pid)
+            self.assertTrue(event["query_trace"])
+            self.assertEqual((event["sample_rate"], event["channels"]), (48000, 2))
+            self.assertGreaterEqual(event["elapsed_ms"], 0)
+        self.assertEqual(len({event["query_id"] for event in events[:4]}), 1)
+        self.assertNotEqual(events[0]["query_id"], events[4]["query_id"])
+
+    def test_legacy_worker_without_trace_capability_keeps_original_commands(self):
+        module = self.module(mode="query-legacy")
+        module.query_devices(kind="output")
+        module.check_output_settings(samplerate=48000, channels=2, dtype="float32")
+        self.assertEqual(
+            self.commands(),
+            [
+                {"op": "query_device"},
+                {"op": "check_format", "sample_rate": 48000, "channels": 2},
+            ],
+        )
+        self.assertEqual(len(self.workers), 1)
+
+    def test_native_phase_and_failure_evidence_survive_worker_cleanup(self):
+        module = self.module(mode="query-phase-exit")
+        with (
+            patch("vntts.rust_output.record_audio_lifecycle") as record,
+            self.assertRaisesRegex(RuntimeError, "exited before completion"),
+        ):
+            module.query_devices(kind="output")
+        events = [call.kwargs for call in record.call_args_list]
+        self.assertEqual(
+            [event["phase"] for event in events],
+            ["send-started", "send-complete", "dispatch", "failed"],
+        )
+        self.assertEqual(events[2]["native_elapsed_ms"], 0.125)
+        self.assertEqual(events[-1]["error_type"], "RuntimeError")
+        self.assertEqual(len({event["query_id"] for event in events}), 1)
+        self.assertTrue(self.workers[0].closed.is_set())
+        self.assertIsNone(module.query_worker)
+
+    def test_query_phases_share_one_timeout_budget(self):
+        module = self.module()
+        module.query_devices(kind="output")
+        worker = self.workers[0]
+        with (
+            patch.object(worker, "send"),
+            patch.object(
+                worker,
+                "receive",
+                side_effect=[
+                    {
+                        "event": "query_phase",
+                        "operation": "query_device",
+                        "phase": "dispatch",
+                        "native_elapsed_ms": 0,
+                    },
+                    queue.Empty(),
+                ],
+            ) as receive,
+            patch("vntts.rust_output.monotonic", side_effect=[0, 0, 0, 0, 1, 1, 2, 3]),
+            self.assertRaisesRegex(RuntimeError, "query_device timed out"),
+        ):
+            module.query_devices(kind="output")
+        self.assertEqual([call.args[0] for call in receive.call_args_list], [2, 1])
+        self.assertIsNone(module.query_worker)
 
     def test_query_timeouts_identify_operation_and_close_worker(self):
         for method, options, command, message in (
@@ -388,14 +561,18 @@ class RustOutputProtocolTest(unittest.TestCase):
                 module = RustAudioModule()
                 self.addCleanup(module._terminate)
                 worker = Mock()
+                worker.ready = {"query_trace": True}
                 worker.receive.side_effect = queue.Empty
                 with patch("vntts.rust_output.RustAudioWorker", return_value=worker):
                     with self.assertRaises(RuntimeError) as caught:
                         getattr(module, method)(**options)
                 self.assertEqual(str(caught.exception), message)
-                worker.send.assert_called_once_with(command)
-                worker.receive.assert_called_once_with(3)
+                worker.send.assert_called_once_with({**command, "trace": True})
+                timeout = worker.receive.call_args.args[0]
+                self.assertGreater(timeout, 2.9)
+                self.assertLessEqual(timeout, 3)
                 worker.close.assert_called_once_with()
+                self.assertIsNone(module.query_worker)
 
     def test_truncated_native_completion_does_not_claim_stream_drain(self):
         pcm = np.ones((10, 2), dtype=np.float32)

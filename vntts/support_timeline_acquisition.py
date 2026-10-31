@@ -51,6 +51,8 @@ _IDENTITY_FIELDS = {
     "match_result",
     "phase",
     "worker_id",
+    "query_id",
+    "query_operation",
     "route_kind",
 }
 # Reasons are application symbols, never user, OCR or exception text.
@@ -150,7 +152,7 @@ CONTINUATION_GATE_REASONS = PREROUTE_DIAGNOSTIC_REASONS | frozenset(
 _NUMERIC_FIELDS = (
     frozenset(
         """
-ocr_text_characters active_generation dialog_ready_generation pending_auto_advance_generation
+native_elapsed_ms query_trace ocr_text_characters active_generation dialog_ready_generation pending_auto_advance_generation
 failed_auto_advance_generation blocked_generation suppressed_generation auto_advance_enabled
 already_dispatched timer_pending timer_serial current_timer_serial processed_frame_version
 frame_equivalence_ms routed_frame_equivalent frame_route_epoch routed_latest_equal routed_frame_present latest_frame_present

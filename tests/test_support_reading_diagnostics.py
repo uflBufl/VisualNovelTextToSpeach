@@ -14,6 +14,44 @@ from vntts.support import AudioLifecycleLog, RuntimeSupportLog, SupportBundleBui
 
 
 class SupportReadingDiagnosticsTest(unittest.TestCase):
+    def test_query_boundaries_survive_audio_log_export_and_bounded_journal(self):
+        from vntts.support_timeline_acquisition import TimelineAcquisition
+
+        details = {
+            "query_id": uuid4().hex,
+            "query_operation": "check_format",
+            "query_trace": True,
+            "phase": "format_supported_enter",
+            "worker_id": uuid4().hex,
+            "worker_pid": 4321,
+            "worker_startup_ms": 25.5,
+            "sample_rate": 44100,
+            "channels": 1,
+            "elapsed_ms": 12.125,
+            "native_elapsed_ms": 10.125,
+            "error_type": "RuntimeError",
+        }
+        log = AudioLifecycleLog()
+        log.record("rust-query", **details, stderr="PRIVATE", worker_path="PRIVATE")
+        event = support.sanitize_event(log.snapshot()[0])
+        for key, value in details.items():
+            self.assertEqual(event[key], value)
+        self.assertNotIn("PRIVATE", json.dumps(event))
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "audio.jsonl"
+            journal = TimelineAcquisition(path)
+            journal.record(event)
+            journal.stop()
+            raw = path.read_text()
+        retained = next(
+            record
+            for line in raw.splitlines()
+            if (record := json.loads(line))["kind"] == "event"
+        )
+        for key, value in details.items():
+            self.assertEqual(retained[key], value)
+        self.assertNotIn("PRIVATE", raw)
+
     def test_native_capture_identity_and_clock_mapping_survive_journal(self):
         from vntts.support_timeline_acquisition import TimelineAcquisition
 

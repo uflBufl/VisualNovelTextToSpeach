@@ -44,10 +44,15 @@ pub(super) enum Command {
     Resume {
         id: u64,
     },
-    QueryDevice,
+    QueryDevice {
+        #[serde(default)]
+        trace: bool,
+    },
     CheckFormat {
         sample_rate: u32,
         channels: u8,
+        #[serde(default)]
+        trace: bool,
     },
     Status {
         id: u64,
