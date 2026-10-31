@@ -354,6 +354,31 @@ Remaining defects, missing measurements and native acceptance:
       Verify Close after completed/partial preparation while a clip is playing
       and while waiting for advance; no repeated speech or lost continuation.
       Evidence: native-trial-20261031 session126b84e3a90a443387cf225043918c17.
+      Concrete change plan, pending agreement:
+      - Retain the explicitly chosen progressive Reading source in application
+        session state after a successful runtime handoff. Source selection and
+        control readiness must not depend on the preparation panel's lifetime;
+        Stop/Start keeps this choice, and another job cannot replace it without
+        an explicit handoff. Do not persist temporary progress paths.
+      - Remove saved-runtime restoration from ordinary rejected/Close completion.
+        Dispose the panel normally while leaving speech, pause, cursor and the
+        current runtime untouched. Explicit pack activation/profile/source
+        changes still use the existing validated replacement lifecycle.
+      - Replace backend callbacks bound to the panel with application-owned
+        forwarding guarded by the active job/source identity. Reopening the same
+        job may reconnect progress; a different job or deleted panel must never
+        receive old reading events. Release stale bindings on source replacement.
+      - Preserve cancellation of generation and its completed files independently
+        of Reading. For a stopped partial job, report the real stopped/waiting
+        state for missing audio; do not imply generation is running, silently
+        activate another pack, skip speech or introduce an unapproved fallback.
+      - Gate with focused regressions: Close during speech/Pause/advance wait;
+        actual Qt deletion followed by another callback; Stop/Start; same-job
+        reopen and different-job nonactivation; explicit activation and source
+        replacement; partial cancellation/error and unchanged saved preferences.
+        Run the changed-test selector first after code changes, plus affected
+        preparation/setup/runtime tests it misses. Defer game acceptance to the
+        final combined run; no new metrics are needed for this known cause.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
