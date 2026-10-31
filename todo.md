@@ -314,8 +314,22 @@ sample-clock failure still lack the boundary context needed for a causal repair.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Remaining measurements and native acceptance (combined run before selecting
-further causal fixes):
+Post-campaign triage (implementation still requires agreement):
+
+- Fix the understood lifecycle/log isolation defects UX-31-01 and SUPPORT-31-01
+  separately; neither needs another chapter run to choose a correction.
+- Diagnose RUN-29-02 offline from the retained lossless pairs before adding
+  runtime telemetry or requesting more game footage.
+- For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
+  below, then use focused game/load episodes. Existing queue, OCR and native
+  query telemetry must be reused rather than duplicated.
+- REC-29-02 and AUDIO-29-01 did not recur in the latest campaign. Inspect existing
+  clock/query evidence first; a passing run does not close either historical
+  failure. Keep broader unexercised acceptance below distinct from confirmed bugs.
+- Repeat the autonomous chapter only after the resulting repairs; a recovered
+  reading or a partial sound capture cannot satisfy that final gate.
+
+Remaining defects, missing measurements and native acceptance:
 
 - [ ] **SUPPORT-31-01 - Tests pollute the application's persistent error log.**
       Opening Support in the fresh native campaign shows critical startup and
@@ -354,6 +368,13 @@ further causal fixes):
       Earlier37 also timed out after its dispatched key451686.034, before Close
       stopped Reading at451700.582; distinguish the missing transition from the
       separate preparation lifecycle defect.
+      Missing dispatch evidence: correlate run/generation and one dispatch ID
+      with key-down/key-up call boundaries and their actual interval, native
+      errors, and selected/foreground process immediately before and after
+      posting. Join these to the existing transition/timeout events and video.
+      OS posting success is not game receipt; compare one automatic and one
+      operator-triggered dispatch using the same sender in a short episode.
+      Do not add retries or change key-hold duration before this comparison.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
@@ -400,6 +421,13 @@ further causal fixes):
       wall time; oldest queued callbacks waited about3.14s. Source clock checks
       did not fail. Retain these aligned intervals and correlate video/runtime
       scheduling and output I/O before selecting a writer/scheduling correction.
+      Queue/lag/phase telemetry is already sufficient to locate the stall.
+      Missing discrimination: retain consumer thread identity and thread-CPU
+      delta alongside slow/max CAF wall spans, then capture a bounded external
+      stack/thread-state sample while a write is still stalled. CPU delta alone
+      cannot distinguish scheduler delay from blocking I/O. Keep sampling outside
+      the real-time callback, record its availability/overhead and limit captures;
+      do not build a second profiler or add per-callback logs.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
@@ -415,26 +443,30 @@ further causal fixes):
       valid clock restart before proposing a continuity policy. Preserve the
       partial recording and truthful failed qualification; do not conceal a gap
       by removing the check without evidence. New native acceptance is required.
+      Existing previous/current clock snapshots already cover the audio boundary.
+      If recurrence is needed, add correlated output/device/process lifecycle
+      events around it, rather than another duplicate timestamp stream. This
+      failure did not recur in native-trial-20261031.
 
 - [ ] **AUDIO-29-01 - Initial prepared playback fails native format check under load.**
       Follow-up session09406def638a43caaf28b2de23f07bf1 routed314001:6 correctly
       at407105.493 but reported `Rust audio check_format timed out (44100 Hz,
       1 channels)`. No PCM completion, speech tap or game key followed. Game-audio
       and window recording remained active while fresh MOSS generation continued.
-      Rebuild the native worker with query tracing before the combined run.
+      Query tracing was enabled in native-trial-20261031; the timeout did not
+      recur. Reuse these parent/native phase records and verify query_trace on
+      the actual worker before adding more instrumentation or rerunning.
       Correlate query/worker IDs and parent/native phase times to identify the
       last completed boundary before choosing a fix. Check ordinary recovery
       under load. Do not mask it by extending timeouts or advancing
       the game without speech. Gate: prepared mono playback starts and completes
       under the real generation/recording load, with truthful failure recovery.
 
-- [ ] **OCR-29-01 native acceptance:** in the combined chapter rerun, verify
-      visible43 (`Thank you ever so much, madam.`, Duvalle) admits once with
-      prepared audio and no prolonged wait when the dialogue is complete but
-      the OCR name remains unreadable. Include a genuine typewriter prefix and
-      ambiguous same-text speakers; neither may gain full-line authority.
-      Preserve native crop, speaker/dialogue confidence and actual playback
-      evidence. Keep this gate until the real-game check, not just unit tests.
+- [ ] **OCR-29-01 remaining native edges:** line43 passed in
+      native-trial-20261031; retain only genuine typewriter-prefix and ambiguous
+      same-text speaker checks. Neither may gain full-line authority from an
+      unreadable name. Preserve native crop, speaker/dialogue confidence and
+      actual playback evidence for these unexercised paths.
 
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
    The user approved one combined game campaign covering all accumulated fixes
@@ -526,6 +558,12 @@ further causal fixes):
      bypass ownership. Full visible frame: native-trial-20261031/stall100-before-route.png.
      Session921241e0f5f4449bac677f48f0170e2b retains lossless routed/latest pairs
      for100/101 in visual-waits; inspect these before requesting another replay.
+     Offline comparison should expose the rejected band (speaker/dialogue),
+     both source/union bounds, threshold, best shared translation and offending
+     pixel mask over the saved images. First reproduce the current boolean
+     rejection exactly; choose a segmentation/comparison repair from that result.
+     Add runtime rejection detail only if the exact saved comparison is
+     insufficient; capture IDs, versions and comparison durations already exist.
      Existing comparison unions both name
      regions; the saved narrator pair expands from25px to1470px of scenery.
      A lossy reconstructed full/full pair also rejects, but does not isolate
