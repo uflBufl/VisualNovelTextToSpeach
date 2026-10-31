@@ -314,14 +314,8 @@ sample-clock failure still lack the boundary context needed for a causal repair.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next code changes proposed for agreement (do not implement before approval):
-
-- [ ] **REC-29-01/02 failure evidence:** retain both sides of the first sample/
-      host-clock violation, timestamp validity/rate flags, callback receipt and
-      file offset before raising. Add start/end context to phase maxima and the
-      phase preceding max consumer lag. Keep the real-time callback bounded,
-      preserve failed/partial CAF, and verify native selfcheck plus collection.
-      No larger queue, QoS or permissive clock epochs without causal evidence.
+Remaining measurements and native acceptance (combined run before selecting
+further causal fixes):
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
@@ -371,7 +365,9 @@ Next code changes proposed for agreement (do not implement before approval):
       `Sample-time discontinuity`. Window video continued. New diagnostics show
       no overflow, queue high-water11 blocks/5632frames and max consumer lag0.123s.
       Correlate source host/sample timestamps with output activation, focus and
-      process lifecycle; distinguish an actual uncovered audio interval from a
+      process lifecycle using `clock_failure.previous/current`, receipt times
+      and file-frame offsets. Align phase-max and consumer-lag contexts to
+      distinguish an actual uncovered audio interval from a
       valid clock restart before proposing a continuity policy. Preserve the
       partial recording and truthful failed qualification; do not conceal a gap
       by removing the check without evidence. New native acceptance is required.

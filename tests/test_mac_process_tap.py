@@ -60,6 +60,8 @@ class ProcessTapRecorderTest(unittest.TestCase):
         self.assertIn("no capture or playback", result.stdout)
         self.assertIn("controlled Stop metadata", result.stdout)
         self.assertIn("bounded capture diagnostics", result.stdout)
+        self.assertIn("clock failure boundary", result.stdout)
+        self.assertIn("phase timing context", result.stdout)
         self.assertIn("zero/partial CAF finalization", result.stdout)
 
     def test_capture_requires_explicit_authorization_and_valid_target_arguments(self):

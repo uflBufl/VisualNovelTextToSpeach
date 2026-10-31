@@ -12,6 +12,7 @@
 #include <sys/mount.h>
 #import <dispatch/dispatch.h>
 #include <math.h>
+#include <float.h>
 #include <unistd.h>
 
 #define SLOT_COUNT 64u
@@ -22,7 +23,18 @@ typedef enum { PhaseIdle, PhaseConsume, PhaseCAFWrite, PhaseJSONSerialize, Phase
     PhaseIdentity, PhaseStop, PhaseCAFFinalize, PhaseWait, PhaseCount } ConsumerPhase;
 static NSString *const phaseNames[] = {@"idle", @"consume", @"caf_write", @"json_serialize", @"json_write",
     @"hal_identity", @"stop", @"caf_finalize", @"wait"};
-typedef struct { uint64_t count, total, maximum; } Timing;
+typedef struct { uint64_t count, total, maximum, maxStarted, maxEnded; } Timing;
+typedef struct { ConsumerPhase phase; uint64_t started, ended; bool present; } PhaseContext;
+typedef struct {
+    UInt32 frames;
+    uint64_t received, fileFrame;
+    AudioTimeStamp timestamp;
+} ClockBlock;
+typedef struct {
+    bool present, sampleFailure, hostFailure;
+    uint64_t observed;
+    ClockBlock previous, current;
+} ClockFailure;
 typedef struct {
     UInt32 frames;
     uint64_t received;
@@ -37,7 +49,11 @@ typedef struct {
     uint64_t overflowTicks, overflowBlocks, overflowFrames, overflowPhase, overflowPhaseStarted;
     bool overflowPhaseConsistent;
     Timing timings[PhaseCount], lag;
+    PhaseContext lastCompleted, lagPreceding, lagPhase;
     uint64_t lagReceived, lagStarted, lagBlocks, lagFrames;
+    ClockBlock previousClock;
+    bool previousClockPresent;
+    ClockFailure clockFailure;
     bool planar;
     Block blocks[SLOT_COUNT];
 } Queue;
@@ -64,12 +80,16 @@ static void phase_begin(Queue *q, ConsumerPhase phase, uint64_t tick) {
     atomic_store(&q->phase, phase);
     atomic_fetch_add(&q->phaseVersion, 1);
 }
-static void timing_add(Timing *timing, uint64_t elapsed) {
+static void timing_add(Timing *timing, uint64_t begin, uint64_t end) {
+    uint64_t elapsed = end - begin;
+    if (!timing->count || elapsed > timing->maximum) {
+        timing->maximum = elapsed; timing->maxStarted = begin; timing->maxEnded = end;
+    }
     ++timing->count; timing->total += elapsed;
-    if (elapsed > timing->maximum) timing->maximum = elapsed;
 }
 static void phase_end(Queue *q, ConsumerPhase phase, uint64_t begin, uint64_t end) {
-    timing_add(&q->timings[phase], end - begin);
+    timing_add(&q->timings[phase], begin, end);
+    q->lastCompleted = (PhaseContext){phase, begin, end, true};
     phase_begin(q, PhaseIdle, end);
 }
 static void observe_overflow(Queue *q, unsigned r, unsigned w, uint64_t tick) {
@@ -87,8 +107,11 @@ static void observe_lag(Queue *q, Block *b, unsigned r, unsigned w, uint64_t tic
     if (!q->lag.count || lag > q->lag.maximum) {
         q->lagReceived = b->received; q->lagStarted = tick;
         q->lagBlocks = w - r; q->lagFrames = queued_frames(q, r, w);
+        q->lagPreceding = q->lastCompleted;
+        uint64_t started = atomic_load(&q->phaseStarted);
+        q->lagPhase = (PhaseContext){atomic_load(&q->phase), started, tick, started > 0 && started <= tick};
     }
-    timing_add(&q->lag, lag);
+    timing_add(&q->lag, b->received, tick);
 }
 
 // The IO thread only validates shape and copies into bounded preallocated storage.
@@ -143,6 +166,24 @@ static void check(OSStatus status, NSString *operation) {
 }
 static void require(bool condition, NSString *reason) {
     if (!condition) @throw [NSException exceptionWithName:@"CaptureError" reason:reason userInfo:nil];
+}
+static ClockBlock clock_block(Block *b, uint64_t fileFrame) {
+    return (ClockBlock){b->frames, b->received, fileFrame, b->timestamp};
+}
+static double seconds(uint64_t ticks);
+static void require_clock_continuity(Queue *q, Block *b, uint64_t fileFrame, uint64_t observed) {
+    if (!q->previousClockPresent) return;
+    double expected = q->previousClock.timestamp.mSampleTime + q->previousClock.frames;
+    // Keep the existing half-frame tolerance and source-host comparison unchanged.
+    double previousHost = seconds(q->previousClock.timestamp.mHostTime);
+    bool sampleFailure = expected >= 0 && !(fabs(b->timestamp.mSampleTime - expected) < 0.5);
+    bool hostFailure = !(seconds(b->timestamp.mHostTime) > previousHost);
+    if ((sampleFailure || hostFailure) && !q->clockFailure.present) {
+        q->clockFailure = (ClockFailure){true, sampleFailure, hostFailure, observed,
+            q->previousClock, clock_block(b, fileFrame)};
+    }
+    require(!sampleFailure, @"Sample-time discontinuity");
+    require(!hostFailure, @"Host clock discontinuity");
 }
 static void require_queue_healthy(Queue *q, uint64_t tick) {
     int failure = atomic_load_explicit(&q->failure, memory_order_acquire);
@@ -225,9 +266,43 @@ static double seconds(uint64_t ticks) {
     mach_timebase_info(&base);
     return (double)ticks * base.numer / base.denom / 1e9;
 }
+static NSDictionary *time_context(uint64_t begin, uint64_t end) {
+    return @{@"started_ticks": @(begin), @"ended_ticks": @(end),
+        @"started_monotonic_s": @(seconds(begin)), @"ended_monotonic_s": @(seconds(end))};
+}
+static id phase_context(PhaseContext phase) {
+    if (!phase.present) return NSNull.null;
+    NSMutableDictionary *context = [time_context(phase.started, phase.ended) mutableCopy];
+    context[@"phase"] = phaseNames[phase.phase];
+    return context;
+}
 static NSDictionary *timing_summary(Timing timing) {
     return @{@"count": @(timing.count), @"total_wall_s": @(seconds(timing.total)),
-        @"max_wall_s": @(seconds(timing.maximum))};
+        @"max_wall_s": @(seconds(timing.maximum)),
+        @"max_context": timing.count ? time_context(timing.maxStarted, timing.maxEnded) : (id)NSNull.null};
+}
+static id finite_number(double value) { return isfinite(value) ? @(value) : (id)NSNull.null; }
+static NSDictionary *clock_block_summary(ClockBlock block) {
+    AudioTimeStamp stamp = block.timestamp;
+    return @{@"frame_count": @(block.frames), @"file_frame_start": @(block.fileFrame),
+        @"callback_received_ticks": @(block.received), @"callback_received_monotonic_s": @(seconds(block.received)),
+        @"host_ticks": @(stamp.mHostTime), @"monotonic_s": @(seconds(stamp.mHostTime)),
+        @"sample_time": finite_number(stamp.mSampleTime), @"timestamp_flags": @(stamp.mFlags),
+        @"host_time_valid": @((stamp.mFlags & kAudioTimeStampHostTimeValid) != 0),
+        @"sample_time_valid": @((stamp.mFlags & kAudioTimeStampSampleTimeValid) != 0),
+        @"rate_scalar_valid": @((stamp.mFlags & kAudioTimeStampRateScalarValid) != 0),
+        @"rate_scalar": finite_number(stamp.mRateScalar)};
+}
+static id clock_failure_summary(ClockFailure failure) {
+    if (!failure.present) return NSNull.null;
+    double expected = failure.previous.timestamp.mSampleTime + failure.previous.frames;
+    return @{@"reason": failure.sampleFailure ? @"sample_time_discontinuity" : @"host_clock_discontinuity",
+        @"sample_time_discontinuity": @(failure.sampleFailure), @"host_clock_discontinuity": @(failure.hostFailure),
+        @"observed_ticks": @(failure.observed), @"observed_monotonic_s": @(seconds(failure.observed)),
+        @"file_frame_start": @(failure.current.fileFrame), @"expected_sample_time": finite_number(expected),
+        @"sample_delta_frames": finite_number(failure.current.timestamp.mSampleTime - expected),
+        @"host_delta_s": @(seconds(failure.current.timestamp.mHostTime) - seconds(failure.previous.timestamp.mHostTime)),
+        @"previous": clock_block_summary(failure.previous), @"current": clock_block_summary(failure.current)};
 }
 static NSDictionary *diagnostics(Queue *q) {
     if (!q) return @{};
@@ -237,9 +312,14 @@ static NSDictionary *diagnostics(Queue *q) {
     for (ConsumerPhase p = PhaseCAFWrite; p <= PhaseCAFFinalize; ++p)
         phases[phaseNames[p]] = timing_summary(q->timings[p]);
     NSMutableDictionary *lag = [timing_summary(q->lag) mutableCopy];
-    lag[@"max_context"] = q->lag.count ? @{@"callback_received_ticks": @(q->lagReceived),
-        @"consumer_started_ticks": @(q->lagStarted), @"queued_blocks": @(q->lagBlocks),
-        @"queued_frames": @(q->lagFrames), @"queued_pcm_bytes": @(q->lagFrames * CHANNELS * sizeof(float))} : (id)NSNull.null;
+    if (q->lag.count) {
+        NSMutableDictionary *context = [lag[@"max_context"] mutableCopy];
+        [context addEntriesFromDictionary:@{@"callback_received_ticks": @(q->lagReceived),
+            @"consumer_started_ticks": @(q->lagStarted), @"queued_blocks": @(q->lagBlocks),
+            @"queued_frames": @(q->lagFrames), @"queued_pcm_bytes": @(q->lagFrames * CHANNELS * sizeof(float)),
+            @"preceding_phase": phase_context(q->lagPreceding), @"phase_at_observation": phase_context(q->lagPhase)}];
+        lag[@"max_context"] = context;
+    }
     id overflow = NSNull.null;
     if (atomic_load_explicit(&q->failure, memory_order_acquire) == 1) {
         overflow = @{@"observed_ticks": @(q->overflowTicks), @"observed_monotonic_s": @(seconds(q->overflowTicks)),
@@ -258,7 +338,8 @@ static NSDictionary *diagnostics(Queue *q) {
         @"consumer_lag_scope": @"count is wait observations, including oldest queued block when consumer observes failure",
         @"queue_high_water": @{@"blocks": @(atomic_load_explicit(&q->highBlocks, memory_order_relaxed)),
             @"frames": @(highFrames), @"pcm_bytes": @(highFrames * CHANNELS * sizeof(float))},
-        @"consumer_lag": lag, @"phases": phases, @"overflow": overflow};
+        @"consumer_lag": lag, @"phases": phases, @"overflow": overflow,
+        @"clock_failure": clock_failure_summary(q->clockFailure)};
 }
 
 static NSString *safety_failure(bool parentAlive, bool spaceAvailable, uint64_t freeBytes) {
@@ -273,6 +354,75 @@ static void record_stop(NSMutableDictionary *metadata, bool requested, double be
     metadata[@"capture_stopped_monotonic_s"] = @(end);
     metadata[@"captured_seconds"] = @(end - begin);
     metadata[@"duration_completed"] = @(end - begin >= duration);
+}
+
+static bool same_json_values(id expected, id actual) {
+    if ([expected isEqual:actual]) return true;
+    // Foundation's JSON float round trip can differ by a few ULPs; integer ticks remain exact.
+    if ([expected isKindOfClass:NSNumber.class] && [actual isKindOfClass:NSNumber.class] &&
+        strchr("fd", *[expected objCType])) {
+        double left = [expected doubleValue], right = [actual doubleValue];
+        return fabs(left - right) <= 4 * DBL_EPSILON * fmax(fabs(left), fabs(right));
+    }
+    if (![expected isKindOfClass:NSDictionary.class] || ![actual isKindOfClass:NSDictionary.class] ||
+        [expected count] != [actual count]) return false;
+    for (id key in expected) if (!same_json_values(expected[key], actual[key])) return false;
+    return true;
+}
+
+static void selfcheck_clock(Queue *q) {
+    struct { double previousSample, sample; uint64_t host; bool sampleFailure, hostFailure; } cases[] = {
+        {100, 102, 1001, false, false}, {100, 102.49, 1001, false, false}, {100, 101.51, 1001, false, false},
+        {100, 102.5, 1001, true, false}, {100, 101.5, 1001, true, false}, {100, 120, 1001, true, false},
+        {100, 90, 1001, true, false}, {100, 0, 1001, true, false},
+        {100, 102, 1000, false, true}, {100, 102, 900, false, true}, {100, 0, 900, true, true},
+        {-10, 999, 1001, false, false}, {-2, 999, 1001, true, false}, {-10, 999, 1000, false, true}};
+    Block *b = &q->blocks[0];
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        q->clockFailure = (ClockFailure){0};
+        q->previousClockPresent = true;
+        q->previousClock = (ClockBlock){2, 1100, 10, {.mSampleTime = cases[i].previousSample, .mHostTime = 1000,
+            .mRateScalar = 1, .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid | kAudioTimeStampRateScalarValid}};
+        b->frames = 2; b->received = 1200;
+        b->timestamp = (AudioTimeStamp){.mSampleTime = cases[i].sample, .mHostTime = cases[i].host,
+            .mRateScalar = NAN, .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
+        bool failed = false;
+        @try { require_clock_continuity(q, b, 12, 1300); }
+        @catch (NSException *error) {
+            failed = true;
+            require([error.reason isEqual:cases[i].sampleFailure ? @"Sample-time discontinuity" : @"Host clock discontinuity"],
+                @"Clock failure reason changed");
+        }
+        require(failed == (cases[i].sampleFailure || cases[i].hostFailure), @"Clock acceptance policy changed");
+        require(q->clockFailure.present == failed, @"Clock diagnostics must only record actual failures");
+        if (failed) {
+            NSDictionary *failure = diagnostics(q)[@"clock_failure"];
+            require([failure[@"sample_time_discontinuity"] boolValue] == cases[i].sampleFailure &&
+                [failure[@"host_clock_discontinuity"] boolValue] == cases[i].hostFailure &&
+                [failure[@"file_frame_start"] unsignedLongLongValue] == 12 &&
+                [failure[@"expected_sample_time"] doubleValue] == cases[i].previousSample + 2 &&
+                [failure[@"sample_delta_frames"] doubleValue] == cases[i].sample - (cases[i].previousSample + 2) &&
+                [failure[@"previous"][@"file_frame_start"] unsignedLongLongValue] == 10 &&
+                [failure[@"previous"][@"frame_count"] unsignedIntValue] == 2 &&
+                [failure[@"previous"][@"callback_received_ticks"] unsignedLongLongValue] == 1100 &&
+                [failure[@"current"][@"callback_received_ticks"] unsignedLongLongValue] == 1200 &&
+                [failure[@"current"][@"host_ticks"] unsignedLongLongValue] == cases[i].host &&
+                [failure[@"current"][@"sample_time"] doubleValue] == cases[i].sample &&
+                [failure[@"observed_ticks"] unsignedLongLongValue] == 1300,
+                @"Clock failure must retain both source blocks, receipt and file offset before rejecting");
+            require([failure[@"previous"][@"rate_scalar_valid"] boolValue] &&
+                ![failure[@"current"][@"rate_scalar_valid"] boolValue] &&
+                failure[@"current"][@"rate_scalar"] == NSNull.null &&
+                [NSJSONSerialization dataWithJSONObject:failure options:0 error:nil] != nil,
+                @"Timestamp flags and non-finite optional scalars must remain serializable");
+            b->timestamp.mSampleTime = -100; b->received = 9999;
+            @try { require_clock_continuity(q, b, 9999, 9999); } @catch (NSException *error) { (void)error; }
+            require([clock_failure_summary(q->clockFailure) isEqual:failure], @"First clock failure must remain immutable");
+        }
+    }
+    q->clockFailure = (ClockFailure){0}; q->previousClockPresent = false;
+    require_clock_continuity(q, b, 0, 1300);
+    require(!q->clockFailure.present, @"First block has no preceding clock boundary");
 }
 
 static void selfcheck_caf(Queue *q) {
@@ -291,6 +441,22 @@ static void selfcheck_caf(Queue *q) {
             if (frameCount) {
                 AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, sizeof(samples), samples}}};
                 write_caf(q, audio, frameCount, &list);
+                q->previousClock = (ClockBlock){frameCount, 1100, 0, {.mSampleTime = 100, .mHostTime = 1000,
+                    .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid}};
+                q->previousClockPresent = true; q->clockFailure = (ClockFailure){0};
+                Block *bad = &q->blocks[0]; bad->frames = 2; bad->received = 1200;
+                bad->timestamp = (AudioTimeStamp){.mSampleTime = 120, .mHostTime = 1001,
+                    .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
+                bool rejected = false;
+                @try { require_clock_continuity(q, bad, frameCount, 1300); }
+                @catch (NSException *error) { rejected = [error.reason isEqual:@"Sample-time discontinuity"]; }
+                require(rejected && q->clockFailure.present, @"Bad clock must stop before writing the next PCM block");
+                NSString *path = [root stringByAppendingPathComponent:@"session.json"];
+                json(NULL, @{@"status": @"failed", @"frames": @(frameCount), @"capture_diagnostics": diagnostics(q)}, path);
+                NSDictionary *saved = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:path] options:0 error:nil];
+                require([saved[@"status"] isEqual:@"failed"] &&
+                    [saved[@"capture_diagnostics"][@"clock_failure"][@"file_frame_start"] unsignedIntValue] == frameCount,
+                    @"Failed CAF metadata must preserve the rejected clock boundary");
             }
             OSStatus status = finalize_caf(q, audio); audio = NULL;
             check(status, @"Finalize partial selfcheck CAF");
@@ -368,7 +534,23 @@ static void selfcheck(void) {
     phase_end(q, PhaseCAFWrite, 1300, 1320);
     require(q->timings[PhaseCAFWrite].count == 2 && q->timings[PhaseCAFWrite].total == 120 &&
         q->timings[PhaseCAFWrite].maximum == 100, @"Phase wall timing aggregation failed");
+    require(q->timings[PhaseCAFWrite].maxStarted == 1100 && q->timings[PhaseCAFWrite].maxEnded == 1200,
+        @"Phase maximum must retain its own interval after a shorter later operation");
+    phase_begin(q, PhaseWait, 1320);
+    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 2500);
     NSDictionary *summary = diagnostics(q);
+    NSDictionary *lagContext = summary[@"consumer_lag"][@"max_context"];
+    require([lagContext[@"preceding_phase"][@"phase"] isEqual:@"caf_write"] &&
+        [lagContext[@"preceding_phase"][@"started_ticks"] unsignedLongLongValue] == 1300 &&
+        [lagContext[@"preceding_phase"][@"ended_ticks"] unsignedLongLongValue] == 1320 &&
+        [lagContext[@"phase_at_observation"][@"phase"] isEqual:@"wait"] &&
+        [lagContext[@"phase_at_observation"][@"started_ticks"] unsignedLongLongValue] == 1320 &&
+        [lagContext[@"ended_ticks"] unsignedLongLongValue] == 2500,
+        @"Maximum lag must retain preceding completed phase and phase observed before consume");
+    phase_begin(q, PhaseJSONWrite, 2600); phase_end(q, PhaseJSONWrite, 2600, 2650);
+    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 2000);
+    require([diagnostics(q)[@"consumer_lag"][@"max_context"] isEqual:lagContext],
+        @"Later short lag or cleanup must not replace maximum lag context");
     require([summary[@"overflow"][@"observed_ticks"] unsignedLongLongValue] == 1150 &&
         [summary[@"overflow"][@"queued_frames"] unsignedLongLongValue] == SLOT_COUNT * 2 &&
         [summary[@"overflow"][@"queued_pcm_bytes"] unsignedLongLongValue] == SLOT_COUNT * 2 * CHANNELS * sizeof(float) &&
@@ -388,12 +570,13 @@ static void selfcheck(void) {
     record_stop(failed, true, 10, 11, 2);
     NSData *encoded = [NSJSONSerialization dataWithJSONObject:failed options:0 error:nil];
     NSDictionary *decoded = encoded ? [NSJSONSerialization JSONObjectWithData:encoded options:0 error:nil] : nil;
-    require([decoded[@"capture_diagnostics"] isEqual:summary] && [decoded[@"stop_reason"] isEqual:@"requested_stop"],
+    require(same_json_values(summary, decoded[@"capture_diagnostics"]) && [decoded[@"stop_reason"] isEqual:@"requested_stop"],
         @"Failed session diagnostics and partial Stop must serialize together");
     require([decoded[@"capture_diagnostics"][@"timebase_numer"] unsignedLongLongValue] > 0 &&
         [decoded[@"capture_diagnostics"][@"timebase_denom"] unsignedLongLongValue] > 0 &&
         [decoded[@"capture_diagnostics"][@"overflow"][@"observed_monotonic_s"] doubleValue] == seconds(1500) &&
         encoded.length < 8192, @"Serialized diagnostics must preserve clock conversion and stay bounded");
+    selfcheck_clock(q);
     memset(q, 0, sizeof(*q)); q->planar = true;
     struct { UInt32 count; AudioBuffer buffers[2]; } planar = {2, {{1, 8, samples}, {1, 8, samples + 2}}};
     receive(0, NULL, (AudioBufferList *)&planar, &stamp, NULL, NULL, q);
@@ -404,7 +587,7 @@ static void selfcheck(void) {
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     selfcheck_caf(q);
     free(q);
-    puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, bounded capture diagnostics, zero/partial CAF finalization; no capture or playback");
+    puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
 }
 
 static dispatch_source_t monitor_safety(NSString *root, pid_t controllingParent, NSMutableDictionary *state) {
@@ -449,11 +632,11 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     Queue *q = calloc(1, sizeof(*q));
     bool started = false;
     uint64_t frames = 0;
-    double peak = 0, previousEnd = -1, previousHost = -1;
+    double peak = 0;
     NSMutableArray *errors = [NSMutableArray array];
     @try {
         require(queue_lock_free(q), @"Cannot allocate lock-free capture queue");
-        timing_add(&q->timings[PhaseIdentity], identityEnd - identityBegin);
+        timing_add(&q->timings[PhaseIdentity], identityBegin, identityEnd);
         phase_begin(q, PhaseIdle, mach_absolute_time());
         CATapDescription *description = [[CATapDescription alloc] initStereoMixdownOfProcesses:@[selected[@"hal_process_object"]]];
         description.name = @"VNTTS explicit process evidence";
@@ -510,8 +693,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
                 observe_lag(q, b, r, atomic_load_explicit(&q->produced, memory_order_acquire), consumeStarted);
                 phase_begin(q, PhaseConsume, consumeStarted);
                 double host = seconds(b->timestamp.mHostTime);
-                require(previousEnd < 0 || fabs(b->timestamp.mSampleTime - previousEnd) < 0.5, @"Sample-time discontinuity");
-                require(previousHost < 0 || host > previousHost, @"Host clock discontinuity");
+                require_clock_continuity(q, b, frames, consumeStarted);
                 double blockPeak = 0;
                 for (unsigned i = 0; i < b->frames * CHANNELS; ++i) {
                     require(isfinite(b->pcm[i]), @"Non-finite captured PCM"); blockPeak = fmax(blockPeak, fabs(b->pcm[i]));
@@ -522,8 +704,8 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
                     @"host_ticks": @(b->timestamp.mHostTime), @"monotonic_s": @(host),
                     @"sample_time": @(b->timestamp.mSampleTime), @"peak": @(blockPeak)});
                 phase_begin(q, PhaseConsume, mach_absolute_time());
+                q->previousClock = clock_block(b, frames); q->previousClockPresent = true;
                 frames += b->frames; peak = fmax(peak, blockPeak);
-                previousEnd = b->timestamp.mSampleTime + b->frames; previousHost = host;
                 atomic_store_explicit(&q->consumed, ++r, memory_order_release);
             } }
             phase_begin(q, PhaseIdle, mach_absolute_time());

@@ -462,11 +462,23 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                     self.assertIsNone(recording.ready_monotonic)
                     self.assertEqual(recording.report()["qualification"], "failed")
 
-    def test_overflow_measurements_survive_failed_capture_collection(self):
+    def test_capture_diagnostics_survive_failed_capture_collection(self):
         recording = self.recording()
-        self.run_fake(recording, failed=lambda name: name == "game-audio")
-        path = self.root / "game-audio" / "session.json"
-        metadata = json.loads(path.read_text())
+        block = {
+            "frame_count": 480,
+            "file_frame_start": 960,
+            "callback_received_ticks": 1200,
+            "host_ticks": 1100,
+            "sample_time": 960.0,
+            "timestamp_flags": 3,
+            "rate_scalar": 1.0,
+        }
+        context = {
+            "started_ticks": 1000,
+            "ended_ticks": 1200,
+            "started_monotonic_s": 1.0,
+            "ended_monotonic_s": 1.2,
+        }
         diagnostics = {
             "queue_high_water": {"blocks": 64, "frames": 32768, "pcm_bytes": 262144},
             "overflow": {
@@ -478,13 +490,48 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                 "consumer_phase_snapshot_consistent": True,
             },
             "phases": {
-                "hal_identity": {"count": 4, "total_wall_s": 1.3, "max_wall_s": 1.2}
+                "hal_identity": {
+                    "count": 4,
+                    "total_wall_s": 1.3,
+                    "max_wall_s": 1.2,
+                    "max_context": context,
+                }
+            },
+            "consumer_lag": {
+                "max_context": {"preceding_phase": {"phase": "hal_identity", **context}}
+            },
+            "clock_failure": {
+                "reason": "sample_time_discontinuity",
+                "observed_ticks": 12345,
+                "observed_monotonic_s": 12.345,
+                "file_frame_start": 1440,
+                "expected_sample_time": 1440.0,
+                "sample_delta_frames": 10.0,
+                "previous": block,
+                "current": {**block, "sample_time": 1450.0, "timestamp_flags": 0},
             },
         }
-        metadata.update(
-            errors=["Capture queue overflow"], capture_diagnostics=diagnostics
-        )
-        path.write_text(json.dumps(metadata))
+        fake_launch = self.fake_launch
+
+        def launch_with_evidence(recording, commands, **kwargs):
+            launch = fake_launch(recording, commands, **kwargs)
+
+            def write_evidence(command, output):
+                launch(command, output)
+                if output.name == "game-audio":
+                    path = output / "session.json"
+                    metadata = json.loads(path.read_text())
+                    metadata.update(
+                        errors=["Capture queue overflow"],
+                        capture_diagnostics=diagnostics,
+                    )
+                    path.write_text(json.dumps(metadata))
+                    (output / "process.caf").write_bytes(b"partial audio")
+
+            return write_evidence
+
+        with patch.object(self, "fake_launch", side_effect=launch_with_evidence):
+            self.run_fake(recording, failed=lambda name: name == "game-audio")
 
         report = recording.report()
 
@@ -494,6 +541,9 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["errors"], ["Capture queue overflow"])
         self.assertEqual(failed["capture_diagnostics"], diagnostics)
+        self.assertEqual(
+            (self.root / "game-audio" / "process.caf").read_bytes(), b"partial audio"
+        )
 
     def test_failed_worker_keeps_independent_captures_and_new_worker_recording(self):
         snapshots = iter(
