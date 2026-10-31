@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
+from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (  # noqa: E402
     write_story_index,
@@ -3737,6 +3738,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     ):
         from vntts.app import TrayApplication
 
+        self.enterContext(isolated_application_error_log())
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_story_index(root / "content"))

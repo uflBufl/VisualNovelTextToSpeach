@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from tests.error_logging_fixtures import isolated_application_error_log
 from vntts import support
 from vntts.async_ui import _Task
 from vntts.game_content_importer import GameContentImportCancelled
@@ -21,27 +22,13 @@ from vntts.settings import AppSettings
 
 class ApplicationErrorLoggingTest(unittest.TestCase):
     def setUp(self):
-        root = logging.getLogger()
-        self.handlers = list(root.handlers)
-        self.root_level = root.level
-        self.error_log = support.application_error_log
-        self.error_handler = support._application_error_handler
-        root.setLevel(logging.WARNING)
-
-    def tearDown(self):
-        root = logging.getLogger()
-        for handler in root.handlers:
-            if handler not in self.handlers:
-                handler.close()
-        root.handlers = self.handlers
-        root.setLevel(self.root_level)
-        support.application_error_log = self.error_log
-        support._application_error_handler = self.error_handler
+        self.enterContext(isolated_application_error_log())
+        logging.getLogger().setLevel(logging.WARNING)
 
     def test_catalog_failure_survives_discarded_result_restart_and_ordinary_export(
         self,
     ):
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, isolated_application_error_log():
             root = Path(directory)
             original = root / "jobs" / "legacy-job" / "job.json"
             original.parent.mkdir(parents=True)
@@ -80,7 +67,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
             self.assertIsNone(report["persistence_error"])
 
     def test_exception_chain_and_notes_are_redacted_without_capturing_locals(self):
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, isolated_application_error_log():
             path = Path(directory) / "errors.log"
             log = support.configure_application_error_log(path)
             private_local = "PRIVATE_LOCAL_CONTENT"
@@ -171,7 +158,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
         self.assertIn("Original failure", log.snapshot()[0]["traceback"])
 
     def test_unreadable_previous_log_is_reported_and_preserved(self):
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, isolated_application_error_log():
             path = Path(directory) / "errors.log"
             original = b"previous error evidence"
             path.write_bytes(original)
@@ -190,7 +177,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
     def test_retention_and_reconfiguration_remain_bounded_without_duplicate_handlers(
         self,
     ):
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, isolated_application_error_log():
             path = Path(directory) / "errors.log"
             support.configure_application_error_log(path)
             log = support.configure_application_error_log(path)
@@ -221,7 +208,7 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
     def test_early_bundled_dependency_failure_is_persistent(self):
         from vntts import app
 
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, isolated_application_error_log():
             root = Path(directory)
             with (
                 patch("vntts.app.get_local_data_directory", return_value=root),

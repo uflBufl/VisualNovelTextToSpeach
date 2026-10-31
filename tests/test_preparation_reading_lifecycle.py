@@ -13,6 +13,7 @@ from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool, Signal  # noqa
 from PySide6.QtWidgets import QApplication, QDialog, QWidget  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
+from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.game_pack import import_game_pack  # noqa: E402
@@ -61,6 +62,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
     def setUp(self):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        self.enterContext(isolated_application_error_log())
         self.root = Path(directory.name)
         self.enterContext(
             patch.dict(

@@ -316,8 +316,6 @@ chapter remains a final gate, not a per-fix test.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Fix the understood log isolation defect SUPPORT-31-01; it does not need another
-  chapter run to choose a correction.
 - Diagnose RUN-29-02 offline from the retained lossless pairs before adding
   runtime telemetry or requesting more game footage.
 - For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
@@ -330,42 +328,6 @@ Post-campaign triage (implementation still requires agreement):
   reading or a partial sound capture cannot satisfy that final gate.
 
 Remaining defects, missing measurements and native acceptance:
-
-- [ ] **SUPPORT-31-01 - Tests pollute the application's persistent error log.**
-      Opening Support in the fresh native campaign shows critical startup and
-      cleanup errors produced by intentional test failures. Confirmed example:
-      `test_timeline_acquisition` invokes `app.main` with a mocked
-      `FileExistsError("existing")` while leaving the real error-log configuration
-      active; the full test run writes it into the normal `errors.log`.
-      Isolate test log storage/handlers and verify expected failures cannot alter
-      the user's log or leak a root handler into later tests. Preserve real
-      application error reporting; do not classify all historical errors as tests.
-      Native campaign evidence: `native-trial-20261031`, Support inspection;
-      confirmed critical event at2026-10-31T13:43:53.223350+00:00.
-      Concrete change plan, pending agreement (test infrastructure only):
-      - Add one shared test context that detaches the existing application error
-        handler without closing it, installs a fresh isolated log, then closes
-        only test-owned application handlers and restores both support globals,
-        the original handler's presence and root level even after an exception.
-        Do not close unrelated root handlers or restore an already-closed one.
-      - Use this context for entrypoint/error-log tests and the test owners of
-        TrayApplication in test_app, preparation_reading_lifecycle,
-        self_service_pregeneration and the affected pregeneration_setup case.
-        Replace ApplicationErrorLoggingTest's duplicated unsafe restoration.
-      - Route app.get_local_data_directory to a per-test temporary directory in
-        entrypoint tests and TrayApplicationTest. A temporary settings filename
-        alone does not isolate errors.log, runtime.log or previous-session data.
-        Preserve existing narrower test overrides and explicit persistence tests;
-        the fresh-install subprocess journey already isolates its data root.
-      - Regression gates: intentional startup failure persists only in temporary
-        errors.log and propagates unchanged; later errors cannot modify that
-        file or recreate its removed directory. Verify nested/repeated contexts,
-        original handler not closed, no extra application handlers, unchanged
-        unrelated handlers/root level and restored unhandled-exception hooks.
-        Keep real persistence, redaction and ordinary support-export coverage.
-      - Run the changed-test selector first after implementation, then any
-        affected logging/cleanup tests it misses. No game rerun, production
-        logging suppression, global test autodetection or user-log deletion.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:

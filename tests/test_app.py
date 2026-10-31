@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 from shiboken6 import isValid  # noqa: E402
 
+from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
 from tests.pregeneration_fixtures import ambiguous_fixture, fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
@@ -118,6 +119,13 @@ class TrayApplicationTest(unittest.TestCase):
         )
         settings_directory = TemporaryDirectory()
         self.addCleanup(settings_directory.cleanup)
+        self.enterContext(isolated_application_error_log())
+        self.enterContext(
+            patch(
+                "vntts.app.get_local_data_directory",
+                return_value=Path(settings_directory.name) / "data",
+            )
+        )
         environment = patch.dict(
             os.environ,
             {
@@ -617,6 +625,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         with (
             TemporaryDirectory() as directory,
+            isolated_application_error_log(),
             patch("vntts.app.get_local_data_directory", return_value=Path(directory)),
             patch("vntts.support.collect_dependency_status", return_value={}),
             patch("vntts.support.collect_build_identity", return_value={}),
@@ -877,6 +886,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller = Mock(is_ready=False)
             with (
                 patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}),
+                isolated_application_error_log(),
                 patch("vntts.app.get_local_data_directory", return_value=root),
                 patch(
                     "vntts.app.QSystemTrayIcon.isSystemTrayAvailable",
@@ -9601,6 +9611,7 @@ class TrayApplicationTest(unittest.TestCase):
                         "VNTTS_AUDIO_SOURCE_POLICY": "prefer-generated",
                     },
                 ),
+                isolated_application_error_log(),
                 patch("vntts.settings.get_local_data_directory", return_value=local),
                 patch("vntts.app.get_local_data_directory", return_value=local),
             ):

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QSizePolicy,
 )
 
+from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
     InProcessPocketGenerator,
     InterruptingPocketGenerator,
@@ -77,6 +78,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.enterContext(isolated_application_error_log())
         self._voice_library_directory = TemporaryDirectory()
         self._voice_library = VoiceLibrary(
             Path(self._voice_library_directory.name) / "library"

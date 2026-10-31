@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from threading import Event, Thread
 from unittest.mock import patch
 from uuid import uuid4
 
+from tests.error_logging_fixtures import isolated_application_error_log
 from vntts.support import GenerationTimelineLog
 
 
@@ -239,6 +241,15 @@ class TimelineAcquisitionTest(unittest.TestCase):
 
 
 class TimelineAcquisitionEntrypointTest(unittest.TestCase):
+    def setUp(self):
+        self.data_directory = Path(self.enterContext(TemporaryDirectory()))
+        self.enterContext(isolated_application_error_log())
+        self.enterContext(
+            patch(
+                "vntts.app.get_local_data_directory", return_value=self.data_directory
+            )
+        )
+
     def run_main(self, arguments, *, fail_start=False):
         from unittest.mock import Mock
 
@@ -248,9 +259,8 @@ class TimelineAcquisitionEntrypointTest(unittest.TestCase):
         application.exec.return_value = 17
         tray = Mock()
         if fail_start:
-            tray.generation_timelines.start_acquisition.side_effect = FileExistsError(
-                "existing"
-            )
+            failure = FileExistsError("existing")
+            tray.generation_timelines.start_acquisition.side_effect = failure
         with (
             patch.object(app, "configure_bundled_dependencies"),
             patch.object(app, "enable_windows_dpi_awareness"),
@@ -259,8 +269,9 @@ class TimelineAcquisitionEntrypointTest(unittest.TestCase):
             patch.object(app, "TrayApplication", return_value=tray),
         ):
             if fail_start:
-                with self.assertRaises(FileExistsError):
+                with self.assertRaises(FileExistsError) as raised:
                     app.main(arguments)
+                self.assertIs(raised.exception, failure)
             else:
                 self.assertEqual(app.main(arguments), 17)
         return application, tray
@@ -285,6 +296,9 @@ class TimelineAcquisitionEntrypointTest(unittest.TestCase):
         application.exec.assert_not_called()
         tray.shutdown.assert_called_once_with()
         tray.generation_timelines.stop_acquisition.assert_called_once_with(timeout=0.25)
+        text = (self.data_directory / "errors.log").read_text(encoding="utf-8")
+        self.assertIn("FileExistsError", text)
+        self.assertIn("existing", text)
 
     def test_package_mode_never_starts_journal_or_desktop(self):
         from types import SimpleNamespace
@@ -303,3 +317,11 @@ class TimelineAcquisitionEntrypointTest(unittest.TestCase):
                 0,
             )
         tray.assert_not_called()
+
+    def test_startup_failure_does_not_capture_later_test_errors(self):
+        with isolated_application_error_log():
+            self.run_main(["--timeline-journal", "new.jsonl"], fail_start=True)
+            path = self.data_directory / "errors.log"
+            original = path.read_bytes()
+        logging.getLogger(__name__).error("Later test cleanup failure")
+        self.assertEqual(path.read_bytes(), original)
