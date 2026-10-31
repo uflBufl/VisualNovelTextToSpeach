@@ -316,8 +316,9 @@ chapter remains a final gate, not a per-fix test.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Diagnose RUN-29-02 offline from the retained lossless pairs before adding
-  runtime telemetry or requesting more game footage.
+- Agree the bounded RUN-29-02 shared-threshold repair below. Keep the remaining
+  particle/animated-background rejection as a separate investigation; use saved
+  video before requesting short targeted lossless footage or new telemetry.
 - For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
   below, then use focused game/load episodes. Existing queue, OCR and native
   query telemetry must be reused rather than duplicated.
@@ -533,22 +534,36 @@ Remaining defects, missing measurements and native acceptance:
      and no speech pending.103 eventually advanced14.564s after PCM completion.
      Retained capture IDs,
      frame versions and comparison times distinguish this from capture replacement.
-     Diagnose the actual differing pixels before agreeing a correction; do not
-     blame speaker confidence alone or treat matching text as permission to
+     Do not blame speaker confidence alone or treat matching text as permission to
      bypass ownership. Full visible frame: native-trial-20261031/stall100-before-route.png.
      Session921241e0f5f4449bac677f48f0170e2b retains lossless routed/latest pairs
-     for100/101 in visual-waits; inspect these before requesting another replay.
-     Offline comparison should expose the rejected band (speaker/dialogue),
-     both source/union bounds, threshold, best shared translation and offending
-     pixel mask over the saved images. First reproduce the current boolean
-     rejection exactly; choose a segmentation/comparison repair from that result.
-     Add runtime rejection detail only if the exact saved comparison is
-     insufficient; capture IDs, versions and comparison durations already exist.
-     Existing comparison unions both name
-     regions; the saved narrator pair expands from25px to1470px of scenery.
-     A lossy reconstructed full/full pair also rejects, but does not isolate
-     the differing pixels or prove the final segmentation correction. Retain
-     dim punctuation, name changes and all control barriers when fixing this.
+     for100/101 in visual-waits. Offline analysis in
+     `frame-equivalence-20261101` reproduces both-band refusal on all25 offsets;
+     zero offset minimizes the changed pixels. Name-region width alone cannot
+     explain it: dialogue rejects independently. Two distinct remaining tasks:
+     - Agree and implement one common bright-core threshold for both images in
+       `_dialog_band_equivalent`, proposed as max(160, max(before.max(),
+       after.max()) - 20). Keep the160 floor, four-level edge tolerance, shared
+       translation and original route anchor. On101 the current235/233 thresholds
+       falsely mark326 identical-valued dialogue pixels changed; on102 the same
+       defect marks1340 identical name pixels and581 dialogue pixels. Regression:
+       unchanged233-valued glyphs with a separate highlight255 ->253 must pass;
+       new dim punctuation, changed names, prefixes, region-edge additions and
+       cumulative drift must still fail. Verify symmetry and existing capture/
+       live-consumer tests before committing. This fixes a measured comparison
+       defect, not the complete100/101 stalls; no new live metrics are needed.
+     - Diagnose residual animated particles and glyph-edge intensity changes
+       before choosing a filter. On100 low/core masks reject83/253 dialogue
+       pixels; on101 the common-threshold experiment still leaves38 low-mask and
+       66 core-mask refusals. The existing speaker-presence detector accepts
+       both saved wide crops, so simply skipping an absent-name band cannot fix
+       these pairs. Inspect short existing video sequences to distinguish moving
+       particles from persistent new ink. If exact temporal pixels are missing,
+       propose a bounded lossless burst around a refusal: source/capture times,
+       IDs, OCR regions and per-band thresholds/rejection masks, reusing existing
+       session limits and reporting dropped evidence/overhead. A short targeted
+       scene suffices for diagnosis; defer a full chapter until causal repairs.
+       Never discard small components globally: they can be real punctuation.
      Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
      visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
      `d8f1c1208ebf4d7fa10353e8b7145f6c`.
