@@ -316,8 +316,8 @@ chapter remains a final gate, not a per-fix test.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Fix the understood lifecycle/log isolation defects UX-31-01 and SUPPORT-31-01
-  separately; neither needs another chapter run to choose a correction.
+- Fix the understood log isolation defect SUPPORT-31-01; it does not need another
+  chapter run to choose a correction.
 - Diagnose RUN-29-02 offline from the retained lossless pairs before adding
   runtime telemetry or requesting more game footage.
 - For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
@@ -342,43 +342,6 @@ Remaining defects, missing measurements and native acceptance:
       application error reporting; do not classify all historical errors as tests.
       Native campaign evidence: `native-trial-20261031`, Support inspection;
       confirmed critical event at2026-10-31T13:43:53.223350+00:00.
-
-- [ ] **UX-31-01 - Closing completed preparation unexpectedly stops Reading.**
-      In chapter314001 run `f22f863df70447bfad41f967e39793d3`, Step4 Close
-      restored saved Reading settings and stopped the live session around37,
-      although its footer says the current audio setup stays unchanged.
-      `_pregeneration_finished` restores temporary preparation playback through
-      configuration apply; controller restart calls shutdown and does not resume
-      Reading. Agree a lifecycle fix preserving active reading when closing its
-      background progress, and make any necessary settings restoration explicit.
-      Verify Close after completed/partial preparation while a clip is playing
-      and while waiting for advance; no repeated speech or lost continuation.
-      Evidence: native-trial-20261031 session126b84e3a90a443387cf225043918c17.
-      Concrete change plan, pending agreement:
-      - Retain the explicitly chosen progressive Reading source in application
-        session state after a successful runtime handoff. Source selection and
-        control readiness must not depend on the preparation panel's lifetime;
-        Stop/Start keeps this choice, and another job cannot replace it without
-        an explicit handoff. Do not persist temporary progress paths.
-      - Remove saved-runtime restoration from ordinary rejected/Close completion.
-        Dispose the panel normally while leaving speech, pause, cursor and the
-        current runtime untouched. Explicit pack activation/profile/source
-        changes still use the existing validated replacement lifecycle.
-      - Replace backend callbacks bound to the panel with application-owned
-        forwarding guarded by the active job/source identity. Reopening the same
-        job may reconnect progress; a different job or deleted panel must never
-        receive old reading events. Release stale bindings on source replacement.
-      - Preserve cancellation of generation and its completed files independently
-        of Reading. For a stopped partial job, report the real stopped/waiting
-        state for missing audio; do not imply generation is running, silently
-        activate another pack, skip speech or introduce an unapproved fallback.
-      - Gate with focused regressions: Close during speech/Pause/advance wait;
-        actual Qt deletion followed by another callback; Stop/Start; same-job
-        reopen and different-job nonactivation; explicit activation and source
-        replacement; partial cancellation/error and unchanged saved preferences.
-        Run the changed-test selector first after code changes, plus affected
-        preparation/setup/runtime tests it misses. Defer game acceptance to the
-        final combined run; no new metrics are needed for this known cause.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
@@ -523,6 +486,12 @@ Remaining defects, missing measurements and native acceptance:
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Preparation Close (UX-31-01), native acceptance:** close completed/partial
+     preparation during speech, Pause and advance wait. Reading must keep its
+     source, current speech position and continuation without a controller restart.
+     Reopen the same job and use Stop/Start; another preparation must not replace
+     the source implicitly. For stopped partial preparation, ready audio remains
+     usable and missing audio reports that preparation must be continued.
    - **Preparation resume (UX-29-02), remaining edges:** changed
      voices/settings/content and explicit `Prepare again` must require review.
      Check truthful phase labels for these changed-input paths.

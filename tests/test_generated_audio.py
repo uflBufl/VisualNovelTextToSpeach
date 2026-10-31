@@ -274,6 +274,51 @@ class GeneratedAudioTest(unittest.TestCase):
                 getattr(resolver, method).assert_called_once_with("Ada", "Hello.")
                 live.prepare_playback.assert_not_called()
 
+    def test_stopped_preparation_reports_resume_action_without_playing_missing_audio(
+        self,
+    ):
+        for initially_stopped in (False, True):
+            with self.subTest(initially_stopped=initially_stopped):
+                with TemporaryDirectory() as directory:
+                    manifest = Path(directory) / "generated-audio.json"
+                    write_generated_audio_manifest(
+                        manifest, {"vntts.runtime.progress": True}, []
+                    )
+                    live = self.create_live_backend()
+                    output = FakeAudioOutput()
+                    backend = GeneratedAudioFallbackBackend(
+                        live,
+                        GeneratedAudioLibrary.load_optional(manifest),
+                        self.create_resolver(),
+                        audio_output=output,
+                    )
+                    route = backend.prepare_route("Ada", "Hello.")
+                    stopped = initially_stopped
+                    cancelled = Event()
+                    statuses = []
+                    message = "Preparation is stopped. Open Stories to continue."
+                    backend.progress_wait_description = lambda: (
+                        message if stopped else None
+                    )
+
+                    def status_changed(status):
+                        nonlocal stopped
+                        statuses.append(status)
+                        if status == message:
+                            cancelled.set()
+                        stopped = True
+
+                    backend.progress_wait_status = status_changed
+                    outcome = backend.play_route(
+                        route, playback_guard=lambda: not cancelled.is_set()
+                    )
+
+                self.assertEqual(statuses[-1], message)
+                self.assertEqual(len(statuses), 1 if initially_stopped else 2)
+                self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+                self.assertEqual(output.plays, [])
+                live.prepare_playback.assert_not_called()
+
     def test_runtime_progress_waits_for_the_exact_generated_line(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

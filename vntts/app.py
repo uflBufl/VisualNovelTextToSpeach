@@ -315,6 +315,7 @@ class AppSignals(QObject):
     read_requested = Signal()
     live_requested = Signal()
     unknown_speaker = Signal(str)
+    preparation_line = Signal(object, bool, str, str)
 
 
 def build_unknown_speaker_prompt(
@@ -1871,6 +1872,7 @@ class SettingsDialog(QDialog):
 
 class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     controller: AppController
+    _progress_preparation_active: bool
     dashboard: ControlDashboard
     diagnostics_dialog: DiagnosticsDialog | None
     signals: AppSignals
@@ -2341,6 +2343,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.toggle_live, Qt.ConnectionType.QueuedConnection
         )
         self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
+        self.signals.preparation_line.connect(
+            self._forward_preparation_line, Qt.ConnectionType.QueuedConnection
+        )
         self.application.aboutToQuit.connect(self.shutdown)
         current_sequence_status = getattr(
             self.controller, "get_live_sequence_status", None
@@ -2610,6 +2615,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         source = self._playback_source(settings)
         if source != self._prepared_source:
             self._prepared_source = source
+            self._progress_preparation_active = False
             restored = (
                 self.playback_store.restore(settings)
                 if self.playback_store is not None
@@ -2656,6 +2662,87 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return None
         candidate = factory()
         return candidate if isinstance(candidate, AppSettings) else None
+
+    def _progressive_runtime_settings(self) -> AppSettings | None:
+        settings = self._runtime_settings()
+        return (
+            settings
+            if self._prepared_settings is not None
+            and settings.game_pack is None
+            and settings.generated_audio_manifest
+            else None
+        )
+
+    def _retain_preparation_reading(self, settings: AppSettings) -> None:
+        self._prepared_source = self._playback_source(self.settings)
+        self._prepared_settings = settings
+        candidate = self._preparation_runtime_settings()
+        self._progress_preparation_active = bool(
+            candidate is not None
+            and self._reading_pack_identity(candidate)
+            == self._reading_pack_identity(settings)
+            and self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        )
+
+    def _bind_preparation_callbacks(self) -> None:
+        settings = self._progressive_runtime_settings()
+        loaded = getattr(self.controller, "settings", None)
+        backend = getattr(self.controller, "speech_backend", None)
+        if (
+            settings is None
+            or not isinstance(loaded, AppSettings)
+            or self._reading_pack_identity(loaded)
+            != self._reading_pack_identity(settings)
+            or backend is None
+        ):
+            return
+        source = self._reading_pack_identity(settings)
+        backend.progress_wait_request = partial(
+            self.signals.preparation_line.emit, source, True
+        )
+        backend.progress_line_observed = partial(
+            self.signals.preparation_line.emit, source, False
+        )
+        backend.progress_wait_description = partial(
+            self._preparation_wait_description, source
+        )
+
+    def _forward_preparation_line(
+        self, source: object, prioritize: bool, line_id: str, text_sha256: str
+    ) -> None:
+        if self._shutting_down:
+            return
+        settings = self._progressive_runtime_settings()
+        candidate = self._preparation_runtime_settings()
+        if (
+            settings is None
+            or candidate is None
+            or source != self._reading_pack_identity(settings)
+            or source != self._reading_pack_identity(candidate)
+        ):
+            return
+        dialog = self.pregeneration_dialog
+        assert dialog is not None
+        if prioritize:
+            if dialog.has_pending_work():
+                dialog.prioritize_line(line_id, text_sha256)
+        else:
+            dialog.readingLineObserved.emit(line_id, text_sha256)
+
+    def _preparation_wait_description(self, source: object) -> str | None:
+        # Playback workers read only session data; Qt panels belong to the UI thread.
+        settings = self._prepared_settings
+        if (
+            settings is not None
+            and source == self._reading_pack_identity(settings)
+            and not self._progress_preparation_active
+        ):
+            return (
+                "Preparation is stopped; this dialogue has no prepared audio yet. "
+                "Open Stories and continue preparation."
+            )
+        return None
 
     @staticmethod
     def _reading_pack_identity(settings: AppSettings) -> tuple[str | None, ...]:
@@ -2734,10 +2821,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _reading_source_choice(
         self, *, prefer_preparation: bool = False
     ) -> tuple[AppSettings | None, bool]:
+        progress = self._progressive_runtime_settings()
+        if progress is not None and not prefer_preparation:
+            return progress, True
         active_pack = self._active_pack_reading_available()
         if active_pack and not prefer_preparation:
             return None, True
-        candidate = self._preparation_runtime_settings()
+        candidate = self._preparation_runtime_settings() or progress
         return candidate, active_pack or candidate is not None
 
     def _preparation_blocks_reading(self, *, loaded: bool) -> bool:
@@ -2747,14 +2837,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _preparation_playback_active(self) -> bool:
-        candidate = self._preparation_runtime_settings()
+        candidate = self._progressive_runtime_settings()
         controller_settings = getattr(self.controller, "settings", None)
         return bool(
             candidate is not None
             and isinstance(controller_settings, AppSettings)
-            and controller_settings.generated_audio_manifest
-            == candidate.generated_audio_manifest
-            and controller_settings.story_index == candidate.story_index
+            and self._reading_pack_identity(controller_settings)
+            == self._reading_pack_identity(candidate)
         )
 
     def _show_preparation_reading(self, runtime_settings: AppSettings | None) -> None:
@@ -2794,22 +2883,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if runtime_settings is not None:
             generation = self._begin_controller_lifecycle()
             applied = self.session_owner.attach(generation, runtime_settings)
+            if applied is not False:
+                self._retain_preparation_reading(runtime_settings)
             self._finish_controller_lifecycle()
             if applied is False:
                 self.show_error("Unable to connect in-progress prepared audio")
                 return
             if self.controller.is_ready:
                 self._controller_ready = True
-                backend = getattr(self.controller, "speech_backend", None)
-                dialog = self.pregeneration_dialog
-                if backend is not None and dialog is not None:
-                    backend.progress_wait_request = dialog.prioritize_line
-                    backend.progress_line_observed = dialog.readingLineObserved.emit
                 self._apply_controller_action_state()
                 self.set_status(
-                    "Reading uses finished recordings while preparation continues. "
-                    "If you catch up, it waits for that dialogue instead of starting "
-                    "a second TTS generation."
+                    "Reading uses prepared recordings and waits for missing audio. "
+                    "Manage preparation in Stories."
                 )
                 if start_live and not self.controller.is_live_running:
                     self.toggle_live()
@@ -4161,9 +4246,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             dialog.accept()
 
-    def _preparation_activity_changed(self, _active: bool) -> None:
+    def _preparation_activity_changed(self, active: bool) -> None:
         if self._shutting_down:
             return
+        sender = self.sender()
+        if sender is not None and sender is not self.pregeneration_dialog:
+            return
+        candidate = self._preparation_runtime_settings()
+        selected = self._progressive_runtime_settings()
+        self._progress_preparation_active = bool(
+            active
+            and candidate is not None
+            and selected is not None
+            and self._reading_pack_identity(candidate)
+            == self._reading_pack_identity(selected)
+        )
         if not self._voice_audition_background_available():
             self.voice_auditions.cancel_warmup()
         self._apply_controller_action_state()
@@ -4172,7 +4269,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = self.pregeneration_dialog
         if dialog is None:
             return None
-        used_runtime_progress = self._preparation_playback_active()
+        candidate = self._preparation_runtime_settings()
+        if (
+            candidate is not None
+            and self._prepared_settings is not None
+            and self._reading_pack_identity(candidate)
+            == self._reading_pack_identity(self._prepared_settings)
+        ):
+            self._progress_preparation_active = False
         self.pregeneration_dialog = None
         self._preparation_activation_settings = None
         self.dashboard.remove_preparation(dialog)
@@ -4183,13 +4287,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             QTimer.singleShot(0, self.application, self.application.quit)
             return None
         if result != QDialog.DialogCode.Accepted:
-            if used_runtime_progress:
-                self._start_configuration_apply(
-                    self.settings,
-                    progress_status="Restoring the saved Reading setup...",
-                    success_status="Saved Reading setup restored.",
-                    restart=self._controller_ready,
-                )
             return None
         job = dialog.job()
         pack_result = dialog.pack_result()
@@ -5792,6 +5889,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _finish_controller_lifecycle(self) -> None:
         self._controller_busy = False
+        self._bind_preparation_callbacks()
         self._apply_controller_action_state()
         self._update_auto_advance_action()
         if self.readiness_dialog is not None:

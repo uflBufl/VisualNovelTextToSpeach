@@ -2107,9 +2107,15 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_ready_dialogue_starts_with_runtime_progress_settings(self):
         saved = AppSettings(onboarding_completed=True)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        story = Path(directory.name) / "selected-story.jsonl"
+        manifest = Path(directory.name) / "live-progress-manifest.json"
+        story.touch()
+        manifest.touch()
         progress = saved.updated(
-            story_index="selected-story.jsonl",
-            generated_audio_manifest="live-progress-manifest.json",
+            story_index=str(story),
+            generated_audio_manifest=str(manifest),
             audio_source_policy="prefer-game-audio",
         )
         backend = Mock()
@@ -2119,7 +2125,9 @@ class TrayApplicationTest(unittest.TestCase):
             settings=saved,
             speech_backend=backend,
         )
-        controller.apply_settings.return_value = True
+        controller.apply_settings.side_effect = lambda selected, **_kwargs: (
+            setattr(controller, "settings", selected) or True
+        )
         tray = TrayApplication(
             self.application,
             saved,
@@ -2134,14 +2142,11 @@ class TrayApplicationTest(unittest.TestCase):
             tray._read_prepared_story()
 
         controller.apply_settings.assert_called_once_with(progress, cancellation=ANY)
-        self.assertIs(
-            backend.progress_wait_request,
-            preparation.prioritize_line,
-        )
-        self.assertIs(
-            backend.progress_line_observed,
-            preparation.readingLineObserved.emit,
-        )
+        backend.progress_wait_request("line", "digest")
+        backend.progress_line_observed("line", "digest")
+        self.application.processEvents()
+        preparation.prioritize_line.assert_called_once_with("line", "digest")
+        preparation.readingLineObserved.emit.assert_called_once_with("line", "digest")
         start_reading.assert_called_once_with()
         self.assertEqual(tray.settings, saved)
         tray.pregeneration_dialog = None
@@ -7866,9 +7871,15 @@ class TrayApplicationTest(unittest.TestCase):
                 tray, controller, pool = self._cold_reading_tray()
                 preparation = Mock()
                 preparation.has_pending_work.return_value = True
+                directory = TemporaryDirectory()
+                self.addCleanup(directory.cleanup)
+                story = Path(directory.name) / "progress-story.jsonl"
+                manifest = Path(directory.name) / "progress-audio.json"
+                story.touch()
+                manifest.touch()
                 progress = tray.settings.updated(
-                    story_index="progress-story.jsonl",
-                    generated_audio_manifest="progress-audio.json",
+                    story_index=str(story),
+                    generated_audio_manifest=str(manifest),
                 )
                 preparation.runtime_playback_settings.return_value = (
                     None if source == "unavailable" else progress

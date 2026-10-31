@@ -698,9 +698,18 @@ class GeneratedAudioFallbackBackend:
         self.progress_line_observed: Callable[[str, str], object] = (
             lambda _line_id, _text_sha256: None
         )
+        self.progress_wait_description: Callable[[], str | None] = lambda: None
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
         self.playback_owner = AudioRoutePlaybackOwner(self)
+
+    def pending_progress_description(
+        self, line_id: str, text_sha256: str
+    ) -> str | None:
+        assert self.library is not None
+        return self.progress_wait_description() or self.library.progress_description(
+            line_id, text_sha256
+        )
 
     def will_use_source_audio(self, character: str, text: str) -> bool:
         """Return whether live playback for this exact line stays in the game."""
@@ -1356,7 +1365,7 @@ class AudioRoutePlaybackOwner:
         try:
             self.router.progress_wait_request(route.line_id, route.text_sha256)
             last_status = (
-                self.router.library.progress_description(
+                self.router.pending_progress_description(
                     route.line_id, route.text_sha256
                 )
                 or "Waiting for offline preparation to finish the current dialogue..."
@@ -1388,7 +1397,7 @@ class AudioRoutePlaybackOwner:
                         playback_guard=playback_guard,
                         on_playback_dispatch=on_playback_dispatch,
                     )
-                status = self.router.library.progress_description(
+                status = self.router.pending_progress_description(
                     route.line_id, route.text_sha256
                 )
                 if status is not None and status != last_status:
