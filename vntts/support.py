@@ -280,6 +280,8 @@ generation_timeline_detail_fields = (
     "end_provenance",
     "measurement",
     "capture_id",
+    "compared_capture_id",
+    "latest_capture_id",
     "visibility_provenance",
     "worker_stage",
     "worker_state",
@@ -287,6 +289,8 @@ generation_timeline_detail_fields = (
     "worker_progress_age_ms",
     "worker_frame_version",
     "latest_frame_version",
+    "compared_frame_version",
+    "frame_comparison_passed",
     "frame_version",
     "started_monotonic",
     "completed_monotonic",
@@ -462,6 +466,9 @@ def _sanitize_preroute_details(details: SupportDetails) -> SupportDocument:
         "started_monotonic",
         "completed_monotonic",
         "frame_version",
+        "compared_frame_version",
+        "latest_frame_version",
+        "frame_equivalence_ms",
         "frame_age_ms",
         "ocr_call_ms",
         "attempt_ms",
@@ -476,9 +483,18 @@ def _sanitize_preroute_details(details: SupportDetails) -> SupportDocument:
         value = details.get(key)
         if optional_finite_number(value) is not None:
             safe[key] = value
-    if isinstance(details.get("transition_expected"), bool):
-        safe["transition_expected"] = details["transition_expected"]
-    for key in ("capture_id", "run_id", "route_kind", "outcome", "error_type"):
+    for key in ("transition_expected", "frame_comparison_passed"):
+        if isinstance(details.get(key), bool):
+            safe[key] = details[key]
+    for key in (
+        "capture_id",
+        "compared_capture_id",
+        "latest_capture_id",
+        "run_id",
+        "route_kind",
+        "outcome",
+        "error_type",
+    ):
         value = details.get(key)
         if isinstance(value, str) and re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value

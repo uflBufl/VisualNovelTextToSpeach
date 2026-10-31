@@ -29,10 +29,18 @@ class PrerouteSupportDiagnosticsTests(unittest.TestCase):
     def test_preroute_fields_survive_export_acquisition_and_generation_zero_restart(
         self,
     ):
-        session, run, capture = [uuid4().hex for _ in range(3)]
+        session, run, capture, compared_capture, latest_capture = [
+            uuid4().hex for _ in range(5)
+        ]
         details = {
             "capture_id": capture,
             "frame_version": 4,
+            "compared_capture_id": compared_capture,
+            "compared_frame_version": 5,
+            "latest_capture_id": latest_capture,
+            "latest_frame_version": 6,
+            "frame_equivalence_ms": 0.75,
+            "frame_comparison_passed": True,
             "started_monotonic": 10.0,
             "completed_monotonic": 10.025,
             "frame_age_ms": 3.25,
@@ -51,6 +59,27 @@ class PrerouteSupportDiagnosticsTests(unittest.TestCase):
             "ocr_confidence": 0.25,
             "minimum_confidence": 0.8,
         }
+        self.assertLessEqual(
+            {
+                "ocr-current",
+                "ocr-not-current",
+                "ocr-purpose-changed",
+                "ocr-owner-changed",
+                "ocr-focus-lost",
+                "ocr-stopped",
+                "ocr-paused",
+                "ocr-emergency-stopped",
+                "ocr-shutting-down",
+                "ocr-epoch-changed",
+                "ocr-run-changed",
+                "ocr-visibility-changed",
+                "ocr-frame-not-visible",
+                "ocr-frame-unavailable",
+                "ocr-frame-not-equivalent",
+                "ocr-capture-replaced-during-validation",
+            },
+            PREROUTE_DIAGNOSTIC_REASONS,
+        )
         with TemporaryDirectory() as directory:
             root = Path(directory)
             log = GenerationTimelineLog(path=root / "generation-timelines.json")
@@ -100,6 +129,83 @@ class PrerouteSupportDiagnosticsTests(unittest.TestCase):
             for key, value in details.items():
                 self.assertEqual(event[key], value)
         self.assertNotIn("PRIVATE", repr(exported) + repr(previous) + repr(events))
+
+    def test_ocr_freshness_rejects_unsafe_values_on_record_restart_and_acquisition(
+        self,
+    ):
+        unsafe_fields = [
+            (key, value)
+            for keys, values in (
+                (
+                    ("capture_id", "compared_capture_id", "latest_capture_id"),
+                    ("PRIVATE /capture", "x" * 161, "", None, 12),
+                ),
+                (
+                    (
+                        "frame_version",
+                        "compared_frame_version",
+                        "latest_frame_version",
+                        "frame_equivalence_ms",
+                    ),
+                    ("12", float("inf"), float("-inf"), float("nan"), 10**400, True),
+                ),
+                (
+                    ("frame_comparison_passed",),
+                    ("true", 0, 1, None, float("nan")),
+                ),
+            )
+            for key in keys
+            for value in values
+        ]
+        with TemporaryDirectory() as directory:
+            log = GenerationTimelineLog()
+            timeline_path = Path(directory) / "timeline.jsonl"
+            direct_path = Path(directory) / "direct.jsonl"
+            log.start_acquisition(timeline_path)
+            direct = TimelineAcquisition(direct_path)
+            try:
+                for index, (key, value) in enumerate(unsafe_fields):
+                    log.record("ocr-attempt", 0, float(index), **{key: value})
+                    direct.record({"stage": "ocr-attempt", key: value})
+            finally:
+                log.stop_acquisition()
+                direct.stop()
+            retained = log.snapshot()[0]["events"]
+            acquired = read_journal(timeline_path)[1:-1]
+            direct_events = read_journal(direct_path)[1:-1]
+        self.assertEqual(len(retained), len(unsafe_fields))
+        self.assertEqual(len(acquired), len(unsafe_fields))
+        self.assertEqual(len(direct_events), len(unsafe_fields))
+        for index, (key, value) in enumerate(unsafe_fields):
+            with self.subTest(key=key, value=value):
+                restored = support._sanitize_previous_timeline(
+                    {"generation": 0, "events": [{"stage": "ocr-attempt", key: value}]}
+                )
+                for event in (
+                    retained[index],
+                    restored["events"][0],
+                    acquired[index],
+                    direct_events[index],
+                ):
+                    self.assertNotIn(key, event)
+
+    def test_ocr_freshness_negative_comparison_survives_acquisition(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "timeline.jsonl"
+            log = GenerationTimelineLog()
+            log.start_acquisition(path)
+            log.record(
+                "ocr-attempt",
+                0,
+                1.0,
+                reason="ocr-frame-not-equivalent",
+                frame_comparison_passed=False,
+            )
+            log.stop_acquisition()
+            self.assertIs(
+                log.snapshot()[0]["events"][0]["frame_comparison_passed"], False
+            )
+            self.assertIs(read_journal(path)[1]["frame_comparison_passed"], False)
 
     def test_generation_zero_remains_restricted_to_preroute_stages(self):
         log = GenerationTimelineLog()

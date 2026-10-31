@@ -1503,6 +1503,48 @@ class LiveDialogReader:
                 last_route_kind=route_kind,
             )
 
+    def _recognition_context_refusal(
+        self, purpose: str, recognition_owner: str | None
+    ) -> str | None:
+        if self._ocr_callback("validating-purpose", self.ocr_purpose) != purpose:
+            return "ocr-purpose-changed"
+        if recognition_owner != self._ocr_callback(
+            "validating-owner", self.stable_frame_owner
+        ):
+            return "ocr-owner-changed"
+        if not self._ocr_callback("validating-focus", self._is_focused):
+            return "ocr-focus-lost"
+        return None
+
+    def _recognition_state_refusal_locked(
+        self,
+        epoch: int,
+        run_id: str | None,
+        visible: bool,
+        compared_frame: Frame | None = None,
+    ) -> str | None:
+        return next(
+            (
+                reason
+                for refused, reason in (
+                    (self.stop_event.is_set(), "ocr-stopped"),
+                    (self.paused, "ocr-paused"),
+                    (self.emergency_stopped, "ocr-emergency-stopped"),
+                    (self.is_shutting_down, "ocr-shutting-down"),
+                    (
+                        compared_frame is not None
+                        and compared_frame is not self.latest_frame,
+                        "ocr-capture-replaced-during-validation",
+                    ),
+                    (epoch != self.frame_route_epoch, "ocr-epoch-changed"),
+                    (run_id is not None and run_id != self.run_id, "ocr-run-changed"),
+                    (visible != self.latest_frame_visible, "ocr-visibility-changed"),
+                )
+                if refused
+            ),
+            None,
+        )
+
     def _recognition_is_current(
         self,
         purpose: str,
@@ -1514,65 +1556,96 @@ class LiveDialogReader:
         render_fingerprint: object,
         frame: Frame | None = None,
         run_id: str | None = None,
+        *,
+        diagnostics: dict[str, object] | None = None,
     ) -> bool:
-        # Ownership/focus are barriers even when pixels happen to match.
-        if (
-            self._ocr_callback("validating-purpose", self.ocr_purpose) != purpose
-            or recognition_owner
-            != self._ocr_callback("validating-owner", self.stable_frame_owner)
-            or not self._ocr_callback("validating-focus", self._is_focused)
-        ):
-            return False
-        with self.state_lock:
-            if (
-                self.stop_event.is_set()
-                or self.paused
-                or self.emergency_stopped
-                or self.is_shutting_down
-                or recognition_epoch != self.frame_route_epoch
-                or (run_id is not None and run_id != self.run_id)
-                or visible != self.latest_frame_visible
-            ):
+        compared_frame = None
+        compared_version = None
+        comparison_passed = None
+        comparison_ms = None
+        reason = None
+        try:
+            # Ownership/focus are barriers even when pixels happen to match.
+            reason = self._recognition_context_refusal(purpose, recognition_owner)
+            if reason is not None:
                 return False
-            if purpose == "expected-successor-prefix":
-                return bool(self.latest_frame_visible and not self.stop_event.is_set())
-            changed = (
-                fingerprint != self.latest_frame_fingerprint
-                or complete != self.latest_frame_complete
-                or (
-                    self.tracker_options.get("complete_dialogue_only")
-                    and render_fingerprint != self.latest_render_fingerprint
+            with self.state_lock:
+                reason = self._recognition_state_refusal_locked(
+                    recognition_epoch, run_id, visible
                 )
+                if reason is not None:
+                    return False
+                if purpose == "expected-successor-prefix":
+                    reason = (
+                        "ocr-frame-not-visible"
+                        if not self.latest_frame_visible
+                        else "ocr-stopped"
+                        if self.stop_event.is_set()
+                        else None
+                    )
+                    return reason is None
+                changed = (
+                    fingerprint != self.latest_frame_fingerprint
+                    or complete != self.latest_frame_complete
+                    or (
+                        self.tracker_options.get("complete_dialogue_only")
+                        and render_fingerprint != self.latest_render_fingerprint
+                    )
+                )
+                latest = self.latest_frame
+                latest_version = self.frame_version
+            if not changed:
+                return True
+            # Compare the entire name/text evidence; a new glyph must invalidate OCR.
+            if frame is None or latest is None:
+                reason = "ocr-frame-unavailable"
+                return False
+            compared_frame, compared_version = latest, latest_version
+            comparison_started = monotonic()
+            try:
+                comparison_passed = self._ocr_callback(
+                    "validating-frame", self.frame_equivalent, frame, latest
+                )
+            finally:
+                comparison_ms = (monotonic() - comparison_started) * 1000
+            if not comparison_passed:
+                reason = "ocr-frame-not-equivalent"
+                return False
+            focused = self._ocr_callback("validating-focus", self._is_focused)
+            purpose_current = self._ocr_callback("validating-purpose", self.ocr_purpose)
+            owner_current = self._ocr_callback(
+                "validating-owner", self.stable_frame_owner
             )
-            latest = self.latest_frame
-        if not changed:
-            return True
-        # Compare the entire name/text evidence; a new glyph must invalidate OCR.
-        if (
-            frame is None
-            or latest is None
-            or not self._ocr_callback(
-                "validating-frame", self.frame_equivalent, frame, latest
-            )
-        ):
-            return False
-        focused = self._ocr_callback("validating-focus", self._is_focused)
-        purpose_current = self._ocr_callback("validating-purpose", self.ocr_purpose)
-        owner_current = self._ocr_callback("validating-owner", self.stable_frame_owner)
-        with self.state_lock:
-            return (
-                focused
-                and purpose_current == purpose
-                and owner_current == recognition_owner
-                and not self.stop_event.is_set()
-                and not self.paused
-                and not self.emergency_stopped
-                and not self.is_shutting_down
-                and latest is self.latest_frame
-                and recognition_epoch == self.frame_route_epoch
-                and (run_id is None or run_id == self.run_id)
-                and visible == self.latest_frame_visible
-            )
+            with self.state_lock:
+                reason = next(
+                    (
+                        reason
+                        for refused, reason in (
+                            (not focused, "ocr-focus-lost"),
+                            (purpose_current != purpose, "ocr-purpose-changed"),
+                            (owner_current != recognition_owner, "ocr-owner-changed"),
+                        )
+                        if refused
+                    ),
+                    None,
+                ) or self._recognition_state_refusal_locked(
+                    recognition_epoch, run_id, visible, latest
+                )
+                return reason is None
+        finally:
+            if diagnostics is not None:
+                with self.state_lock:
+                    current_latest = self.latest_frame
+                    current_version = self.frame_version
+                diagnostics.update(
+                    reason=reason,
+                    compared_capture_id=_frame_capture_evidence(compared_frame)[0],
+                    compared_frame_version=compared_version,
+                    latest_capture_id=_frame_capture_evidence(current_latest)[0],
+                    latest_frame_version=current_version,
+                    frame_comparison_passed=comparison_passed,
+                    frame_equivalence_ms=comparison_ms,
+                )
 
     def worker_health_snapshot(self) -> dict[str, object]:
         with self.state_lock:
@@ -2138,6 +2211,7 @@ class LiveDialogReader:
             else optional_finite_number(captured_at)
         )
         outcome, reason, error_type = "error", None, None
+        freshness: dict[str, object] = {}
         uncertainty = None
         recognized: Observation | RecognizedDialog = (None, "")
         try:
@@ -2168,11 +2242,12 @@ class LiveDialogReader:
                     render_fingerprint,
                     frame,
                     recognition_run_id,
+                    diagnostics=freshness,
                 )
 
             is_current = partial(is_current_at_epoch, recognition_epoch)
             if not is_current():
-                outcome, reason = "stale", "ocr-not-current"
+                outcome = "stale"
                 return None
             if uncertainty is not None:
                 self._ocr_callback(
@@ -2200,6 +2275,9 @@ class LiveDialogReader:
             raise
         finally:
             completed = monotonic()
+            refusal = freshness.pop("reason", None)
+            if outcome == "stale":
+                reason = refusal if isinstance(refusal, str) else "ocr-not-current"
             self._report_pipeline_event(
                 "ocr-attempt",
                 generation,
@@ -2221,6 +2299,7 @@ class LiveDialogReader:
                 minimum_confidence=uncertainty.minimum_confidence
                 if uncertainty
                 else None,
+                **freshness,
             )
 
     def _stable_frame_route_decision(

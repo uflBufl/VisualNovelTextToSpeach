@@ -316,15 +316,6 @@ chapter remains a final gate, not a per-fix test.
 
 Next code changes proposed for agreement (do not implement before approval):
 
-- [ ] **RUN-29-02 rejection evidence:** split generic `ocr-not-current` into the
-      actual refused barriers (purpose/owner/run/epoch/focus/visibility/control,
-      failed frame comparison, or capture replaced during validation). Retain
-      compared/current capture identities and comparison duration in the existing
-      opt-in diagnostics. Exercise identical and genuinely changed glyph frames
-      arriving during comparison. Use a short saved-frame/native reproduction
-      to select the correction before replacing glyph segmentation. Do not
-      remove timestamp/ownership barriers, mask small punctuation as dust, or
-      treat elapsed time as permission to advance.
 - [ ] **AUDIO-29-01 recovery and evidence:** retire and clear the query worker
       after send/receive/protocol failures, preserving the primary exception.
       A valid unsupported-format reply remains ordinary format negotiation.
@@ -487,8 +478,12 @@ Next code changes proposed for agreement (do not implement before approval):
      `native-trial-20261029-followup/line100-wait/frame-001.png`.
      Joined evidence:242/244 OCR attempts after full text are stale, including
     168 exact text-only and60 normalized text-only resolutions. Generic
-     `ocr-not-current` does not distinguish failed glyph comparison from a new
-     capture arriving during validation. Existing comparison unions both name
+     `ocr-not-current` in that old journal cannot distinguish failed glyph
+     comparison from capture replacement. Collect a short targeted recording
+     with the new specific refusal reasons, compared/latest capture IDs and
+     versions, comparison outcome and duration. Distinguish real image rejection
+     from capture replacement during validation before agreeing a correction.
+     Existing comparison unions both name
      regions; the saved narrator pair expands from25px to1470px of scenery.
      A lossy reconstructed full/full pair also rejects, but does not isolate
      the differing pixels or prove the final segmentation correction. Retain

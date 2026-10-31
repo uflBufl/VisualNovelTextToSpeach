@@ -28,6 +28,8 @@ _IDENTITY_FIELDS = {
     "run_id",
     "playback_id",
     "capture_id",
+    "compared_capture_id",
+    "latest_capture_id",
     "mechanism",
     "scope",
     "coordinate_space",
@@ -56,6 +58,20 @@ PREROUTE_DIAGNOSTIC_REASONS = frozenset(
     {
         "ocr-current",
         "ocr-not-current",
+        "ocr-purpose-changed",
+        "ocr-owner-changed",
+        "ocr-focus-lost",
+        "ocr-stopped",
+        "ocr-paused",
+        "ocr-emergency-stopped",
+        "ocr-shutting-down",
+        "ocr-epoch-changed",
+        "ocr-run-changed",
+        "ocr-visibility-changed",
+        "ocr-frame-not-visible",
+        "ocr-frame-unavailable",
+        "ocr-frame-not-equivalent",
+        "ocr-capture-replaced-during-validation",
         "empty",
         "waiting-stability",
         "committed-prefix",
@@ -147,7 +163,7 @@ bind_frame_available capture_target_present render_quiet_ms
 ocr_confidence ocr_speaker_confidence ocr_dialogue_confidence minimum_confidence wait_ms
 raw_character_length raw_text_length canonical_character_length canonical_text_length
 generation occurred_at monotonic_at clock_origin clock_elapsed_ms event_sequence run_started_at
-worker_progress_age_ms worker_frame_version latest_frame_version frame_version started_monotonic
+worker_progress_age_ms worker_frame_version latest_frame_version compared_frame_version frame_version started_monotonic
 completed_monotonic acquired_monotonic source_monotonic clock_uncertainty_ms frame_sequence layout_epoch window_id owner_pid success attempt underflowed generation_limited synthesis_ms
 frame_age_ms ocr_call_ms attempt_ms span_ms committed_characters latest_characters stable_characters
 transition_expected queue_wait_ms worker_call_ms resolver_ms
@@ -311,7 +327,16 @@ class TimelineAcquisition:
         # Only bounded symbolic identities and numeric evidence, never free-text reasons.
         safe: dict[str, object] = {}
         for key, value in islice(event.items(), 128):
-            if key in _NUMERIC_FIELDS and isinstance(value, (bool, int)):
+            if key in (
+                "frame_version",
+                "compared_frame_version",
+                "latest_frame_version",
+                "frame_equivalence_ms",
+            ) and isinstance(value, bool):
+                continue
+            if key == "frame_comparison_passed" and isinstance(value, bool):
+                safe[key] = value
+            elif key in _NUMERIC_FIELDS and isinstance(value, (bool, int)):
                 if isinstance(value, bool) or value.bit_length() <= 64:
                     safe[key] = value
             elif (
