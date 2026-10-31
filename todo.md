@@ -317,6 +317,44 @@ chapter remains a final gate, not a per-fix test.
 Remaining measurements and native acceptance (combined run before selecting
 further causal fixes):
 
+- [ ] **SUPPORT-31-01 - Tests pollute the application's persistent error log.**
+      Opening Support in the fresh native campaign shows critical startup and
+      cleanup errors produced by intentional test failures. Confirmed example:
+      `test_timeline_acquisition` invokes `app.main` with a mocked
+      `FileExistsError("existing")` while leaving the real error-log configuration
+      active; the full test run writes it into the normal `errors.log`.
+      Isolate test log storage/handlers and verify expected failures cannot alter
+      the user's log or leak a root handler into later tests. Preserve real
+      application error reporting; do not classify all historical errors as tests.
+      Native campaign evidence: `native-trial-20261031`, Support inspection;
+      confirmed critical event at2026-10-31T13:43:53.223350+00:00.
+
+- [ ] **UX-31-01 - Closing completed preparation unexpectedly stops Reading.**
+      In chapter314001 run `f22f863df70447bfad41f967e39793d3`, Step4 Close
+      restored saved Reading settings and stopped the live session around37,
+      although its footer says the current audio setup stays unchanged.
+      `_pregeneration_finished` restores temporary preparation playback through
+      configuration apply; controller restart calls shutdown and does not resume
+      Reading. Agree a lifecycle fix preserving active reading when closing its
+      background progress, and make any necessary settings restoration explicit.
+      Verify Close after completed/partial preparation while a clip is playing
+      and while waiting for advance; no repeated speech or lost continuation.
+      Evidence: native-trial-20261031 session126b84e3a90a443387cf225043918c17.
+
+- [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
+      Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
+      line54 completed169344PCM frames; one key at452140.594 did not change the
+      displayed line. Video0.5s before/after shows complete text and continuation
+      cue, and later OCR keeps recognizing54 while already_dispatched=true blocks
+      further keys. Foreground was the selected game when checked. Preserve the
+      once-only safeguard; investigate actual key delivery/acknowledgement and
+      game readiness before proposing recovery. Do not label this OCR failure or
+      attribute it to the later recorder overflow at452205. Saved key54 pair and
+      stall54 frame in native-trial-20261031; no manual game key used on54.
+      Earlier37 also timed out after its dispatched key451686.034, before Close
+      stopped Reading at451700.582; distinguish the missing transition from the
+      separate preparation lifecycle defect.
+
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
       overflow` after about78 seconds, while background MOSS generation was
@@ -356,6 +394,12 @@ further causal fixes):
       These wall maxima include descheduling; correlate the retained max contexts
       before selecting a correction. A passing interval does not explain prior
       overflows or the separate clock-discontinuity failure below.
+      Current9a224f7f campaign126b84e3a90a443387cf225043918c17 reproduced both
+      overflows only2.13ms apart (452205.013842/452205.015976). Both consumers
+      were in CAF writes starting452204.275 and ending452207.414, about3.139s
+      wall time; oldest queued callbacks waited about3.14s. Source clock checks
+      did not fail. Retain these aligned intervals and correlate video/runtime
+      scheduling and output I/O before selecting a writer/scheduling correction.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
@@ -467,10 +511,21 @@ further causal fixes):
      Joined evidence:242/244 OCR attempts after full text are stale, including
     168 exact text-only and60 normalized text-only resolutions. Generic
      `ocr-not-current` in that old journal cannot distinguish failed glyph
-     comparison from capture replacement. Collect a short targeted recording
-     with the new specific refusal reasons, compared/latest capture IDs and
-     versions, comparison outcome and duration. Distinguish real image rejection
-     from capture replacement during validation before agreeing a correction.
+     comparison from capture replacement. Current9a224f7f recording
+     921241e0f5f4449bac677f48f0170e2b identifies real frame-equivalence refusals:
+     key99 to route100 takes113.189s, with181 stale comparisons before routing
+     (166 already matched100). After complete529200PCM frames, no app key for
+     369.197s until a disclosed manual transition;101 similarly needed a manual
+     key135.777s after complete speech. The first89.11s on100 contain144 stale
+     comparisons and67 withheld advances despite focus/visibility/completion cue
+     and no speech pending.103 eventually advanced14.564s after PCM completion.
+     Retained capture IDs,
+     frame versions and comparison times distinguish this from capture replacement.
+     Diagnose the actual differing pixels before agreeing a correction; do not
+     blame speaker confidence alone or treat matching text as permission to
+     bypass ownership. Full visible frame: native-trial-20261031/stall100-before-route.png.
+     Session921241e0f5f4449bac677f48f0170e2b retains lossless routed/latest pairs
+     for100/101 in visual-waits; inspect these before requesting another replay.
      Existing comparison unions both name
      regions; the saved narrator pair expands from25px to1470px of scenery.
      A lossy reconstructed full/full pair also rejects, but does not isolate
