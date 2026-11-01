@@ -172,6 +172,68 @@ class WindowCaptureTargetTest(unittest.TestCase):
         self.assertTrue(target.is_focused())
         self.assertFalse(target.is_focused())
 
+    def test_input_focus_snapshot_reports_ids_without_changing_selection(self):
+        selected = WindowInfo(100, "Reverse: 1999 PRIVATE title", 42)
+        other = WindowInfo(200, "PRIVATE other title", 84)
+        backend = Mock()
+        backend.list_windows.return_value = [selected]
+        backend.get_window.side_effect = lambda handle: {100: selected, 200: other}.get(
+            handle
+        )
+        backend.get_foreground_handle.return_value = 200
+        target = WindowCaptureTarget("Reverse: 1999", backend)
+
+        self.assertEqual(
+            target.input_focus_snapshot(),
+            {
+                "selected_window_id": 100,
+                "selected_pid": 42,
+                "foreground_window_id": 200,
+                "foreground_pid": 84,
+                "focused": False,
+            },
+        )
+        self.assertIsNone(target._handle)
+        self.assertIsNone(target.last_window)
+        target.get_geometry()
+        backend.get_foreground_handle.return_value = 100
+        self.assertTrue(target.input_focus_snapshot()["focused"])
+        self.assertEqual(target._handle, 100)
+        self.assertIs(target.last_window, selected)
+
+    def test_input_focus_snapshot_omits_unknown_foreground_and_propagates_failure(self):
+        backend = Mock()
+        backend.list_windows.return_value = [WindowInfo(100, "Game", 42)]
+        backend.get_foreground_handle.return_value = 0
+        target = WindowCaptureTarget("Game", backend)
+        self.assertEqual(
+            target.input_focus_snapshot(),
+            {
+                "selected_window_id": 100,
+                "selected_pid": 42,
+                "focused": False,
+            },
+        )
+        backend.get_foreground_handle.side_effect = OSError("PRIVATE failure")
+        with self.assertRaises(OSError):
+            target.input_focus_snapshot()
+        self.assertIsNone(target.last_window)
+
+    def test_input_focus_snapshot_does_not_retarget_another_process(self):
+        selected = WindowInfo(100, "Game", 42)
+        backend = Mock()
+        backend.list_windows.return_value = [selected]
+        backend.get_window.return_value = selected
+        target = WindowCaptureTarget("Game", backend)
+        target.get_geometry()
+        backend.get_window.return_value = None
+        backend.list_windows.return_value = [WindowInfo(200, "Game", 84)]
+
+        with self.assertRaises(WindowNotFoundError):
+            target.input_focus_snapshot()
+        self.assertEqual(target._handle, 100)
+        self.assertIs(target.last_window, selected)
+
 
 class MacOSWindowBackendTest(unittest.TestCase):
     def window(self, number, owner, *, name="", onscreen=True, layer=0):
@@ -264,6 +326,38 @@ class MacOSWindowBackendTest(unittest.TestCase):
 
         application.processIdentifier = lambda: 84
         self.assertTrue(target.is_focused())
+
+    def test_input_focus_snapshot_uses_macos_frontmost_pid_not_z_order(self):
+        game = self.window(20, "Game")
+        game["pid"] = 84
+        application = SimpleNamespace(processIdentifier=lambda: 91)
+        target = WindowCaptureTarget(
+            "Game",
+            MacOSWindowBackend(
+                FakeQuartz([game]),
+                workspace=SimpleNamespace(frontmostApplication=lambda: application),
+            ),
+        )
+        self.assertEqual(
+            target.input_focus_snapshot(),
+            {
+                "selected_window_id": 20,
+                "selected_pid": 84,
+                "foreground_pid": 91,
+                "focused": False,
+            },
+        )
+        application.processIdentifier = lambda: 84
+        self.assertTrue(target.input_focus_snapshot()["focused"])
+        application.processIdentifier = lambda: 0
+        self.assertEqual(
+            target.input_focus_snapshot(),
+            {
+                "selected_window_id": 20,
+                "selected_pid": 84,
+                "focused": False,
+            },
+        )
 
     def test_reports_window_that_disappeared(self):
         backend = MacOSWindowBackend(FakeQuartz([]))

@@ -178,6 +178,7 @@ class AutoAdvanceAttempt:
 
     dispatched: bool
     reason: str
+    dispatch_id: str | None = None
 
     def __bool__(self) -> bool:
         return self.dispatched
@@ -535,6 +536,8 @@ class LiveDialogReader:
         self._advance_requested_generation: int | None = None
         self._advance_requested_at: float | None = None
         self._advance_requested_frame: Frame | None = None
+        self._advance_input_origin = "automatic"
+        self._last_input_dispatch: tuple[int, str] | None = None
         self._auto_advance_gate_reports: dict[str, tuple[object, int, float]] = {}
         self.focus_probe_failed = False
         self.ocr_worker_stage = "not-started"
@@ -698,6 +701,7 @@ class LiveDialogReader:
             self._reset_speech_history()
             self.dialog_ready_generation = None
             self.last_auto_advance_dispatched_generation = None
+            self._last_input_dispatch = None
             self.pending_auto_advance_generation = None
             self.failed_auto_advance_generation = None
             self.auto_advance_attempts = 0
@@ -2623,14 +2627,23 @@ class LiveDialogReader:
         timer.start()
 
     def _run_auto_advance(
-        self, generation: int, timer_serial: int | None = None
+        self,
+        generation: int,
+        timer_serial: int | None = None,
+        *,
+        input_origin: str = "automatic",
     ) -> None:
+        if input_origin not in {"automatic", "user-diagnostic"}:
+            raise ValueError("Unknown input diagnostic origin")
         if not self.require_visible_auto_advance:
+            if input_origin != "automatic":
+                return
             self._dispatch_auto_advance(generation, timer_serial)
             return
         with self.pause_condition:
             if (
                 generation != self.active_generation
+                or (input_origin == "user-diagnostic" and generation <= 0)
                 or (
                     timer_serial is not None
                     and timer_serial != self._auto_advance_timer_serial
@@ -2638,6 +2651,7 @@ class LiveDialogReader:
                 or self.auto_advance is None
                 or self.dialog_ready_generation != generation
                 or self.pending_auto_advance_generation == generation
+                or self._advance_requested_generation is not None
                 or self.last_auto_advance_dispatched_generation == generation
                 or self.failed_auto_advance_generation == generation
                 or self.auto_advance_blocked_generation == generation
@@ -2650,7 +2664,13 @@ class LiveDialogReader:
                 or self.stop_event.is_set()
             ):
                 return
+            timer = self.auto_advance_timer
             self.auto_advance_timer = None
+            if timer is not None:
+                timer.cancel()
+            if input_origin == "user-diagnostic":
+                self._auto_advance_timer_serial += 1
+            self._advance_input_origin = input_origin
             self._advance_requested_generation = generation
             self._advance_requested_at = monotonic()
             self._advance_requested_frame = self.routed_frame
@@ -2841,9 +2861,11 @@ class LiveDialogReader:
         if isinstance(attempt, AutoAdvanceAttempt):
             advanced: object = attempt.dispatched
             refusal_reason = attempt.reason
+            dispatch_id = attempt.dispatch_id
         else:
             advanced = attempt
             refusal_reason = None
+            dispatch_id = None
         if advanced is False:
             self._handle_auto_advance_refusal(generation, refusal_reason)
             return
@@ -2855,6 +2877,9 @@ class LiveDialogReader:
                 self.auto_advance_attempts = 1
                 attempt = 1
                 self.last_auto_advance_dispatched_generation = generation
+                self._last_input_dispatch = (
+                    (generation, dispatch_id) if dispatch_id is not None else None
+                )
                 self._advance_requested_generation = None
                 self._advance_requested_at = None
                 self._advance_requested_frame = None
@@ -3115,6 +3140,7 @@ class LiveDialogReader:
                 and chunk.run_id == self.run_id
                 and stage
                 in {
+                    "key-input",
                     "key-dispatch",
                     "confirmed-next-dialogue",
                     "auto-advance-withheld",
@@ -3123,6 +3149,11 @@ class LiveDialogReader:
                 }
             ):
                 context = self._chunk_context(chunk)
+        if stage in {"key-dispatch", "confirmed-next-dialogue", "auto-advance-timeout"}:
+            with self.state_lock:
+                last_dispatch = self._last_input_dispatch
+            if last_dispatch is not None and last_dispatch[0] == generation:
+                details.setdefault("dispatch_id", last_dispatch[1])
         details = {
             "run_id": self.run_id,
             "run_started_at": self.run_started_at,
@@ -3150,6 +3181,7 @@ class LiveDialogReader:
         self._advance_requested_generation = None
         self._advance_requested_at = None
         self._advance_requested_frame = None
+        self._advance_input_origin = "automatic"
         self._auto_advance_timer_serial += 1
         if timer is not None:
             timer.cancel()

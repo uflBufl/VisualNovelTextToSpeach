@@ -39,8 +39,10 @@ from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.path_safety import open_regular_binary
 from vntts.settings import AppSettings
 from vntts.support_timeline_acquisition import (
+    INPUT_DIAGNOSTIC_FIELDS,
     PREROUTE_DIAGNOSTIC_REASONS,
     TimelineAcquisition,
+    sanitize_input_diagnostics,
 )
 from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
@@ -242,6 +244,7 @@ generation_timeline_stages = (
     "playback-completion",
     "playback-outcome",
     "key-dispatch",
+    "key-input",
     "confirmed-next-dialogue",
     "auto-advance-withheld",
     "auto-advance-timeout",
@@ -449,6 +452,28 @@ def _timeline_uuid(value: object | None, name: str) -> str | None:
         raise ValueError(f"Timeline {name} ID must be a UUID") from error
 
 
+def _sanitize_timeline_details(stage: str, details: SupportDetails) -> SupportDocument:
+    if stage == "key-input":
+        return {
+            key: _sanitize_event_value(value)
+            for key, value in details.items()
+            if key in generation_timeline_detail_fields
+            and key not in INPUT_DIAGNOSTIC_FIELDS
+            and (
+                isinstance(value, (bool, int, float))
+                or isinstance(value, str)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value)
+            )
+        } | sanitize_input_diagnostics(details)
+    if stage in preroute_timeline_stages:
+        return _sanitize_preroute_details(details)
+    return {
+        key: _sanitize_event_value(details[key])
+        for key in generation_timeline_detail_fields
+        if key in details and details[key] is not None
+    } | sanitize_input_diagnostics({"dispatch_id": details.get("dispatch_id")})
+
+
 def _record_stable_frame_gate(existing: SupportDetails, event: SupportDocument) -> None:
     observations = _event_counter(existing, "observations")
     candidate_frames = event.get("candidate_frames")
@@ -591,15 +616,7 @@ class GenerationTimelineLog:
                     (occurred_at - self.clock_origin) * 1000
                 ),
                 "event_sequence": self.event_sequence,
-                **(
-                    _sanitize_preroute_details(details)
-                    if stage in preroute_timeline_stages
-                    else {
-                        key: _sanitize_event_value(details[key])
-                        for key in generation_timeline_detail_fields
-                        if key in details and details[key] is not None
-                    }
-                ),
+                **_sanitize_timeline_details(stage, details),
             }
             if stage == "stable-frame-gate":
                 _record_stable_frame_gate(existing, event)
@@ -1894,15 +1911,7 @@ def _sanitize_previous_event(event: object) -> SupportDocument | None:
         generation_timeline_stages + sequence_timeline_stages
     ):
         return None
-    details = (
-        _sanitize_preroute_details(event)
-        if event["stage"] in preroute_timeline_stages
-        else {
-            key: _sanitize_event_value(event[key])
-            for key in generation_timeline_detail_fields
-            if key in event and event[key] is not None
-        }
-    )
+    details = _sanitize_timeline_details(event["stage"], event)
     return {
         "stage": event["stage"],
         **{

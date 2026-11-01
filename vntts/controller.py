@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
+from uuid import uuid4
 
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import PcmAdmissionRejected
@@ -91,6 +92,7 @@ from vntts.live_speech import (
     raise_playback_failure,
 )
 from vntts.model_assets import ModelAssetManager
+from vntts.numeric_values import optional_finite_number
 from vntts.ocr import (
     DialogRegion,
     OCRRegions,
@@ -3620,8 +3622,12 @@ class AppController:
                 if not visual_guard():
                     return AutoAdvanceAttempt(False, "visual-wait")
                 advanced = self._auto_advance_dialog(focus_verified=True)
-                if advanced is False:
-                    return AutoAdvanceAttempt(False, "dispatch-disabled")
+                if not advanced:
+                    return (
+                        advanced
+                        if isinstance(advanced, AutoAdvanceAttempt)
+                        else AutoAdvanceAttempt(False, "dispatch-disabled")
+                    )
             self.sequence_advance_leases.add(lease)
             try:
                 snapshot = cursor.dispatch_advance()
@@ -3643,9 +3649,16 @@ class AppController:
                 line_id=snapshot.current_line_id,
                 occurrence_id=lease.occurrence_id,
                 next_event_count=len(snapshot.expected_successor_ids),
+                dispatch_id=advanced.dispatch_id
+                if isinstance(advanced, AutoAdvanceAttempt)
+                else None,
             )
             self._publish_live_sequence_status()
-            return AutoAdvanceAttempt(True, "dispatched")
+            return (
+                advanced
+                if isinstance(advanced, AutoAdvanceAttempt)
+                else AutoAdvanceAttempt(True, "dispatched")
+            )
 
     def _reader_visual_dispatch_guard(
         self, reader: LiveDialogReader | None
@@ -3713,8 +3726,72 @@ class AppController:
                 return refusal
             if not visual_guard():
                 return AutoAdvanceAttempt(False, "visual-wait")
-            DialogueAdvancer(self.settings.auto_advance_key).advance()
-        return True
+            return self._send_advance_input()
+
+    def _input_focus_diagnostics(self, prefix: str) -> dict[str, object]:
+        try:
+            target = self.capture_target
+            if target is None:
+                return {}
+            probe = getattr(target, "input_focus_snapshot", None)
+            if not callable(probe):
+                return {}
+            return {f"{prefix}_{key}": value for key, value in probe().items()}
+        except Exception as error:
+            return {f"{prefix}_focus_error_type": type(error).__name__}
+
+    def _send_advance_input(self) -> AutoAdvanceAttempt:
+        reader = self.live_reader
+        generation = reader.active_generation if reader is not None else 0
+        dispatch_id = uuid4().hex
+        origin = (
+            reader._advance_input_origin
+            if isinstance(reader, LiveDialogReader)
+            else "automatic"
+        )
+        context: dict[str, object] = {
+            "dispatch_id": dispatch_id,
+            "input_origin": origin,
+        }
+        cursor = self.story_cursor
+        if cursor is not None:
+            context.update(
+                event_id=cursor.current_event_id, occurrence_id=cursor.occurrence_id
+            )
+            event = cursor.current_event
+            if event is not None:
+                context["line_id"] = event.line_id
+        elif (
+            isinstance(reader, LiveDialogReader)
+            and reader.last_spoken_chunk is not None
+            and reader.last_spoken_chunk.generation == generation
+        ):
+            context["line_id"] = reader.last_spoken_chunk.line_id
+
+        def report(details: dict[str, object]) -> None:
+            details = {**context, **details, **self._input_focus_diagnostics("after")}
+            occurred_at = optional_finite_number(details.get("completed_monotonic"))
+            if occurred_at is None:
+                occurred_at = monotonic()
+            if isinstance(reader, LiveDialogReader):
+                reader._report_pipeline_event(
+                    "key-input", generation, occurred_at, **details
+                )
+            else:
+                self.pipeline_event_handler(
+                    "key-input", generation, occurred_at, **details
+                )
+
+        advanced = DialogueAdvancer(
+            self.settings.auto_advance_key,
+            diagnostic_handler=report,
+            diagnostic_probe=lambda: self._input_focus_diagnostics("before"),
+        ).advance()
+        return AutoAdvanceAttempt(
+            bool(advanced),
+            "dispatched" if advanced else "dispatch-disabled",
+            dispatch_id,
+        )
 
     def _initialize_live_sequence_state(self) -> None:
         self.sequence_admitted_chunks: dict[SequenceEventLease, SpeechChunk] = {}

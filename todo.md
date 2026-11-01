@@ -344,29 +344,23 @@ Remaining defects, missing measurements and native acceptance:
       Earlier37 also timed out after its dispatched key451686.034, before Close
       stopped Reading at451700.582; distinguish the missing transition from the
       separate preparation lifecycle defect.
-      Missing dispatch evidence: correlate run/generation and one dispatch ID
+      Native acceptance: correlate run/generation and one dispatch ID
       with key-down/key-up call boundaries and their actual interval, native
       errors, and selected/foreground process immediately before and after
       posting. Join these to the existing transition/timeout events and video.
       OS posting success is not game receipt; compare one automatic and one
       operator-triggered dispatch using the same sender in a short episode.
       Do not add retries or change key-hold duration before this comparison.
-      Proposed implementation, awaiting agreement: collect bounded native-call
-      timestamps/errors in `auto_advance.py`, then publish only after key-up
-      cleanup. Timeline persistence is synchronous; logging between down/up
-      would change the measured interval. Preserve primary exceptions and
-      best-effort release; diagnostic failures must not affect input. Windows
-      keeps its two-event SendInput batch and reports actual accepted count,
-      not invented separate down/up call times. Reuse the selected-window and
-      foreground identity authority in `window_capture.py`; snapshot before/
-      after dispatch without logging titles or text. Correlate one dispatch ID
-      through controller, reader dispatch/confirmation/timeout and both support
-      serializers. Use a temporary explicit diagnostic invocation for the
-      operator comparison; no new player button or audio-manual auto-input path.
-      Gates: successful and failing native calls, compensating release, broken
-      telemetry sink, focus/control/owner refusals, shared sequence/plain sender,
-      exact correlation and privacy-safe timeline/JSONL persistence. Existing
-      recordings cannot establish why the game missed these two transitions.
+      Inspect `key-input` and its correlated dispatch/confirmation/timeout in
+      both the normal timeline and saved JSONL. Verify before/after actual focus
+      identity and native posting spans; logging occurs after release. Windows
+      reports a two-event batch, not separate OS down/up receipt times. Exercise
+      one explicit `user-diagnostic` request through the same fresh-OCR guarded
+      path, with a selected game and ready positive generation. A queued automatic
+      timer must not overwrite that request or send another key. Operator requests
+      remain disabled by Pause/Stop, missing focus, disabled auto advance and
+      audio-manual. Establish the reason from this evidence before changing input
+      policy; current recordings cannot explain the two historical misses.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue

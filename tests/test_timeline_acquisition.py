@@ -17,6 +17,88 @@ def read_journal(path):
 
 
 class TimelineAcquisitionTest(unittest.TestCase):
+    def test_input_dispatch_fields_and_correlation_survive_acquisition(self):
+        dispatch_id = str(uuid4())
+        details = {
+            "dispatch_id": dispatch_id,
+            "input_origin": "user-diagnostic",
+            "mechanism": "sendinput",
+            "input_key": "enter",
+            "key_code": 13,
+            "started_monotonic": 1.0,
+            "completed_monotonic": 1.3,
+            "press_started_monotonic": 1.01,
+            "press_completed_monotonic": 1.02,
+            "release_started_monotonic": 1.1,
+            "release_completed_monotonic": 1.2,
+            "batch_started_monotonic": 1.01,
+            "batch_completed_monotonic": 1.2,
+            "batch_error_type": "OSError",
+            "input_events_requested": 2,
+            "input_events_sent": 1,
+            "cleanup_events_sent": 1,
+            "native_error_code": 5,
+            "success": False,
+            "error_type": "OSError",
+            "press_error_type": "OSError",
+            "release_error_type": "RuntimeError",
+            "before_selected_window_id": 20,
+            "before_selected_pid": 42,
+            "before_foreground_window_id": 20,
+            "before_foreground_pid": 42,
+            "before_focused": True,
+            "after_selected_window_id": 20,
+            "after_selected_pid": 42,
+            "after_foreground_window_id": 30,
+            "after_foreground_pid": 43,
+            "after_focused": False,
+            "before_focus_error_type": "OSError",
+            "after_focus_error_type": "RuntimeError",
+            "line_id": "story:47",
+            "event_id": "story:47:dialogue",
+            "occurrence_id": 7,
+            "playback_id": str(uuid4()),
+            "capture_id": str(uuid4()),
+            "run_started_at": 0.5,
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "input.jsonl"
+            log = GenerationTimelineLog()
+            log.start_acquisition(path)
+            log.record(
+                "key-input",
+                1,
+                1.3,
+                **details,
+                text="PRIVATE text",
+                window_title="PRIVATE title",
+            )
+            log.record("key-dispatch", 1, 1.3, dispatch_id=dispatch_id)
+            # Exercise the journal's own trust boundary independently of the timeline.
+            log.acquisition.record(
+                {
+                    "stage": "key-input",
+                    "dispatch_id": "PRIVATE ID",
+                    "input_key": "PRIVATE key",
+                    "release_error_type": "PRIVATE exception",
+                    "key_code": True,
+                }
+            )
+            log.stop_acquisition()
+            events = [entry for entry in read_journal(path) if entry["kind"] == "event"]
+            in_memory_input = next(
+                event
+                for event in log.snapshot()[0]["events"]
+                if event["stage"] == "key-input"
+            )
+            for key, value in details.items():
+                self.assertEqual(in_memory_input[key], value)
+            self.assertNotIn("PRIVATE", path.read_text())
+        for key, value in details.items():
+            self.assertEqual(events[0][key], value)
+        self.assertEqual(events[1]["dispatch_id"], dispatch_id)
+        self.assertEqual(set(events[2]), {"kind", "acquisition_id", "stage"})
+
     def test_opt_out_and_early_evidence_survives_memory_eviction(self):
         log = GenerationTimelineLog(maximum_entries=1)
         self.assertNotIn("acquisition", log.report())

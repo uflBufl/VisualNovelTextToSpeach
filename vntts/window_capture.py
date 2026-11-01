@@ -673,7 +673,33 @@ class WindowCaptureTarget(DisplayCaptureTarget):
             return int(process_probe(self.backend)) == int(window.process_id)
         return int(self.backend.get_foreground_handle()) == int(window.handle)
 
-    def _resolve_window(self) -> WindowInfo:
+    def input_focus_snapshot(self) -> dict[str, object]:
+        window = self._resolve_window(update_selection=False)
+        snapshot: dict[str, object] = {
+            "selected_window_id": int(window.handle),
+            "selected_pid": int(window.process_id),
+        }
+        process_probe = getattr(type(self.backend), "get_foreground_process_id", None)
+        if process_probe is not None:
+            foreground_pid = int(process_probe(self.backend))
+            if foreground_pid > 0:
+                snapshot["foreground_pid"] = foreground_pid
+            snapshot["focused"] = (
+                foreground_pid > 0 and foreground_pid == window.process_id
+            )
+        else:
+            foreground_handle = int(self.backend.get_foreground_handle())
+            if foreground_handle > 0:
+                snapshot["foreground_window_id"] = foreground_handle
+                foreground = self.backend.get_window(foreground_handle)
+                if foreground is not None and foreground.process_id > 0:
+                    snapshot["foreground_pid"] = int(foreground.process_id)
+            snapshot["focused"] = (
+                foreground_handle > 0 and foreground_handle == window.handle
+            )
+        return snapshot
+
+    def _resolve_window(self, *, update_selection: bool = True) -> WindowInfo:
         if not self.window_title:
             raise WindowNotFoundError("Select a game window in Settings")
 
@@ -687,9 +713,11 @@ class WindowCaptureTarget(DisplayCaptureTarget):
                     or window.process_id == self.last_window.process_id
                 )
             ):
-                self.last_window = window
+                if update_selection:
+                    self.last_window = window
                 return window
-            self._handle = None
+            if update_selection:
+                self._handle = None
 
         windows = [
             item
@@ -714,8 +742,9 @@ class WindowCaptureTarget(DisplayCaptureTarget):
             )
         window = candidates[0]
 
-        self._handle = window.handle
-        self.last_window = window
+        if update_selection:
+            self._handle = window.handle
+            self.last_window = window
         return window
 
     def _title_matches(self, title: str) -> bool:

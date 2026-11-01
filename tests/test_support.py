@@ -365,6 +365,129 @@ class PregenerationSupportSummaryTest(unittest.TestCase):
 
 
 class GenerationTimelineLogTest(unittest.TestCase):
+    def test_input_evidence_survives_repeated_dispatches_and_restart(self):
+        details = {
+            "dispatch_id": str(uuid4()),
+            "input_origin": "automatic",
+            "mechanism": "quartz",
+            "input_key": "space",
+            "key_code": 49,
+            "started_monotonic": 1.0,
+            "completed_monotonic": 1.2,
+            "success": False,
+            "error_type": "RuntimeError",
+            "press_started_monotonic": 1.01,
+            "press_completed_monotonic": 1.02,
+            "press_error_type": "RuntimeError",
+            "release_started_monotonic": 1.1,
+            "release_completed_monotonic": 1.11,
+            "release_error_type": "OSError",
+            "batch_started_monotonic": 1.03,
+            "batch_completed_monotonic": 1.04,
+            "batch_error_type": "OSError",
+            "input_events_requested": 2,
+            "input_events_sent": 1,
+            "cleanup_events_sent": 1,
+            "native_error_code": 5,
+            "before_selected_window_id": 20,
+            "before_selected_pid": 42,
+            "before_foreground_window_id": 20,
+            "before_foreground_pid": 42,
+            "before_focused": True,
+            "after_selected_window_id": 20,
+            "after_selected_pid": 42,
+            "after_foreground_window_id": 30,
+            "after_foreground_pid": 43,
+            "after_focused": False,
+            "before_focus_error_type": "OSError",
+            "after_focus_error_type": "RuntimeError",
+            "line_id": "story:47",
+            "event_id": "story:47:dialogue",
+            "occurrence_id": 7,
+            "playback_id": str(uuid4()),
+            "capture_id": str(uuid4()),
+            "run_started_at": 0.5,
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "generation-timelines.json"
+            log = GenerationTimelineLog(path=path)
+            log.record("key-input", 1, 1.2, **details, window_title="PRIVATE title")
+            diagnostic_id = str(uuid4())
+            log.record(
+                "key-input",
+                1,
+                1.3,
+                dispatch_id=diagnostic_id,
+                input_origin="user-diagnostic",
+            )
+            for stage in (
+                "key-dispatch",
+                "sequence-key-dispatch-authorized",
+                "confirmed-next-dialogue",
+                "auto-advance-timeout",
+            ):
+                log.record(stage, 1, 1.4, dispatch_id=details["dispatch_id"])
+            events = log.snapshot()[0]["events"]
+            for key, value in details.items():
+                self.assertEqual(events[0][key], value)
+            self.assertEqual(events[1]["dispatch_id"], diagnostic_id)
+            self.assertTrue(
+                all(
+                    event["dispatch_id"] == details["dispatch_id"]
+                    for event in events[2:]
+                )
+            )
+            self.assertNotIn("PRIVATE", path.read_text())
+            self.assertEqual(
+                json.loads(path.read_text())["timelines"][0]["events"], events
+            )
+            restored = preserve_previous_session(directory)
+            self.assertEqual(restored["generation_timelines"][0]["events"], events)
+
+    def test_input_evidence_rejects_text_and_invalid_scalars(self):
+        log = GenerationTimelineLog()
+        log.record(
+            "key-input",
+            1,
+            1.0,
+            dispatch_id="PRIVATE dispatch",
+            input_origin="PRIVATE origin",
+            mechanism="PRIVATE mechanism",
+            input_key="PRIVATE key",
+            press_error_type="PRIVATE exception message",
+            before_focus_error_type="PRIVATE title",
+            key_code=True,
+            input_events_sent="PRIVATE count",
+            before_focused=1,
+            release_started_monotonic=float("inf"),
+            batch_started_monotonic=10**1000,
+            after_selected_pid={"PRIVATE": 42},
+            window_title="PRIVATE title",
+            error=RuntimeError("PRIVATE error"),
+            line_id="PRIVATE line",
+            playback_id={"PRIVATE": "playback"},
+        )
+        event = log.snapshot()[0]["events"][0]
+        self.assertEqual(
+            set(event),
+            {
+                "stage",
+                "monotonic_at",
+                "clock_origin",
+                "clock_elapsed_ms",
+                "event_sequence",
+                "elapsed_ms",
+            },
+        )
+
+    def test_input_evidence_rejects_unbounded_uuid_strings(self):
+        log = GenerationTimelineLog()
+        for value in ("urn:uuid:" + str(uuid4()), "0" * 1000):
+            log.record("key-input", 1, 1.0, dispatch_id=value)
+        self.assertTrue(
+            all("dispatch_id" not in event for event in log.snapshot()[0]["events"])
+        )
+
     def test_retention_counts_trim_and_whole_timeline_evictions_once(self):
         log = GenerationTimelineLog(maximum_entries=1)
         for sequence in range(1, 515):

@@ -10,9 +10,95 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from typing import Mapping
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from vntts.cleanup import attempt_cleanup
+
+INPUT_DIAGNOSTIC_TIMINGS = frozenset(
+    f"{phase}_{edge}_monotonic"
+    for phase in ("press", "release", "batch")
+    for edge in ("started", "completed")
+) | {"started_monotonic", "completed_monotonic"}
+INPUT_DIAGNOSTIC_ERRORS = frozenset(
+    {"error_type", "press_error_type", "release_error_type", "batch_error_type"}
+    | {f"{phase}_focus_error_type" for phase in ("before", "after")}
+)
+INPUT_DIAGNOSTIC_INTS = frozenset(
+    {
+        "key_code",
+        "input_events_requested",
+        "input_events_sent",
+        "cleanup_events_sent",
+        "native_error_code",
+    }
+    | {
+        f"{phase}_{field}"
+        for phase in ("before", "after")
+        for field in (
+            "selected_window_id",
+            "selected_pid",
+            "foreground_window_id",
+            "foreground_pid",
+        )
+    }
+)
+INPUT_DIAGNOSTIC_BOOLS = frozenset({"success", "before_focused", "after_focused"})
+INPUT_DIAGNOSTIC_ENUMS = {
+    "input_origin": {"automatic", "user-diagnostic"},
+    "mechanism": {"quartz", "sendinput", "pynput", "custom"},
+    "input_key": {"space", "enter", "right", "down"},
+}
+INPUT_DIAGNOSTIC_FIELDS = (
+    INPUT_DIAGNOSTIC_TIMINGS
+    | INPUT_DIAGNOSTIC_ERRORS
+    | INPUT_DIAGNOSTIC_INTS
+    | INPUT_DIAGNOSTIC_BOOLS
+    | INPUT_DIAGNOSTIC_ENUMS.keys()
+    | {"dispatch_id"}
+)
+
+
+def sanitize_input_diagnostics(details: Mapping[str, object]) -> dict[str, object]:
+    """Keep only bounded input evidence, never exception messages or window titles."""
+    safe: dict[str, object] = {}
+    for key in INPUT_DIAGNOSTIC_FIELDS:
+        value = details.get(key)
+        if key == "dispatch_id":
+            if isinstance(value, str) and len(value) <= 36:
+                try:
+                    UUID(value)
+                except ValueError:
+                    continue
+                safe[key] = value
+        elif key in INPUT_DIAGNOSTIC_BOOLS and isinstance(value, bool):
+            safe[key] = value
+        elif (
+            key in INPUT_DIAGNOSTIC_INTS
+            and type(value) is int
+            and value.bit_length() <= 64
+        ):
+            safe[key] = value
+        elif (
+            key in INPUT_DIAGNOSTIC_TIMINGS
+            and (type(value) is int or type(value) is float)
+            and (not isinstance(value, int) or value.bit_length() <= 64)
+            and math.isfinite(value)
+        ):
+            safe[key] = value
+        elif (
+            key in INPUT_DIAGNOSTIC_ERRORS
+            and isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", value)
+        ):
+            safe[key] = value
+        elif (
+            key in INPUT_DIAGNOSTIC_ENUMS
+            and isinstance(value, str)
+            and value in INPUT_DIAGNOSTIC_ENUMS[key]
+        ):
+            safe[key] = value
+    return safe
+
 
 _IDENTITY_FIELDS = {
     "stage",
@@ -328,7 +414,16 @@ class TimelineAcquisition:
     ) -> None:
         # Only bounded symbolic identities and numeric evidence, never free-text reasons.
         safe: dict[str, object] = {}
+        input_details = sanitize_input_diagnostics(event)
         for key, value in islice(event.items(), 128):
+            if (
+                key == "dispatch_id"
+                or event.get("stage") == "key-input"
+                and key in INPUT_DIAGNOSTIC_FIELDS
+            ):
+                if key in input_details:
+                    safe[key] = input_details[key]
+                continue
             if key in (
                 "frame_version",
                 "compared_frame_version",

@@ -1,5 +1,6 @@
 import ctypes
 import sys
+import time
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
@@ -56,7 +57,13 @@ def _windows_input() -> WindowsInput:
     return user32
 
 
-def send_windows_key(keycode: int, *, user32: WindowsInput | None = None) -> bool:
+def send_windows_key(
+    keycode: int,
+    *,
+    user32: WindowsInput | None = None,
+    _diagnostics: dict[str, object] | None = None,
+    _diagnostic_probe: Callable[[], dict[str, object]] | None = None,
+) -> bool:
     class KeyboardInput(ctypes.Structure):
         _fields_ = (
             ("virtual_key", ctypes.c_ushort),
@@ -104,25 +111,97 @@ def send_windows_key(keycode: int, *, user32: WindowsInput | None = None) -> boo
         ),
     )
     user32 = user32 or _windows_input()
-    sent = user32.SendInput(len(events), ctypes.byref(events), ctypes.sizeof(Input))
+    _collect_input_probe(_diagnostics, _diagnostic_probe)
+    if _diagnostics is not None:
+        _diagnostics["input_events_requested"] = len(events)
+
+    def send_batch() -> int:
+        sent = user32.SendInput(len(events), ctypes.byref(events), ctypes.sizeof(Input))
+        if sent != len(events) and _diagnostics is not None:
+            get_last_error = getattr(ctypes, "GetLastError", None)
+            if get_last_error is not None:
+                _diagnostics["native_error_code"] = get_last_error()
+        return sent
+
+    sent = _record_input_call(
+        send_batch,
+        "batch",
+        _diagnostics,
+    )
+    if _diagnostics is not None:
+        _diagnostics["input_events_sent"] = sent
     if sent != len(events):
-        user32.SendInput(1, ctypes.byref(events[1]), ctypes.sizeof(Input))
+        cleanup_sent = _record_input_call(
+            lambda: user32.SendInput(1, ctypes.byref(events[1]), ctypes.sizeof(Input)),
+            "release",
+            _diagnostics,
+        )
+        if _diagnostics is not None:
+            _diagnostics["cleanup_events_sent"] = cleanup_sent
         raise OSError("Windows SendInput could not post the auto-advance key")
     return True
 
 
-def _send_key_pair(press: Callable[[], object], release: Callable[[], object]) -> None:
+def _record_input_call[T](
+    operation: Callable[[], T],
+    phase: str,
+    diagnostics: dict[str, object] | None,
+) -> T:
+    if diagnostics is None:
+        return operation()
+    diagnostics[f"{phase}_started_monotonic"] = time.monotonic()
     try:
-        press()
+        return operation()
+    except BaseException as error:
+        diagnostics[f"{phase}_error_type"] = type(error).__name__
+        raise
+    finally:
+        diagnostics[f"{phase}_completed_monotonic"] = time.monotonic()
+
+
+def _send_key_pair(
+    press: Callable[[], object],
+    release: Callable[[], object],
+    diagnostics: dict[str, object] | None = None,
+    diagnostic_probe: Callable[[], dict[str, object]] | None = None,
+) -> None:
+    def release_key() -> object:
+        return _record_input_call(release, "release", diagnostics)
+
+    _collect_input_probe(diagnostics, diagnostic_probe)
+    try:
+        _record_input_call(press, "press", diagnostics)
     except BaseException as error:
         attempt_cleanup(
-            release,
+            release_key,
             description="Auto-advance key release",
             primary_error=error,
         )
         raise
     else:
-        release()
+        release_key()
+
+
+def _collect_input_probe(
+    diagnostics: dict[str, object] | None,
+    probe: Callable[[], dict[str, object]] | None,
+) -> None:
+    if diagnostics is None or probe is None:
+        return
+    try:
+        diagnostics.update(probe())
+    except BaseException as error:
+        diagnostics["before_focus_error_type"] = type(error).__name__
+
+
+def _report_diagnostic(
+    handler: Callable[[dict[str, object]], object], diagnostics: dict[str, object]
+) -> None:
+    try:
+        handler(diagnostics)
+    except BaseException:
+        # Diagnostics must never change the input result or its original error.
+        pass
 
 
 class DialogueAdvancer:
@@ -137,6 +216,8 @@ class DialogueAdvancer:
         quartz_module: QuartzInput | None = None,
         accessibility_probe: Callable[[], object] | None = None,
         windows_sender: Callable[[int], bool] | None = None,
+        diagnostic_handler: Callable[[dict[str, object]], object] | None = None,
+        diagnostic_probe: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         if key not in advance_keys:
             choices = ", ".join(sorted(advance_keys))
@@ -147,18 +228,64 @@ class DialogueAdvancer:
         self.quartz_module = quartz_module
         self.accessibility_probe = accessibility_probe
         self.windows_sender = windows_sender or send_windows_key
+        self.diagnostic_handler = diagnostic_handler
+        self.diagnostic_probe = diagnostic_probe
 
     def advance(self) -> bool:
+        mechanism = "pynput"
         if self.platform == "darwin":
-            return self._advance_macos()
+            mechanism = "quartz"
+        elif self.platform == "win32":
+            mechanism = (
+                "sendinput" if self.windows_sender is send_windows_key else "custom"
+            )
+        diagnostics: dict[str, object] = {
+            "started_monotonic": time.monotonic(),
+            "mechanism": mechanism,
+            "input_key": self.key,
+            "success": False,
+        }
+        if self.platform in ("darwin", "win32"):
+            diagnostics["key_code"] = (
+                macos_virtual_keys
+                if self.platform == "darwin"
+                else windows_virtual_keys
+            )[self.key]
+        try:
+            success = self._advance(diagnostics)
+            diagnostics["success"] = success
+            return success
+        except BaseException as error:
+            diagnostics["error_type"] = type(error).__name__
+            raise
+        finally:
+            diagnostics["completed_monotonic"] = time.monotonic()
+            if self.diagnostic_handler is not None:
+                _report_diagnostic(self.diagnostic_handler, diagnostics)
+
+    def _advance(self, diagnostics: dict[str, object]) -> bool:
+        if self.platform == "darwin":
+            return self._advance_macos(diagnostics)
         if self.platform == "win32":
+            if self.windows_sender is send_windows_key:
+                return send_windows_key(
+                    windows_virtual_keys[self.key],
+                    _diagnostics=diagnostics,
+                    _diagnostic_probe=self.diagnostic_probe,
+                )
+            _collect_input_probe(diagnostics, self.diagnostic_probe)
             return self.windows_sender(windows_virtual_keys[self.key])
         controller = self.controller_factory()
         key = advance_keys[self.key]
-        _send_key_pair(lambda: controller.press(key), lambda: controller.release(key))
+        _send_key_pair(
+            lambda: controller.press(key),
+            lambda: controller.release(key),
+            diagnostics,
+            self.diagnostic_probe,
+        )
         return True
 
-    def _advance_macos(self) -> bool:
+    def _advance_macos(self, diagnostics: dict[str, object]) -> bool:
         # pynput asks Text Input Services for the current keyboard layout.
         # macOS asserts when that API is reached from live mode's timer thread.
         # Quartz posts virtual-key events directly and is safe from this worker.
@@ -186,5 +313,7 @@ class DialogueAdvancer:
         _send_key_pair(
             lambda: quartz.CGEventPost(quartz.kCGHIDEventTap, events[0]),
             lambda: quartz.CGEventPost(quartz.kCGHIDEventTap, events[1]),
+            diagnostics,
+            self.diagnostic_probe,
         )
         return True
