@@ -424,12 +424,14 @@ Remaining defects, missing measurements and native acceptance:
       Queue/lag/phase telemetry is already sufficient to locate the stall.
       Profiling is temporary investigation work under ignored
       `.codex/investigations/`, never a permanent application feature.
-      - [ ] Retain the next real overflow with the external instrumented-recorder
-            harness during sustained background generation and chapter Reading.
-            Preserve explicit game/Rust targets, capture actual writer CPU/state
-            and an overlapping external stack when available; report late/missing
-            sampling rather than interpreting it as healthy. Do not duplicate
-            process taps or replace the production failure/queue behavior.
+      - [ ] Prepare temporary measurements for the real combined chapter run
+            instead of a separate timed synthetic-workload probe. Observe the
+            single production recorder owner and its actual game/Rust helpers,
+            including worker replacement and arming before PCM; do not launch
+            duplicate taps or use the standalone probe's artificial Rust workload.
+            Agree temporary attachment wiring before implementation. Verify
+            correlated run/worker/helper/capture identities and useful evidence
+            before advancing the chapter. Report denied/late stack evidence.
       - [ ] Use the retained evidence to agree the actual root-cause correction,
             then implement it with regression tests. Final product changes must
             contain only that correction and tests, without temporary profiling
