@@ -347,6 +347,26 @@ Remaining defects, missing measurements and native acceptance:
       text/typing regression before the next combined native acceptance.
       Evidence: `input-delivery-20261101/gen9-gen10-pcm-followup.json`,
       `gen9-capture-video-offsets.json`, and `frames/gen9-*.png`.
+      Proposed implementation, awaiting agreement: keep explicit calibration and
+      automatically detected layout separate. Resolve every new positive divider
+      from the original calibration; only when no new layout is detected, reuse
+      the last automatic speaker/dialogue regions from the same capture context
+      instead of widening OCR to the whole crop. Never feed prior auto speaker
+      bounds into a new positive detection: their intersection would clip later
+      longer names. Own this retained layout in the reading/capture session,
+      shared with ordered replay, not in a global OCR worker. Reset on a new run,
+      target/profile/capture ROI/explicit-region change, image-size/layout epoch
+      change; dividerless sessions before any positive detection retain their
+      current path. Gates: positive -> blank -> positive, moving divider,
+      short/long names, absent narrator name, A/I/punctuation, early typed text,
+      dividerless startup and every context reset. Retained regions are geometry,
+      not proof of text. Qualify the failing transition before claiming the repair
+      complete; video reconstruction alone did not reproduce a/confidence78.
+      Explicitly review the behavior when a game genuinely abandons its divider
+      layout: retained calibration must not silently claim recognition outside
+      its dialogue regions, and changing calibration must release the old layout.
+      Offline evidence: `blank-scene-layout-20261101`; current bright-count and
+      speaker-stroke predicates both accept the blank background.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
