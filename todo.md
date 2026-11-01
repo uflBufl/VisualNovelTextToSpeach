@@ -331,29 +331,12 @@ Post-campaign triage (implementation still requires agreement):
 
 Remaining defects, missing measurements and native acceptance:
 
-- [ ] **OCR-01-01 - An empty scene can admit a one-letter background artifact.**
-      Native session56fe8245336a461595690f0603d80950, runa3da1d24ee51491fa6659072952d629f,
-      gen9 recognized U+0061 twice at confidence78 while the video shows no
-      dialogue block or text. Captures be73a275641e47dcb2f8e6ee63b552c4 and
-      50961b9955994d368f65beebb72d4b01, source-video offsets170.868664/171.571745s
-      with119.657ms clock uncertainty, were followed by no-match/live fallback:
-      144000 dialogue PCM frames at48kHz completed (not an announcement or an
-      unplayed candidate). Gen10 then played the actual indexed line14 separately.
-      Native acceptance: replay the actual line13 -> blank -> line14 transition
-      with retained OCR layout and verify no speech job/PCM is admitted for the
-      scenery. Preserve legitimate short replies, single-letter text, punctuation,
-      narrator absence and early prepared prefixes in the combined run. If false
-      text still passes, retain its original lossless capture and OCR evidence
-      before choosing an additional text-presence rule; do not add a blanket
-      minimum length, dictionary filter or timeout skip. Compressed saved-video
-      checks qualify geometry retention and reject these reconstructed blank
-      frames, but do not reproduce the original lossless a/confidence78.
-      Verify that changing calibration releases retained layout when the game
-      genuinely switches UI style. Existing dividerless sessions remain separate
-      from a previously established divider layout.
-      Evidence: `input-delivery-20261101/gen9-gen10-pcm-followup.json`,
-      `gen9-capture-video-offsets.json`, `frames/gen9-*.png`, and
-      `blank-scene-layout-20261101/production-session-results.json`.
+- [ ] **OCR-01-01 remaining native layout edges.** Verify legitimate single-letter
+      replies, punctuation, absent names and early prefixes under retained layout,
+      and calibration invalidation when a game genuinely changes UI style.
+      Keep dividerless startup distinct from a previously established divider.
+      Preserve original lossless evidence if another background artifact passes;
+      do not add minimum-length/dictionary filters or timeout skips.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
@@ -375,6 +358,14 @@ Remaining defects, missing measurements and native acceptance:
       game receipt. Preserve once-only input and control guards; do not add retries
       or change key-hold duration without a measured failure. Current positive
       short-run evidence does not explain the two historical misses.
+      New campaign525660ad06bf4e12a529a0956edaab44 reproduces the failure on26,
+      generation23, dispatch4ef175316597490bb347c5bb3111e7dc at538242.599463.
+      Quartz posts successfully; before/after foreground PID3077 matches selected
+      PID/window16034. Posting durations overlap20 successful preceding keys.
+      Video before/after shows the same complete phrase and continuation cue;
+      249 subsequent successful captures/OCRs remain on26. No retry or manual
+      key was sent. Investigate delivery/game event handling using this retained
+      recurrence; don't blame the recorder overflow125.5s later.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
@@ -424,14 +415,19 @@ Remaining defects, missing measurements and native acceptance:
       Queue/lag/phase telemetry is already sufficient to locate the stall.
       Profiling is temporary investigation work under ignored
       `.codex/investigations/`, never a permanent application feature.
-      - [ ] Prepare temporary measurements for the real combined chapter run
-            instead of a separate timed synthetic-workload probe. Observe the
-            single production recorder owner and its actual game/Rust helpers,
-            including worker replacement and arming before PCM; do not launch
-            duplicate taps or use the standalone probe's artificial Rust workload.
-            Agree temporary attachment wiring before implementation. Verify
-            correlated run/worker/helper/capture identities and useful evidence
-            before advancing the chapter. Report denied/late stack evidence.
+      Current native recurrence525660ad06bf4e12a529a0956edaab44: both consumers
+      overflow at538368.128907/538368.142669 (13.762ms apart), in CAF calls lasting
+      894.113ms/845.592ms. Thread CPU is only0.224625ms/0.110708ms; consistent
+      snapshots show TH_STATE_UNINTERRUPTIBLE at those instants, not CPU-heavy
+      execution or runnable waiting throughout. Clock checks and retained audio
+      offsets remain continuous before loss. This narrows the wait but does not
+      identify I/O, VM or another kernel dependency. Game helper exited before
+      stack collection; Rust sampler returned255 without a stack. Both overflows
+      preceded sampler launch. Do not treat failed profiling as a cause or proof.
+      - [ ] Choose and agree the next causal probe or justified buffer contract
+            change from retained evidence. The post-overflow sampling window was
+            too short here: qualify access to a live helper and any bounded early
+            trigger before another run. Keep all profiling temporary and external.
       - [ ] Use the retained evidence to agree the actual root-cause correction,
             then implement it with regression tests. Final product changes must
             contain only that correction and tests, without temporary profiling
@@ -469,6 +465,21 @@ Remaining defects, missing measurements and native acceptance:
       under load. Do not mask it by extending timeouts or advancing
       the game without speech. Gate: prepared mono playback starts and completes
       under the real generation/recording load, with truthful failure recovery.
+
+- [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
+      In the real chapter campaign with the original8 stages plus7 Bkornblume
+      stages,314001:11 routed to waiting-for-generation at538046.628683.
+      Publication538064.797 and prepared-source538065.542 used the existing WAV
+      (cache_source=shared-wav, synthesis_ms=0, matching prior audio SHA), about19s
+      later. Voice/reference remained the same; queue documents differ only in
+      global source_audio_semantic_evidence_id while their entry IDs are unchanged.
+      `_reuse_completed_audio` rejects that whole-document mismatch. Verify entry
+      authority before changing the reuse contract. Also account for the15s after
+      the preceding render: result-to-publication is only11ms, so that earlier
+      interval is not established projection work. Preserve cache/provenance validation
+      and reading priority; do not weaken identities or hide waiting as synthesis.
+      Evidence: session525660ad06bf4e12a529a0956edaab44,
+      run47e713e3c1de44659b1f92834e8b10ed, joba5bf53c0e131502c56d1a1a5.
 
 - [ ] **OCR-29-01 remaining native edges:** line43 passed in
       native-trial-20261031; retain only genuine typewriter-prefix and ambiguous
