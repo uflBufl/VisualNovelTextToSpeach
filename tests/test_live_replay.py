@@ -17,6 +17,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests import test_adaptive_ocr as ocr_fixtures
 from tests.replay_fixtures import write_sequence_replay_corpus
 from tests.story_fixtures import write_verified_source_story
 from tests.symlink_support import symlink_or_skip
@@ -26,6 +27,7 @@ from vntts.live_replay import (
     LiveReplayRunner,
     LiveReplaySequenceBinding,
     LiveReplaySequenceExpectation,
+    ReplayDialogue,
     ReplayFileBinding,
     ReplayFrameSource,
     _live_sequence_snapshot,
@@ -39,6 +41,49 @@ from vntts.live_replay import (
 
 
 class LiveReplayTest(unittest.TestCase):
+    def test_ordered_capture_retains_layout_without_changing_frame_receipts(self):
+        before, _ = ocr_fixtures.AdaptiveOCRTest.frame(name="X", text="A")
+        after, _ = ocr_fixtures.AdaptiveOCRTest.frame(
+            lines=2, name="Adar Llwch Gwin", text="I"
+        )
+        images = (before, Image.new("RGB", before.size, "black"), after)
+        for index, image in enumerate(images):
+            image.info["vntts_replay_declared_identity"] = (0, index)
+        frames = tuple(CapturedDialogFrame(image, 0) for image in images)
+        item = ReplayDialogue(
+            frames,
+            ("first", "blank", "last"),
+            ("0" * 64,) * 3,
+            ("ocr",) * 3,
+            "X",
+            "A",
+            None,
+            None,
+            True,
+            None,
+        )
+        source = ReplayFrameSource((item,))
+        first = source.capture()
+        source.acknowledge(first)
+        blank = source.capture()
+        self.assertIsNone(frames[1].ocr_regions)
+        self.assertIs(blank.image, frames[1].image)
+        self.assertIs(blank.ocr_regions, first.ocr_regions)
+        source.acknowledge(blank)
+        self.assertEqual(source.consumed, [[True, True, False]])
+        last = source.capture()
+        self.assertIs(last, frames[2])
+        self.assertNotEqual(
+            last.ocr_regions.dialogue.top, first.ocr_regions.dialogue.top
+        )
+        self.assertGreater(
+            last.ocr_regions.speaker.width, first.ocr_regions.speaker.width
+        )
+
+        independent = ReplayFrameSource((item,))
+        independent.frame_index = 1
+        self.assertIsNone(independent.capture().ocr_regions)
+
     def test_sequence_metrics_preserve_one_shot_input_counters(self):
         events = [
             {

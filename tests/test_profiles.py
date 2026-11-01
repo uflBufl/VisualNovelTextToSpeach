@@ -96,6 +96,21 @@ class GameProfileStoreTest(unittest.TestCase):
 
         self.assertIsNone(migrated.ocr_regions)
 
+    def test_resolved_ocr_regions_persist_only_calibration_rectangles(self):
+        regions = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.3, 0.2),
+            DialogRegion(0.1, 0.4, 0.7, 0.5),
+            _resolved=True,
+        )
+        profile = GameProfile.from_settings("Game", AppSettings(), ocr_regions=regions)
+
+        values = profile.to_mapping()
+        restored = GameProfile.from_mapping(values)
+
+        self.assertEqual(values["ocr_regions"], regions.to_json())
+        self.assertEqual(restored.ocr_regions, regions)
+        self.assertFalse(restored.ocr_regions._resolved)
+
     def test_settings_update_preserves_layout_but_region_recalibration_clears_it(self):
         regions = OCRRegions(
             speaker=DialogRegion(0.1, 0.6, 0.3, 0.08),

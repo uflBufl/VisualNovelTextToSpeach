@@ -106,6 +106,41 @@ class CapturedDialogFrame:
         )
 
 
+class DialogLayoutSession:
+    """Retain detected geometry until the ordered capture context changes."""
+
+    def __init__(self) -> None:
+        self._context: object = object()
+        self._regions: OCRRegions | None = None
+
+    def apply(
+        self, frame: CapturedDialogFrame, *, context: object = None
+    ) -> CapturedDialogFrame:
+        source = frame.provenance
+        signature = (
+            context,
+            frame.image.size,
+            None
+            if source is None
+            else (
+                source.run_id,
+                source.window_id,
+                source.owner_pid,
+                source.session_id,
+                source.layout_epoch,
+            ),
+        )
+        if signature != self._context:
+            self._context = signature
+            self._regions = None
+        regions = frame.ocr_regions
+        if regions is not None and regions._resolved:
+            self._regions = regions
+        elif self._regions is not None:
+            return replace(frame, ocr_regions=self._regions)
+        return frame
+
+
 def get_screenshot_directory(settings: ScreenshotSettings | None = None) -> Path:
     if settings is not None:
         return Path(settings.screenshot_directory).expanduser()
@@ -358,6 +393,8 @@ def capture_live_frame(
     ocr_regions: OCRRegions | None = None,
     run_id: str | None = None,
     provenance_handler: Callable[[CaptureProvenance], object] | None = None,
+    layout_session: DialogLayoutSession | None = None,
+    layout_context: object = None,
 ) -> CapturedDialogFrame:
     capture_started = clock()
     records: list[CaptureProvenance] = []
@@ -375,11 +412,19 @@ def capture_live_frame(
         run_id=run_id,
         provenance_handler=captured,
     )
-    return CapturedDialogFrame(
+    frame = CapturedDialogFrame(
         image=image,
         capture_ms=(clock() - capture_started) * 1000,
         ocr_regions=ocr_regions,
         provenance=records[-1] if records else None,
+    )
+    return (
+        frame
+        if layout_session is None
+        else layout_session.apply(
+            frame,
+            context=(run_id, capture_target, region, ocr_regions, layout_context),
+        )
     )
 
 

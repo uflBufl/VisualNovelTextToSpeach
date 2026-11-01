@@ -11,6 +11,7 @@ from PIL import Image
 
 from vntts.capture_provenance import CaptureProvenance
 from vntts.dialog_capture import CapturedDialogFrame
+from vntts.ocr import DialogRegion, OCRRegions
 from vntts.reading_diagnostics import (
     ReadingDiagnosticSession,
     retain_visual_wait_frames,
@@ -59,6 +60,12 @@ class ReadingVisualEvidenceTest(unittest.TestCase):
         )
 
     def test_original_pixels_and_geometry_survive_until_export(self):
+        regions = OCRRegions(
+            DialogRegion(0.1, 0.1, 0.3, 0.2),
+            DialogRegion(0.1, 0.4, 0.7, 0.5),
+            _resolved=True,
+        )
+        self.frame = replace(self.frame, ocr_regions=regions)
         self.retain()
         self.frame.image.putpixel((0, 0), (255, 255, 255))
         self.session.phase = "finalizing"
@@ -69,7 +76,7 @@ class ReadingVisualEvidenceTest(unittest.TestCase):
         metadata = json.loads((folder / "frames.json").read_text())["entries"][0]
         self.assertEqual(metadata["generation"], 3)
         self.assertEqual(metadata["frames"][0]["capture"]["window_id"], 1)
-        self.assertIn("ocr_regions", metadata["frames"][0])
+        self.assertEqual(metadata["frames"][0]["ocr_regions"], regions.to_json())
 
     def test_journal_only_foreign_and_failed_captures_never_retain_pixels(self):
         recording = self.session.recording

@@ -36,6 +36,7 @@ from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     DialogFrameEquivalence,
+    DialogLayoutSession,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
     recognize_live_frame,
@@ -365,6 +366,7 @@ class ReplayFrameSource:
         focus_probes: Sequence[bool] = (),
     ) -> None:
         self.dialogue = tuple(dialogue)
+        self.layout_session = DialogLayoutSession()
         self.dialogue_index = 0
         self.frame_index = 0
         self.advance_requests = 0
@@ -386,7 +388,7 @@ class ReplayFrameSource:
     def capture(self) -> CapturedDialogFrame:
         with self.condition:
             current = self.dialogue[self.dialogue_index]
-            return current.frames[self.frame_index]
+            return self.layout_session.apply(current.frames[self.frame_index])
 
     def get_geometry(self) -> WindowGeometry:
         image = self.capture().image

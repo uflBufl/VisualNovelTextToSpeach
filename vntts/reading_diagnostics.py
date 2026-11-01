@@ -8,7 +8,7 @@ import re
 import shutil
 import stat
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
@@ -224,7 +224,7 @@ def retain_visual_wait_frames(
                         "capture": frame.provenance.as_dict()
                         if frame.provenance
                         else None,
-                        "ocr_regions": asdict(frame.ocr_regions)
+                        "ocr_regions": frame.ocr_regions.to_json()
                         if frame.ocr_regions
                         else None,
                     }

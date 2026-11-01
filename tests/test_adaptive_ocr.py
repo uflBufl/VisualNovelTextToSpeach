@@ -16,6 +16,7 @@ from vntts.ocr import (
     OCRRegions,
     OCRResult,
     default_dialog_region,
+    get_ocr_regions,
     recognize_dialog_image_result,
     resolve_ocr_regions,
     speaker_glyphs_visible,
@@ -88,6 +89,49 @@ class AdaptiveOCRTest(unittest.TestCase):
         self.assertEqual((new_box[0], new_box[2]), (old_box[0], old_box[2]))
         self.assertEqual(new_box[3], old_box[3])
 
+    def test_resolved_regions_are_reused_without_detecting_the_frame_again(self):
+        image, _ = self.frame()
+        regions = resolve_ocr_regions(image)
+        self.assertTrue(regions._resolved)
+
+        with patch("vntts.ocr._dialogue_divider", side_effect=AssertionError):
+            self.assertIs(resolve_ocr_regions(image, regions), regions)
+            self.assertIs(CapturedDialogFrame(image, 0, regions).ocr_regions, regions)
+
+    def test_fresh_detection_uses_original_configuration_for_longer_names(self):
+        configured = OCRRegions(
+            DialogRegion(0.02, 0.1, 0.94, 0.2),
+            DialogRegion(0.02, 0.72, 0.95, 0.28),
+        )
+        short_image, _ = self.frame(name="X")
+        long_image, _ = self.frame(name="Adar Llwch Gwin")
+
+        short_regions = resolve_ocr_regions(short_image, configured)
+        long_regions = resolve_ocr_regions(long_image, configured)
+
+        self.assertFalse(configured._resolved)
+        self.assertGreater(
+            long_regions.speaker._pixel_box(*long_image.size)[2],
+            short_regions.speaker._pixel_box(*short_image.size)[2],
+        )
+        self.assertEqual(long_regions.speaker, resolve_ocr_regions(long_image).speaker)
+
+    def test_in_memory_preview_becomes_fresh_profile_calibration(self):
+        preview_image, _ = self.frame(name="X")
+        preview_regions = resolve_ocr_regions(preview_image)
+        configured = get_ocr_regions(
+            default_dialog_region, default_dialog_region, preview_regions
+        )
+        long_image, divider = self.frame(lines=3, name="Adar Llwch Gwin")
+
+        regions = resolve_ocr_regions(long_image, configured)
+
+        self.assertTrue(preview_regions._resolved)
+        self.assertFalse(configured._resolved)
+        self.assertTrue(regions._resolved)
+        self.assertNotEqual(regions.dialogue.top, preview_regions.dialogue.top)
+        self.assertGreater(regions.dialogue._pixel_box(*long_image.size)[1], divider)
+
     def test_contiguous_five_row_divider_is_one_rule_in_both_polarities(self):
         for inverted in (False, True):
             with self.subTest(inverted=inverted):
@@ -136,7 +180,9 @@ class AdaptiveOCRTest(unittest.TestCase):
             elif variant == "outside":
                 draw.line((0, 60, 35, 60), fill="white")
             with self.subTest(variant=variant):
-                self.assertEqual(resolve_ocr_regions(image, configured), configured)
+                regions = resolve_ocr_regions(image, configured)
+                self.assertEqual(regions, configured)
+                self.assertFalse(regions._resolved)
                 self.assertIsNone(resolve_ocr_regions(image))
 
     def test_name_crop_stops_at_distant_art_but_retains_spaces_within_name(self):

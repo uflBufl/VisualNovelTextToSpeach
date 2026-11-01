@@ -22,6 +22,7 @@ from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.dialog_capture import (
+    DialogLayoutSession,
     capture_live_frame,
     detect_standalone_ellipsis_frame,
     ellipsis_speaker_hint,
@@ -850,6 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return result.character or "Narrator", result.text
 
+        layout_session = DialogLayoutSession()
         print("Capturing accepted OCR frames; press Ctrl+C to finish and validate")
         try:
             result = capture_replay_session(
@@ -859,6 +861,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     capture_target,
                     region=region,
                     ocr_regions=ocr_regions,
+                    layout_session=layout_session,
                 ),
                 recognize_frame=recognize,
                 interval_seconds=interval_seconds,

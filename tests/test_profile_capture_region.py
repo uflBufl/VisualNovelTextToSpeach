@@ -2,12 +2,15 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PIL import Image
 from PySide6.QtWidgets import QApplication
 
+from tests import test_adaptive_ocr
 from vntts.controller import AppController
 from vntts.ocr import (
     DialogRegion,
@@ -56,6 +59,52 @@ class ProfileCaptureRegionTest(unittest.TestCase):
         override = DialogRegion(0.2, 0.4, 0.7, 0.4)
         with patch.dict(os.environ, {"VNTTS_DIALOG_REGION": "0.2,0.4,0.7,0.4"}):
             self.assertEqual(get_dialog_region(profile_region), override)
+
+    def test_controller_geometry_resets_with_profile_run_and_calibration(self):
+        with TemporaryDirectory() as directory:
+            store = GameProfileStore(Path(directory) / "profiles.json")
+            region = DialogRegion(0, 0.6, 1, 0.4)
+            first = store.create("First", AppSettings(), region=region)
+            second = store.create("Second", AppSettings(), region=region)
+            controller = AppController(first.apply(AppSettings()), profile_store=store)
+            controller.live_reader = SimpleNamespace(run_id="first-run")
+            detected, _ = test_adaptive_ocr.AdaptiveOCRTest.frame()
+            blank = Image.new("RGB", detected.size)
+            configured = OCRRegions(
+                DialogRegion(0.1, 0.1, 0.3, 0.2),
+                DialogRegion(0.1, 0.4, 0.7, 0.5),
+            )
+            with patch("vntts.dialog_capture.capture_dialog") as capture:
+                capture.return_value = (detected, None)
+                learned = controller._capture_live_frame()
+                capture.return_value = (blank, None)
+                self.assertIs(
+                    controller._capture_live_frame().ocr_regions, learned.ocr_regions
+                )
+
+                controller.settings = second.apply(AppSettings())
+                self.assertIsNone(controller._capture_live_frame().ocr_regions)
+
+                capture.return_value = (detected, None)
+                controller._capture_live_frame()
+                capture.return_value = (blank, None)
+                controller.live_reader.run_id = "second-run"
+                self.assertIsNone(controller._capture_live_frame().ocr_regions)
+
+                capture.return_value = (detected, None)
+                controller._capture_live_frame()
+                capture.return_value = (blank, None)
+                calibrated = DialogRegion(0, 0.5, 1, 0.5)
+                store.update_region(second.id, calibrated)
+                self.assertIsNone(controller._capture_live_frame().ocr_regions)
+
+                capture.return_value = (detected, None)
+                controller._capture_live_frame()
+                capture.return_value = (blank, None)
+                store.update_capture_regions(second.id, calibrated, configured)
+                self.assertEqual(
+                    controller._capture_live_frame().ocr_regions, configured
+                )
 
     def test_configured_layout_is_captured_with_its_profile_and_manual_diagnostics(
         self,

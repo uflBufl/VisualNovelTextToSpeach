@@ -339,34 +339,21 @@ Remaining defects, missing measurements and native acceptance:
       with119.657ms clock uncertainty, were followed by no-match/live fallback:
       144000 dialogue PCM frames at48kHz completed (not an announcement or an
       unplayed candidate). Gen10 then played the actual indexed line14 separately.
-      Inspect the calibrated ROI, presence gate, OCR glyph evidence and admission
-      through the blank-scene transition before proposing a shared repair.
-      Preserve legitimate short replies, single-letter text, symbols and early
-      prepared prefixes; do not hide the cause with a blanket minimum length,
-      English dictionary filter or timeout skip. Retain a deterministic scene/
-      text/typing regression before the next combined native acceptance.
+      Native acceptance: replay the actual line13 -> blank -> line14 transition
+      with retained OCR layout and verify no speech job/PCM is admitted for the
+      scenery. Preserve legitimate short replies, single-letter text, punctuation,
+      narrator absence and early prepared prefixes in the combined run. If false
+      text still passes, retain its original lossless capture and OCR evidence
+      before choosing an additional text-presence rule; do not add a blanket
+      minimum length, dictionary filter or timeout skip. Compressed saved-video
+      checks qualify geometry retention and reject these reconstructed blank
+      frames, but do not reproduce the original lossless a/confidence78.
+      Verify that changing calibration releases retained layout when the game
+      genuinely switches UI style. Existing dividerless sessions remain separate
+      from a previously established divider layout.
       Evidence: `input-delivery-20261101/gen9-gen10-pcm-followup.json`,
-      `gen9-capture-video-offsets.json`, and `frames/gen9-*.png`.
-      Proposed implementation, awaiting agreement: keep explicit calibration and
-      automatically detected layout separate. Resolve every new positive divider
-      from the original calibration; only when no new layout is detected, reuse
-      the last automatic speaker/dialogue regions from the same capture context
-      instead of widening OCR to the whole crop. Never feed prior auto speaker
-      bounds into a new positive detection: their intersection would clip later
-      longer names. Own this retained layout in the reading/capture session,
-      shared with ordered replay, not in a global OCR worker. Reset on a new run,
-      target/profile/capture ROI/explicit-region change, image-size/layout epoch
-      change; dividerless sessions before any positive detection retain their
-      current path. Gates: positive -> blank -> positive, moving divider,
-      short/long names, absent narrator name, A/I/punctuation, early typed text,
-      dividerless startup and every context reset. Retained regions are geometry,
-      not proof of text. Qualify the failing transition before claiming the repair
-      complete; video reconstruction alone did not reproduce a/confidence78.
-      Explicitly review the behavior when a game genuinely abandons its divider
-      layout: retained calibration must not silently claim recognition outside
-      its dialogue regions, and changing calibration must release the old layout.
-      Offline evidence: `blank-scene-layout-20261101`; current bright-count and
-      speaker-stroke predicates both accept the blank background.
+      `gen9-capture-video-offsets.json`, `frames/gen9-*.png`, and
+      `blank-scene-layout-20261101/production-session-results.json`.
 
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:

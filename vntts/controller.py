@@ -39,6 +39,7 @@ from vntts.dialog_capture import (
     CapturedDialogFrame,
     DiagnosticSnapshot,
     DialogFrameEquivalence,
+    DialogLayoutSession,
     OCRUncertainError,
     capture_live_frame,
     dialog_glyphs_visible,
@@ -649,6 +650,7 @@ class AppController:
         self.error_handler = error_handler
         self._initialize_live_sequence_state()
         self.capture_target = self._create_capture_target()
+        self.live_dialog_layout = DialogLayoutSession()
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         self.tts = None
         self.voice_router = None
@@ -1131,6 +1133,8 @@ class AppController:
             ocr_regions=self._capture_ocr_regions(),
             run_id=getattr(self.live_reader, "run_id", None),
             provenance_handler=self._record_capture_provenance,
+            layout_session=self.live_dialog_layout,
+            layout_context=self.settings.active_profile_id,
         )
 
     def _record_capture_provenance(self, provenance: object) -> None:

@@ -191,6 +191,7 @@ class OCRRegions:
 
     speaker: DialogRegion
     dialogue: DialogRegion
+    _resolved: bool = field(default=False, kw_only=True, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.speaker, DialogRegion) or not isinstance(
@@ -224,6 +225,8 @@ def resolve_ocr_regions(
     image: Image.Image, configured: OCRRegions | None = None
 ) -> OCRRegions | None:
     """Follow an unambiguous thin divider; retain calibration on other layouts."""
+    if configured is not None and configured._resolved:
+        return configured
     width, height = image.size
     if width < 64 or height < 24:
         return configured
@@ -261,7 +264,6 @@ def resolve_ocr_regions(
     name_box = _nameplate_bounds(image, (name_left, name_top, name_right, name_bottom))
     if configured is not None:
         x, _, end_x, _ = configured.speaker._pixel_box(width, height)
-        # Detect on the same pixels even when the caller already resolved this frame.
         if max(x, name_box[0]) < min(end_x, name_box[2]):
             name_box = (
                 max(x, name_box[0]),
@@ -282,7 +284,9 @@ def resolve_ocr_regions(
         )
 
     return OCRRegions(
-        region(name_box), region((text_left, band_bottom, text_right, text_bottom))
+        region(name_box),
+        region((text_left, band_bottom, text_right, text_bottom)),
+        _resolved=True,
     )
 
 
@@ -688,7 +692,13 @@ def get_ocr_regions(
     profile_regions: OCRRegions | None = None,
 ) -> OCRRegions | None:
     if profile_region is not None:
-        return profile_regions if capture_region == profile_region else None
+        if capture_region != profile_region:
+            return None
+        return (
+            replace(profile_regions, _resolved=False)
+            if profile_regions is not None and profile_regions._resolved
+            else profile_regions
+        )
     path = get_dialog_region_file()
     try:
         if not path.is_file() or capture_region != load_dialog_region(path):

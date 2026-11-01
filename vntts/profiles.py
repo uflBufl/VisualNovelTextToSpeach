@@ -151,7 +151,11 @@ class GameProfile:
         )
 
     def to_mapping(self) -> dict[str, object]:
-        return preference_values(asdict(self))
+        values = asdict(self)
+        values["ocr_regions"] = (
+            self.ocr_regions.to_json() if self.ocr_regions is not None else None
+        )
+        return preference_values(values)
 
     def apply(self, settings: AppSettings) -> AppSettings:
         settings = settings.updated(
