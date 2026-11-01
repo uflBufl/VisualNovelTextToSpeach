@@ -21,13 +21,13 @@ from vntts.cleanup import cleanup_on_exit
 from vntts.dialog import is_empty
 from vntts.dialog_capture import (
     DiagnosticSnapshot,
+    DialogFrameEquivalence,
     OCRError,
     OCRUncertainError,
     ScreenCaptureError,
     TTSInitializationError,
     analyze_dialog_snapshot,
     dialog_completion_cue_visible,
-    dialog_frames_equivalent,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
     fingerprint_dialog_render_activity,
@@ -532,9 +532,13 @@ class RuntimeLifecycleComponent:
             playback_executor=controller.playback_executor,
             capture_frame=controller._capture_live_frame,
             recognize_frame=controller._recognize_live_frame,
+            frame_routed=controller._bind_live_frame_evidence,
             ocr_uncertain=controller._admit_live_ocr_uncertainty,
             frame_fingerprint=fingerprint_dialog_frame,
-            frame_equivalent=dialog_frames_equivalent,
+            frame_equivalent=DialogFrameEquivalence(
+                controller.settings.ocr_minimum_confidence,
+                controller._live_frame_evidence_context,
+            ),
             frame_render_fingerprint=fingerprint_dialog_render_activity,
             frame_presence=dialog_glyphs_visible,
             frame_completion=dialog_completion_cue_visible,
@@ -678,6 +682,10 @@ class RuntimeLifecycleComponent:
         tracker_options = live_configuration["tracker_options"]
         reader.interval_seconds = interval_seconds
         reader.tracker_options = dict(tracker_options)
+        reader.frame_equivalent = DialogFrameEquivalence(
+            controller.settings.ocr_minimum_confidence,
+            controller._live_frame_evidence_context,
+        )
         reader.require_visible_auto_advance = True
         reader.set_auto_advance(controller._live_auto_advance_callback())
         reader.auto_advance_delay_seconds = get_auto_advance_delay_seconds(

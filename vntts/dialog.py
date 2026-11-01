@@ -10,6 +10,55 @@ NAME_PUNCTUATION = "-'’"
 Image = TypeVar("Image")
 
 
+def bounded_levenshtein(left: str, right: str, limit: int) -> int:
+    """Return the edit distance, or limit + 1 when it exceeds the cutoff."""
+    overflow = limit + 1
+    if abs(len(left) - len(right)) > limit:
+        return overflow
+    previous = {column: column for column in range(min(len(right), limit) + 1)}
+    for row, character in enumerate(left, 1):
+        current = {0: row} if row <= limit else {}
+        for column in range(max(1, row - limit), min(len(right), row + limit) + 1):
+            current[column] = min(
+                current.get(column - 1, overflow) + 1,
+                previous.get(column, overflow) + 1,
+                previous.get(column - 1, overflow) + (character != right[column - 1]),
+            )
+        if min(current.values(), default=overflow) > limit:
+            return overflow
+        previous = current
+    return min(previous.get(len(right), overflow), overflow)
+
+
+def _one_edit_text_match(left: str, right: str) -> bool:
+    return left == right or (
+        min(sum(c.isalnum() for c in left), sum(c.isalnum() for c in right)) >= 3
+        and bounded_levenshtein(left, right, 1) <= 1
+    )
+
+
+def ocr_texts_equivalent(
+    left: str, right: str, *, punctuation_fallback: bool = False
+) -> bool:
+    left, right = (
+        " ".join(normalize("NFKC", value).casefold().split()) for value in (left, right)
+    )
+    if _one_edit_text_match(left, right):
+        return True
+    if not punctuation_fallback or not all(
+        any(c.isalnum() for c in value) for value in (left, right)
+    ):
+        return False
+    # Compare identity keys only; symbol-only replies and spoken text stay intact.
+    left, right = (
+        " ".join(
+            "".join(" " if category(c).startswith("P") else c for c in value).split()
+        )
+        for value in (left, right)
+    )
+    return _one_edit_text_match(left, right)
+
+
 def is_empty(text: str | None) -> bool:
     return text is None or text == "" or text.isspace()
 

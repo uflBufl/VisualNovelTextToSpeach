@@ -37,6 +37,7 @@ from vntts.dialog import is_symbol_only_text, speak_dialog
 from vntts.dialog_capture import (
     CapturedDialogFrame,
     DiagnosticSnapshot,
+    DialogFrameEquivalence,
     OCRUncertainError,
     capture_live_frame,
     dialog_glyphs_visible,
@@ -1170,6 +1171,35 @@ class AppController:
             profile.ocr_regions if profile is not None else None,
         )
 
+    def _live_frame_evidence_context(self) -> tuple[str, str | None] | None:
+        reader = self.live_reader
+        if not isinstance(reader, LiveDialogReader):
+            return None
+        return reader.run_id, self._stable_live_frame_owner()
+
+    def _bind_live_frame_evidence(
+        self,
+        frame: object,
+        fingerprint: object,
+        _route_kind: str,
+        _character: str | None,
+        _text: str,
+    ) -> None:
+        with self.story_cursor_lock:
+            reader = self.live_reader
+            context = self._live_frame_evidence_context()
+            if isinstance(reader, LiveDialogReader) and context is not None:
+                with reader.state_lock:
+                    if (
+                        reader.routed_frame is frame
+                        and reader.routed_frame_fingerprint == fingerprint
+                        and reader.run_id == context[0]
+                        and not reader.observation_uncertain
+                        and isinstance(reader.frame_equivalent, DialogFrameEquivalence)
+                    ):
+                        # Fresh route admission can establish a new story owner.
+                        reader.frame_equivalent.bind_route(frame, context)
+
     def _recognize_live_frame(
         self, frame: object
     ) -> tuple[str, str] | RecognizedDialog:
@@ -1197,10 +1227,20 @@ class AppController:
         raw_result: OCRResult | None = None
         canonical_line: ChapterDialogue | None = None
         canonical_exact = False
+        reader = self.live_reader
+        comparison = (
+            reader.frame_equivalent if isinstance(reader, LiveDialogReader) else None
+        )
+        evidence_context = self._live_frame_evidence_context()
 
         def observe_raw_result(result: OCRResult) -> None:
             nonlocal raw_result
             raw_result = result
+            if (
+                isinstance(comparison, DialogFrameEquivalence)
+                and evidence_context is not None
+            ):
+                comparison.record(frame, result, evidence_context)
 
         def resolve_result(result: OCRResult) -> OCRResult:
             nonlocal canonical_line, canonical_exact

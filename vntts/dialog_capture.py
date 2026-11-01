@@ -6,7 +6,7 @@ import sys
 import warnings
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import blake2b
 from pathlib import Path
@@ -20,9 +20,16 @@ from PIL import Image, ImageFilter
 from PIL.PngImagePlugin import PngInfo
 from scipy.ndimage import label, maximum_filter
 
+from vntts.audio_cache import BoundedCache
 from vntts.capture_provenance import CaptureProvenance
 from vntts.diagnostics import DiagnosticSnapshot
-from vntts.dialog import is_empty, is_symbol_only_text, speak_dialog, symbol_text_key
+from vntts.dialog import (
+    is_empty,
+    is_symbol_only_text,
+    ocr_texts_equivalent,
+    speak_dialog,
+    symbol_text_key,
+)
 from vntts.native_capture import NativeFrame
 from vntts.ocr import (
     DialogRegion,
@@ -551,6 +558,61 @@ def dialog_frames_equivalent(previous: object, current: object) -> bool:
             ):
                 return True
     return False
+
+
+class DialogFrameEquivalence:
+    """Use existing raw OCR for known pairs; never recognize inside a comparison."""
+
+    def __init__(
+        self,
+        minimum_confidence: float,
+        context: Callable[[], tuple[str, str | None] | None],
+    ) -> None:
+        self.minimum_confidence = minimum_confidence
+        self.context = context
+        self._results: BoundedCache[
+            int, tuple[object, tuple[str, str | None], OCRResult]
+        ] = BoundedCache(8)
+
+    def record(
+        self, frame: object, result: OCRResult, context: tuple[str, str | None]
+    ) -> None:
+        self._results.put(
+            id(frame),
+            (frame, context, replace(result, processed_image=None, speaker_image=None)),
+        )
+
+    def bind_route(self, frame: object, context: tuple[str, str | None]) -> None:
+        evidence = self._results.get(id(frame))
+        if (
+            evidence is not None
+            and evidence[0] is frame
+            and evidence[1][0] == context[0]
+        ):
+            self._results.put(id(frame), (frame, context, evidence[2]))
+
+    def __call__(self, previous: object, current: object) -> bool:
+        # Touch the fixed route anchor even while the latest frame lacks OCR.
+        before = self._results.get(id(previous))
+        after = self._results.get(id(current))
+        context = self.context()
+        if (
+            context is not None
+            and before is not None
+            and after is not None
+            and before[0] is previous
+            and after[0] is current
+            and before[1] == after[1] == context
+            and before[2].is_confident(self.minimum_confidence)
+            and after[2].is_confident(self.minimum_confidence)
+        ):
+            equivalent = ocr_texts_equivalent(
+                before[2].character, after[2].character
+            ) and ocr_texts_equivalent(
+                before[2].text, after[2].text, punctuation_fallback=True
+            )
+            return equivalent and self.context() == context
+        return dialog_frames_equivalent(previous, current)
 
 
 def fingerprint_dialog_render_activity(frame: object) -> bytes:

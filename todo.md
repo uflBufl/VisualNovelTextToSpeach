@@ -571,25 +571,21 @@ Remaining defects, missing measurements and native acceptance:
        Remaining speaker work: distinguish absent names from visible unreadable
        names on retained-02/04 using the saved crops and faint-name fixtures;
        preserve unreadable and single-glyph-name guards; requiring an aligned
-       glyph pair is not an acceptable repair. Review only the five residual
+       glyph pair is not an acceptable repair. Review only the four residual
        pairs in `dialogue-change-benchmark-20261101/remaining-failures.html`.
-       Agree and implement the measured punctuation-key fallback for retained-01
-       after the ordinary one-edit comparison, preserving spoken text and
-       punctuation-only dialogue keys. Qualify genuine punctuation differences,
-       including numeric separators, before wiring it into live frame ownership.
-       Before implementation, agree a semantic-evidence design using the existing
-       tracker and OCR stream; do not call OCR recursively from frame_equivalent.
-       Frame-pair prototypes do not establish occurrence identity or freshness at
-       key dispatch. Use the approved option1 with one Levenshtein edit separately
-       for name and dialogue when both strings have at least3 alphanumeric
-       characters; reuse the existing distance helper. Rare identical consecutive
-       or one-edit-different dialogue is an accepted limit, not a separate
-       implementation gate. The frozen fuzzy follow-up recovers one synthetic
-       noisy pair but leaves100/101 unconfirmed, including spurious/unreadable
-       OCR names. Qualify these cases, genuine speaker changes outside the
-       accepted edit budget and automatic transitions before replacing either
-       live admission barrier. Keep the confidence gate and ownership guards;
-       the approved fuzzy tolerance does not authorize keys on unreadable text.
+       Qualify cached raw-OCR comparison in the combined native run: retain the
+       routed source anchor through playback, initial/new story ownership and
+       Restart/Pause/Stop; inspect100/101, actual speaker changes and automatic
+       transitions under background generation. Frame-pair results do not prove
+       action-time freshness. Image checks remain necessary when either frame
+       lacks current-run/owner confident OCR. Exercise animation faster than OCR:
+       an unrecognized latest must still refuse freshness, even when the source
+       text matches an older anchor. Agree a separate freshness design before
+       replacing this remaining image gate; never recursively invoke OCR from
+       frame_equivalent. Rare identical consecutive or one-edit-different
+       dialogue is an accepted limit, not a separate implementation gate. Keep
+       the confidence and ownership guards: fuzzy/punctuation tolerance does not
+       authorize keys on unreadable text or establish a new occurrence.
        Include the benchmark's synthetic75-on25 newly added punctuation in the
        safety corpus: the current160-floor comparator accepts it as unchanged.
        Qualify a correction without blindly lowering the global pixel threshold.

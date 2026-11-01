@@ -8,9 +8,9 @@ from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
-    _bounded_levenshtein,
     _normalize_without_latin_diacritics,
 )
+from vntts.dialog import bounded_levenshtein
 
 
 def dialogue(text, line_id="line", *, speaker="Ada", sequence=1):
@@ -461,7 +461,7 @@ class BoundedLevenshteinTest(unittest.TestCase):
             for limit in range(4):
                 with self.subTest(left=left, right=right, limit=limit):
                     self.assertEqual(
-                        _bounded_levenshtein(left, right, limit),
+                        bounded_levenshtein(left, right, limit),
                         min(distance, limit + 1),
                     )
 

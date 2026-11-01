@@ -20,7 +20,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.cleanup import temporary_directory
-from vntts.dialog import is_symbol_only_text, symbol_text_key
+from vntts.dialog import bounded_levenshtein, is_symbol_only_text, symbol_text_key
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_text, read_regular_bytes
@@ -495,7 +495,7 @@ class ChapterVoicePreloader:
             ranked = sorted(
                 (
                     (
-                        _bounded_levenshtein(
+                        bounded_levenshtein(
                             observed, self.diacritic_folded_text[row], 4
                         ),
                         row,
@@ -880,26 +880,6 @@ class ChapterVoicePreloader:
         return ChapterMatch(
             best_row.chapter, best_row.sequence, best_score, best_row.story_order
         )
-
-
-def _bounded_levenshtein(left: str, right: str, limit: int) -> int:
-    """Return the edit distance, or limit + 1 when it exceeds the cutoff."""
-    overflow = limit + 1
-    if abs(len(left) - len(right)) > limit:
-        return overflow
-    previous = {column: column for column in range(min(len(right), limit) + 1)}
-    for row, character in enumerate(left, 1):
-        current = {0: row} if row <= limit else {}
-        for column in range(max(1, row - limit), min(len(right), row + limit) + 1):
-            current[column] = min(
-                current.get(column - 1, overflow) + 1,
-                previous.get(column, overflow) + 1,
-                previous.get(column - 1, overflow) + (character != right[column - 1]),
-            )
-        if min(current.values(), default=overflow) > limit:
-            return overflow
-        previous = current
-    return min(previous.get(len(right), overflow), overflow)
 
 
 _PROTECTED_WORDS = frozenset(
