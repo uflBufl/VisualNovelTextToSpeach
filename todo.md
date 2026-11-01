@@ -331,6 +331,23 @@ Post-campaign triage (implementation still requires agreement):
 
 Remaining defects, missing measurements and native acceptance:
 
+- [ ] **OCR-01-01 - An empty scene can admit a one-letter background artifact.**
+      Native session56fe8245336a461595690f0603d80950, runa3da1d24ee51491fa6659072952d629f,
+      gen9 recognized U+0061 twice at confidence78 while the video shows no
+      dialogue block or text. Captures be73a275641e47dcb2f8e6ee63b552c4 and
+      50961b9955994d368f65beebb72d4b01, source-video offsets170.868664/171.571745s
+      with119.657ms clock uncertainty, were followed by no-match/live fallback:
+      144000 dialogue PCM frames at48kHz completed (not an announcement or an
+      unplayed candidate). Gen10 then played the actual indexed line14 separately.
+      Inspect the calibrated ROI, presence gate, OCR glyph evidence and admission
+      through the blank-scene transition before proposing a shared repair.
+      Preserve legitimate short replies, single-letter text, symbols and early
+      prepared prefixes; do not hide the cause with a blanket minimum length,
+      English dictionary filter or timeout skip. Retain a deterministic scene/
+      text/typing regression before the next combined native acceptance.
+      Evidence: `input-delivery-20261101/gen9-gen10-pcm-followup.json`,
+      `gen9-capture-video-offsets.json`, and `frames/gen9-*.png`.
+
 - [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
       Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
       line54 completed169344PCM frames; one key at452140.594 did not change the
@@ -344,23 +361,13 @@ Remaining defects, missing measurements and native acceptance:
       Earlier37 also timed out after its dispatched key451686.034, before Close
       stopped Reading at451700.582; distinguish the missing transition from the
       separate preparation lifecycle defect.
-      Native acceptance: correlate run/generation and one dispatch ID
-      with key-down/key-up call boundaries and their actual interval, native
-      errors, and selected/foreground process immediately before and after
-      posting. Join these to the existing transition/timeout events and video.
-      OS posting success is not game receipt; compare one automatic and one
-      operator-triggered dispatch using the same sender in a short episode.
-      Do not add retries or change key-hold duration before this comparison.
-      Inspect `key-input` and its correlated dispatch/confirmation/timeout in
-      both the normal timeline and saved JSONL. Verify before/after actual focus
-      identity and native posting spans; logging occurs after release. Windows
-      reports a two-event batch, not separate OS down/up receipt times. Exercise
-      one explicit `user-diagnostic` request through the same fresh-OCR guarded
-      path, with a selected game and ready positive generation. A queued automatic
-      timer must not overwrite that request or send another key. Operator requests
-      remain disabled by Pause/Stop, missing focus, disabled auto advance and
-      audio-manual. Establish the reason from this evidence before changing input
-      policy; current recordings cannot explain the two historical misses.
+      Reproduce37/54 or retain the next recurrence during the combined native
+      chapter under real background generation. Inspect its `key-input` UUID,
+      run/generation, native posting spans/errors and selected/foreground identity
+      against video and transition/timeout evidence. OS posting success is not
+      game receipt. Preserve once-only input and control guards; do not add retries
+      or change key-hold duration without a measured failure. Current positive
+      short-run evidence does not explain the two historical misses.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
