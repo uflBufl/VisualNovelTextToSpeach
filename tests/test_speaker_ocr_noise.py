@@ -113,12 +113,15 @@ class SpeakerOCRNoiseTest(unittest.TestCase):
                     self.assertFalse(result.is_confident())
                     self.assertEqual(result.speaker_note, "")
 
-    def test_visible_empty_unreadable_name_stays_uncertain_in_both_backends(self):
+    def test_empty_name_uses_narrator_and_dialogue_confidence_in_both_backends(self):
         for backend in ("tesseract", "rapidocr"):
-            with self.subTest(backend=backend):
-                result = self.recognize(backend, "", 0, 95)
-                self.assertEqual(result.character, "Narrator")
-                self.assertEqual(result.confidence, 0)
-                self.assertEqual(result.speaker_confidence, 0)
-                self.assertFalse(result.is_confident())
-                self.assertIn("could not be read", result.speaker_note)
+            for dialogue_confidence in (25, 95):
+                with self.subTest(backend=backend, dialogue=dialogue_confidence):
+                    result = self.recognize(backend, "", 0, dialogue_confidence)
+                    self.assertEqual(
+                        (result.character, result.text), ("Narrator", "Hey!")
+                    )
+                    self.assertEqual(result.confidence, dialogue_confidence)
+                    self.assertIsNone(result.speaker_confidence)
+                    self.assertEqual(result.is_confident(), dialogue_confidence >= 60)
+                    self.assertEqual(result.speaker_note, "")

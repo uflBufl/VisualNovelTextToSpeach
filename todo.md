@@ -568,15 +568,11 @@ Remaining defects, missing measurements and native acceptance:
        session limits and reporting dropped evidence/overhead. A short targeted
        scene suffices for diagnosis; defer a full chapter until causal repairs.
        Never discard small components globally: they can be real punctuation.
-       Remaining speaker work: distinguish absent names from visible unreadable
-       names on retained-02/04 using the saved crops and faint-name fixtures;
-       preserve unreadable and single-glyph-name guards; requiring an aligned
-       glyph pair is not an acceptable repair. Review only the four residual
-       pairs in `dialogue-change-benchmark-20261101/remaining-failures.html`.
        Qualify cached raw-OCR comparison in the combined native run: retain the
        routed source anchor through playback, initial/new story ownership and
-       Restart/Pause/Stop; inspect100/101, actual speaker changes and automatic
-       transitions under background generation. Frame-pair results do not prove
+       Restart/Pause/Stop; inspect100/101, empty-name Narrator fallback, actual
+       speaker changes and automatic transitions under background generation.
+       Frame-pair results do not prove
        action-time freshness. Image checks remain necessary when either frame
        lacks current-run/owner confident OCR. Exercise animation faster than OCR:
        an unrecognized latest must still refuse freshness, even when the source

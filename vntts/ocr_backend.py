@@ -120,13 +120,11 @@ class RapidOCRBackend:
             dialogue_image, dialogue_lines, dialogue_confidence = self._recognize_image(
                 ocr_regions.dialogue.crop(image)
             )
-            has_speaker_glyphs = speaker_glyphs_visible(speaker_image)
             speaker_text = (
                 " ".join(text for _box, text, _score in speaker_lines)
-                if has_speaker_glyphs
+                if speaker_glyphs_visible(speaker_image)
                 else ""
             )
-            unreadable_speaker = has_speaker_glyphs and not speaker_text.strip()
             speaker_noise = is_speaker_ocr_noise(
                 speaker_text, speaker_confidence, minimum_confidence
             )
@@ -136,22 +134,16 @@ class RapidOCRBackend:
                 ),
                 " ".join(text for _box, text, _score in dialogue_lines),
                 min(speaker_confidence, dialogue_confidence)
-                if (speaker_text or unreadable_speaker) and not speaker_noise
+                if speaker_text and not speaker_noise
                 else dialogue_confidence,
                 self.name,
                 1,
                 processed_image=dialogue_image,
                 speaker_image=speaker_image,
-                speaker_confidence=(
-                    speaker_confidence if speaker_text or unreadable_speaker else None
-                ),
+                speaker_confidence=speaker_confidence if speaker_text else None,
                 dialogue_confidence=dialogue_confidence,
                 speaker_note=(
-                    f"Name OCR noise ignored: {speaker_text}"
-                    if speaker_noise
-                    else "Visible name could not be read"
-                    if unreadable_speaker
-                    else ""
+                    f"Name OCR noise ignored: {speaker_text}" if speaker_noise else ""
                 ),
             )
         processed_image, lines, confidence = self._recognize_image(image)

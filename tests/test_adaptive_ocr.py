@@ -200,7 +200,7 @@ class AdaptiveOCRTest(unittest.TestCase):
                 self.assertEqual(result.confidence, 96)
                 self.assertTrue(result.is_confident())
 
-    def test_real_unanchored_names_beside_wide_scenery_remain_unreadable(self):
+    def test_empty_ocr_of_visible_unanchored_names_uses_narrator(self):
         for name in ("X", "I", "J", "L", "T", "???", "6", "37"):
             for font_size in (10, 18):
                 for fill in ("white", "#181818"):
@@ -234,9 +234,13 @@ class AdaptiveOCRTest(unittest.TestCase):
                                     ),
                                     ocr_regions=regions,
                                 )
-                                self.assertFalse(result.is_confident())
-                                self.assertIsNotNone(result.speaker_confidence)
-                                self.assertIn("could not be read", result.speaker_note)
+                                self.assertEqual(
+                                    (result.character, result.text), ("Narrator", "I")
+                                )
+                                self.assertTrue(result.is_confident())
+                                self.assertEqual(result.confidence, 96)
+                                self.assertIsNone(result.speaker_confidence)
+                                self.assertEqual(result.speaker_note, "")
 
     def test_wide_unanchored_scenery_does_not_change_an_anchored_name_crop(self):
         image = self.wide_scenery_frame()
@@ -276,9 +280,13 @@ class AdaptiveOCRTest(unittest.TestCase):
                                 ]
                             ),
                         )
-                        self.assertFalse(result.is_confident())
-                        self.assertIsNotNone(result.speaker_confidence)
-                        self.assertIn("could not be read", result.speaker_note)
+                        self.assertEqual(
+                            (result.character, result.text), ("Narrator", "I")
+                        )
+                        self.assertTrue(result.is_confident())
+                        self.assertEqual(result.confidence, 96)
+                        self.assertIsNone(result.speaker_confidence)
+                        self.assertEqual(result.speaker_note, "")
 
     def test_faint_centered_short_names_survive_distant_bright_scenery(self):
         for name in ("X", "I", "J", "L", "T", "???", "6", "37"):
@@ -313,10 +321,15 @@ class AdaptiveOCRTest(unittest.TestCase):
                                 ]
                             ),
                         )
-                        self.assertFalse(result.is_confident())
-                        self.assertIsNotNone(result.speaker_confidence)
+                        self.assertEqual(
+                            (result.character, result.text), ("Narrator", "I")
+                        )
+                        self.assertTrue(result.is_confident())
+                        self.assertEqual(result.confidence, 96)
+                        self.assertIsNone(result.speaker_confidence)
+                        self.assertEqual(result.speaker_note, "")
 
-    def test_faint_name_touching_upper_crop_boundary_remains_unreadable(self):
+    def test_faint_name_at_upper_crop_boundary_keeps_glyphs_and_allows_narrator(self):
         for name in ("I", "J", "L", "T", "???", "6", "37"):
             with self.subTest(name=name):
                 image, divider = self.frame(name="", text="I")
@@ -335,8 +348,11 @@ class AdaptiveOCRTest(unittest.TestCase):
                         ]
                     ),
                 )
-                self.assertFalse(result.is_confident())
-                self.assertIsNotNone(result.speaker_confidence)
+                self.assertEqual((result.character, result.text), ("Narrator", "I"))
+                self.assertTrue(result.is_confident())
+                self.assertEqual(result.confidence, 96)
+                self.assertIsNone(result.speaker_confidence)
+                self.assertEqual(result.speaker_note, "")
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_original_six_narrator_frames_keep_dialogue_and_live_acceptance(self):
@@ -366,7 +382,7 @@ class AdaptiveOCRTest(unittest.TestCase):
                         recognize_live_frame(frame), ("Narrator", result.text)
                     )
 
-    def test_scenery_is_not_a_name_but_an_added_unreadable_name_is_retained(self):
+    def test_empty_speaker_ocr_uses_narrator_with_scenery_or_added_name(self):
         directory = Path(__file__).parent / "fixtures" / "ocr-narrator-scenery"
         for filename in ("lecture-books.png", "gallery.png", "room.png"):
             with Image.open(directory / filename) as source:
@@ -379,6 +395,10 @@ class AdaptiveOCRTest(unittest.TestCase):
                     ImageDraw.Draw(image).text(
                         (30, max(0, bottom - 25)), name, fill="white", font_size=18
                     )
+                    regions = resolve_ocr_regions(image)
+                    self.assertEqual(
+                        speaker_glyphs_visible(regions.speaker.crop(image)), bool(name)
+                    )
                     result = recognize_dialog_image_result(
                         image,
                         recognize_text=Mock(return_value="A complete dialogue."),
@@ -390,12 +410,11 @@ class AdaptiveOCRTest(unittest.TestCase):
                         ),
                     )
                     self.assertEqual(result.text, "A complete dialogue.")
-                    self.assertEqual(result.is_confident(), not bool(name))
-                    if name:
-                        self.assertIn("could not be read", result.speaker_note)
-                    else:
-                        self.assertEqual(result.character, "Narrator")
-                        self.assertIsNone(result.speaker_confidence)
+                    self.assertTrue(result.is_confident())
+                    self.assertEqual(result.character, "Narrator")
+                    self.assertEqual(result.confidence, 96)
+                    self.assertIsNone(result.speaker_confidence)
+                    self.assertEqual(result.speaker_note, "")
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_recorded_scenery_frames_are_accepted_without_a_speaker(self):
@@ -428,7 +447,7 @@ class AdaptiveOCRTest(unittest.TestCase):
                     self.assertEqual((result.character, result.text), (name, text))
                     self.assertTrue(result.is_confident())
 
-    def test_visible_unreadable_name_cannot_be_accepted_as_narrator(self):
+    def test_empty_speaker_ocr_with_visible_name_is_accepted_as_narrator(self):
         image, _ = self.frame(name="Unknown")
         result = recognize_dialog_image_result(
             image,
@@ -437,9 +456,11 @@ class AdaptiveOCRTest(unittest.TestCase):
                 side_effect=[{"text": [], "conf": []}, {"text": ["?"], "conf": [96]}]
             ),
         )
-        self.assertFalse(result.is_confident())
-        self.assertIsNotNone(result.speaker_confidence)
-        self.assertIn("could not be read", result.speaker_note)
+        self.assertEqual((result.character, result.text), ("Narrator", "?"))
+        self.assertTrue(result.is_confident())
+        self.assertEqual(result.confidence, 96)
+        self.assertIsNone(result.speaker_confidence)
+        self.assertEqual(result.speaker_note, "")
         uncertain = Mock()
         with (
             patch(
@@ -454,9 +475,9 @@ class AdaptiveOCRTest(unittest.TestCase):
                 recognize_live_frame(
                     CapturedDialogFrame(image, 0), uncertain_handler=uncertain
                 ),
-                (None, ""),
+                ("Narrator", "?"),
             )
-        uncertain.assert_called_once()
+        uncertain.assert_not_called()
         with (
             patch(
                 "vntts.dialog_capture.recognize_screenshot_result",
@@ -468,7 +489,7 @@ class AdaptiveOCRTest(unittest.TestCase):
             ),
         ):
             self.assertEqual(
-                recognize_live_frame(CapturedDialogFrame(image, 0)), (None, "")
+                recognize_live_frame(CapturedDialogFrame(image, 0)), ("Narrator", "...")
             )
 
     def test_absent_name_keeps_first_short_dialogue_as_dialogue(self):

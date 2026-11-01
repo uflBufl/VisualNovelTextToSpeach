@@ -803,9 +803,6 @@ def recognize_dialog_image_result(
             speaker=False,
             recognize_combined=recognize_combined,
         )
-        unreadable_speaker = not speaker.text.strip() and speaker_glyphs_visible(
-            speaker_image
-        )
         speaker_noise = is_speaker_ocr_noise(
             speaker.text, speaker.confidence, minimum_confidence
         )
@@ -816,22 +813,16 @@ def recognize_dialog_image_result(
             character,
             dialogue.text,
             min(speaker.confidence, dialogue.confidence)
-            if not speaker_noise and (speaker.text.strip() or unreadable_speaker)
+            if not speaker_noise and speaker.text.strip()
             else dialogue.confidence,
             dialogue.profile,
             max(speaker.attempts, dialogue.attempts),
             processed_image=dialogue.processed_image,
             speaker_image=speaker.processed_image,
-            speaker_confidence=speaker.confidence
-            if speaker.text.strip() or unreadable_speaker
-            else None,
+            speaker_confidence=speaker.confidence if speaker.text.strip() else None,
             dialogue_confidence=dialogue.confidence,
             speaker_note=(
-                f"Name OCR noise ignored: {speaker.text}"
-                if speaker_noise
-                else "Visible name could not be read"
-                if unreadable_speaker
-                else ""
+                f"Name OCR noise ignored: {speaker.text}" if speaker_noise else ""
             ),
         )
 
