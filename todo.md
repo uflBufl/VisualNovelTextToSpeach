@@ -422,12 +422,37 @@ Remaining defects, missing measurements and native acceptance:
       did not fail. Retain these aligned intervals and correlate video/runtime
       scheduling and output I/O before selecting a writer/scheduling correction.
       Queue/lag/phase telemetry is already sufficient to locate the stall.
-      Missing discrimination: retain consumer thread identity and thread-CPU
-      delta alongside slow/max CAF wall spans, then capture a bounded external
-      stack/thread-state sample while a write is still stalled. CPU delta alone
-      cannot distinguish scheduler delay from blocking I/O. Keep sampling outside
-      the real-time callback, record its availability/overhead and limit captures;
-      do not build a second profiler or add per-callback logs.
+      Measurement implementation plan (pending approval):
+      - [ ] In `process_tap.m`, retain consumer thread identity and thread-CPU
+            delta alongside the existing maximum CAF wall span. Failed CPU
+            measurements remain explicitly unavailable, without failing capture.
+      - [ ] After the callback has published an actual overflow, use the native
+            monitor to snapshot the consumer state only while the same CAF call
+            remains active. Retain at most16 timestamped thread-state/CPU
+            observations. Read consistent phase snapshots before/after Mach
+            queries; skip transitions. Observe before the existing filesystem
+            check and retain actual observation times, including late/missed cases.
+      - [ ] Notify the Python supervisor once through an inherited nonblocking
+            pipe, with a fixed bounded record; no disk write on the trigger path.
+            Keep callback admission unchanged. Initialize monitor dependencies
+            before resume and drain cancellation before freeing queue/thread data.
+      - [ ] In `diagnostic_recording.py`, launch at most one external
+            `/usr/bin/sample` per failed helper (1s,10ms interval), asynchronously
+            in its own process group after verifying helper PID/create time.
+            Bound execution to3s and output to1MiB. Own descriptors/children
+            through Stop, deadline, helper exit and cleanup. Record API/access
+            failure, timeout, late sampling and observer effect without changing
+            the capture result or extending existing stop deadlines. No elevation.
+      - [ ] Retain trigger/span identity, native observation times and sampler
+            launch/finish times with the diagnostic artifacts. Verify actual
+            overlap before interpreting a stack; low CPU alone cannot establish
+            disk I/O or scheduler starvation. Keep an unresolved cause unknown.
+      - [ ] Run the changed-test selector first after code changes, then native
+            no-capture selfchecks and focused supervisor tests: consistent/late
+            trigger, fixed bounds, CPU/Mach failure, pipe saturation/closure,
+            permission denial, PID mismatch, timeout/output cap, dual helpers and
+            cleanup. Confirm healthy acquisition never launches a sampler.
+            Exercise a synthetic stalled writer before the combined load run.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
