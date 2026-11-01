@@ -316,13 +316,10 @@ chapter remains a final gate, not a per-fix test.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Use the measured options1/2/4 comparison in
-  `dialogue-change-benchmark-20261101` to agree the next RUN-29-02 repair; evaluate
-  semantic evidence from the existing OCR stream before expanding geometric
-  filtering. Keep the bounded shared-threshold correction as a separate defect.
-  Keep the remaining
-  particle/animated-background rejection as a separate investigation; use saved
-  video before requesting short targeted lossless footage or new telemetry.
+- Qualify RUN-29-02's serialized OCR in the combined native run below: measure
+  current cadence/load and post-speech latency under background generation.
+  Investigate residual waits from recognized evidence and controls; do not revive
+  the removed pixel-comparison/shared-threshold repair plan.
 - For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
   below, then use focused game/load episodes. Existing queue, OCR and native
   query telemetry must be reused rather than duplicated.
@@ -354,6 +351,22 @@ Remaining defects, missing measurements and native acceptance:
       OS posting success is not game receipt; compare one automatic and one
       operator-triggered dispatch using the same sender in a short episode.
       Do not add retries or change key-hold duration before this comparison.
+      Proposed implementation, awaiting agreement: collect bounded native-call
+      timestamps/errors in `auto_advance.py`, then publish only after key-up
+      cleanup. Timeline persistence is synchronous; logging between down/up
+      would change the measured interval. Preserve primary exceptions and
+      best-effort release; diagnostic failures must not affect input. Windows
+      keeps its two-event SendInput batch and reports actual accepted count,
+      not invented separate down/up call times. Reuse the selected-window and
+      foreground identity authority in `window_capture.py`; snapshot before/
+      after dispatch without logging titles or text. Correlate one dispatch ID
+      through controller, reader dispatch/confirmation/timeout and both support
+      serializers. Use a temporary explicit diagnostic invocation for the
+      operator comparison; no new player button or audio-manual auto-input path.
+      Gates: successful and failing native calls, compensating release, broken
+      telemetry sink, focus/control/owner refusals, shared sequence/plain sender,
+      exact correlation and privacy-safe timeline/JSONL persistence. Existing
+      recordings cannot establish why the game missed these two transitions.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
