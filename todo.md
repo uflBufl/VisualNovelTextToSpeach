@@ -316,7 +316,11 @@ chapter remains a final gate, not a per-fix test.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Agree the bounded RUN-29-02 shared-threshold repair below. Keep the remaining
+- Use the measured options1/2/4 comparison in
+  `dialogue-change-benchmark-20261101` to agree the next RUN-29-02 repair; evaluate
+  semantic evidence from the existing OCR stream before expanding geometric
+  filtering. Keep the bounded shared-threshold correction as a separate defect.
+  Keep the remaining
   particle/animated-background rejection as a separate investigation; use saved
   video before requesting short targeted lossless footage or new telemetry.
 - For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
@@ -564,6 +568,16 @@ Remaining defects, missing measurements and native acceptance:
        session limits and reporting dropped evidence/overhead. A short targeted
        scene suffices for diagnosis; defer a full chapter until causal repairs.
        Never discard small components globally: they can be real punctuation.
+       Before implementation, agree a semantic-evidence design using the existing
+       tracker and OCR stream; do not call OCR recursively from frame_equivalent.
+       Frame-pair prototypes do not establish occurrence identity or freshness at
+       key dispatch. The options1/2/4 report improves synthetic robustness but
+       leaves100/101 unconfirmed, including spurious/unreadable OCR names. Qualify
+       these cases, repeated identical phrases, genuine speaker changes and
+       automatic transitions before replacing either live admission barrier.
+       Include the benchmark's synthetic75-on25 newly added punctuation in the
+       safety corpus: the current160-floor comparator accepts it as unchanged.
+       Qualify a correction without blindly lowering the global pixel threshold.
      Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
      visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
      `d8f1c1208ebf4d7fa10353e8b7145f6c`.
