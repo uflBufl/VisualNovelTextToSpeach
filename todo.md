@@ -570,10 +570,13 @@ Remaining defects, missing measurements and native acceptance:
        Never discard small components globally: they can be real punctuation.
        Remaining speaker work: distinguish absent names from visible unreadable
        names on retained-02/04 using the saved crops and faint-name fixtures;
-       preserve the unreadable-name guard. Review only the five residual pairs in
-       `dialogue-change-benchmark-20261101/remaining-failures.html`. Investigate
-       punctuation normalization for identity on retained-01 without changing
-       spoken text or conflating punctuation-only dialogue events.
+       preserve unreadable and single-glyph-name guards; requiring an aligned
+       glyph pair is not an acceptable repair. Review only the five residual
+       pairs in `dialogue-change-benchmark-20261101/remaining-failures.html`.
+       Agree and implement the measured punctuation-key fallback for retained-01
+       after the ordinary one-edit comparison, preserving spoken text and
+       punctuation-only dialogue keys. Qualify genuine punctuation differences,
+       including numeric separators, before wiring it into live frame ownership.
        Before implementation, agree a semantic-evidence design using the existing
        tracker and OCR stream; do not call OCR recursively from frame_equivalent.
        Frame-pair prototypes do not establish occurrence identity or freshness at
