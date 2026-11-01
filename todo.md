@@ -366,6 +366,14 @@ Remaining defects, missing measurements and native acceptance:
       249 subsequent successful captures/OCRs remain on26. No retry or manual
       key was sent. Investigate delivery/game event handling using this retained
       recurrence; don't blame the recorder overflow125.5s later.
+      Do not adopt a50ms hold from the bounded standalone comparison: it did not
+      reproduce a missed key or distinguish the two arms. Before another trial,
+      agree an external delivery-side observation that adds evidence beyond
+      sender timestamps; first qualify exactly which OS/application boundary
+      it observes. Correlate it with existing dispatch IDs, selected identity,
+      readiness and source-video on a real recurrence. OS observation must not
+      be called game receipt. Keep the probe temporary, preserve key release and
+      once-only safeguards, and avoid repeating short sender-only clean runs.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue
