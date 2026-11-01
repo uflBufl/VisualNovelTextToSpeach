@@ -12,6 +12,7 @@ from vntts.ocr import (
     OCRResult,
     VoiceRegistry,
     default_minimum_ocr_confidence,
+    is_speaker_ocr_noise,
     normalize_recognized_speaker,
     parse_recognized_dialog,
     recognize_dialog_image_result,
@@ -110,7 +111,6 @@ class RapidOCRBackend:
         language: str = "eng",
         ocr_regions: OCRRegions | None = None,
     ) -> OCRResult:
-        del minimum_confidence
         if language.casefold() not in {"eng", "en"}:
             raise ValueError("The RapidOCR prototype currently supports English only")
         if ocr_regions is not None:
@@ -120,23 +120,39 @@ class RapidOCRBackend:
             dialogue_image, dialogue_lines, dialogue_confidence = self._recognize_image(
                 ocr_regions.dialogue.crop(image)
             )
+            has_speaker_glyphs = speaker_glyphs_visible(speaker_image)
             speaker_text = (
                 " ".join(text for _box, text, _score in speaker_lines)
-                if speaker_glyphs_visible(speaker_image)
+                if has_speaker_glyphs
                 else ""
             )
+            unreadable_speaker = has_speaker_glyphs and not speaker_text.strip()
+            speaker_noise = is_speaker_ocr_noise(
+                speaker_text, speaker_confidence, minimum_confidence
+            )
             return OCRResult(
-                normalize_recognized_speaker(speaker_text, voice_registry),
+                normalize_recognized_speaker(
+                    "" if speaker_noise else speaker_text, voice_registry
+                ),
                 " ".join(text for _box, text, _score in dialogue_lines),
                 min(speaker_confidence, dialogue_confidence)
-                if speaker_text
+                if (speaker_text or unreadable_speaker) and not speaker_noise
                 else dialogue_confidence,
                 self.name,
                 1,
                 processed_image=dialogue_image,
                 speaker_image=speaker_image,
-                speaker_confidence=speaker_confidence if speaker_text else None,
+                speaker_confidence=(
+                    speaker_confidence if speaker_text or unreadable_speaker else None
+                ),
                 dialogue_confidence=dialogue_confidence,
+                speaker_note=(
+                    f"Name OCR noise ignored: {speaker_text}"
+                    if speaker_noise
+                    else "Visible name could not be read"
+                    if unreadable_speaker
+                    else ""
+                ),
             )
         processed_image, lines, confidence = self._recognize_image(image)
         recognized = "\n".join(text for _box, text, _score in lines)

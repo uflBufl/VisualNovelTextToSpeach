@@ -806,12 +806,17 @@ def recognize_dialog_image_result(
         unreadable_speaker = not speaker.text.strip() and speaker_glyphs_visible(
             speaker_image
         )
-        character = normalize_recognized_speaker(speaker.text, voice_registry)
+        speaker_noise = is_speaker_ocr_noise(
+            speaker.text, speaker.confidence, minimum_confidence
+        )
+        character = normalize_recognized_speaker(
+            "" if speaker_noise else speaker.text, voice_registry
+        )
         return OCRResult(
             character,
             dialogue.text,
             min(speaker.confidence, dialogue.confidence)
-            if speaker.text.strip() or unreadable_speaker
+            if not speaker_noise and (speaker.text.strip() or unreadable_speaker)
             else dialogue.confidence,
             dialogue.profile,
             max(speaker.attempts, dialogue.attempts),
@@ -821,7 +826,13 @@ def recognize_dialog_image_result(
             if speaker.text.strip() or unreadable_speaker
             else None,
             dialogue_confidence=dialogue.confidence,
-            speaker_note="Visible name could not be read" if unreadable_speaker else "",
+            speaker_note=(
+                f"Name OCR noise ignored: {speaker.text}"
+                if speaker_noise
+                else "Visible name could not be read"
+                if unreadable_speaker
+                else ""
+            ),
         )
 
     remaining_timeout()
@@ -1171,6 +1182,22 @@ def speaker_glyphs_visible(image: Image.Image) -> bool:
                 return True
         stroke_width *= 2
     return _isolated_speaker_strokes(pixels)
+
+
+def is_speaker_ocr_noise(
+    text: str,
+    confidence: float,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+) -> bool:
+    name = _normalize_unknown_nameplate(" ".join(text.split()))
+    if not name or name == "???":
+        return False
+    if not any(character.isalnum() for character in name):
+        return True
+    # Low confidence alone cannot distinguish an unusual name from scenery.
+    return confidence < minimum_confidence and any(
+        not any(character.isalnum() for character in word) for word in name.split()
+    )
 
 
 def normalize_recognized_speaker(
