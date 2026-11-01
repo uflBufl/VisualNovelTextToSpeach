@@ -10,7 +10,6 @@ from vntts.dialog_capture import (
     CapturedDialogFrame,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     recognize_live_frame,
 )
 from vntts.ocr import (
@@ -318,19 +317,11 @@ class SplitOCRTest(unittest.TestCase):
         self.assertEqual(
             fingerprint_dialog_frame(first), fingerprint_dialog_frame(second)
         )
-        self.assertEqual(
-            fingerprint_dialog_render_activity(first),
-            fingerprint_dialog_render_activity(second),
-        )
         changed_dialogue = image.copy()
         ImageDraw.Draw(changed_dialogue).text((155, 145), "Wait!", fill="white")
         third = CapturedDialogFrame(changed_dialogue, 0, self.regions)
         self.assertNotEqual(
             fingerprint_dialog_frame(first), fingerprint_dialog_frame(third)
-        )
-        self.assertNotEqual(
-            fingerprint_dialog_render_activity(first),
-            fingerprint_dialog_render_activity(third),
         )
 
     def test_live_capture_uses_frozen_layout_and_reports_both_inputs(self):

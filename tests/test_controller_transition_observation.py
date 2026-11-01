@@ -413,7 +413,6 @@ class ControllerTransitionObservationTest(unittest.TestCase):
 
     def reader_harness(self, controller):
         harness = AutoAdvanceFakeFrameHarness(
-            stable_frame_route=controller._stable_live_frame_route,
             dialog_observed=controller._dialog_observed,
             ocr_purpose=controller._live_ocr_purpose,
         )
@@ -566,9 +565,6 @@ class ControllerTransitionObservationTest(unittest.TestCase):
         controller._is_game_focused = lambda: True
         harness.reader.recognize_frame = harness._recognize
         harness.reader.frame_equivalent = lambda old, new: old == new
-        harness.reader.frame_recheck_required = (
-            controller._sequence_prefix_recheck_required
-        )
 
         def play(prepared, *, playback_guard):
             self.assertTrue(playback_guard())
@@ -717,8 +713,6 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                                 for stage, _generation, _timestamp, details in harness.pipeline_events
                             )
                         )
-                        with reader.state_lock:
-                            reader.latest_render_fingerprint = "successor"
                         harness.clock.advance(1.0)
                         harness.push(
                             "Ada",
@@ -861,14 +855,14 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                 self.assertEqual(reader.routed_frame_fingerprint, "a")
                 harness.speech_executor.run_next()
                 harness.playback_executor.run_next()
-                harness.timer_scheduler.fire_next("_run_auto_advance")
+                harness.fire_advance()
                 advancer.return_value.advance.assert_not_called()
 
                 harness.push("Ada", lines[-1].text, background="c2", fingerprint="c2")
                 self.assertEqual(reader.active_generation, 2)
                 harness.speech_executor.run_next()
                 harness.playback_executor.run_next()
-                harness.timer_scheduler.fire_next("_run_auto_advance")
+                harness.fire_advance()
                 advancer.return_value.advance.assert_called_once_with()
                 self.assertEqual(harness.errors, [])
             finally:
@@ -1012,7 +1006,7 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                 harness.push(
                     "Ada", lines[-1].text, background="new-c", fingerprint="new-c"
                 )
-                harness.timer_scheduler.fire_next("_run_auto_advance")
+                harness.fire_advance()
                 advancer.return_value.advance.assert_called_once_with()
                 self.assertEqual(harness.errors, [])
             finally:

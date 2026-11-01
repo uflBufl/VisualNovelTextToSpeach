@@ -15,7 +15,6 @@ from vntts.dialog_capture import (
     analyze_dialog_snapshot,
     capture_dialog,
     capture_live_frame,
-    dialog_frames_equivalent,
     format_runtime_error,
     recognize_screenshot_result,
 )
@@ -328,7 +327,7 @@ def ridge_frame(text="A complete dialogue line.", speaker="Cornerstone"):
     return CapturedDialogFrame(image, 0)
 
 
-class DialogFrameEquivalenceTest(unittest.TestCase):
+class DialogFrameRegionsTest(unittest.TestCase):
     def test_five_row_divider_preserves_complete_speaker_and_dialogue(self):
         frame = ridge_frame()
         self.assertIsNotNone(frame.ocr_regions)
@@ -348,153 +347,6 @@ class DialogFrameEquivalenceTest(unittest.TestCase):
                 self.assertLessEqual(top, ink_top)
                 self.assertGreaterEqual(right, ink_right)
                 self.assertGreaterEqual(bottom, ink_bottom)
-
-    def test_five_row_divider_ignores_scenery_and_preserves_text_identity(self):
-        original = ridge_frame()
-        scenery = original.image.copy()
-        ImageDraw.Draw(scenery).rectangle((1100, 80, 1190, 145), fill="white")
-        changed = CapturedDialogFrame(scenery, 0)
-        self.assertEqual(original.ocr_regions, changed.ocr_regions)
-        self.assertTrue(dialog_frames_equivalent(original, changed))
-        self.assertTrue(dialog_frames_equivalent(changed, original))
-        for difference, changed in (
-            ("speaker", ridge_frame(speaker="Other")),
-            ("dialogue", ridge_frame(text="A different dialogue line.")),
-            ("punctuation", ridge_frame(text="A complete dialogue line!")),
-        ):
-            with self.subTest(difference=difference):
-                self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_short_left_edge_text_survives_brightness_translation_and_cue(self):
-        original = glyph_frame()
-        for brightness, shift in ((210, (1, -2)), (250, (-2, 2)), (230, (0, 0))):
-            with self.subTest(brightness=brightness, shift=shift):
-                self.assertTrue(
-                    dialog_frames_equivalent(
-                        original,
-                        glyph_frame(brightness=brightness, shift=shift, cue=True),
-                    )
-                )
-
-    def test_small_roi_translation_and_size_jitter_keeps_all_text_evidence(self):
-        original, shifted = (
-            glyph_frame("Ouch!", ""),
-            glyph_frame("Ouch!", "", brightness=210, shift=(1, 1)),
-        )
-        original = CapturedDialogFrame(
-            original.image,
-            0,
-            OCRRegions(DialogRegion(0, 0, 1, 0.3), DialogRegion(0, 0.4, 0.9, 0.5)),
-        )
-        shifted = CapturedDialogFrame(
-            shifted.image,
-            0,
-            OCRRegions(DialogRegion(0, 0, 0.99, 0.3), DialogRegion(0, 0.41, 0.91, 0.5)),
-        )
-        self.assertTrue(dialog_frames_equivalent(original, shifted))
-        changed = glyph_frame("Ouch!x", "", shift=(1, 1))
-        changed = CapturedDialogFrame(changed.image, 0, shifted.ocr_regions)
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_typewriter_additions_punctuation_new_name_and_empty_text_invalidate(self):
-        original = glyph_frame()
-        for changed in (
-            glyph_frame("Ouch!"),
-            glyph_frame("Ouch."),
-            glyph_frame("Ouc"),
-            glyph_frame("Ouch", "Other"),
-            glyph_frame(""),
-            glyph_frame(shift=(3, 0)),
-        ):
-            self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_small_addition_to_long_line_is_not_hidden_by_global_similarity(self):
-        original = glyph_frame("A very long line with many words")
-        self.assertFalse(
-            dialog_frames_equivalent(
-                original, glyph_frame("A very long line with many words.")
-            )
-        )
-
-    def test_dim_single_pixel_punctuation_is_not_hidden_by_bright_core_threshold(self):
-        original = glyph_frame()
-        changed = glyph_frame()
-        changed.image.putpixel((42, 58), (180, 180, 180))
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_real_bottom_right_punctuation_is_not_removed_as_continue_cue(self):
-        original = glyph_frame()
-        changed = glyph_frame()
-        changed.image.putpixel((244, 72), (230, 230, 230))
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def antialiased_frame(self, *, shifted_regions=False):
-        image = Image.new("RGB", (800, 162), (25, 25, 25))
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((28, 48, 36, 53), fill=(182,) * 3)
-        draw.rectangle((38, 48, 44, 53), fill=(180,) * 3)
-        draw.rectangle((25, 100, 34, 106), fill=(238,) * 3)
-        image.putpixel((27, 49), (158,) * 3)
-        image.putpixel((37, 50), (159,) * 3)
-        image.putpixel((24, 102), (217,) * 3)
-        left, width = (16, 735) if shifted_regions else (15, 737)
-        regions = OCRRegions(
-            DialogRegion(27 / 800, 46 / 162, 143 / 800, 29 / 162),
-            DialogRegion(left / 800, 84 / 162, width / 800, 78 / 162),
-        )
-        return CapturedDialogFrame(image, 0, regions)
-
-    def test_crop_jitter_and_supported_antialiasing_crossings_keep_fixed_anchor(self):
-        original = self.antialiased_frame()
-        changed = self.antialiased_frame(shifted_regions=True)
-        changed.image.putpixel((27, 49), (160,) * 3)
-        changed.image.putpixel((37, 50), (162,) * 3)
-        changed.image.putpixel((24, 102), (218,) * 3)
-        self.assertTrue(dialog_frames_equivalent(original, changed))
-        self.assertTrue(dialog_frames_equivalent(changed, original))
-
-    def test_crop_union_keeps_new_glyph_at_region_edge(self):
-        original = self.antialiased_frame()
-        changed = self.antialiased_frame(shifted_regions=True)
-        changed.image.putpixel((15, 102), (180,) * 3)
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_new_dim_punctuation_without_stable_core_support_invalidates(self):
-        original = self.antialiased_frame()
-        changed = self.antialiased_frame()
-        original.image.putpixel((70, 102), (158,) * 3)
-        changed.image.putpixel((70, 102), (160,) * 3)
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_new_pixel_beside_glyph_is_not_antialiasing_noise(self):
-        original = self.antialiased_frame()
-        changed = self.antialiased_frame()
-        changed.image.putpixel((27, 49), (180,) * 3)
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_cumulative_brightness_changes_are_bounded_by_original_anchor(self):
-        original = self.antialiased_frame()
-        first = self.antialiased_frame()
-        second = self.antialiased_frame()
-        first.image.putpixel((27, 49), (162,) * 3)
-        second.image.putpixel((27, 49), (166,) * 3)
-        self.assertTrue(dialog_frames_equivalent(original, first))
-        self.assertTrue(dialog_frames_equivalent(first, second))
-        self.assertFalse(dialog_frames_equivalent(original, second))
-
-    def test_independent_speaker_and_dialogue_translations_invalidate(self):
-        original = glyph_frame()
-        changed = glyph_frame(shift=(1, 0))
-        changed.image.paste(glyph_frame(shift=(-1, 0)).image.crop((0, 0, 256, 30)))
-        self.assertFalse(dialog_frames_equivalent(original, changed))
-
-    def test_continue_cue_alone_does_not_prove_visible_dialogue(self):
-        empty = glyph_frame("", "", cue=True)
-        self.assertFalse(dialog_frames_equivalent(empty, empty))
-
-    def test_identical_empty_frames_are_not_reading_evidence(self):
-        empty = glyph_frame("", "")
-        self.assertFalse(dialog_frames_equivalent(empty, empty))
 
 
 if __name__ == "__main__":

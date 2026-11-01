@@ -35,6 +35,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dialog_capture import (
     CapturedDialogFrame,
+    DialogFrameEquivalence,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
     recognize_live_frame,
@@ -50,15 +51,12 @@ from vntts.generated_audio import (
 )
 from vntts.json_types import decode_json
 from vntts.live import (
-    CanonicalDialogRoute,
     LiveDialogReader,
-    SilentDialogRoute,
     SpeechChunk,
-    StableFrameRoute,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.numeric_values import optional_finite_number
-from vntts.ocr import DialogRegion
+from vntts.ocr import DialogRegion, OCRResult
 from vntts.path_safety import ensure_separate_output, open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
@@ -1170,6 +1168,7 @@ class LiveReplayRunner:
         played: list[ReplayPlayed] = []
 
         def recognize(frame: object) -> ReplayRecognition:
+            context = controller._live_frame_evidence_context()
             replay_frame = _replay_frame(frame)
             result = (
                 _recognize_replay_frame(
@@ -1202,6 +1201,13 @@ class LiveReplayRunner:
                     **ledger_event,
                 }
             )
+            comparison = reader.frame_equivalent
+            if isinstance(comparison, DialogFrameEquivalence) and context is not None:
+                comparison.record(
+                    frame,
+                    OCRResult(result[0], result[1], 100, "replay", 1),
+                    context,
+                )
             return result
 
         def frame_routed(
@@ -1211,6 +1217,9 @@ class LiveReplayRunner:
             character: str | None,
             text: str,
         ) -> None:
+            controller._bind_live_frame_evidence(
+                frame, _fingerprint, route_kind, character, text
+            )
             replay_frame = _replay_frame(frame)
             ledger_event = frame_source.acknowledge_route(
                 replay_frame,
@@ -1332,33 +1341,6 @@ class LiveReplayRunner:
             )
             controller._auto_advance_state_changed(state, generation, attempt)
 
-        def stable_frame_route(
-            fingerprint: object,
-            settled: bool,
-            expected_owner: str | None,
-            route_epoch: int,
-        ) -> StableFrameRoute:
-            decision = controller._stable_live_frame_route(
-                fingerprint,
-                settled,
-                expected_owner,
-                route_epoch,
-            )
-            if (
-                decision is None
-                or decision is False
-                or isinstance(decision, (CanonicalDialogRoute, SilentDialogRoute))
-            ):
-                return decision
-            if (
-                isinstance(decision, tuple)
-                and len(decision) == 2
-                and isinstance(decision[0], str)
-                and isinstance(decision[1], str)
-            ):
-                return decision
-            raise RuntimeError("Replay controller returned an invalid stable route")
-
         def line_id_resolver(character: str | None, text: str) -> str | None:
             if character is None:
                 return None
@@ -1372,11 +1354,13 @@ class LiveReplayRunner:
             capture_frame=frame_source.capture,
             recognize_frame=recognize,
             frame_fingerprint=_fingerprint_replay_frame,
+            frame_equivalent=DialogFrameEquivalence(
+                settings.ocr_minimum_confidence,
+                controller._live_frame_evidence_context,
+            ),
             frame_presence=dialog_glyphs_visible,
             frame_completion=frame_source.is_final_declared_frame,
-            stable_frame_route=stable_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
-            frame_recheck_required=controller._sequence_prefix_recheck_required,
             ocr_purpose=controller._live_ocr_purpose,
             frame_routed=frame_routed,
             frame_observed=frame_observed,

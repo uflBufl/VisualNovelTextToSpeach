@@ -30,7 +30,6 @@ from vntts.dialog_capture import (
     dialog_completion_cue_visible,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     get_screenshot_directory,
 )
 from vntts.generated_audio import (
@@ -539,12 +538,9 @@ class RuntimeLifecycleComponent:
                 controller.settings.ocr_minimum_confidence,
                 controller._live_frame_evidence_context,
             ),
-            frame_render_fingerprint=fingerprint_dialog_render_activity,
             frame_presence=dialog_glyphs_visible,
             frame_completion=dialog_completion_cue_visible,
-            frame_recheck_required=controller._sequence_prefix_recheck_required,
             ocr_purpose=controller._live_ocr_purpose,
-            stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             line_id_resolver=controller._live_sequence_line_id,
             accept_chunk=controller._accept_live_chunk,

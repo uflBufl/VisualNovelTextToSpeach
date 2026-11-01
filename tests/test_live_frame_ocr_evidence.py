@@ -17,6 +17,7 @@ from vntts.dialog_capture import (
 )
 from vntts.live import RecognizedDialog
 from vntts.ocr import OCRResult
+from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.settings import AppSettings
 from vntts.voices import CharacterVoiceRegistry
 
@@ -50,7 +51,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         ):
             return self.controller._recognize_live_frame(frame)
 
-    def test_runtime_wires_raw_ocr_comparison_without_changing_spoken_text(self):
+    def test_runtime_wires_validated_ocr_comparison_without_changing_spoken_text(self):
         before, after = self.frame(), self.frame()
         self.assertIsInstance(self.reader.frame_equivalent, DialogFrameEquivalence)
         self.assertFalse(self.reader.frame_equivalent(before, after))
@@ -93,7 +94,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
             self.recognize(frame, replace(result, confidence=95))
         self.assertTrue(comparison(before, after))
 
-    def test_canonical_speaker_resolution_does_not_replace_raw_speaker_evidence(self):
+    def test_canonical_speaker_resolution_supplies_validated_evidence(self):
         text = "The prepared story contains this complete sentence."
         line = ChapterDialogue("line", "chapter", 1, "Ada", text, text_sha256(text))
         self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
@@ -105,9 +106,9 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         self.assertIsInstance(first, RecognizedDialog)
         self.assertEqual(first.character, "Ada")
         self.assertEqual(second.character, "Ada")
-        self.assertFalse(self.reader.frame_equivalent(before, after))
+        self.assertTrue(self.reader.frame_equivalent(before, after))
 
-    def test_low_raw_confidence_rescued_by_story_cannot_authorize_semantics(self):
+    def test_confident_story_dialogue_rescues_low_raw_speaker_for_evidence(self):
         text = "The prepared story contains this complete sentence."
         line = ChapterDialogue("line", "chapter", 1, "Ada", text, text_sha256(text))
         self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
@@ -120,9 +121,46 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
 
         self.assertIsInstance(first, RecognizedDialog)
         self.assertEqual(second, first)
+        self.assertTrue(self.reader.frame_equivalent(before, after))
+
+    def test_owned_prefix_evidence_keeps_the_actually_recognized_text(self):
+        text = "The prepared story contains this complete sentence."
+        line = ChapterDialogue("line", "chapter", 1, "Ada", text, text_sha256(text))
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
+        self.controller._expected_sequence_prefix_line_locked = Mock(return_value=line)
+        before, after = self.frame(), self.frame()
+        prefix = "The prepared story"
+
+        recognized = self.recognize(before, OCRResult("Ada", prefix, 95, "balanced", 1))
+        self.recognize(after, OCRResult("Ada", text, 95, "balanced", 1))
+
+        self.assertEqual(recognized, ("Ada", prefix))
         self.assertFalse(self.reader.frame_equivalent(before, after))
 
-    def test_owner_and_run_changes_invalidate_raw_evidence(self):
+    def test_corrections_are_shared_by_spoken_text_and_frame_evidence(self):
+        before, after = self.frame(), self.frame()
+        self.controller.correction_dictionary = OCRCorrectionDictionary(
+            {"Mareus": "Marcus", "misread": "correct"}
+        )
+        original = OCRResult("Mareus", "The misread sentence.", 95, "balanced", 1)
+        corrected = replace(original, character="Marcus", text="The correct sentence.")
+
+        first = self.recognize(before, original)
+        second = self.recognize(after, corrected)
+
+        self.assertEqual(first, second)
+        self.assertTrue(self.reader.frame_equivalent(before, after))
+
+    def test_rejected_ocr_cannot_supply_frame_evidence(self):
+        before, after = self.frame(), self.frame()
+        result = OCRResult("Ada", "Unresolved dialogue.", 95, "balanced", 1)
+        self.recognize(before, result)
+        with self.assertRaises(OCRUncertainError):
+            self.recognize(after, replace(result, confidence=50))
+
+        self.assertFalse(self.reader.frame_equivalent(before, after))
+
+    def test_owner_and_run_changes_invalidate_evidence(self):
         for barrier in ("owner", "run"):
             with self.subTest(barrier=barrier):
                 before, after = self.frame(), self.frame()
@@ -153,7 +191,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
 
         self.assertFalse(self.reader.frame_equivalent(before, after))
 
-    def test_initial_canonical_route_keeps_its_raw_anchor_under_new_owner(self):
+    def test_initial_canonical_route_keeps_its_anchor_under_new_owner(self):
         fixture = (
             test_controller_transition_observation.ControllerTransitionObservationTest()
         )
@@ -247,7 +285,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
             side_effect=replace_capture,
         ) as recognize:
             observation = self.reader._recognize_current_frame(
-                source, "legacy", "source", True, False, None, policy, 1, None
+                source, "legacy", "source", True, False, policy, 1, None
             )
 
         self.assertIsNone(observation)
@@ -257,7 +295,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         self.assertFalse(self.reader.frame_equivalent(source, latest))
         details = self.reader.pipeline_event_handler.call_args.kwargs
         self.assertEqual(details["outcome"], "stale")
-        self.assertEqual(details["reason"], "ocr-frame-not-equivalent")
+        self.assertEqual(details["reason"], "ocr-capture-replaced-during-validation")
 
     def test_reader_and_controller_dispatch_share_semantic_visual_evidence(self):
         before, after = self.frame(), self.frame()
@@ -280,10 +318,23 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
 
         self.reader.auto_advance = guarded_dispatch
         with patch("vntts.live.Timer"):
-            self.reader._run_auto_advance(3)
+            self.reader._dispatch_auto_advance(3)
 
         dispatch.assert_called_once_with()
         self.assertEqual(self.reader.pending_auto_advance_generation, 3)
+
+    def test_matching_fingerprint_cannot_authorize_unrecognized_frame(self):
+        before, after = self.frame(), self.frame()
+        result = OCRResult("Ada", "Visible dialogue.", 95, "balanced", 1)
+        self.recognize(before, result)
+        self.reader.routed_frame = before
+        self.reader.latest_frame = after
+        self.reader.latest_frame_visible = True
+        self.reader.routed_frame_fingerprint = self.reader.latest_frame_fingerprint = (
+            "same"
+        )
+
+        self.assertFalse(self.controller._reader_visual_dispatch_guard(self.reader)())
 
     def test_dispatch_guard_rejects_capture_replacement_after_comparison(self):
         before, after = self.frame(), self.frame()

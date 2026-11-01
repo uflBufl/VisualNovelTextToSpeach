@@ -8,9 +8,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from vntts.dialog_capture import (
     CapturedDialogFrame,
-    dialog_glyphs_visible,
     fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     recognize_live_frame,
 )
 from vntts.ocr import (
@@ -591,21 +589,6 @@ class AdaptiveOCRTest(unittest.TestCase):
                             else (None, ""),
                         )
 
-    def test_live_activity_observes_text_above_old_fixed_dialogue_crop(self):
-        image, divider = self.frame(lines=4, text="I")
-        configured = OCRRegions(
-            DialogRegion(0, 0.4, 1, 0.2), DialogRegion(0, 0.7, 1, 0.3)
-        )
-        first = CapturedDialogFrame(image, 0, configured)
-        changed = image.copy()
-        ImageDraw.Draw(changed).text((50, divider + 5), "?", fill="white", font_size=18)
-        second = CapturedDialogFrame(changed, 0, configured)
-        self.assertTrue(dialog_glyphs_visible(first))
-        self.assertNotEqual(
-            fingerprint_dialog_render_activity(first),
-            fingerprint_dialog_render_activity(second),
-        )
-
     def test_resolved_fingerprints_ignore_continue_indicator_blink(self):
         image, _ = self.frame(text="Hi.")
         first = CapturedDialogFrame(image, 0)
@@ -616,10 +599,6 @@ class AdaptiveOCRTest(unittest.TestCase):
         second = CapturedDialogFrame(changed, 0)
         self.assertEqual(
             fingerprint_dialog_frame(first), fingerprint_dialog_frame(second)
-        )
-        self.assertEqual(
-            fingerprint_dialog_render_activity(first),
-            fingerprint_dialog_render_activity(second),
         )
 
     def test_cropped_ellipsis_is_detected_near_dialogue_top(self):

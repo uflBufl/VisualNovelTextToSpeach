@@ -29,7 +29,6 @@ from vntts.dialog_capture import (
     dialog_completion_cue_visible,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     format_runtime_error,
     get_screenshot_directory,
     read_dialog,

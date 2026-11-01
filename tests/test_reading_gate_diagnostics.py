@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.test_live import process_advance_ocr
 from vntts.live import AutoAdvanceAttempt, LiveDialogReader
 from vntts.support import GenerationTimelineLog
 from vntts.support_timeline_acquisition import TimelineAcquisition
@@ -35,7 +36,7 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         reader.frame_version = 25
         reader.processed_frame_version = 24
         reader.frame_route_epoch = 4
-        reader.candidate_frame_count = 2
+        reader.last_observation = ("Alice", "Hello.")
         return reader
 
     def test_exact_visual_refusal_has_branch_state_without_changing_dispatch(self):
@@ -47,41 +48,50 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
         )
         with patch("vntts.live.Timer"):
             reader._run_auto_advance(3)
+            process_advance_ocr(reader)
         reader.auto_advance.assert_not_called()
+        events = [
+            event
+            for event in events
+            if event[0][0] == "auto-advance-withheld"
+            and event[1].get("reason") != "schedule-precondition"
+        ]
         self.assertEqual(len(events), 1)
         args, event = events[0]
         self.assertEqual(args[:2], ("auto-advance-withheld", 3))
         self.assertEqual(event["reason"], "owned-frame-not-visible-and-stable")
-        self.assertIs(event["routed_latest_equal"], False)
+        self.assertIs(event["routed_latest_equal"], True)
         self.assertIs(event["visible"], True)
         self.assertIs(event["completion_cue"], True)
         self.assertIs(event["focused"], True)
-        self.assertEqual(event["frame_version"], 25)
+        self.assertEqual(event["frame_version"], 26)
         self.assertEqual(event["processed_frame_version"], 24)
-        self.assertEqual(event["frame_route_epoch"], 4)
-        self.assertEqual(event["candidate_frames"], 2)
+        self.assertEqual(event["frame_route_epoch"], 5)
 
-    def test_equivalent_frame_can_advance_without_moving_route_anchor(self):
+    def test_fresh_equivalent_ocr_compares_original_request_anchor(self):
         reader = self.reader(frame_equivalent=Mock(return_value=True))
         anchor = reader.routed_frame = object()
         latest = reader.latest_frame = object()
         with patch("vntts.live.Timer"):
             reader._run_auto_advance(3)
+            process_advance_ocr(reader)
         reader.frame_equivalent.assert_called_once_with(anchor, latest)
         reader.auto_advance.assert_called_once()
-        self.assertIs(reader.routed_frame, anchor)
-        self.assertEqual(reader.routed_frame_fingerprint, b"routed")
+        self.assertIs(reader.routed_frame, latest)
+        self.assertEqual(reader.routed_frame_fingerprint, b"latest")
         event = reader.pipeline_event_handler.call_args.kwargs
         self.assertIs(event["routed_frame_equivalent"], True)
         self.assertGreaterEqual(event["frame_equivalence_ms"], 0)
 
     def test_equivalence_cannot_accept_stale_or_unowned_frame(self):
         for mutation in (
-            lambda reader: setattr(reader, "frame_version", 26),
-            lambda reader: setattr(reader, "frame_route_epoch", 5),
+            lambda reader: setattr(reader, "frame_version", reader.frame_version + 1),
+            lambda reader: setattr(
+                reader, "frame_route_epoch", reader.frame_route_epoch + 1
+            ),
             lambda reader: setattr(reader, "run_id", "new-run"),
+            lambda reader: setattr(reader, "stable_frame_owner", lambda: "new-owner"),
             lambda reader: setattr(reader, "latest_frame", object()),
-            lambda reader: setattr(reader, "routed_frame", object()),
             lambda reader: setattr(reader, "observation_uncertain", True),
             lambda reader: setattr(reader, "paused", True),
             lambda reader: setattr(reader, "emergency_stopped", True),
@@ -106,14 +116,38 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
                 reader.frame_equivalent = compare
                 with patch("vntts.live.Timer"):
                     reader._run_auto_advance(3)
+                    process_advance_ocr(reader)
                 reader.auto_advance.assert_not_called()
 
-    def test_focus_lost_during_comparison_reports_focus_wait(self):
-        reader = self.reader(focus_probe=Mock(side_effect=[True, False]))
+    def test_failed_key_callback_is_not_retried_by_later_ocr(self):
+        error = RuntimeError("ambiguous key failure")
+        reader = self.reader(
+            frame_equivalent=Mock(return_value=True),
+            auto_advance=Mock(side_effect=error),
+        )
         reader.routed_frame, reader.latest_frame = object(), object()
-        reader.frame_equivalent = Mock(return_value=True)
         with patch("vntts.live.Timer"):
             reader._run_auto_advance(3)
+            process_advance_ocr(reader)
+            process_advance_ocr(reader)
+            process_advance_ocr(reader)
+        reader.auto_advance.assert_called_once()
+        reader.report_error.assert_called_once_with(error)
+        self.assertIsNone(reader._advance_requested_generation)
+        self.assertEqual(reader.failed_auto_advance_generation, 3)
+
+    def test_focus_lost_during_comparison_reports_focus_wait(self):
+        reader = self.reader()
+        reader.routed_frame, reader.latest_frame = object(), object()
+
+        def lose_focus(*_frames):
+            reader.focus_probe = lambda: False
+            return True
+
+        reader.frame_equivalent = lose_focus
+        with patch("vntts.live.Timer"):
+            reader._run_auto_advance(3)
+            process_advance_ocr(reader)
         reader.auto_advance.assert_not_called()
         event = reader.pipeline_event_handler.call_args.kwargs
         self.assertEqual(event["reason"], "game-focus-lost-before-dispatch")
@@ -126,19 +160,17 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
                 reader.routed_frame, reader.latest_frame = object(), object()
                 with patch("vntts.live.Timer"):
                     reader._run_auto_advance(3)
+                    process_advance_ocr(reader)
                 reader.auto_advance.assert_not_called()
 
-    def test_stale_timer_keeps_current_timer_and_reports_both_serials(self):
+    def test_stale_timer_keeps_current_timer_without_requesting_ocr(self):
         reader = self.reader()
         pending = reader.auto_advance_timer = Mock()
         reader._auto_advance_timer_serial = 6
         reader._run_auto_advance(3, 5)
         self.assertIs(reader.auto_advance_timer, pending)
         reader.auto_advance.assert_not_called()
-        details = reader.pipeline_event_handler.call_args.kwargs
-        self.assertEqual(details["reason"], "stale-auto-advance-timer")
-        self.assertEqual(details["timer_serial"], 5)
-        self.assertEqual(details["current_timer_serial"], 6)
+        self.assertIsNone(reader._advance_requested_generation)
 
     def test_scheduler_barrier_reports_why_no_timer_was_created(self):
         reader = self.reader()
@@ -158,13 +190,18 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
 
         def record(*args, **details):
             self.assertFalse(reader.state_lock._is_owned())
-            events.append(details)
+            if (
+                args[0] == "auto-advance-withheld"
+                and details.get("reason") != "schedule-precondition"
+            ):
+                events.append(details)
 
         reader.pipeline_event_handler = record
         with patch("vntts.live.Timer"), patch("vntts.live.monotonic") as clock:
             for now in (10.0, 10.1, 10.9, 11.0):
                 clock.return_value = now
                 reader._run_auto_advance(3)
+                process_advance_ocr(reader)
         self.assertEqual(len(events), 2)
         reader.auto_advance.assert_not_called()
 
@@ -178,8 +215,10 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
                     auto_advance=Mock(return_value=AutoAdvanceAttempt(False, refusal))
                 )
                 reader.routed_frame_fingerprint = reader.latest_frame_fingerprint
+                reader.frame_equivalent = lambda *_: True
                 with patch("vntts.live.Timer"):
                     reader._run_auto_advance(3)
+                    process_advance_ocr(reader)
                 self.assertIsNone(reader.pending_auto_advance_generation)
                 self.assertIsNone(reader.failed_auto_advance_generation)
                 self.assertEqual(
@@ -194,16 +233,22 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
             log.start_acquisition(path)
             with patch("vntts.live.Timer"):
                 reader._run_auto_advance(3)
+                process_advance_ocr(reader)
             log.record("capture", 4, 30.0)
             log.stop_acquisition()
             events = [json.loads(line) for line in path.read_text().splitlines()]
         self.assertEqual(log.snapshot()[0]["generation"], 4)
-        event = next(e for e in events if e.get("stage") == "auto-advance-withheld")
+        event = next(
+            e
+            for e in events
+            if e.get("stage") == "auto-advance-withheld"
+            and e.get("reason") == "owned-frame-not-visible-and-stable"
+        )
         self.assertEqual(event["reason"], "owned-frame-not-visible-and-stable")
         self.assertEqual(event["generation"], 3)
         self.assertEqual(event["run_id"], reader.run_id)
-        self.assertIs(event["routed_latest_equal"], False)
-        self.assertEqual(event["frame_version"], 25)
+        self.assertIs(event["routed_latest_equal"], True)
+        self.assertEqual(event["frame_version"], 26)
         self.assertEqual(event["processed_frame_version"], 24)
 
     def test_journal_retains_known_reasons_and_hashes_owner_without_private_text(self):
@@ -215,9 +260,7 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
                     "stage": "stable-frame-gate",
                     "reason": "prefix-render-not-quiet",
                     "owner": "PRIVATEowner",
-                    "fingerprint": LiveDialogReader._privacy_safe_fingerprint(
-                        "PRIVATEpixels"
-                    ),
+                    "fingerprint": sha256(b"PRIVATEpixels").hexdigest()[:16],
                     "candidate_frames": 2,
                     "text": "PRIVATEdialogue",
                 }
@@ -338,7 +381,9 @@ class ReadingGateDiagnosticsTest(unittest.TestCase):
             auto_advance=Mock(return_value=AutoAdvanceAttempt(False, "PRIVATEreason"))
         )
         reader.routed_frame_fingerprint = reader.latest_frame_fingerprint
+        reader.frame_equivalent = lambda *_: True
         reader._run_auto_advance(3)
+        process_advance_ocr(reader)
         event = reader.pipeline_event_handler.call_args.kwargs
         self.assertEqual(event["reason"], "callback-blocked")
         self.assertNotIn("PRIVATE", repr(event))

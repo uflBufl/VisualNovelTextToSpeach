@@ -361,13 +361,6 @@ class StoryCursor:
                 return None
             current = candidate
 
-    def confirm_visual_transition(self) -> LiveSequenceEvent | None:
-        candidate = self.deterministic_visual_successor()
-        if candidate is None:
-            return None
-        self.anchor_event(candidate.event_id, "visual-transition-confirmed")
-        return candidate
-
     def dispatch_advance(self) -> StoryCursorSnapshot:
         event = self._require_current()
         if not self.can_auto_advance:

@@ -60,7 +60,6 @@ from vntts.main import (
     dialog_completion_cue_visible,
     dialog_glyphs_visible,
     fingerprint_dialog_frame,
-    fingerprint_dialog_render_activity,
     get_live_configuration,
     get_screenshot_directory,
     get_tts_configuration,
@@ -359,22 +358,6 @@ class MainTest(unittest.TestCase):
         self.assertNotEqual(
             fingerprint_dialog_frame(CapturedDialogFrame(first, 0)),
             fingerprint_dialog_frame(CapturedDialogFrame(second, 0)),
-        )
-
-    def test_render_activity_fingerprint_keeps_small_new_dialogue_glyphs(self):
-        first = Image.new("RGB", (1200, 240), "#202020")
-        second = first.copy()
-        for image in (first, second):
-            ImageDraw.Draw(image).text(
-                (280, 100),
-                "The dialogue is almost complete",
-                fill="white",
-            )
-        ImageDraw.Draw(second).text((820, 100), "I", fill="white")
-
-        self.assertNotEqual(
-            fingerprint_dialog_render_activity(CapturedDialogFrame(first, 0)),
-            fingerprint_dialog_render_activity(CapturedDialogFrame(second, 0)),
         )
 
     def test_dialog_glyph_presence_accepts_ellipsis_and_rejects_empty_crop(self):
@@ -3140,7 +3123,7 @@ class MainTest(unittest.TestCase):
         unprepared_backend.prepare_route.assert_not_called()
         self.assertEqual(status.expected_audio_route, "Live TTS")
         self.assertEqual(status.actual_audio_route, "-")
-        self.assertIn("OCR idle", status.ocr_activity)
+        self.assertIn("OCR observing visible dialogue", status.ocr_activity)
         controller.last_audio_route_trace = stub_route_trace(
             "generated-audio",
             "reverse1999:1:1",
@@ -3304,6 +3287,7 @@ class MainTest(unittest.TestCase):
             playback_executor=Mock(),
             capture_frame=Mock(),
             recognize_frame=Mock(),
+            frame_equivalent=lambda previous, current: previous is current,
             ocr_uncertain=controller._admit_live_ocr_uncertainty,
             prepare_chunk=Mock(),
             play_prepared=Mock(),
@@ -3311,7 +3295,6 @@ class MainTest(unittest.TestCase):
             focus_probe=lambda: True,
             ocr_purpose=controller._live_ocr_purpose,
             dialog_observed=controller._dialog_observed,
-            stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             line_id_resolver=controller._live_sequence_line_id,
             accept_chunk=controller._accept_live_chunk,
@@ -3440,7 +3423,11 @@ class MainTest(unittest.TestCase):
         line = lines[0]
         tracker = IncrementalDialogTracker()
         chunk = tracker.observe_canonical(line.speaker, line.text, line.line_id)[0]
-        reader = self._sequence_reader(controller, tracker_factory=lambda **_: tracker)
+        reader = self._sequence_reader(
+            controller,
+            tracker_factory=lambda **_: tracker,
+            frame_equivalent=lambda *_: True,
+        )
         reader.active_generation = chunk.generation
         reader.dialog_ready_generation = chunk.generation
         reader.latest_frame = object()
@@ -3479,7 +3466,12 @@ class MainTest(unittest.TestCase):
             self.assertEqual(reader.active_generation, chunk.generation)
             self.assertIsNotNone(reader.auto_advance_timer)
             reader.auto_advance_timer.fire()
-            reader._run_auto_advance(chunk.generation)
+            controller._auto_advance_dialog.assert_not_called()
+            reader.latest_frame = object()
+            reader.latest_frame_captured_at = reader._advance_requested_at
+            reader.frame_version += 1
+            stopped_worker.clear()
+            reader._run_ocr(stopped_worker)
 
         reader.speech_executor.submit.assert_not_called()
         controller._auto_advance_dialog.assert_called_once_with(focus_verified=True)
@@ -3627,7 +3619,6 @@ class MainTest(unittest.TestCase):
             playback_executor=playback,
             tracker_factory=lambda **_: tracker,
             dialog_observed=lambda *_: None,
-            stable_frame_route=lambda *_: None,
             line_id_resolver=lambda *_: "story:1",
             ocr_purpose=lambda: "legacy",
             prepare_chunk=lambda _chunk: "admitted audio",
@@ -4654,24 +4645,16 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.finish_playback()
         controller.story_cursor.dispatch_advance()
 
-        routed = controller._stable_live_frame_route(
-            "ellipsis-frame",
-            True,
-            expected_owner="event-77",
-            route_epoch=4,
-        )
+        routed = controller._dialog_observed("Mrs. Owen", "...")
 
         self.assertEqual(routed, SilentDialogRoute("event-78"))
         self.assertEqual(controller.story_cursor.current_event_id, "event-78")
         self.assertTrue(controller.story_cursor.can_auto_advance)
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
-        self.assertEqual(pipeline[-1][0][0], "sequence-visual-transition")
-        self.assertEqual(
-            pipeline[-1][1]["match_result"], "expected-silent-visual-transition"
-        )
-        self.assertEqual(pipeline[-1][1]["proof"], "application-owned-single-dispatch")
+        self.assertEqual(pipeline[-1][0][0], "sequence-audio-auto")
+        self.assertEqual(pipeline[-1][1]["match_result"], "expected-silent-symbols")
 
-    def test_sequence_silent_ellipsis_is_not_inferred_without_owned_dispatch(self):
+    def test_sequence_silent_ellipsis_is_not_inferred_from_unchanged_ocr(self):
         rows = [
             {
                 "chapter": "1",
@@ -4752,7 +4735,7 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.begin_playback()
         controller.story_cursor.finish_playback()
 
-        self.assertIsNone(controller._stable_live_frame_route("ellipsis-frame", True))
+        controller._dialog_observed("Mrs. Owen", "Before.")
         self.assertEqual(controller.story_cursor.current_event_id, "event-77")
 
     def test_sequence_transition_accepts_complete_short_successor(self):
@@ -5008,7 +4991,6 @@ class MainTest(unittest.TestCase):
         controller.story_cursor.dispatch_advance()
         status = controller.get_live_sequence_status()
 
-        self.assertIsNone(controller._stable_live_frame_route("changed", True))
         routed = controller._dialog_observed(
             "corrupted nameplate",
             "The right branch.",
@@ -5114,20 +5096,10 @@ class MainTest(unittest.TestCase):
         )
         controller._offer_unknown_speaker_mapping.assert_not_called()
         controller.history.add.assert_not_called()
-        self.assertIsNone(controller._stable_live_frame_route("new", True))
         controller._finish_sequence_playback(
             event_id,
             PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
         )
-        self.assertIsNone(controller._stable_live_frame_route("new", False))
-        self.assertFalse(
-            controller._stable_live_frame_route(
-                "new",
-                True,
-                expected_owner="stale-event",
-            )
-        )
-        self.assertIsNone(controller._stable_live_frame_route("new", True))
         controller._offer_unknown_speaker_mapping.return_value = False
         self.assertEqual(
             controller._dialog_observed("Hotelier", "Second canonical line."),
@@ -5343,12 +5315,6 @@ class MainTest(unittest.TestCase):
             "event-1", controller.story_cursor.occurrence_id
         )
 
-        routed = controller._stable_live_frame_route(
-            "first-stable-successor-frame",
-            False,
-            expected_owner="event-1",
-        )
-        self.assertIsNone(routed)
         self.assertEqual(controller._live_ocr_purpose(), "expected-successor-prefix")
         preloader.resolve_bounded_among = Mock(
             side_effect=AssertionError(
@@ -5632,7 +5598,6 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
         self.assertEqual(controller.story_cursor.reason, "playback-failed")
-        self.assertFalse(controller._stable_live_frame_route("new", True))
         status = controller.get_live_sequence_status()
         self.assertTrue(status.recovery_required)
         self.assertIn("Playback failed", status.guidance)
@@ -5934,7 +5899,6 @@ class MainTest(unittest.TestCase):
             PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0),
         )
 
-        self.assertIsNone(controller._stable_live_frame_route("third", True))
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
 
         routed = controller._dialog_observed(
@@ -6230,50 +6194,6 @@ class MainTest(unittest.TestCase):
         )
         self.assertRegex(miss[1]["normalized_text_sha256"], r"^[0-9a-f]{64}$")
         self.assertNotIn("A complete canonical", repr(miss))
-
-    def test_stable_completion_cue_cannot_confirm_current_prefix(self):
-        canonical = "Sharpodonties, sir."
-        preloader = ChapterVoicePreloader(
-            (
-                ChapterDialogue(
-                    "reverse1999:1:27",
-                    "1",
-                    27,
-                    "Rhiannon",
-                    canonical,
-                    text_sha256(canonical),
-                ),
-            )
-        )
-        plan = stub_live_sequence_plan(*preloader.dialogue)
-        controller = AppController(
-            AppSettings(
-                story_index="story.jsonl",
-                live_sequence_plan="plan.json",
-                live_sequence_mode="audio-auto",
-            ),
-            tts_factory=Mock(),
-            chapter_voice_preloader=preloader,
-            live_sequence_plan_factory=Mock(return_value=plan),
-        )
-        controller.live_reader = Mock()
-        controller.live_reader.frame_route_epoch_is_current.return_value = True
-        controller.story_cursor.anchor_event("event-1")
-        controller.story_cursor.begin_playback()
-        controller.story_cursor.finish_playback()
-        controller.sequence_prefix_confirmation_event_id = "event-1"
-
-        routed = controller._stable_live_frame_route(
-            "full-frame",
-            True,
-            "event-1",
-            1,
-        )
-
-        self.assertIsNone(routed)
-        self.assertEqual(controller.sequence_prefix_confirmation_event_id, "event-1")
-        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
-        controller.live_reader.record_canonical_full_text.assert_not_called()
 
     def test_full_canonical_ocr_confirms_current_prefix_once_after_playback(self):
         canonical = "A complete line with a persistent OCR substitution."

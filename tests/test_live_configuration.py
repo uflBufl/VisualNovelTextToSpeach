@@ -6,7 +6,6 @@ from concurrent.futures import Future, TimeoutError
 from threading import TIMEOUT_MAX
 from unittest.mock import Mock, patch
 
-from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.controller import AppController
 from vntts.live import (
     AdaptiveCapturePolicy,
@@ -71,8 +70,6 @@ class LiveConfigurationTest(unittest.TestCase):
             (
                 make_reader,
                 (
-                    "frame_recheck_interval_seconds",
-                    "stable_frame_minimum_seconds",
                     "interval_seconds",
                     "auto_advance_delay_seconds",
                     "auto_advance_confirmation_timeout_seconds",
@@ -209,20 +206,10 @@ class LiveConfigurationTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             reader.wait(timeout_seconds=-1)
 
-    def test_comparison_durations_do_not_receive_a_thread_limit(self):
+    def test_backpressure_cooldown_does_not_receive_a_thread_limit(self):
         maximum = sys.float_info.max
         policy = AdaptiveSpeechBackpressure(cooldown_seconds=maximum)
-        reader = make_reader(
-            frame_recheck_interval_seconds=maximum,
-            stable_frame_minimum_seconds=maximum,
-            auto_advance_delay_seconds=0,
-        )
         self.assertEqual(policy.cooldown_seconds, maximum)
-        self.assertEqual(reader.frame_recheck_interval_seconds, maximum)
-        self.assertEqual(reader.stable_frame_minimum_seconds, maximum)
-        self.assertEqual(
-            make_reader(stable_frame_minimum_seconds=0).stable_frame_minimum_seconds, 0
-        )
 
     def test_bool_timings_keep_existing_numeric_and_zero_contracts(self):
         self.assertEqual(
@@ -231,12 +218,9 @@ class LiveConfigurationTest(unittest.TestCase):
         self.assertEqual(AdaptiveCapturePolicy(base_interval=True).base_interval, 1)
         reader = make_reader(
             interval_seconds=True,
-            frame_recheck_interval_seconds=True,
-            stable_frame_minimum_seconds=False,
             auto_advance_delay_seconds=False,
         )
         self.assertEqual(reader.interval_seconds, 1)
-        self.assertEqual(reader.stable_frame_minimum_seconds, 0)
         self.assertEqual(reader.auto_advance_delay_seconds, 0)
         for factory, name in (
             (AdaptiveSpeechBackpressure, "cooldown_seconds"),
@@ -295,20 +279,3 @@ class LiveConfigurationTest(unittest.TestCase):
         policy.assert_not_called()
         self.assertIs(reader.tracker_options, tracker_options)
         self.assertIs(reader.adaptive_options, policy_options)
-
-    def test_unrepresentable_recheck_telemetry_does_not_prevent_ocr(self):
-        harness = AutoAdvanceFakeFrameHarness(
-            frame_recheck_required=lambda: True,
-            frame_recheck_interval_seconds=sys.float_info.max,
-        )
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Alice", "hello", background="first")
-        self.assertEqual(len(harness.recognized_frames), 1)
-        self.assertEqual(harness.errors, [])
-        details = next(
-            details
-            for stage, _generation, _at, details in harness.pipeline_events
-            if stage == "canonical-prefix-visual-recheck"
-        )
-        self.assertIsNone(details["recheck_interval_ms"])

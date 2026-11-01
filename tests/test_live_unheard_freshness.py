@@ -28,7 +28,17 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
         executor = QueuedExecutor()
         errors = []
         recognized = RecognizedDialog("Narrator", self.canonical, "canonical")
-        recognize = Mock(side_effect=[recognized, ("Narrator", self.canonical)])
+        calls = 0
+
+        def recognize_frame(_frame):
+            nonlocal calls
+            calls += 1
+            if calls > 1 and barrier is not None:
+                loop_stop.set()
+                return "Narrator", self.canonical
+            return recognized
+
+        recognize = Mock(side_effect=recognize_frame)
         observations = []
         reader = None
         candidate = None
@@ -80,7 +90,6 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
             report_error=errors.append,
             focus_probe=lambda: context["focused"],
             stable_frame_owner=lambda: context["owner"],
-            stable_frame_route=lambda *_args: None,
             frame_equivalent=lambda first, second: first == second,
             dialog_observed=(lambda *_args: ("Narrator", "Different dialogue."))
             if rewrite
@@ -112,16 +121,16 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
         queued = [arguments[0] for _, _, arguments in executor.jobs]
         return reader, tracker, recognize, queued
 
-    def test_cached_canonical_can_replace_late_qualified_candidate_once(self):
+    def test_fresh_canonical_ocr_can_replace_late_qualified_candidate_once(self):
         reader, tracker, recognize, queued = self.harness()
         canonical = [chunk for chunk in queued if chunk.line_id == "canonical"]
         self.assertEqual(len(canonical), 1)
         self.assertEqual(canonical[0].text, self.canonical)
         self.assertEqual(tracker.canonical_line_id, "canonical")
         self.assertEqual(reader.active_generation, canonical[0].generation)
-        recognize.assert_called_once_with("canonical frame")
+        self.assertGreaterEqual(recognize.call_count, 2)
 
-    def test_barriers_do_not_promote_cached_canonical_authority(self):
+    def test_context_barriers_do_not_reuse_previous_canonical_authority(self):
         for barrier in (
             "invalidation",
             "run",
@@ -137,7 +146,7 @@ class LiveUnheardFreshnessTest(unittest.TestCase):
                 self.assertIsNone(tracker.canonical_line_id)
                 self.assertEqual(
                     recognize.call_count,
-                    2 if barrier in {"invalidation", "frame"} else 1,
+                    2,
                 )
 
     def test_callback_rewrite_does_not_reuse_canonical_identity(self):

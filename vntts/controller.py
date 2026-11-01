@@ -271,7 +271,6 @@ class _StoryCursor(Protocol):
     def deterministic_visual_successor(self) -> LiveSequenceEvent | None: ...
     def deterministic_upcoming_visible_event(self) -> LiveSequenceEvent | None: ...
     def deterministic_manual_successor(self) -> LiveSequenceEvent | None: ...
-    def confirm_visual_transition(self) -> LiveSequenceEvent | None: ...
     def anchor_event(
         self, event_id: str, reason: str | None = None
     ) -> StoryCursorSnapshot: ...
@@ -1225,6 +1224,7 @@ class AppController:
             identity = {}
 
         raw_result: OCRResult | None = None
+        effective_result: OCRResult | None = None
         canonical_line: ChapterDialogue | None = None
         canonical_exact = False
         reader = self.live_reader
@@ -1236,20 +1236,16 @@ class AppController:
         def observe_raw_result(result: OCRResult) -> None:
             nonlocal raw_result
             raw_result = result
-            if (
-                isinstance(comparison, DialogFrameEquivalence)
-                and evidence_context is not None
-            ):
-                comparison.record(frame, result, evidence_context)
 
         def resolve_result(result: OCRResult) -> OCRResult:
-            nonlocal canonical_line, canonical_exact
+            nonlocal canonical_line, canonical_exact, effective_result
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
             resolution: dict[str, object] = {}
             try:
                 resolved = self._resolve_story_ocr_result(result, resolution=resolution)
+                effective_result = resolved
                 line = resolution.get("line")
                 canonical_line = line if isinstance(line, ChapterDialogue) else None
                 canonical_exact = resolution.get("match_result") in {
@@ -1294,6 +1290,16 @@ class AppController:
             raw_result_observer=observe_raw_result,
         )
         character = self._canonical_observed_character(character, text)
+        if (
+            isinstance(comparison, DialogFrameEquivalence)
+            and evidence_context is not None
+            and effective_result is not None
+        ):
+            comparison.record(
+                frame,
+                replace(effective_result, character=character or "", text=text),
+                evidence_context,
+            )
         if (
             canonical_line is not None
             and canonical_line.line_id is not None
@@ -1781,10 +1787,7 @@ class AppController:
                 f"Recovery OCR available; {recognized_frames} frame(s) recognized"
             )
         else:
-            ocr_activity = (
-                f"Full OCR idle in locked routing; {recognized_frames} anchor/recovery "
-                "frame(s) recognized"
-            )
+            ocr_activity = f"OCR observing visible dialogue; {recognized_frames} frame(s) recognized"
         return ocr_activity
 
     def _get_live_sequence_status_locked(self) -> LiveSequenceStatus:
@@ -1853,10 +1856,7 @@ class AppController:
                     "position after making the in-game choice."
                 )
             else:
-                guidance = (
-                    "Waiting for the next stable dialogue fingerprint; locked routing "
-                    "will not run OCR."
-                )
+                guidance = "Watching for the next recognized dialogue."
         else:
             guidance = "Waiting for canonical playback to complete."
         expected_audio_route = self._expected_sequence_audio_route(event, line)
@@ -2846,159 +2846,6 @@ class AppController:
             outcome=outcome,
         )
 
-    def _stable_live_frame_route(
-        self,
-        _fingerprint: object,
-        settled: bool,
-        expected_owner: str | None = None,
-        route_epoch: int | None = None,
-    ) -> bool | tuple[str, str] | CanonicalDialogRoute | SilentDialogRoute | None:
-        with self.story_cursor_lock:
-            cursor = self.story_cursor
-            if cursor is None or not is_live_sequence_audio_mode(
-                self.settings.live_sequence_mode
-            ):
-                return None
-            if not self._stable_live_frame_owner_is_current_locked(
-                cursor, expected_owner, route_epoch
-            ):
-                return False
-            if cursor.state in {
-                StoryCursorState.UNSYNCHRONIZED,
-                StoryCursorState.ANCHORING,
-            }:
-                return None
-            if (
-                self.live_reader is not None
-                and self.live_reader.observation_uncertain is True
-            ):
-                return None
-            if self._expected_sequence_prefix_line_locked() is not None:
-                return None
-            if not settled:
-                return None
-            if cursor.state in {
-                StoryCursorState.MANUAL,
-                StoryCursorState.DESYNCHRONIZED,
-            }:
-                return None
-            if self.sequence_prefix_confirmation_event_id == cursor.current_event_id:
-                # Completion cues cannot identify which dialogue is on screen.
-                return None
-            if not cursor.can_confirm_visual_transition:
-                return None
-            return self._route_visual_successor_locked(cursor)
-
-    def _stable_live_frame_owner_is_current_locked(
-        self,
-        cursor: _StoryCursor,
-        expected_owner: str | None,
-        route_epoch: int | None,
-    ) -> bool:
-        if expected_owner is not None and cursor.current_event_id != expected_owner:
-            return False
-        return not (
-            route_epoch is not None
-            and self.live_reader is not None
-            and not self.live_reader.frame_route_epoch_is_current(route_epoch)
-        )
-
-    def _route_visual_successor_locked(
-        self, cursor: _StoryCursor
-    ) -> bool | SilentDialogRoute | None:
-        event = cursor.deterministic_visual_successor()
-        application_owned_transition = bool(
-            self.settings.live_sequence_mode == "audio-auto"
-            and cursor.state == StoryCursorState.WAITING_TRANSITION
-        )
-        if event is None or event.kind != "silent":
-            return None
-        if not self._has_unique_visible_successor(
-            cursor,
-            event,
-            application_owned_transition,
-        ):
-            return None
-        return self._confirm_visual_sequence_successor_locked(
-            cursor,
-            event,
-            application_owned_transition,
-        )
-
-    def _has_unique_visible_successor(
-        self,
-        cursor: _StoryCursor,
-        event: LiveSequenceEvent | None,
-        application_owned_transition: bool,
-    ) -> bool:
-        immediate = bool(
-            application_owned_transition
-            and event is not None
-            and event.kind == "silent"
-        )
-        candidates = cursor.bounded_visible_successors(
-            maximum_visible_depth=1 if immediate else 3
-        )
-        return (
-            event is not None
-            and len(candidates) == 1
-            and candidates[0].event_id == event.event_id
-        )
-
-    def _confirm_visual_sequence_successor_locked(
-        self,
-        cursor: _StoryCursor,
-        event: LiveSequenceEvent | None,
-        application_owned_transition: bool,
-    ) -> bool | SilentDialogRoute:
-        if event is None or event.kind != "silent":
-            return False
-        previous_event_id = cursor.current_event_id
-        confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
-        confirmed_event = cursor.confirm_visual_transition()
-        if confirmed_event is None or confirmed_event.event_id != event.event_id:
-            return False
-        if confirming_dispatch and self.live_reader is not None:
-            self.live_reader.confirm_pending_auto_advance()
-        generation = self.live_reader.active_generation if self.live_reader else 0
-        return self._confirm_silent_visual_successor_locked(
-            cursor,
-            event,
-            previous_event_id,
-            generation,
-            application_owned_transition,
-        )
-
-    def _confirm_silent_visual_successor_locked(
-        self,
-        cursor: _StoryCursor,
-        event: LiveSequenceEvent,
-        previous_event_id: str | None,
-        generation: int,
-        application_owned_transition: bool,
-    ) -> SilentDialogRoute | bool:
-        if not self._mark_sequence_silence_locked(event.event_id):
-            return False
-        self.pipeline_event_handler(
-            "sequence-visual-transition",
-            generation,
-            monotonic(),
-            state=cursor.state.value,
-            previous_event_id=previous_event_id,
-            event_id=event.event_id,
-            line_id=None,
-            route="silent",
-            reason=cursor.reason,
-            match_result="expected-silent-visual-transition",
-            proof=(
-                "application-owned-single-dispatch"
-                if application_owned_transition
-                else "unique-bounded-visible-successor"
-            ),
-        )
-        self._publish_live_sequence_status()
-        return SilentDialogRoute(event.event_id)
-
     def _stable_live_frame_owner(self) -> str | None:
         with self.story_cursor_lock:
             cursor = self.story_cursor
@@ -3009,7 +2856,7 @@ class AppController:
             return cursor.current_event_id
 
     def _live_ocr_purpose(self) -> str | None:
-        """Authorize full OCR only where the cursor cannot route safely."""
+        """Describe the cursor context for each OCR cycle."""
         with self.story_cursor_lock:
             cursor = self.story_cursor
             if not self._live_sequence_audio_active():
@@ -3809,8 +3656,8 @@ class AppController:
             latest, routed = reader.latest_frame, reader.routed_frame
             run_id = reader.run_id
             version, epoch = reader.frame_version, reader.frame_route_epoch
-            same = reader.latest_frame_fingerprint == reader.routed_frame_fingerprint
-        if latest is not None and routed is not None and not same:
+        same = False
+        if latest is not None and routed is not None:
             try:
                 same = reader.frame_equivalent(routed, latest)
             except Exception as error:

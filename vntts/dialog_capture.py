@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image, ImageFilter
+from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 from scipy.ndimage import label, maximum_filter
 
@@ -472,96 +472,8 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
     return blake2b(label + dialog, digest_size=16).digest()
 
 
-def _dialog_equivalence_boxes(
-    previous: object, current: object
-) -> list[tuple[int, int, int, int]]:
-    width, height = _frame_image(previous).size
-    monitor = {"left": 0, "top": 0, "width": width, "height": height}
-    region_pairs = []
-    for frame in (previous, current):
-        regions = getattr(frame, "ocr_regions", None)
-        region_pairs.append(
-            (regions.speaker, regions.dialogue)
-            if isinstance(regions, OCRRegions)
-            else (DialogRegion(0, 0, 1, 0.36), DialogRegion(0, 0.25, 1, 0.75))
-        )
-    boxes = []
-    for first, second in zip(*region_pairs, strict=True):
-        a, b = first.capture_box(monitor), second.capture_box(monitor)
-        boxes.append(
-            (
-                min(a["left"], b["left"]),
-                min(a["top"], b["top"]),
-                max(a["left"] + a["width"], b["left"] + b["width"]),
-                max(a["top"] + a["height"], b["top"] + b["height"]),
-            )
-        )
-
-    return boxes
-
-
-def _dialog_equivalence_bands(
-    frame: object, boxes: list[tuple[int, int, int, int]]
-) -> tuple[NDArray[np.int16], ...]:
-    image = _frame_image(frame).convert("L")
-    for point in _dialog_completion_cue_pixels(frame):
-        image.putpixel(point, 0)
-    # Padding retains edge glyphs when the comparison translates a whole band.
-    return tuple(
-        np.pad(np.asarray(image.crop(box), dtype=np.int16), 2) for box in boxes
-    )
-
-
-def _dialog_band_equivalent(
-    before: NDArray[np.int16], after: NDArray[np.int16]
-) -> bool:
-    difference = np.abs(before - after)
-    thresholds = zip(
-        (160, max(160, int(before.max()) - 20)),
-        (160, max(160, int(after.max()) - 20)),
-        strict=True,
-    )
-    for first, second in thresholds:
-        changed = (before >= first) != (after >= second)
-        if not changed.any():
-            continue
-        if np.any(difference[changed] > 4):
-            return False
-        # Only tiny intensity crossings beside stable glyph cores are edge noise;
-        # a new isolated punctuation pixel must still invalidate the comparison.
-        stable_core = (before >= first + 4) & (after >= second + 4) & (difference <= 4)
-        supported = maximum_filter(stable_core, size=3, mode="constant")
-        if not supported[changed].all():
-            return False
-    return True
-
-
-def dialog_frames_equivalent(previous: object, current: object) -> bool:
-    """Compare glyphs with one shared translation bounded by two pixels."""
-    before, after = _frame_image(previous), _frame_image(current)
-    if before.size != after.size:
-        return False
-    if not dialog_glyphs_visible(previous) or not dialog_glyphs_visible(current):
-        return False
-
-    boxes = _dialog_equivalence_boxes(previous, current)
-    before_bands = _dialog_equivalence_bands(previous, boxes)
-    after_bands = _dialog_equivalence_bands(current, boxes)
-    if not (before_bands[-1] >= 160).any() or not (after_bands[-1] >= 160).any():
-        return False
-    offsets = sorted(range(-2, 3), key=abs)
-    for dy in offsets:
-        for dx in offsets:
-            if all(
-                _dialog_band_equivalent(np.roll(left, (dy, dx), axis=(0, 1)), right)
-                for left, right in zip(before_bands, after_bands, strict=True)
-            ):
-                return True
-    return False
-
-
 class DialogFrameEquivalence:
-    """Use existing raw OCR for known pairs; never recognize inside a comparison."""
+    """Compare validated OCR evidence; missing or uncertain evidence cannot authorize a key."""
 
     def __init__(
         self,
@@ -612,38 +524,7 @@ class DialogFrameEquivalence:
                 before[2].text, after[2].text, punctuation_fallback=True
             )
             return equivalent and self.context() == context
-        return dialog_frames_equivalent(previous, current)
-
-
-def fingerprint_dialog_render_activity(frame: object) -> bytes:
-    """Fingerprint high-fidelity dialogue glyph activity, not screen identity.
-
-    The ordinary dialogue fingerprint is intentionally compact and may map a
-    nearly complete typewriter prefix to the same identity as the full line.
-    OCR rechecking needs the opposite tradeoff: retain small new glyphs, but
-    ignore the portrait, continue indicator and most animated backdrop pixels.
-    """
-    grayscale = _frame_image(frame).convert("L")
-    width, height = grayscale.size
-    left = min(width - 1, max(0, round(width * 0.18)))
-    right = max(left + 1, min(width, round(width * 0.92)))
-    top = min(height - 1, max(0, round(height * 0.25)))
-    regions = getattr(frame, "ocr_regions", None)
-    band = (
-        regions.dialogue.crop(_without_continue_indicator(grayscale))
-        if isinstance(regions, OCRRegions)
-        else grayscale.crop((left, top, right, height))
-    )
-    brightest = band.getextrema()[1]
-    assert isinstance(brightest, (int, float))
-    threshold = max(205, brightest - 20)
-    mask = band.point(
-        tuple(255 if value >= threshold else 0 for value in range(256))
-    ).filter(ImageFilter.MaxFilter(3))
-    if mask.width > 1024:
-        output_height = max(1, round(mask.height * 1024 / mask.width))
-        mask = mask.resize((1024, output_height), Image.Resampling.NEAREST)
-    return blake2b(mask.tobytes(), digest_size=16).digest()
+        return False
 
 
 def dialog_glyphs_visible(frame: object) -> bool:

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from vntts.dialog import ocr_texts_equivalent
 from vntts.dialog_capture import DialogFrameEquivalence
@@ -61,26 +61,20 @@ class OCRFrameEquivalenceTest(unittest.TestCase):
         self.compare.record(self.before, before, self.context)
         self.compare.record(self.after, after, self.context)
 
-    def test_confident_raw_pair_uses_text_without_image_comparison_or_mutation(self):
+    def test_confident_raw_pair_uses_text_without_mutation(self):
         before, after = result("cluttered,.room:"), result("cluttered, room. .")
         self.record(before, after)
-        with patch("vntts.dialog_capture.dialog_frames_equivalent") as pixels:
-            self.assertTrue(self.compare(self.before, self.after))
-        pixels.assert_not_called()
+        self.assertTrue(self.compare(self.before, self.after))
         self.assertEqual(before.text, "cluttered,.room:")
         self.assertEqual(after.text, "cluttered, room. .")
 
-    def test_confident_different_text_or_name_is_not_overruled_by_pixels(self):
+    def test_confident_different_text_or_name_rejects_evidence(self):
         for after in (result("A different phrase."), result(speaker="Beatrice")):
             with self.subTest(after=after):
                 self.record(result(), after)
-                with patch(
-                    "vntts.dialog_capture.dialog_frames_equivalent", return_value=True
-                ) as pixels:
-                    self.assertFalse(self.compare(self.before, self.after))
-                pixels.assert_not_called()
+                self.assertFalse(self.compare(self.before, self.after))
 
-    def test_missing_or_uncertain_ocr_does_not_authorize_a_new_fallback(self):
+    def test_missing_or_uncertain_ocr_never_authorizes_equivalence(self):
         for after in (
             None,
             result(confidence=59),
@@ -92,21 +86,14 @@ class OCRFrameEquivalenceTest(unittest.TestCase):
                 self.compare.record(self.before, result(), self.context)
                 if after is not None:
                     self.compare.record(self.after, after, self.context)
-                with patch(
-                    "vntts.dialog_capture.dialog_frames_equivalent", return_value=False
-                ) as pixels:
-                    self.assertFalse(self.compare(self.before, self.after))
-                pixels.assert_called_once_with(self.before, self.after)
+                self.assertFalse(self.compare(self.before, self.after))
 
     def test_changed_run_owner_or_missing_context_rejects_cached_evidence(self):
         self.record(result(), result())
         for context in (("other-run", "owner"), ("run", "other-owner"), None):
             with self.subTest(context=context):
                 self.context = context
-                with patch(
-                    "vntts.dialog_capture.dialog_frames_equivalent", return_value=False
-                ):
-                    self.assertFalse(self.compare(self.before, self.after))
+                self.assertFalse(self.compare(self.before, self.after))
 
     def test_cache_is_bounded_and_does_not_slide_the_original_anchor(self):
         self.compare.record(self.before, result("Mira"), self.context)
@@ -116,31 +103,19 @@ class OCRFrameEquivalenceTest(unittest.TestCase):
         for _ in range(24):
             frame = object()
             self.compare.record(frame, result("Milo"), self.context)
-            with patch(
-                "vntts.dialog_capture.dialog_frames_equivalent", return_value=True
-            ) as pixels:
-                self.assertFalse(self.compare(self.before, frame))
-            pixels.assert_not_called()
-        # Unused observations are evicted, rather than retaining an entire run.
+            self.assertFalse(self.compare(self.before, frame))
         stale = frame
         for _ in range(8):
             self.compare.record(object(), result(), self.context)
-        with patch(
-            "vntts.dialog_capture.dialog_frames_equivalent", return_value=False
-        ) as pixels:
-            self.assertFalse(self.compare(self.before, stale))
-        pixels.assert_called_once()
+        self.assertFalse(self.compare(self.before, stale))
 
     def test_context_change_during_semantic_comparison_invalidates_it(self):
         self.record(result(), result())
         self.compare.context = Mock(side_effect=[self.context, ("new-run", "owner")])
-        with patch("vntts.dialog_capture.dialog_frames_equivalent") as pixels:
-            self.assertFalse(self.compare(self.before, self.after))
-        pixels.assert_not_called()
+        self.assertFalse(self.compare(self.before, self.after))
 
     def test_confidence_setting_is_respected(self):
         compare = DialogFrameEquivalence(97, Mock(return_value=self.context))
         compare.record(self.before, result(), self.context)
         compare.record(self.after, result(), self.context)
-        with patch("vntts.dialog_capture.dialog_frames_equivalent", return_value=False):
-            self.assertFalse(compare(self.before, self.after))
+        self.assertFalse(compare(self.before, self.after))

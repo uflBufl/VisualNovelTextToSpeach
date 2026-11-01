@@ -510,84 +510,23 @@ Remaining defects, missing measurements and native acceptance:
      reproduces at native display scales; keep calibration on ambiguous layouts
      and do not relax divider safeguards from synthetic evidence alone.
      Evidence: `native-trial-20261029/line66-wait/frame-001.png`.
-   - **Visual readiness and admission latency (RUN-29-02):** measure full-text
-     observation to canonical route, and PCM completion to key dispatch, on
-     lines39/58/83/100/101/102. Separate focus waits and actual text changes.
-     Confirm stable text and scenery animation no longer strand advancement;
-     correct divider regions alone do not establish that every delay is fixed.
-     Retain residual reproducible comparison/admission failures as separate
-     defects with paired frames, without relaxing tolerances speculatively.
-     Follow-up09406def638a43caaf28b2de23f07bf1 reproduces100: route408215.076,
-     complete529200/529200 PCM, then290.596s until its key; expected-text-only
-     OCR and owned-frame-not-visible-and-stable persist despite complete
-     unobscured text and a visible triangle. Saved pair06 establishes full text
-     by408227.288, before PCM completion408227.373; key arrives408517.969.
-    101 and103 also wait41.466s and19.886s after PCM. Preserve paired frames and inspect
-     ownership/visual readiness rather than lowering tolerances. New frame:
-     `native-trial-20261029-followup/line100-wait/frame-001.png`.
-     Joined evidence:242/244 OCR attempts after full text are stale, including
-    168 exact text-only and60 normalized text-only resolutions. Generic
-     `ocr-not-current` in that old journal cannot distinguish failed glyph
-     comparison from capture replacement. Current9a224f7f recording
-     921241e0f5f4449bac677f48f0170e2b identifies real frame-equivalence refusals:
-     key99 to route100 takes113.189s, with181 stale comparisons before routing
-     (166 already matched100). After complete529200PCM frames, no app key for
-     369.197s until a disclosed manual transition;101 similarly needed a manual
-     key135.777s after complete speech. The first89.11s on100 contain144 stale
-     comparisons and67 withheld advances despite focus/visibility/completion cue
-     and no speech pending.103 eventually advanced14.564s after PCM completion.
-     Retained capture IDs,
-     frame versions and comparison times distinguish this from capture replacement.
-     Do not blame speaker confidence alone or treat matching text as permission to
-     bypass ownership. Full visible frame: native-trial-20261031/stall100-before-route.png.
-     Session921241e0f5f4449bac677f48f0170e2b retains lossless routed/latest pairs
-     for100/101 in visual-waits. Offline analysis in
-     `frame-equivalence-20261101` reproduces both-band refusal on all25 offsets;
-     zero offset minimizes the changed pixels. Name-region width alone cannot
-     explain it: dialogue rejects independently. Two distinct remaining tasks:
-     - Agree and implement one common bright-core threshold for both images in
-       `_dialog_band_equivalent`, proposed as max(160, max(before.max(),
-       after.max()) - 20). Keep the160 floor, four-level edge tolerance, shared
-       translation and original route anchor. On101 the current235/233 thresholds
-       falsely mark326 identical-valued dialogue pixels changed; on102 the same
-       defect marks1340 identical name pixels and581 dialogue pixels. Regression:
-       unchanged233-valued glyphs with a separate highlight255 ->253 must pass;
-       new dim punctuation, changed names, prefixes, region-edge additions and
-       cumulative drift must still fail. Verify symmetry and existing capture/
-       live-consumer tests before committing. This fixes a measured comparison
-       defect, not the complete100/101 stalls; no new live metrics are needed.
-     - Diagnose residual animated particles and glyph-edge intensity changes
-       before choosing a filter. On100 low/core masks reject83/253 dialogue
-       pixels; on101 the common-threshold experiment still leaves38 low-mask and
-       66 core-mask refusals. The existing speaker-presence detector accepts
-       both saved wide crops, so simply skipping an absent-name band cannot fix
-       these pairs. Inspect short existing video sequences to distinguish moving
-       particles from persistent new ink. If exact temporal pixels are missing,
-       propose a bounded lossless burst around a refusal: source/capture times,
-       IDs, OCR regions and per-band thresholds/rejection masks, reusing existing
-       session limits and reporting dropped evidence/overhead. A short targeted
-       scene suffices for diagnosis; defer a full chapter until causal repairs.
-       Never discard small components globally: they can be real punctuation.
-       Qualify cached raw-OCR comparison in the combined native run: retain the
-       routed source anchor through playback, initial/new story ownership and
-       Restart/Pause/Stop; inspect100/101, empty-name Narrator fallback, actual
-       speaker changes and automatic transitions under background generation.
-       Frame-pair results do not prove
-       action-time freshness. Image checks remain necessary when either frame
-       lacks current-run/owner confident OCR. Exercise animation faster than OCR:
-       an unrecognized latest must still refuse freshness, even when the source
-       text matches an older anchor. Agree a separate freshness design before
-       replacing this remaining image gate; never recursively invoke OCR from
-       frame_equivalent. Rare identical consecutive or one-edit-different
-       dialogue is an accepted limit, not a separate implementation gate. Keep
-       the confidence and ownership guards: fuzzy/punctuation tolerance does not
-       authorize keys on unreadable text or establish a new occurrence.
-       Include the benchmark's synthetic75-on25 newly added punctuation in the
-       safety corpus: the current160-floor comparator accepts it as unchanged.
-       Qualify a correction without blindly lowering the global pixel threshold.
-     Evidence: `native-trial-20261029/line39-wait`, `line100-wait`, and retained
-     visual-waits in sessions `fa363219b30447bb88d112530fd69150` and
-     `d8f1c1208ebf4d7fa10353e8b7145f6c`.
+   - **Native acceptance of serialized OCR and admission latency (RUN-29-02):**
+     On lines39/58/83/100/101/102, measure capture/OCR to canonical route and
+     PCM completion to key dispatch under background generation. Distinguish
+     focus, actual text changes, uncertain OCR and key handling. Verify moving
+     particles and brightness changes no longer invalidate an in-flight capture.
+     After speech, require a newly captured recognized frame; unknown text keeps
+     recognizing, a new occurrence cancels the old key. Check accepted A/B/C
+     speech FIFO, empty-name Narrator, actual speaker changes, prefix/full-text,
+     punctuation-only replies and automatic transitions. Exercise Stop/Pause/
+     Restart and settings/owner changes during OCR and before key dispatch.
+     Frozen-frame success does not qualify native latency or CPU consumption.
+     Rare identical consecutive or one-edit-different lines remain an accepted
+     matching limit. Compare OCR cadence and load against retained native runs;
+     do not reinstate pixel identity or lower confidence to hide a residual wait.
+     Retain existing capture IDs, route/attempt timing and lossless frames if a
+     refusal remains. Evidence: `native-trial-20261031/stall100-before-route.png`,
+     `frame-equivalence-20261101` and retained visual-waits100/101.
    - **Prepared matching remaining edges:** after the approved3-character
      edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line
@@ -682,13 +621,15 @@ callers and focused regressions together when changing these contracts.
       Stop responsive; revalidate frame/epoch/owner before admitting its late result.
       Offline regressions do not establish the cause of the historical capture-only
       stall or justify automatic recovery/new timeouts.
-- [ ] **R2 - Validate completed-text freshness on Mac.** Use completed left-edge
-      `Ouch!`, absent names, changing brightness, animated cues and 1-2px auto-ROI
-      translation/size changes with capture faster than OCR. Require prompt current
-      recognition while real replacement, changed name, new punctuation/typewriter
-      glyphs, focus/owner changes and Stop still reject stale speech. Retain captures
-      showing whether real antialiasing changes conservatively need another OCR pass.
-      R1's later capture-only stall remains a separate unknown cause.
+- [ ] **R2 - Validate serialized OCR freshness on Mac.** Use completed left-edge
+      `Ouch!`, absent names, brightness/particles, animated cues and 1-2px auto-ROI
+      translation/size changes during OCR. Require each held capture to finish
+      recognition without cancellation by newer pixels; accepted distinct A/B/C
+      occurrences must play once in order. A fresh recognized changed name/text/
+      punctuation or incomplete typewriter line must prevent an old key. Verify
+      focus/owner/run changes and Pause/Stop/Restart still reject stale work.
+      Measure OCR cadence, load and post-speech latency under background generation.
+      R1's historical capture-only stall remains a separate unknown cause.
 
 - [ ] **R3 - Validate owned early prepared-successor playback on Mac.** Use a
       fully admitted per-character recording and an authorized deterministic key

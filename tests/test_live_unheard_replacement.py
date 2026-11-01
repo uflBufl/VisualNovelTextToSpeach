@@ -56,7 +56,7 @@ class LiveUnheardReplacementTest(unittest.TestCase):
         reader.latest_frame_visible = True
         reader.frame_version = 1
         authority = reader._recognize_current_frame(
-            "frame", "legacy", "frame", True, False, "frame", Mock(), 1, None
+            "frame", "legacy", "frame", True, False, Mock(), 1, None
         )
         self.assertIsNotNone(authority)
         return reader, tracker, chunk, authority, speech, playback, writes

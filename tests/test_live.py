@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
+from vntts.dialog import ocr_texts_equivalent
 from vntts.dialog_capture import OCRError
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -22,6 +23,7 @@ from vntts.live import (
     LiveDialogReader,
     SilentDialogRoute,
     SpeechChunk,
+    _TrackerAdmissionDiagnostics,
 )
 from vntts.ocr import OCRPreviewCancelled
 
@@ -143,16 +145,39 @@ class RecordingCapturePolicy:
         return self.base_interval
 
 
+def process_advance_ocr(reader, *, text="Hello."):
+    """Finish one captured OCR cycle after a timer requested continuation."""
+    from time import monotonic
+    from types import SimpleNamespace
+
+    loop_stop = Event()
+    tracker = IncrementalDialogTracker(complete_dialogue_only=True)
+    tracker.observe_canonical("Alice", "Hello.", "current-line")
+    tracker.generation = reader.active_generation
+    reader.tracker_factory = lambda **_options: tracker
+    reader.recognize_frame = Mock(return_value=("Alice", text))
+
+    def observe(*_args, **_options):
+        loop_stop.set()
+        return reader.interval_seconds
+
+    reader.adaptive_policy_factory = lambda **_options: SimpleNamespace(observe=observe)
+    reader.latest_frame_captured_at = monotonic()
+    if reader.latest_frame is None:
+        reader.latest_frame = object()
+    reader.frame_version += 1
+    admission = _TrackerAdmissionDiagnostics(reader._report_pipeline_event)
+    reader._consume_ocr_frames(
+        loop_stop, tracker, SimpleNamespace(observe=observe), admission
+    )
+    admission.finish()
+
+
 class AutoAdvanceFakeFrameHarness:
     def __init__(
         self,
         *,
-        stable_frame_route=None,
-        stable_frame_minimum_seconds=0.12,
         dialog_observed=None,
-        frame_recheck_required=None,
-        frame_recheck_interval_seconds=0.6,
-        frame_render_fingerprint=None,
         ocr_purpose=None,
         frame_observed=None,
         tracker_options=None,
@@ -178,17 +203,17 @@ class AutoAdvanceFakeFrameHarness:
             playback_executor=self.playback_executor,
             capture_frame=Mock(),
             recognize_frame=self._recognize,
-            frame_render_fingerprint=frame_render_fingerprint,
             frame_presence=lambda frame: frame.get("visible", True),
-            frame_recheck_required=frame_recheck_required,
+            frame_equivalent=lambda before, after: (
+                before["character"] == after["character"]
+                and ocr_texts_equivalent(
+                    before["text"], after["text"], punctuation_fallback=True
+                )
+            ),
             ocr_purpose=ocr_purpose,
             frame_observed=frame_observed,
-            frame_recheck_interval_seconds=frame_recheck_interval_seconds,
-            stable_frame_route=stable_frame_route,
             stable_frame_owner=lambda: self.frame_owner,
             dialog_observed=dialog_observed,
-            stable_frame_minimum_seconds=stable_frame_minimum_seconds,
-            stable_frame_clock=self.clock,
             prepare_chunk=lambda chunk: f"audio:{chunk.text}",
             play_prepared=self._play,
             report_error=self.errors.append,
@@ -203,6 +228,7 @@ class AutoAdvanceFakeFrameHarness:
                 **(tracker_options or {}),
             },
             auto_advance=self._advance,
+            require_visible_auto_advance=True,
             auto_advance_delay_seconds=0.2,
             auto_advance_confirmation_timeout_seconds=0.5,
             auto_advance_state_changed=lambda state, generation, attempt: (
@@ -236,6 +262,7 @@ class AutoAdvanceFakeFrameHarness:
         visible=True,
         complete=False,
         expected=None,
+        captured_at=None,
     ):
         frame = {
             "character": character,
@@ -243,17 +270,27 @@ class AutoAdvanceFakeFrameHarness:
             "background": background,
             "visible": visible,
         }
+        from time import monotonic
+
         with self.reader.pause_condition:
             self.reader.latest_frame = frame
-            self.reader.latest_frame_fingerprint = fingerprint
-            render_fingerprint = self.reader.frame_render_fingerprint
-            self.reader.latest_render_fingerprint = (
-                render_fingerprint(frame) if render_fingerprint else None
+            self.reader.latest_frame_captured_at = (
+                monotonic() if captured_at is None else captured_at
             )
+            self.reader.latest_frame_fingerprint = fingerprint
             self.reader.latest_frame_visible = visible
             self.reader.latest_frame_complete = complete
             self.reader.frame_version += 1
+            version = self.reader.frame_version
             self.reader.pause_condition.notify_all()
+            if not self.reader.pause_condition.wait_for(
+                lambda: self.reader.processed_frame_version >= version, timeout=1
+            ):
+                raise AssertionError(
+                    f"OCR cycle {version} did not finish: {self.errors!r}"
+                )
+        if not visible and self.completed_observations.empty():
+            return
         observed = self.completed_observations.get(timeout=1)
         expected = (character, text) if expected is None else expected
         if observed[:2] != expected:
@@ -261,6 +298,12 @@ class AutoAdvanceFakeFrameHarness:
                 f"Expected processed observation {expected!r}, "
                 f"received {observed[:2]!r}"
             )
+
+    def fire_advance(self):
+        timer = self.timer_scheduler.fire_next("_run_auto_advance")
+        frame = self.reader.latest_frame
+        self.push(frame["character"], frame["text"], background="advance-recheck")
+        return timer
 
     def prepare_ready_dialogue(self):
         self.push("Rhiannon", "I, erhm ...", background="first")
@@ -365,26 +408,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                     admitted.assert_not_called()
                 self.assertEqual(harness.errors, [])
 
-    def test_owned_prefix_does_not_reinterpret_the_unchanged_previous_frame(self):
-        harness = AutoAdvanceFakeFrameHarness(
-            stable_frame_route=lambda *_args: None,
-            ocr_purpose=lambda: "expected-successor-prefix",
-        )
-        harness.reader.routed_frame_fingerprint = "previous-line"
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push(
-            "Ada",
-            "I...",
-            background="previous",
-            fingerprint="previous-line",
-            expected=(None, ""),
-        )
-        self.assertEqual(harness.recognized_frames, [])
-        self.assertEqual(harness.speech_executor.jobs, [])
-        self.assertEqual(harness.errors, [])
-
-    def test_expected_prefix_survives_typewriter_growth_only_for_current_owner(self):
+    def test_ocr_requires_current_owner_epoch_focus_and_purpose(self):
         for change in (
             "growth",
             "legacy",
@@ -420,7 +444,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                 reader.line_id_resolver = lambda *_args: "line-2"
 
                 def recognize(_frame):
-                    # Capture continues while OCR reads the first letter.
+                    # Fingerprints are diagnostic; ownership changes invalidate OCR.
                     if not change.endswith("-static"):
                         reader.latest_frame_fingerprint = "more-letters"
                     condition = change.removesuffix("-static")
@@ -440,7 +464,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                 reader.recognize_frame = recognize
                 reader._run_ocr(harness.stop_event)
 
-                if change == "growth":
+                if change in {"growth", "legacy"}:
                     observed.assert_called_once_with("Ada", "N")
                     self.assertEqual(len(harness.speech_executor.jobs), 1)
                     chunk = harness.speech_executor.jobs[0][2][0]
@@ -450,193 +474,10 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                     self.assertEqual(harness.speech_executor.jobs, [])
                 self.assertEqual(harness.errors, [])
 
-    def test_locked_visual_frame_is_acknowledged_without_running_ocr(self):
-        observed = []
-        harness = AutoAdvanceFakeFrameHarness(
-            stable_frame_route=lambda *_args: None,
-            ocr_purpose=lambda: None,
-            frame_observed=lambda _frame, fingerprint, kind: observed.append(
-                (fingerprint, kind)
-            ),
-        )
-        harness.start()
-        self.addCleanup(harness.stop)
-
-        harness.push(
-            "corrupted nameplate",
-            "untrusted OCR payload",
-            background="locked",
-            fingerprint="locked-frame",
-            expected=(None, ""),
-        )
-
-        self.assertEqual(harness.recognized_frames, [])
-        self.assertEqual(observed, [("locked-frame", "locked-visual-only")])
-
-    def test_stable_frame_route_replaces_second_line_without_another_ocr_call(self):
-        route_calls = []
-
-        def stable_route(fingerprint, settled, _owner, _route_epoch):
-            route_calls.append((fingerprint, settled))
-            return ("Bea", "Canonical second line.") if settled else False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push(
-            "Ada",
-            "First line.",
-            background="first",
-            fingerprint="first-glyphs",
-        )
-        harness.push(
-            "bad OCR",
-            "partial second",
-            background="second-a",
-            fingerprint="second-glyphs",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.push(
-            "bad OCR",
-            "still wrong",
-            background="second-b",
-            fingerprint="second-glyphs",
-            complete=True,
-            expected=("Bea", "Canonical second line."),
-        )
-
-        self.assertEqual(len(harness.recognized_frames), 1)
-        self.assertEqual(
-            route_calls,
-            [("second-glyphs", False), ("second-glyphs", True)],
-        )
-        gate_events = [
-            details
-            for stage, _generation, _occurred_at, details in harness.pipeline_events
-            if stage == "stable-frame-gate"
-        ]
-        self.assertEqual([event["ready"] for event in gate_events], [False, True])
-        self.assertEqual(gate_events[-1]["owner"], "event-1")
-        self.assertEqual(gate_events[-1]["settled_ms"], 120)
-        self.assertTrue(gate_events[-1]["completion_cue"])
-        self.assertNotIn("text", gate_events[-1])
-        self.assertEqual(harness.errors, [])
-
-    def test_completion_cue_change_bypasses_same_fingerprint_ocr_cache(self):
-        def stable_route(_fingerprint, settled, _owner, _route_epoch):
-            if not settled:
-                return False
-            return None
-
-        harness = AutoAdvanceFakeFrameHarness(
-            stable_frame_route=stable_route,
-            dialog_observed=lambda _character, text: (
-                text in {"First line.", "Canonical short line."}
-            ),
-        )
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="candidate-a",
-            fingerprint="short-line",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="candidate-b",
-            fingerprint="short-line",
-        )
-        harness.push(
-            "Bea",
-            "Canonical short line.",
-            background="candidate-with-cue",
-            fingerprint="short-line",
-            complete=True,
-            expected=("Bea", "Canonical short line."),
-        )
-
-        gate_events = [
-            details
-            for stage, _generation, _occurred_at, details in harness.pipeline_events
-            if stage == "stable-frame-gate"
-        ]
-        self.assertTrue(gate_events[-1]["completion_cue"])
-        self.assertEqual(harness.recognized_frames[-1]["text"], "Canonical short line.")
-        self.assertEqual(harness.errors, [])
-
-    def test_pending_prefix_periodically_rechecks_same_fingerprint(self):
-        pending = [True]
-        canonical = "You DO have shillings, don't you, miss?"
-
-        def observe(character, text):
-            if text == canonical:
-                pending[0] = False
-            return character, canonical
-
-        harness = AutoAdvanceFakeFrameHarness(
-            frame_recheck_required=lambda: pending[0],
-            frame_recheck_interval_seconds=0.6,
-            dialog_observed=observe,
-        )
-        harness.start()
-        self.addCleanup(harness.stop)
-
-        harness.push(
-            "Hotelier",
-            "You DO have",
-            background="first",
-            fingerprint="same-glyphs",
-            expected=("Hotelier", canonical),
-        )
-        self.assertEqual(len(harness.recognized_frames), 1)
-        harness.clock.advance(0.4)
-        harness.push(
-            "Hotelier",
-            "You DO have",
-            background="cached",
-            fingerprint="same-glyphs",
-            expected=("Hotelier", canonical),
-        )
-        self.assertEqual(len(harness.recognized_frames), 1)
-        harness.clock.advance(0.2)
-        harness.push(
-            "Hotelier",
-            canonical,
-            background="rechecked",
-            fingerprint="same-glyphs",
-        )
-        self.assertEqual(len(harness.recognized_frames), 2)
-        self.assertFalse(pending[0])
-
-        harness.clock.advance(1.0)
-        harness.push(
-            "Hotelier",
-            canonical,
-            background="ordinary-cache",
-            fingerprint="same-glyphs",
-        )
-        self.assertEqual(len(harness.recognized_frames), 2)
-        rechecks = [
-            details
-            for stage, _generation, _occurred_at, details in harness.pipeline_events
-            if stage == "canonical-prefix-visual-recheck"
-        ]
-        self.assertEqual(len(rechecks), 2)
-        self.assertEqual(rechecks[-1]["recheck_interval_ms"], 600)
-        self.assertNotIn("text", rechecks[-1])
-        self.assertEqual(harness.errors, [])
-
     def test_generated_route_rechecks_new_glyphs_with_same_compact_fingerprint(self):
         partial = "ae You DO have shillings ]"
         full = "You DO have shillings, don't you, miss?"
         harness = AutoAdvanceFakeFrameHarness(
-            frame_render_fingerprint=lambda frame: frame["background"],
             tracker_options={
                 "complete_dialogue_only": True,
                 "early_dialogue_resolver": (
@@ -654,7 +495,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
 
         self.assertEqual(
             [frame["text"] for frame in harness.recognized_frames],
-            [partial, full],
+            [partial, partial, full, full],
         )
         self.assertEqual(
             harness.speech_executor.jobs[0][2][0].text,
@@ -662,10 +503,8 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         )
         self.assertEqual(harness.errors, [])
 
-    def test_live_tts_keeps_compact_ocr_cache_during_render_changes(self):
-        harness = AutoAdvanceFakeFrameHarness(
-            frame_render_fingerprint=lambda frame: frame["background"],
-        )
+    def test_live_tts_recognizes_every_frame_during_render_changes(self):
+        harness = AutoAdvanceFakeFrameHarness()
         harness.start()
         self.addCleanup(harness.stop)
 
@@ -674,86 +513,12 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             "Alice",
             "First words appeared",
             background="full",
-            expected=("Alice", "First"),
         )
 
-        self.assertEqual(len(harness.recognized_frames), 1)
+        self.assertEqual(len(harness.recognized_frames), 2)
 
-    def test_stable_frame_route_waits_for_minimum_settled_time(self):
-        route_calls = []
-
-        def stable_route(fingerprint, settled, _owner, _route_epoch):
-            route_calls.append((fingerprint, settled))
-            return ("Bea", "Canonical second line.") if settled else False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-a",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.05)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-b",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.07)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-c",
-            fingerprint="second",
-            expected=("Bea", "Canonical second line."),
-        )
-
-        self.assertEqual(
-            route_calls,
-            [("second", False), ("second", False), ("second", True)],
-        )
-        self.assertEqual(len(harness.recognized_frames), 1)
-
-    def test_stable_frame_route_requires_visible_dialogue(self):
-        route_calls = []
-
-        def stable_route(fingerprint, settled, _owner, _route_epoch):
-            route_calls.append((fingerprint, settled))
-            return ("Bea", "Canonical second line.") if settled else False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.clock.advance(0.2)
-        harness.push(
-            "bad OCR",
-            "popup",
-            background="popup-a",
-            fingerprint="popup",
-            visible=False,
-            expected=("Ada", "First line."),
-        )
-        harness.push(
-            "bad OCR",
-            "popup",
-            background="popup-b",
-            fingerprint="popup",
-            visible=False,
-            expected=("Ada", "First line."),
-        )
-
-        self.assertEqual(route_calls, [])
-        self.assertEqual(len(harness.recognized_frames), 1)
-
-    def test_first_invisible_frame_never_invokes_ocr(self):
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=Mock())
+    def test_invisible_frame_runs_ocr_without_admitting_dialogue(self):
+        harness = AutoAdvanceFakeFrameHarness()
         harness.start()
         self.addCleanup(harness.stop)
 
@@ -766,120 +531,42 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             expected=(None, ""),
         )
 
-        self.assertEqual(harness.recognized_frames, [])
-        harness.reader.stable_frame_route.assert_not_called()
-
-    def test_stable_frame_route_resets_when_owner_changes(self):
-        route_calls = []
-
-        def stable_route(fingerprint, settled, _owner, _route_epoch):
-            route_calls.append((fingerprint, settled))
-            return ("Bea", "Canonical second line.") if settled else False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-a",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.frame_owner = "event-9"
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-b",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-c",
-            fingerprint="second",
-            expected=("Bea", "Canonical second line."),
-        )
-
-        self.assertEqual(
-            route_calls,
-            [("second", False), ("second", False), ("second", True)],
-        )
-
-    def test_explicit_frame_bind_invalidates_in_flight_stable_route(self):
-        harness = None
-
-        def stable_route(_fingerprint, settled, _owner, _route_epoch):
-            if settled:
-                self.assertTrue(harness.reader.bind_current_frame_route())
-                return ("Bea", "Stale canonical route.")
-            return False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-a",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.push(
-            "bad OCR",
-            "still partial",
-            background="second-b",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-
         self.assertEqual(len(harness.recognized_frames), 1)
-        self.assertEqual(harness.reader.routed_frame_fingerprint, "second")
 
-    def test_stable_frame_route_resets_while_game_is_unfocused(self):
-        route_calls = []
+    def test_timer_requires_ocr_of_a_capture_taken_after_request(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.prepare_ready_dialogue()
+            harness.finish_playback()
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+            requested_at = harness.reader._advance_requested_at
+            self.assertEqual(harness.advance_calls, [])
+            harness.push(
+                "Rhiannon",
+                "I, erhm ...",
+                background="old-capture",
+                captured_at=requested_at - 1,
+            )
+            self.assertEqual(harness.advance_calls, [])
+            harness.push("Rhiannon", "I, erhm ...", background="fresh-capture")
+            self.assertEqual(harness.advance_calls, [1])
 
-        def stable_route(fingerprint, settled, _owner, _route_epoch):
-            route_calls.append((fingerprint, settled))
-            return ("Bea", "Canonical second line.") if settled else False
-
-        harness = AutoAdvanceFakeFrameHarness(stable_frame_route=stable_route)
-        harness.start()
-        self.addCleanup(harness.stop)
-        harness.push("Ada", "First line.", background="first", fingerprint="first")
-        harness.focused = False
-        harness.clock.advance(0.2)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-a",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.focused = True
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-b",
-            fingerprint="second",
-            expected=("Ada", "First line."),
-        )
-        harness.clock.advance(0.12)
-        harness.push(
-            "bad OCR",
-            "partial",
-            background="second-c",
-            fingerprint="second",
-            expected=("Bea", "Canonical second line."),
-        )
-
-        self.assertEqual(route_calls, [("second", False), ("second", True)])
+    def test_newer_ocr_dialogue_cancels_old_key_even_with_permissive_comparator(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.prepare_ready_dialogue()
+            harness.finish_playback()
+            harness.reader.frame_equivalent = lambda *_frames: True
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+            harness.push(
+                "Rhiannon", "I, erhm ... but there is more.", background="successor"
+            )
+            self.assertEqual(harness.advance_calls, [])
+            self.assertIsNone(harness.reader._advance_requested_generation)
 
     def test_disabling_auto_advance_cancels_delayed_key_press(self):
         harness = AutoAdvanceFakeFrameHarness()
@@ -929,7 +616,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                 len(harness.timer_scheduler.pending("_run_auto_advance")),
                 1,
             )
-            harness.timer_scheduler.fire_next("_run_auto_advance")
+            harness.fire_advance()
             self.assertEqual(harness.advance_calls, [1])
             self.assertEqual(harness.states, [("dispatched", 1, 1)])
 
@@ -997,7 +684,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                     try:
                         harness.prepare_ready_dialogue()
                         harness.finish_playback()
-                        harness.timer_scheduler.fire_next("_run_auto_advance")
+                        harness.fire_advance()
                         harness.push(
                             "Rhiannon" if stale_text else None,
                             stale_text,
@@ -1055,7 +742,7 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             self.addCleanup(harness.stop)
             harness.prepare_ready_dialogue()
             harness.finish_playback()
-            harness.timer_scheduler.fire_next("_run_auto_advance")
+            harness.fire_advance()
 
             self.assertEqual(harness.advance_calls, [1])
             harness.focused = False
@@ -1874,24 +1561,15 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(health["latest_frame_version"], 0)
         self.assertTrue(reader.stop())
 
-    def test_capture_exposes_blocked_ocr_callback_without_starting_another_worker(self):
+    def test_blocked_ocr_keeps_health_and_stop_available_without_more_captures(self):
         blocked = Event()
         release = Event()
-        capture_continued = Event()
 
         def purpose():
             blocked.set()
             if not release.wait(timeout=2):
                 raise AssertionError("OCR callback was not released")
             return "legacy"
-
-        def capture_state(*_):
-            health = reader.worker_health_snapshot()
-            if (
-                blocked.is_set()
-                and health["latest_frame_version"] > health["worker_frame_version"]
-            ):
-                capture_continued.set()
 
         with (
             ThreadPoolExecutor(max_workers=1) as capture,
@@ -1903,12 +1581,11 @@ class LiveDialogReaderTest(unittest.TestCase):
                 capture_executor=capture_executor,
                 ocr_executor=ocr_executor,
                 ocr_purpose=purpose,
-                capture_state_changed=capture_state,
             )
             try:
                 self.assertTrue(reader.start())
                 self.assertTrue(blocked.wait(timeout=1))
-                self.assertTrue(capture_continued.wait(timeout=1))
+                self.assertEqual(reader.capture_frame.call_count, 1)
                 health = reader.worker_health_snapshot()
                 self.assertEqual(health["worker_state"], "running")
                 self.assertEqual(health["worker_stage"], "reading-purpose")
@@ -1929,260 +1606,6 @@ class LiveDialogReaderTest(unittest.TestCase):
                 release.set()
                 reader.wait(timeout_seconds=1)
             reader.play_prepared.assert_not_called()
-
-    def test_blocked_stable_comparison_keeps_capture_health_and_stop_available(self):
-        for comparison in ("routed", "candidate"):
-            with self.subTest(comparison=comparison):
-                blocked, release, capture_continued = Event(), Event(), Event()
-
-                def equivalent(before, _after):
-                    if before == comparison:
-                        blocked.set()
-                        if not release.wait(timeout=2):
-                            raise AssertionError("comparison was not released")
-                    return False
-
-                def capture_state(*_):
-                    health = reader.worker_health_snapshot()
-                    if (
-                        blocked.is_set()
-                        and health["latest_frame_version"]
-                        > health["worker_frame_version"]
-                    ):
-                        capture_continued.set()
-
-                with (
-                    ThreadPoolExecutor(max_workers=1) as capture,
-                    ThreadPoolExecutor(max_workers=1) as ocr,
-                    ThreadPoolExecutor(max_workers=1) as controls,
-                ):
-                    reader = self.create_reader(
-                        capture_executor=capture,
-                        ocr_executor=ocr,
-                        capture_frame=lambda: "latest",
-                        frame_fingerprint=lambda frame: frame,
-                        frame_equivalent=equivalent,
-                        stable_frame_route=Mock(return_value=None),
-                        capture_state_changed=capture_state,
-                    )
-                    reader.latest_frame = "latest"
-                    reader.latest_frame_fingerprint = "latest"
-                    reader.latest_frame_visible = True
-                    reader.frame_version = 1
-                    reader.routed_frame = "routed"
-                    reader.routed_frame_fingerprint = "old-routed"
-                    reader.candidate_frame = "candidate"
-                    reader.candidate_frame_fingerprint = "old-candidate"
-                    reader.ocr_future = ocr.submit(reader._run_ocr, reader.stop_event)
-                    try:
-                        self.assertTrue(blocked.wait(timeout=1))
-                        reader.capture_future = capture.submit(
-                            reader._run_capture, reader.stop_event
-                        )
-                        health = controls.submit(reader.worker_health_snapshot).result(
-                            timeout=1
-                        )
-                        self.assertEqual(health["worker_state"], "running")
-                        self.assertEqual(
-                            health["worker_stage"], f"comparing-{comparison}-frame"
-                        )
-                        self.assertTrue(capture_continued.wait(timeout=1))
-                        self.assertTrue(controls.submit(reader.stop).result(timeout=1))
-                        with self.assertRaises(FutureTimeoutError):
-                            controls.submit(reader.wait, timeout_seconds=0.01).result(
-                                timeout=1
-                            )
-                    finally:
-                        release.set()
-                        reader.stop()
-                        reader.wait(timeout_seconds=1)
-                    reader.stable_frame_route.assert_not_called()
-                    reader.play_prepared.assert_not_called()
-
-    def test_stable_candidate_restarts_settling_after_route_or_focus_reset(self):
-        for reset in ("accepted-route", "focus-loss"):
-            with self.subTest(reset=reset):
-                clock, focused = FakeClock(), [True]
-                route = Mock(return_value=False)
-                reader = self.create_reader(
-                    stable_frame_route=route,
-                    stable_frame_owner=lambda: None,
-                    stable_frame_clock=clock,
-                    stable_frame_minimum_seconds=0.12,
-                    focus_probe=lambda: focused[0],
-                    frame_equivalent=lambda before, after: abs(before - after) <= 1,
-                )
-                reader.routed_frame = -10
-                reader.routed_frame_fingerprint = "previous"
-                reader.latest_frame = 1
-                reader._stable_frame_route_decision("candidate")
-                clock.advance(0.2)
-                reader.latest_frame = 2
-                reader._stable_frame_route_decision("accepted")
-                self.assertTrue(route.call_args.args[1])
-
-                if reset == "accepted-route":
-                    reader._accept_routed_frame("accepted")
-                else:
-                    focused[0] = False
-                    self.assertIs(
-                        reader._stable_frame_route_decision("unfocused"), False
-                    )
-                    focused[0] = True
-                route.reset_mock()
-                clock.advance(1)
-                reader.latest_frame = 0
-                reader._stable_frame_route_decision("fresh-candidate")
-                self.assertEqual(reader.candidate_frame_count, 1)
-                self.assertEqual(reader.candidate_frame_started_at, clock.now)
-                clock.advance(0.05)
-                reader._stable_frame_route_decision("fresh-jitter")
-                clock.advance(0.07)
-                reader._stable_frame_route_decision("settled-jitter")
-
-                self.assertEqual(
-                    [candidate.args[1] for candidate in route.call_args_list],
-                    [False, False, True],
-                )
-
-    def test_stable_comparison_revalidates_frame_and_ownership_before_routing(self):
-        for barrier in (
-            "version",
-            "frame",
-            "epoch",
-            "owner",
-            "focus",
-            "stop",
-            "pause",
-            "uncertain",
-        ):
-            with self.subTest(barrier=barrier):
-                owner, focused = ["event"], [True]
-                route = Mock(return_value=("Alice", "Stale route."))
-                reader = self.create_reader(
-                    stable_frame_route=route,
-                    stable_frame_owner=lambda: owner[0],
-                    focus_probe=lambda: focused[0],
-                )
-                reader.latest_frame = "latest"
-                reader.routed_frame = "routed"
-                reader.routed_frame_fingerprint = "old"
-
-                def equivalent(*_):
-                    if barrier == "version":
-                        reader.frame_version += 1
-                    elif barrier == "frame":
-                        reader.latest_frame = object()
-                    elif barrier == "epoch":
-                        reader.frame_route_epoch += 1
-                    elif barrier == "owner":
-                        owner[0] = "other"
-                    elif barrier == "focus":
-                        focused[0] = False
-                    elif barrier == "stop":
-                        reader.stop_event.set()
-                    elif barrier == "pause":
-                        reader.paused = True
-                    else:
-                        reader.observation_uncertain = True
-                    return False
-
-                reader.frame_equivalent = equivalent
-                self.assertIs(reader._stable_frame_route_decision("new"), False)
-                route.assert_not_called()
-                self.assertEqual(reader.candidate_frame_count, 0)
-
-    def test_blocked_transition_comparison_keeps_health_and_stop_available(self):
-        blocked, release = Event(), Event()
-
-        def equivalent(*_):
-            blocked.set()
-            if not release.wait(timeout=2):
-                raise AssertionError("transition comparison was not released")
-            return False
-
-        with (
-            ThreadPoolExecutor(max_workers=1) as capture,
-            ThreadPoolExecutor(max_workers=1) as controls,
-        ):
-            reader = self.create_reader(
-                capture_executor=capture,
-                capture_frame=lambda: "latest",
-                frame_fingerprint=lambda frame: frame,
-                frame_equivalent=equivalent,
-            )
-            reader.pending_auto_advance_generation = reader.active_generation
-            reader.pending_transition_frame = "anchor"
-            reader.capture_future = capture.submit(
-                reader._run_capture, reader.stop_event
-            )
-            try:
-                self.assertTrue(blocked.wait(timeout=1))
-                controls.submit(reader.worker_health_snapshot).result(timeout=1)
-                self.assertEqual(reader.pipeline_metrics.captured_frames, 1)
-                self.assertTrue(controls.submit(reader.stop).result(timeout=1))
-                with self.assertRaises(FutureTimeoutError):
-                    controls.submit(reader.wait, timeout_seconds=0.01).result(timeout=1)
-            finally:
-                release.set()
-                reader.stop()
-                reader.wait(timeout_seconds=1)
-            self.assertFalse(reader.pending_transition_seen)
-            self.assertIsNone(reader.pending_transition_progress_at)
-            reader.play_prepared.assert_not_called()
-
-    def test_transition_comparison_revalidates_frame_and_ownership(self):
-        for barrier in (
-            "generation",
-            "pending",
-            "anchor",
-            "version",
-            "frame",
-            "epoch",
-            "owner",
-            "focus",
-            "stop",
-            "pause",
-        ):
-            with self.subTest(barrier=barrier):
-                owner, focused = ["event"], [True]
-                reader = self.create_reader(
-                    stable_frame_owner=lambda: owner[0],
-                    focus_probe=lambda: focused[0],
-                )
-                frame = object()
-                reader.latest_frame = frame
-                reader.pending_auto_advance_generation = reader.active_generation
-                reader.pending_transition_frame = object()
-
-                changes = {
-                    "generation": ("active_generation", 1),
-                    "pending": ("pending_auto_advance_generation", None),
-                    "anchor": ("pending_transition_frame", object()),
-                    "version": ("frame_version", 1),
-                    "frame": ("latest_frame", object()),
-                    "epoch": ("frame_route_epoch", 1),
-                    "pause": ("paused", True),
-                }
-
-                def equivalent(*_):
-                    if barrier == "owner":
-                        owner[0] = "other"
-                    elif barrier == "focus":
-                        focused[0] = False
-                    elif barrier == "stop":
-                        reader.stop_event.set()
-                    else:
-                        attribute, value = changes[barrier]
-                        setattr(reader, attribute, value)
-                    return False
-
-                reader.frame_equivalent = equivalent
-                reader._observe_transition_frame(
-                    frame, "new", True, True, None, "event"
-                )
-                self.assertFalse(reader.pending_transition_seen)
-                self.assertIsNone(reader.pending_transition_progress_at)
 
     def test_ocr_initialization_failure_stops_capture_and_reports_original_error(self):
         failure = RuntimeError("OCR tracker initialization failed")
@@ -2281,7 +1704,7 @@ class LiveDialogReaderTest(unittest.TestCase):
         self,
     ):
         speech = QueuedExecutor()
-        tracker = Mock(generation=1)
+        tracker = Mock(generation=1, character=None, latest_text="")
         tracker.observe_canonical.return_value = [SpeechChunk(1, "Alice", "Hello.")]
         reader = self.create_reader(
             speech_executor=speech,
@@ -2306,42 +1729,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(reader.active_generation, 0)
         self.assertTrue(reader.enqueue("Alice", "Explicit read."))
         self.assertEqual(len(speech.jobs), 1)
-
-    def test_static_successor_does_not_refresh_transition_progress_forever(self):
-        loop_stop = Event()
-        captures = [0]
-        progress = []
-        states = []
-        reader = self.create_reader(
-            frame_fingerprint=lambda frame: frame,
-            auto_advance_state_changed=lambda *a: states.append(a),
-        )
-        reader.active_generation = 1
-        reader.pending_auto_advance_generation = 1
-        reader.auto_advance_attempts = 1
-        reader.pending_transition_frame = "old"
-        reader.latest_frame = "old"
-        reader.latest_frame_fingerprint = "old"
-        reader.routed_frame_fingerprint = "old"
-
-        def capture():
-            if captures[0]:
-                progress.append(reader.pending_transition_progress_at)
-            captures[0] += 1
-            if captures[0] == 3:
-                loop_stop.set()
-            return "unchanged-new"
-
-        reader.capture_frame = capture
-        reader._run_capture(loop_stop)
-        self.assertEqual(progress[0], progress[1])
-        with (
-            patch("vntts.live.monotonic", return_value=progress[0] + 20),
-            patch.object(reader, "_schedule_auto_advance_confirmation") as reschedule,
-        ):
-            reader._auto_advance_confirmation_expired(1, 1, True)
-        self.assertEqual(states[-1], ("successor-unavailable", 1, 1))
-        reschedule.assert_not_called()
 
     def test_canonical_visual_route_uses_its_frame_and_does_not_fabricate_ocr(self):
         from types import SimpleNamespace
@@ -2385,86 +1772,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(events[-1][0][0], "audio-onset-estimate")
         self.assertEqual(reader.pipeline_metrics.last_first_pcm_at, 20)
 
-    def test_stop_and_focus_changes_during_equivalence_reject_the_observation(self):
-        for barrier in ("stop", "pause", "emergency", "focus", "owner"):
-            with self.subTest(barrier=barrier):
-                focused, owner = [True], ["event"]
-                reader = self.create_reader(
-                    focus_probe=lambda: focused[0], stable_frame_owner=lambda: owner[0]
-                )
-                reader.latest_frame = "jitter"
-                reader.latest_frame_fingerprint = "jitter"
-                reader.latest_frame_visible = True
-
-                def equivalent(_old, _new):
-                    if barrier == "stop":
-                        reader.stop_event.set()
-                    elif barrier == "pause":
-                        reader.paused = True
-                    elif barrier == "emergency":
-                        reader.emergency_stopped = True
-                    elif barrier == "focus":
-                        focused[0] = False
-                    else:
-                        owner[0] = "other"
-                    return True
-
-                reader.frame_equivalent = equivalent
-                self.assertFalse(
-                    reader._recognition_is_current(
-                        "legacy", "event", 0, "old", True, False, "old", "old"
-                    )
-                )
-
-    def test_capture_faster_than_ocr_accepts_completed_short_jittering_text(self):
-        from tests.test_dialog_capture import glyph_frame
-        from vntts.dialog_capture import (
-            dialog_frames_equivalent,
-            fingerprint_dialog_frame,
-        )
-
-        tracker = Mock(generation=0)
-        tracker.observe.return_value = []
-        tracker.flush.return_value = []
-        tracker.is_idle_complete.return_value = False
-        loop_stop = Event()
-        frames = [
-            glyph_frame("Ouch!", "", brightness=b, shift=s)
-            for b, s in ((230, (0, 0)), (210, (1, 1)), (250, (-1, -1)))
-        ]
-        count = [0]
-        reader = self.create_reader(
-            tracker_factory=lambda **_: tracker,
-            frame_equivalent=dialog_frames_equivalent,
-            frame_fingerprint=fingerprint_dialog_frame,
-        )
-
-        def recognize(_frame):
-            count[0] += 1
-            reader.latest_frame = frames[count[0]]
-            reader.latest_frame_fingerprint = fingerprint_dialog_frame(
-                reader.latest_frame
-            )
-            reader.latest_frame_captured_at = count[0] * 0.130
-            reader.frame_version += 1
-            if count[0] == 2:
-                loop_stop.set()
-            return None, "Ouch!"
-
-        reader.recognize_frame = recognize
-        reader.latest_frame = frames[0]
-        reader.latest_frame_fingerprint = fingerprint_dialog_frame(frames[0])
-        reader.latest_frame_visible = True
-        reader.latest_frame_captured_at = 0
-        reader.frame_version = 1
-        reader._run_ocr(loop_stop)
-        self.assertEqual(
-            tracker.observe.call_args_list,
-            [call("Narrator", "Ouch!"), call("Narrator", "Ouch!")],
-        )
-        self.assertEqual(reader.pipeline_metrics.recognized_frames, 2)
-        self.assertEqual(reader.pipeline_metrics.last_ocr_capture_at, 0.130)
-
     def test_restarted_reader_uses_fresh_run_and_replays_have_distinct_attempts(self):
         capture, ocr = QueuedExecutor(), QueuedExecutor()
         events = []
@@ -2494,39 +1801,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.stop()
         capture.run_next()
         ocr.run_next()
-
-    def test_visual_equivalence_keeps_current_ocr_but_owner_epoch_focus_are_barriers(
-        self,
-    ):
-        focused = True
-        owner = "event"
-        reader = self.create_reader(
-            frame_equivalent=lambda a, b: a == "old" and b == "jitter",
-            focus_probe=lambda: focused,
-            stable_frame_owner=lambda: owner,
-        )
-        reader.latest_frame = "jitter"
-        reader.latest_frame_fingerprint = "jitter"
-        reader.latest_frame_visible = True
-        reader.latest_render_fingerprint = "new-render"
-
-        def current():
-            return reader._recognition_is_current(
-                "legacy", "event", 0, "old", True, False, "old-render", "old"
-            )
-
-        self.assertTrue(current())
-        reader.frame_route_epoch += 1
-        self.assertFalse(current())
-        reader.frame_route_epoch = 0
-        owner = "another"
-        self.assertFalse(current())
-        owner = "event"
-        focused = False
-        self.assertFalse(current())
-        focused = True
-        reader.latest_frame = "new-text"
-        self.assertFalse(current())
 
     def test_visual_transition_waits_for_typing_instead_of_failed_key(self):
         states = []
@@ -2633,7 +1907,7 @@ class LiveDialogReaderTest(unittest.TestCase):
                     tracker.flush.assert_not_called()
 
     def test_cancelled_ocr_frame_does_not_block_the_next_frame(self):
-        tracker = Mock(generation=0)
+        tracker = Mock(generation=0, character=None, latest_text="")
         errors = []
         reader = self.create_reader(
             tracker_factory=Mock(return_value=tracker), report_error=errors.append
@@ -3308,9 +2582,9 @@ class LiveDialogReaderTest(unittest.TestCase):
             reader._run_auto_advance(3)
 
         auto_advance.assert_not_called()
-        timer.assert_called_once()
-        timer.return_value.start.assert_called_once_with()
-        state_changed.assert_called_once_with("visual-wait", 3, 0)
+        timer.assert_not_called()
+        state_changed.assert_not_called()
+        self.assertEqual(reader._advance_requested_generation, 3)
 
     def test_quiet_successor_cannot_rebind_previous_prefix_for_auto_advance(self):
         auto_advance = Mock(return_value=True)
@@ -3324,14 +2598,18 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.latest_frame_complete = True
         reader.latest_frame_fingerprint = "new-dialogue"
         reader.routed_frame_fingerprint = "early-prefix"
-        reader.stable_frame_clock = lambda: 10.0
 
         with patch("vntts.live.Timer"):
             reader._run_auto_advance(3)
 
         auto_advance.assert_not_called()
         self.assertEqual(reader.routed_frame_fingerprint, "early-prefix")
-        self.assertEqual(reader.auto_advance_visual_wait_generation, 3)
+        self.assertEqual(reader._advance_requested_generation, 3)
+        reader.frame_equivalent = lambda *_: True
+        with patch("vntts.live.Timer"):
+            process_advance_ocr(reader, text="A different successor line.")
+        auto_advance.assert_not_called()
+        self.assertIsNone(reader._advance_requested_generation)
 
     def test_focused_callback_refusal_blocks_generation_without_retry(self):
         state_changed = Mock()
@@ -3453,10 +2731,14 @@ class LiveDialogReaderTest(unittest.TestCase):
                 reader.latest_frame_fingerprint = "current"
                 reader.routed_frame_fingerprint = "current"
                 reader.capture_future = Future()
+                reader.latest_frame = reader.routed_frame = object()
+                reader.last_observation = ("Alice", "Hello.")
+                reader.frame_equivalent = lambda *_: True
 
                 with patch("vntts.live.Timer", side_effect=scheduler.create):
                     reader._maybe_auto_advance()
                     scheduler.fire_next("_run_auto_advance")
+                    process_advance_ocr(reader)
 
                     self.assertEqual(callback_calls, [control])
                     self.assertEqual(dispatched_keys, [])
@@ -3468,6 +2750,7 @@ class LiveDialogReaderTest(unittest.TestCase):
                     if control == "pause":
                         self.assertFalse(reader.toggle_pause())
                         scheduler.fire_next("_run_auto_advance")
+                        process_advance_ocr(reader)
                         reader._maybe_auto_advance()
 
                         self.assertEqual(callback_calls, [control, control])
@@ -4505,11 +3788,10 @@ class LiveDialogReaderTest(unittest.TestCase):
         stop_event.wait.assert_called_once_with(0.0025)
 
     def test_capture_state_callback_failure_does_not_stop_capture(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, False, True]
+        stop_event = Event()
         failure = RuntimeError("capture status failed")
         capture_state_changed = Mock(side_effect=[failure, None])
-        capture_frame = Mock(return_value="next frame")
+        capture_frame = Mock(side_effect=lambda: (stop_event.set(), "next frame")[1])
         report_error = Mock()
         reader = self.create_reader(
             capture_frame=capture_frame,
@@ -4517,55 +3799,117 @@ class LiveDialogReaderTest(unittest.TestCase):
             focus_probe=Mock(side_effect=[False, True]),
             report_error=report_error,
         )
-
-        reader._run_capture(stop_event)
-
+        with patch.object(stop_event, "wait"):
+            reader._run_capture(stop_event)
         capture_frame.assert_called_once_with()
         self.assertEqual(capture_state_changed.call_count, 2)
         report_error.assert_called_once_with(failure)
 
     def test_capture_continues_while_speech_is_active(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, True]
-        capture_frame = Mock()
-        reader = self.create_reader(
-            capture_frame=capture_frame,
-            interval_seconds=0.2,
-        )
-        reader.current_chunk = SpeechChunk(1, "Alice", "Speaking now.")
-
-        reader._run_capture(stop_event)
-
-        capture_frame.assert_called_once_with()
-        stop_event.wait.assert_called_once_with(0.2)
-
-    def test_split_capture_keeps_only_the_latest_unprocessed_frame(self):
         stop_event = Event()
-        frames = []
+        capture_frame = Mock(side_effect=lambda: (stop_event.set(), "next frame")[1])
+        reader = self.create_reader(capture_frame=capture_frame, interval_seconds=0.2)
+        chunk = reader.current_chunk = SpeechChunk(1, "Alice", "Speaking now.")
+        reader._run_capture(stop_event)
+        capture_frame.assert_called_once_with()
+        self.assertIs(reader.current_chunk, chunk)
+
+    def test_capture_waits_for_ocr_and_full_admission_before_next_frame(self):
+        operations = []
+        captured = []
 
         def capture_frame():
-            frames.append(len(frames) + 1)
-            if len(frames) == 3:
-                stop_event.set()
-            return frames[-1]
+            frame = len(captured) + 1
+            captured.append(frame)
+            operations.append(("capture", frame))
+            return frame
 
-        reader = self.create_reader(
-            ocr_executor=Mock(),
-            capture_frame=capture_frame,
-            recognize_frame=Mock(),
-            frame_fingerprint=lambda frame: frame,
+        def recognize_frame(frame):
+            operations.append(("ocr", frame))
+            return "Alice", f"Line {frame}."
+
+        def observe(_character, text, *, focused=True):
+            frame = int(text.split()[1].rstrip("."))
+            self.assertEqual(len(captured), frame)
+            operations.append(("admission", frame))
+            if frame == 3:
+                reader.stop_event.set()
+            return 0
+
+        from types import SimpleNamespace
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as ocr,
+        ):
+            reader = self.create_reader(
+                capture_executor=capture,
+                ocr_executor=ocr,
+                capture_frame=capture_frame,
+                recognize_frame=recognize_frame,
+                frame_fingerprint=lambda _frame: "same animated dialogue",
+                adaptive_policy_factory=lambda **_options: SimpleNamespace(
+                    observe=observe
+                ),
+            )
+            reader.start()
+            reader.wait(timeout_seconds=2)
+
+        self.assertEqual(
+            operations,
+            [
+                (stage, frame)
+                for frame in (1, 2, 3)
+                for stage in ("capture", "ocr", "admission")
+            ],
         )
+        self.assertEqual(reader.pipeline_metrics.replaced_frames, 0)
+        self.assertEqual(reader.pipeline_metrics.recognized_frames, 3)
 
-        reader._run_capture(stop_event)
+    def test_ocr_failure_releases_capture_handoff_for_next_cycle(self):
+        from types import SimpleNamespace
 
-        metrics = reader.get_pipeline_metrics()
-        self.assertEqual(metrics.captured_frames, 3)
-        self.assertEqual(metrics.replaced_frames, 2)
-        self.assertEqual(reader.latest_frame, 3)
+        captured, errors = [], []
+        failure = RuntimeError("OCR failed")
+
+        def capture_frame():
+            frame = len(captured) + 1
+            captured.append(frame)
+            return frame
+
+        def recognize_frame(frame):
+            if frame == 1:
+                raise failure
+            return "Alice", "Recovered line."
+
+        def observe(*_args, **_options):
+            reader.stop_event.set()
+            return 0
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as ocr,
+        ):
+            reader = self.create_reader(
+                capture_executor=capture,
+                ocr_executor=ocr,
+                capture_frame=capture_frame,
+                recognize_frame=recognize_frame,
+                report_error=errors.append,
+                adaptive_policy_factory=lambda **_options: SimpleNamespace(
+                    observe=observe
+                ),
+            )
+            reader.start()
+            reader.wait(timeout_seconds=1)
+        self.assertEqual(captured, [1, 2])
+        self.assertEqual(errors, [failure])
+        self.assertEqual(reader.processed_frame_version, 2)
+        self.assertEqual(reader.pipeline_metrics.recognized_frames, 1)
 
     def test_ocr_drops_frame_replaced_during_recognition(self):
         stop_event = Event()
-        tracker = Mock(generation=0)
+        tracker = Mock(generation=0, character=None, latest_text="")
         tracker.observe.return_value = []
         tracker.flush.return_value = []
         tracker.is_idle_complete.return_value = False
@@ -4646,81 +3990,87 @@ class LiveDialogReaderTest(unittest.TestCase):
         )
         self.assertEqual(survived_old_ocr, [True])
 
-    def test_changed_fingerprint_bypasses_stale_idle_capture_interval(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, False, True]
-        capture_frame = Mock(side_effect=["same frame", "changed frame"])
-        reader = self.create_reader(
-            interval_seconds=0.2,
-            ocr_executor=Mock(),
-            capture_frame=capture_frame,
-            recognize_frame=Mock(),
-            frame_fingerprint=lambda frame: frame,
-        )
-        reader.latest_frame_fingerprint = "same frame"
+    def test_fresh_advance_request_skips_one_wait_then_pending_request_keeps_cadence(
+        self,
+    ):
+        clock = FakeClock()
+        clock.now = 10
+        stop_event = Event()
+        captures, waits = [], []
+
+        def capture():
+            captures.append(clock.now)
+            clock.advance(0.05)
+            if len(captures) > 2:
+                stop_event.set()
+            return "unchanged dialogue"
+
+        reader = self.create_reader(capture_frame=capture, interval_seconds=0.2)
         reader.next_capture_interval = 0.6
 
-        reader._run_capture(stop_event)
+        def wait(timeout):
+            waits.append(timeout)
+            if reader.processed_frame_version < reader.frame_version:
+                clock.advance(0.15)
+                reader.processed_frame_version = reader.frame_version
+                if len(captures) == 1:
+                    reader._advance_requested_generation = 1
+                    reader._advance_requested_at = clock.now
+            else:
+                stop_event.set()
 
-        self.assertEqual(
-            stop_event.wait.call_args_list,
-            [call(0.6), call(0.1)],
-        )
+        reader.capture_state_changed = lambda *_: clock.advance(0.001)
+        with (
+            patch("vntts.live.monotonic", clock),
+            patch.object(reader.pause_condition, "wait", side_effect=wait),
+        ):
+            reader._run_capture(stop_event)
+        self.assertEqual(len(captures), 2)
+        self.assertEqual(len(waits), 3)
+        self.assertAlmostEqual(waits[-1], 0.399)
 
-    def test_generated_render_change_bypasses_idle_capture_interval(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, True]
-        reader = self.create_reader(
-            interval_seconds=0.2,
-            capture_frame=Mock(return_value="new render"),
-            frame_fingerprint=lambda _frame: "same glyphs",
-            frame_render_fingerprint=lambda frame: frame,
-            tracker_options={"complete_dialogue_only": True},
-        )
-        reader.latest_frame_fingerprint = "same glyphs"
-        reader.latest_render_fingerprint = "old render"
-        reader.next_capture_interval = 0.6
+    def test_capture_interval_includes_ocr_cycle_time_independent_of_pixels(self):
+        for previous, current, visible in (
+            ("same", "same", True),
+            ("old", "new", True),
+            ("old", "new", False),
+        ):
+            with self.subTest(previous=previous, current=current, visible=visible):
+                stop_event = Event()
+                clock = FakeClock()
+                waits = []
 
-        reader._run_capture(stop_event)
+                def capture():
+                    clock.advance(0.05)
+                    return current
 
-        stop_event.wait.assert_called_once_with(0.1)
+                reader = self.create_reader(
+                    interval_seconds=0.2,
+                    capture_frame=capture,
+                    frame_fingerprint=lambda frame: frame,
+                    frame_presence=lambda _frame: visible,
+                )
+                reader.latest_frame_fingerprint = previous
+                reader.next_capture_interval = 0.6
 
-    def test_hidden_dialogue_keeps_idle_capture_interval(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, True]
-        reader = self.create_reader(
-            interval_seconds=0.2,
-            capture_frame=Mock(return_value="moving background"),
-            frame_fingerprint=lambda _frame: "same glyphs",
-            frame_render_fingerprint=lambda frame: frame,
-            frame_presence=lambda _frame: False,
-            tracker_options={"complete_dialogue_only": True},
-        )
-        reader.latest_frame_fingerprint = "same glyphs"
-        reader.next_capture_interval = 0.6
+                def wait(timeout):
+                    waits.append(timeout)
+                    if reader.processed_frame_version < reader.frame_version:
+                        clock.advance(0.15)
+                        reader.processed_frame_version = reader.frame_version
+                    else:
+                        stop_event.set()
 
-        reader._run_capture(stop_event)
+                with (
+                    patch("vntts.live.monotonic", clock),
+                    patch.object(reader.pause_condition, "wait", side_effect=wait),
+                ):
+                    reader._run_capture(stop_event)
+                self.assertEqual(len(waits), 2)
+                self.assertAlmostEqual(waits[0], 0.2)
+                self.assertAlmostEqual(waits[1], 0.4)
 
-        stop_event.wait.assert_called_once_with(0.6)
-
-    def test_unchanged_fingerprint_preserves_adaptive_idle_interval(self):
-        stop_event = Mock()
-        stop_event.is_set.side_effect = [False, True]
-        reader = self.create_reader(
-            interval_seconds=0.2,
-            ocr_executor=Mock(),
-            capture_frame=Mock(return_value="same frame"),
-            recognize_frame=Mock(),
-            frame_fingerprint=lambda frame: frame,
-        )
-        reader.latest_frame_fingerprint = "same frame"
-        reader.next_capture_interval = 0.6
-
-        reader._run_capture(stop_event)
-
-        stop_event.wait.assert_called_once_with(0.6)
-
-    def test_split_ocr_reuses_unchanged_frame_until_auto_advance(self):
+    def test_split_ocr_recognizes_unchanged_frames_before_and_after_auto_advance(self):
         stop_event = Event()
         first_observed = Event()
         second_observed = Event()
@@ -4758,6 +4108,7 @@ class LiveDialogReaderTest(unittest.TestCase):
             frame_fingerprint=Mock(),
             tracker_factory=Tracker,
         )
+        reader.latest_frame_visible = True
         worker = Thread(target=reader._run_ocr, args=(stop_event,))
         worker.start()
         with reader.pause_condition:
@@ -4785,12 +4136,13 @@ class LiveDialogReaderTest(unittest.TestCase):
             recognize_frame.call_args_list,
             [
                 unittest.mock.call("frame one"),
+                unittest.mock.call("frame two with animated background"),
                 unittest.mock.call("first frame after auto advance"),
             ],
         )
         metrics = reader.get_pipeline_metrics()
-        self.assertEqual(metrics.recognized_frames, 2)
-        self.assertEqual(metrics.reused_frames, 1)
+        self.assertEqual(metrics.recognized_frames, 3)
+        self.assertEqual(metrics.reused_frames, 0)
 
 
 if __name__ == "__main__":

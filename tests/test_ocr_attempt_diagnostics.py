@@ -1,11 +1,9 @@
 import unittest
-from dataclasses import replace
-from threading import Event, Thread
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from tests.test_dialog_capture import glyph_frame
-from vntts.dialog_capture import OCRUncertainError, dialog_frames_equivalent
+from vntts.dialog_capture import OCRUncertainError
 from vntts.live import LiveDialogReader, _TrackerAdmissionDiagnostics
 from vntts.live_tracking import IncrementalDialogTracker
 from vntts.ocr import OCRPreviewCancelled, OCRResult
@@ -55,7 +53,6 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
             "pixels",
             visible,
             False,
-            "pixels",
             self.policy,
             7,
             9.6,
@@ -98,8 +95,8 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
             ("epoch", "ocr-epoch-changed"),
             ("run", "ocr-run-changed"),
             ("visibility", "ocr-visibility-changed"),
-            ("unavailable", "ocr-frame-unavailable"),
-            ("pixels", "ocr-frame-not-equivalent"),
+            ("unavailable", "ocr-capture-replaced-during-validation"),
+            ("replacement", "ocr-capture-replaced-during-validation"),
         ):
             with self.subTest(barrier=barrier):
                 self.events.clear()
@@ -138,8 +135,9 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
                         self.reader.latest_frame_visible = False
                     else:
                         self.reader.latest_frame_fingerprint = "replacement"
-                        if barrier == "unavailable":
-                            self.reader.latest_frame = None
+                        self.reader.latest_frame = (
+                            None if barrier == "unavailable" else object()
+                        )
                     return "Narrator", "private dialogue"
 
                 self.reader.recognize_frame = recognize
@@ -154,97 +152,6 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         self.reader.latest_frame_visible = False
         self.assertIsNone(self.recognize(purpose=self.purpose, visible=False))
         self.assertEqual(self.event()[1]["reason"], "ocr-frame-not-visible")
-
-    def test_equivalent_new_capture_keeps_current_result_and_comparison_evidence(self):
-        latest = SimpleNamespace(provenance=SimpleNamespace(capture_id="capture-two"))
-
-        def recognize(_):
-            self.reader.latest_frame = latest
-            self.reader.latest_frame_fingerprint = "shifted"
-            self.reader.frame_version = 8
-            return "Narrator", "private dialogue"
-
-        def equivalent(before, after):
-            self.assertIs(before, self.frame)
-            self.assertIs(after, latest)
-            self.now += 0.025
-            return True
-
-        self.reader.recognize_frame = recognize
-        self.reader.frame_equivalent = equivalent
-        self.assertEqual(self.recognize(), ("Narrator", "private dialogue"))
-        event = self.event()[1]
-        self.assertEqual(event["reason"], "ocr-current")
-        self.assertEqual(event["capture_id"], "capture-one")
-        self.assertEqual(event["compared_capture_id"], "capture-two")
-        self.assertEqual(event["latest_capture_id"], "capture-two")
-        self.assertEqual(event["compared_frame_version"], 8)
-        self.assertEqual(event["latest_frame_version"], 8)
-        self.assertIs(event["frame_comparison_passed"], True)
-        self.assertAlmostEqual(event["frame_equivalence_ms"], 25)
-
-    def test_concurrent_capture_is_distinct_from_changed_glyphs(self):
-        for compared_text in ("Ready.", "Ready?"):
-            for latest_text in ("Ready.", "Next line."):
-                with self.subTest(compared=compared_text, latest=latest_text):
-                    self.events.clear()
-                    frames = [
-                        replace(
-                            glyph_frame(text),
-                            provenance=SimpleNamespace(capture_id=capture_id),
-                        )
-                        for text, capture_id in (
-                            ("Ready.", "capture-one"),
-                            (compared_text, "capture-two"),
-                            (latest_text, "capture-three"),
-                        )
-                    ]
-                    self.frame = frames[0]
-                    entered, replaced = Event(), Event()
-
-                    def recognize(_):
-                        self.reader.latest_frame = frames[1]
-                        self.reader.latest_frame_fingerprint = "changed"
-                        self.reader.frame_version = 8
-                        return "Narrator", "Ready."
-
-                    def capture():
-                        if entered.wait(timeout=1):
-                            with self.reader.state_lock:
-                                self.reader.latest_frame = frames[2]
-                                self.reader.frame_version = 9
-                            replaced.set()
-
-                    def equivalent(before, after):
-                        entered.set()
-                        self.assertTrue(replaced.wait(timeout=1))
-                        self.now += 0.025
-                        return dialog_frames_equivalent(before, after)
-
-                    self.reader.recognize_frame = recognize
-                    self.reader.frame_equivalent = equivalent
-                    worker = Thread(target=capture)
-                    worker.start()
-                    try:
-                        self.assertIsNone(self.recognize())
-                    finally:
-                        entered.set()
-                        worker.join(timeout=1)
-                    self.assertFalse(worker.is_alive())
-                    event = self.event()[1]
-                    same = compared_text == "Ready."
-                    self.assertEqual(
-                        event["reason"],
-                        "ocr-capture-replaced-during-validation"
-                        if same
-                        else "ocr-frame-not-equivalent",
-                    )
-                    self.assertIs(event["frame_comparison_passed"], same)
-                    self.assertEqual(event["compared_capture_id"], "capture-two")
-                    self.assertEqual(event["latest_capture_id"], "capture-three")
-                    self.assertEqual(event["compared_frame_version"], 8)
-                    self.assertEqual(event["latest_frame_version"], 9)
-                    self.assertAlmostEqual(event["frame_equivalence_ms"], 25)
 
     def test_uncertainty_reports_confidence_but_stale_uncertainty_is_not_admitted(self):
         error = OCRUncertainError(
@@ -304,6 +211,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         for frame in (Mock(), BrokenFrame()):
             with self.subTest(frame=type(frame).__name__):
                 self.frame = frame
+                self.reader.latest_frame = frame
                 self.events.clear()
                 self.reader.recognize_frame = Mock(return_value=("Narrator", "text"))
                 self.assertEqual(self.recognize(), ("Narrator", "text"))
