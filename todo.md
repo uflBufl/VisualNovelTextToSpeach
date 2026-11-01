@@ -395,14 +395,29 @@ Remaining defects, missing measurements and native acceptance:
       identify I/O, VM or another kernel dependency. Game helper exited before
       stack collection; Rust sampler returned255 without a stack. Both overflows
       preceded sampler launch. Do not treat failed profiling as a cause or proof.
-      - [ ] Choose and agree the next causal probe or justified buffer contract
-            change from retained evidence. The post-overflow sampling window was
-            too short here: qualify access to a live helper and any bounded early
-            trigger before another run. Keep all profiling temporary and external.
-      - [ ] Use the retained evidence to agree the actual root-cause correction,
-            then implement it with regression tests. Final product changes must
-            contain only that correction and tests, without temporary profiling
-            instrumentation or automatic profiler processes.
+      - [ ] Agree the proposed buffer contract:5seconds at the actual sample
+            rate, covering the measured3.139s write stall with headroom. Use
+            packed preallocated PCM plus callback descriptors; reserve enough
+            descriptors for the currently supported1-frame minimum rather than
+            reintroducing a short-block limit. At44100Hz, worst-case metadata plus
+            PCM is about18.5MiB per recorder, plus a bounded consumer scratch block.
+            Keep callback queue accounting constant-time and allocation/logging/
+            blocking out of the callback. This improves bounded stall tolerance,
+            not a diagnosis of the underlying kernel wait. No new profiling run
+            or permanent instrumentation is part of this proposal.
+      - [ ] Resolve the platform scope before implementation: diagnostic media
+            recording currently rejects non-macOS platforms. Windows has window
+            capture but no process-audio recorder to repair. Functional parity
+            requires separately implementing recording and artifact/lifecycle
+            support under the Windows10 minimum; do not imply a queue change
+            alone supplies that feature or silently require Windows11.
+      - [ ] After agreement, replace the fixed-slot PCM queue and migrate native
+            consumers/diagnostics in the same change. Extend the native selfcheck
+            for small/mixed/max callback sizes, wraparound, virtual3.139s/4s writer
+            stalls, genuine capacity overflow, source-clock errors and Stop with
+            pending PCM. Preserve readable partial audio and truthful failure;
+            do not use multi-minute sleeps to test the capacity. Run related
+            native/helper/analysis tests before the combined native gate.
       Gate: sustained dual-tap capture during real generation, with continuous
       timelines and truthful failure metadata, in the combined native run.
 
