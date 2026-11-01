@@ -63,6 +63,10 @@ class ProcessTapRecorderTest(unittest.TestCase):
         self.assertIn("clock failure boundary", result.stdout)
         self.assertIn("phase timing context", result.stdout)
         self.assertIn("zero/partial CAF finalization", result.stdout)
+        self.assertIn("five-second duration buffer", result.stdout)
+        self.assertIn("virtual3.139s/4s stalls", result.stdout)
+        self.assertIn("one-frame descriptors", result.stdout)
+        self.assertIn("pending Stop PCM finalization", result.stdout)
 
     def test_capture_requires_explicit_authorization_and_valid_target_arguments(self):
         output = Path(self.directory.name) / "must-not-exist"

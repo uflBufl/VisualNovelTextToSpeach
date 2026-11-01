@@ -15,7 +15,7 @@
 #include <float.h>
 #include <unistd.h>
 
-#define SLOT_COUNT 64u
+#define BUFFER_SECONDS 5u
 #define MAX_FRAMES 8192u
 #define CHANNELS 2u
 
@@ -37,9 +37,8 @@ typedef struct {
 } ClockFailure;
 typedef struct {
     UInt32 frames;
-    uint64_t received;
+    uint64_t received, frameStart;
     AudioTimeStamp timestamp;
-    float pcm[MAX_FRAMES * CHANNELS];
 } Block;
 typedef struct {
     _Atomic unsigned produced, consumed;
@@ -55,13 +54,35 @@ typedef struct {
     bool previousClockPresent;
     ClockFailure clockFailure;
     bool planar;
-    Block blocks[SLOT_COUNT];
+    unsigned capacity;
+    uint64_t nextFrame;
+    Block *blocks;
+    float *pcm;
 } Queue;
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Stop flag must remain signal-safe");
 static _Atomic int interrupted;
 static void stop_signal(int value) { (void)value; atomic_store_explicit(&interrupted, 1, memory_order_relaxed); alarm(10); }
 static void watchdog(int value) { (void)value; _exit(2); }
 
+static void prefault(void *memory, size_t bytes) {
+    volatile unsigned char *data = memory;
+    for (size_t i = 0; i < bytes; i += 4096) data[i] = 0;
+    if (bytes) data[bytes - 1] = 0;
+}
+static bool prepare_queue(Queue *q, unsigned frames) {
+    q->capacity = frames;
+    q->blocks = calloc(frames, sizeof(*q->blocks));
+    q->pcm = calloc((size_t)frames * CHANNELS, sizeof(*q->pcm));
+    if (!q->blocks || !q->pcm) return false;
+    // Touch storage before starting IO, including worst-case one-frame descriptors.
+    prefault(q->blocks, (size_t)frames * sizeof(*q->blocks));
+    prefault(q->pcm, (size_t)frames * CHANNELS * sizeof(*q->pcm));
+    return true;
+}
+static void destroy_queue(Queue *q) {
+    if (!q) return;
+    free(q->blocks); free(q->pcm); free(q);
+}
 static bool queue_lock_free(Queue *q) {
     return q && atomic_is_lock_free(&q->produced) && atomic_is_lock_free(&q->consumed) &&
         atomic_is_lock_free(&q->failure) && atomic_is_lock_free(&q->highBlocks) &&
@@ -69,9 +90,16 @@ static bool queue_lock_free(Queue *q) {
         atomic_is_lock_free(&q->phaseStarted) && atomic_is_lock_free(&q->phase);
 }
 static uint64_t queued_frames(Queue *q, unsigned r, unsigned w) {
-    uint64_t frames = 0;
-    for (; r != w; ++r) frames += q->blocks[r % SLOT_COUNT].frames;
-    return frames;
+    // Both rings share ownership, so the retained oldest descriptor cannot be reused during a write.
+    if (r == w) return 0;
+    Block *last = &q->blocks[(w - 1) % q->capacity];
+    return last->frameStart + last->frames - q->blocks[r % q->capacity].frameStart;
+}
+static void copy_pcm(Queue *q, Block *b, float *destination) {
+    unsigned offset = b->frameStart % q->capacity;
+    unsigned first = MIN(b->frames, q->capacity - offset);
+    memcpy(destination, q->pcm + offset * CHANNELS, first * CHANNELS * sizeof(float));
+    memcpy(destination + first * CHANNELS, q->pcm, (b->frames - first) * CHANNELS * sizeof(float));
 }
 static void phase_begin(Queue *q, ConsumerPhase phase, uint64_t tick) {
     // A bounded callback snapshot can detect a transition without spinning on the consumer.
@@ -122,9 +150,6 @@ static OSStatus receive(AudioObjectID device, const AudioTimeStamp *now,
     uint64_t received = mach_absolute_time();
     Queue *q = context;
     if (atomic_load_explicit(&q->failure, memory_order_relaxed)) return noErr;
-    unsigned w = atomic_load_explicit(&q->produced, memory_order_relaxed);
-    unsigned r = atomic_load_explicit(&q->consumed, memory_order_acquire);
-    if (w - r == SLOT_COUNT) { observe_overflow(q, r, w, mach_absolute_time()); return noErr; }
     unsigned expected = q->planar ? CHANNELS : 1;
     unsigned bytesPerFrame = sizeof(float) * (q->planar ? 1 : CHANNELS);
     if (!input || input->mNumberBuffers != expected || !time ||
@@ -143,20 +168,35 @@ static OSStatus receive(AudioObjectID device, const AudioTimeStamp *now,
             atomic_store(&q->failure, 2); return noErr;
         }
     }
-    Block *b = &q->blocks[w % SLOT_COUNT];
-    b->frames = bytes / bytesPerFrame; b->timestamp = *time; b->received = received;
+    unsigned frames = bytes / bytesPerFrame;
+    unsigned w = atomic_load_explicit(&q->produced, memory_order_relaxed);
+    unsigned r = atomic_load_explicit(&q->consumed, memory_order_acquire);
+    if (w - r >= q->capacity || frames > q->capacity - queued_frames(q, r, w)) {
+        observe_overflow(q, r, w, mach_absolute_time()); return noErr;
+    }
+    Block *b = &q->blocks[w % q->capacity];
+    b->frames = frames; b->timestamp = *time; b->received = received; b->frameStart = q->nextFrame;
+    unsigned offset = q->nextFrame % q->capacity;
     if (q->planar) {
-        for (UInt32 i = 0; i < b->frames; ++i)
+        for (UInt32 i = 0; i < b->frames; ++i) {
             for (unsigned c = 0; c < CHANNELS; ++c)
-                b->pcm[i * CHANNELS + c] = ((float *)input->mBuffers[c].mData)[i];
-    } else memcpy(b->pcm, input->mBuffers[0].mData, bytes);
+                q->pcm[offset * CHANNELS + c] = ((float *)input->mBuffers[c].mData)[i];
+            if (++offset == q->capacity) offset = 0;
+        }
+    } else {
+        unsigned first = MIN(frames, q->capacity - offset);
+        const float *source = input->mBuffers[0].mData;
+        memcpy(q->pcm + offset * CHANNELS, source, first * CHANNELS * sizeof(float));
+        memcpy(q->pcm, source + first * CHANNELS, (frames - first) * CHANNELS * sizeof(float));
+    }
+    q->nextFrame += frames;
     atomic_store_explicit(&q->produced, w + 1, memory_order_release);
     r = atomic_load_explicit(&q->consumed, memory_order_acquire);
-    uint64_t blocks = w + 1 - r, frames = queued_frames(q, r, w + 1);
+    uint64_t blocks = w + 1 - r, pendingFrames = queued_frames(q, r, w + 1);
     if (blocks > atomic_load_explicit(&q->highBlocks, memory_order_relaxed))
         atomic_store_explicit(&q->highBlocks, blocks, memory_order_relaxed);
-    if (frames > atomic_load_explicit(&q->highFrames, memory_order_relaxed))
-        atomic_store_explicit(&q->highFrames, frames, memory_order_relaxed);
+    if (pendingFrames > atomic_load_explicit(&q->highFrames, memory_order_relaxed))
+        atomic_store_explicit(&q->highFrames, pendingFrames, memory_order_relaxed);
     return noErr;
 }
 
@@ -190,7 +230,7 @@ static void require_queue_healthy(Queue *q, uint64_t tick) {
     if (!failure) return;
     unsigned r = atomic_load_explicit(&q->consumed, memory_order_relaxed);
     unsigned w = atomic_load_explicit(&q->produced, memory_order_acquire);
-    if (r != w) observe_lag(q, &q->blocks[r % SLOT_COUNT], r, w, tick ? tick : mach_absolute_time());
+    if (r != w) observe_lag(q, &q->blocks[r % q->capacity], r, w, tick ? tick : mach_absolute_time());
     require(false, failure == 1 ? @"Capture queue overflow" : @"Invalid callback shape/timestamp");
 }
 static AudioObjectPropertyAddress address(AudioObjectPropertySelector selector) {
@@ -260,6 +300,28 @@ static void event(Queue *q, FILE *file, NSDictionary *value) {
         require(fwrite(data.bytes, 1, data.length, file) == data.length && fputc('\n', file) != EOF,
             @"Cannot write audio timeline");
     } @finally { phase_end(q, PhaseJSONWrite, begin, mach_absolute_time()); }
+}
+static void consume_block(Queue *q, ExtAudioFileRef audio, FILE *timeline, unsigned r,
+    uint64_t *frames, double *peak, float *pcm) {
+    Block *b = &q->blocks[r % q->capacity];
+    uint64_t begin = mach_absolute_time();
+    observe_lag(q, b, r, atomic_load_explicit(&q->produced, memory_order_acquire), begin);
+    phase_begin(q, PhaseConsume, begin);
+    require_clock_continuity(q, b, *frames, begin);
+    copy_pcm(q, b, pcm);
+    double blockPeak = 0;
+    for (unsigned i = 0; i < b->frames * CHANNELS; ++i) {
+        require(isfinite(pcm[i]), @"Non-finite captured PCM"); blockPeak = fmax(blockPeak, fabs(pcm[i]));
+    }
+    AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, b->frames * CHANNELS * sizeof(float), pcm}}};
+    write_caf(q, audio, b->frames, &list);
+    event(q, timeline, @{@"kind": @"audio", @"file_frame_start": @(*frames), @"frame_count": @(b->frames),
+        @"host_ticks": @(b->timestamp.mHostTime), @"monotonic_s": @(seconds(b->timestamp.mHostTime)),
+        @"sample_time": @(b->timestamp.mSampleTime), @"peak": @(blockPeak)});
+    phase_begin(q, PhaseConsume, mach_absolute_time());
+    q->previousClock = clock_block(b, *frames); q->previousClockPresent = true;
+    *frames += b->frames; *peak = fmax(*peak, blockPeak);
+    atomic_store_explicit(&q->consumed, r + 1, memory_order_release);
 }
 static double seconds(uint64_t ticks) {
     mach_timebase_info_data_t base;
@@ -440,7 +502,25 @@ static void selfcheck_caf(Queue *q) {
             check(ExtAudioFileSetProperty(audio, kExtAudioFileProperty_ClientDataFormat, sizeof(format), &format), @"Set selfcheck CAF format");
             if (frameCount) {
                 AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, sizeof(samples), samples}}};
-                write_caf(q, audio, frameCount, &list);
+                atomic_store(&q->failure, 0); atomic_store(&q->produced, 0); atomic_store(&q->consumed, 0);
+                q->planar = false; q->nextFrame = q->capacity - 1; q->previousClockPresent = false;
+                q->clockFailure = (ClockFailure){0};
+                AudioTimeStamp stamp = {.mSampleTime = 100, .mHostTime = 1000,
+                    .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
+                receive(0, NULL, &list, &stamp, NULL, NULL, q);
+                NSString *timelinePath = [root stringByAppendingPathComponent:@"stop-audio.jsonl"];
+                FILE *journal = fopen(timelinePath.fileSystemRepresentation, "wx");
+                require(journal != NULL, @"Cannot create Stop selfcheck journal");
+                uint64_t written = 0; double peak = 0; float pending[MAX_FRAMES * CHANNELS];
+                atomic_store(&interrupted, 1);
+                @try { consume_block(q, audio, journal, 0, &written, &peak, pending); }
+                @finally { atomic_store(&interrupted, 0); fclose(journal); }
+                require(written == frameCount && peak == 0.5 && atomic_load(&q->consumed) == atomic_load(&q->produced),
+                    @"Stop must drain already accepted wrapped PCM before CAF finalization");
+                NSDictionary *entry = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:timelinePath] options:0 error:nil];
+                require([entry[@"file_frame_start"] unsignedLongLongValue] == 0 &&
+                    [entry[@"frame_count"] unsignedIntValue] == frameCount && [entry[@"host_ticks"] unsignedLongLongValue] == 1000 &&
+                    [entry[@"sample_time"] doubleValue] == 100, @"Stop must preserve source journal offsets and timestamps");
                 q->previousClock = (ClockBlock){frameCount, 1100, 0, {.mSampleTime = 100, .mHostTime = 1000,
                     .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid}};
                 q->previousClockPresent = true; q->clockFailure = (ClockFailure){0};
@@ -479,7 +559,97 @@ static void selfcheck_caf(Queue *q) {
     }
 }
 
+static void selfcheck_receive(Queue *q, unsigned frames) {
+    float samples[MAX_FRAMES * CHANNELS];
+    uint64_t start = q->nextFrame;
+    for (unsigned i = 0; i < frames; ++i) {
+        float value = ((start + i) % 1024) / 1024.0f;
+        samples[q->planar ? i : i * CHANNELS] = value;
+        samples[q->planar ? MAX_FRAMES + i : i * CHANNELS + 1] = -value;
+    }
+    AudioTimeStamp stamp = {.mHostTime = start + 1, .mSampleTime = start, .mRateScalar = 1,
+        .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid | kAudioTimeStampRateScalarValid};
+    AudioBufferList interleaved = {.mNumberBuffers = 1,
+        .mBuffers = {{CHANNELS, frames * CHANNELS * sizeof(float), samples}}};
+    struct { UInt32 count; AudioBuffer buffers[CHANNELS]; } planar = {CHANNELS,
+        {{1, frames * sizeof(float), samples}, {1, frames * sizeof(float), samples + MAX_FRAMES}}};
+    receive(0, NULL, q->planar ? (AudioBufferList *)&planar : &interleaved, &stamp, NULL, NULL, q);
+}
+static void selfcheck_block(Queue *q, unsigned r) {
+    Block *b = &q->blocks[r % q->capacity];
+    float samples[MAX_FRAMES * CHANNELS];
+    copy_pcm(q, b, samples);
+    require(b->timestamp.mSampleTime == b->frameStart && b->timestamp.mHostTime == b->frameStart + 1 &&
+        b->timestamp.mRateScalar == 1, @"Queued source timestamps changed");
+    for (unsigned i = 0; i < b->frames; ++i) {
+        float value = ((b->frameStart + i) % 1024) / 1024.0f;
+        require(samples[i * CHANNELS] == value && samples[i * CHANNELS + 1] == -value, @"Queued PCM changed");
+    }
+    atomic_store_explicit(&q->consumed, r + 1, memory_order_release);
+}
+static void selfcheck_duration_queue(void) {
+    unsigned rates[] = {8000, 44100, 48000, 192000};
+    unsigned sizes[] = {1, 2, 512, MAX_FRAMES};
+    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+        Queue *q = calloc(1, sizeof(*q));
+        require(q && prepare_queue(q, rates[i] * BUFFER_SECONDS), @"Cannot allocate duration selfcheck queue");
+        unsigned blocks = 0;
+        while (q->nextFrame < q->capacity) {
+            unsigned count = MIN(sizes[blocks % 4], q->capacity - q->nextFrame);
+            selfcheck_receive(q, count); ++blocks;
+            require(!atomic_load(&q->failure), @"Five-second queue must cover virtual3.139s/4s writer stalls");
+        }
+        require(queued_frames(q, 0, blocks) == q->capacity && atomic_load(&q->highFrames) == q->capacity,
+            @"Duration capacity must count frames, not callback sizes");
+        selfcheck_receive(q, 0);
+        require(!atomic_load(&q->failure) && atomic_load(&q->produced) == blocks, @"Empty callbacks must not consume capacity");
+        selfcheck_receive(q, 1);
+        require(atomic_load(&q->failure) == 1 && atomic_load(&q->produced) == blocks && q->overflowFrames == q->capacity,
+            @"A real duration overflow must fail without overwriting accepted PCM");
+        for (unsigned r = 0; r < blocks; ++r) selfcheck_block(q, r);
+        destroy_queue(q);
+    }
+    Queue *q = calloc(1, sizeof(*q));
+    require(q && prepare_queue(q, 8000 * BUFFER_SECONDS), @"Cannot allocate tiny-callback selfcheck queue");
+    for (unsigned i = 0; i < q->capacity; ++i) selfcheck_receive(q, 1);
+    require(!atomic_load(&q->failure) && atomic_load(&q->produced) == q->capacity,
+        @"Descriptor capacity must preserve five seconds of one-frame callbacks");
+    selfcheck_receive(q, 1);
+    require(atomic_load(&q->failure) == 1, @"Descriptor limit must remain bounded");
+    destroy_queue(q);
+    q = calloc(1, sizeof(*q));
+    require(q && prepare_queue(q, 17), @"Cannot allocate partial-space selfcheck queue");
+    selfcheck_receive(q, 14); selfcheck_receive(q, 4);
+    require(atomic_load(&q->failure) == 1 && atomic_load(&q->produced) == 1 && q->nextFrame == 14 &&
+        q->overflowFrames == 14, @"Insufficient remaining frames must reject the entire callback");
+    selfcheck_block(q, 0);
+    destroy_queue(q);
+    for (unsigned planar = 0; planar < 2; ++planar) {
+        q = calloc(1, sizeof(*q));
+        require(q && prepare_queue(q, 17), @"Cannot allocate wrap selfcheck queue"); q->planar = planar;
+        for (unsigned i = 0; i < 1000; ++i) {
+            unsigned r = atomic_load(&q->consumed), w = atomic_load(&q->produced);
+            unsigned count = sizes[i % 3];
+            if (count > 17) count = 7;
+            while (queued_frames(q, r, w) + count > q->capacity) selfcheck_block(q, r++);
+            selfcheck_receive(q, count);
+            require(!atomic_load(&q->failure), @"Reusable queue space was lost at wrap");
+        }
+        for (unsigned r = atomic_load(&q->consumed); r != atomic_load(&q->produced); ++r) selfcheck_block(q, r);
+        require(queued_frames(q, atomic_load(&q->consumed), atomic_load(&q->produced)) == 0,
+            @"Stopped producer must leave all pending blocks drainable");
+        destroy_queue(q);
+        q = calloc(1, sizeof(*q));
+        require(q && prepare_queue(q, MAX_FRAMES + 3), @"Cannot allocate maximum-wrap queue"); q->planar = planar;
+        selfcheck_receive(q, MAX_FRAMES); selfcheck_block(q, 0);
+        selfcheck_receive(q, MAX_FRAMES); selfcheck_block(q, 1);
+        require(!atomic_load(&q->failure), @"Maximum callback must cross PCM wrap intact");
+        destroy_queue(q);
+    }
+}
+
 static void selfcheck(void) {
+    selfcheck_duration_queue();
     require(safety_failure(true, true, 512ull * 1024 * 1024) == nil &&
         [safety_failure(false, true, UINT64_MAX) isEqual:@"controlling_parent_exited"] &&
         [safety_failure(true, true, 512ull * 1024 * 1024 - 1) isEqual:@"low_free_space"] &&
@@ -500,35 +670,37 @@ static void selfcheck(void) {
         empty[@"overflow"] == NSNull.null, @"Startup cleanup diagnostics must allow zero samples");
     require_queue_healthy(q, 1000);
     require(q->lag.count == 0, @"Healthy queue checks must not count wait observations");
+    const unsigned blockCount = 64;
+    require(prepare_queue(q, blockCount * 2), @"Cannot allocate selfcheck queue");
     float samples[] = {0, 0.5, -0.25, 0};
     AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{2, sizeof(samples), samples}}};
     AudioTimeStamp stamp = {.mHostTime = 100, .mSampleTime = 0,
         .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
-    for (unsigned i = 0; i < SLOT_COUNT; ++i) receive(0, NULL, &list, &stamp, NULL, NULL, q);
-    require(atomic_load(&q->produced) == SLOT_COUNT && !atomic_load(&q->failure), @"Queue capacity failed");
-    require(q->blocks[0].frames == 2 && q->blocks[0].pcm[1] == 0.5, @"PCM copy failed");
+    for (unsigned i = 0; i < blockCount; ++i) receive(0, NULL, &list, &stamp, NULL, NULL, q);
+    require(atomic_load(&q->produced) == blockCount && !atomic_load(&q->failure), @"Queue capacity failed");
+    require(q->blocks[0].frames == 2 && q->pcm[1] == 0.5, @"PCM copy failed");
     atomic_store(&q->consumed, 1);
     receive(0, NULL, &list, &stamp, NULL, NULL, q);
-    require(atomic_load(&q->produced) == SLOT_COUNT + 1, @"Queue wrap failed");
+    require(atomic_load(&q->produced) == blockCount + 1, @"Queue wrap failed");
     receive(0, NULL, &list, &stamp, NULL, NULL, q);
     require(atomic_load(&q->failure) == 1, @"Overflow must fail closed");
-    require(atomic_load(&q->highBlocks) == SLOT_COUNT && atomic_load(&q->highFrames) == SLOT_COUNT * 2,
+    require(atomic_load(&q->highBlocks) == blockCount && atomic_load(&q->highFrames) == blockCount * 2,
         @"Queue high water must count blocks and PCM frames");
     q->blocks[1].received = 1000;
-    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 1070);
-    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 1030);
+    observe_lag(q, &q->blocks[1], 1, blockCount + 1, 1070);
+    observe_lag(q, &q->blocks[1], 1, blockCount + 1, 1030);
     require(q->lag.count == 2 && q->lag.total == 100 && q->lag.maximum == 70 && q->lagStarted == 1070,
         @"Consumer lag must use callback receipt, independent of source timestamp");
     phase_begin(q, PhaseWait, 1100);
-    observe_overflow(q, 1, SLOT_COUNT + 1, 1150);
+    observe_overflow(q, 1, blockCount + 1, 1150);
     @try { require_queue_healthy(q, 2000); require(false, @"Overflow unexpectedly accepted"); }
     @catch (NSException *error) { require([error.reason isEqual:@"Capture queue overflow"], @"Unexpected queue failure"); }
     require(q->lag.count == 3 && q->lag.total == 1100 && q->lag.maximum == 1000 && q->lagStarted == 2000 &&
-        atomic_load(&q->consumed) == 1 && atomic_load(&q->produced) == SLOT_COUNT + 1 && atomic_load(&q->failure) == 1 &&
+        atomic_load(&q->consumed) == 1 && atomic_load(&q->produced) == blockCount + 1 && atomic_load(&q->failure) == 1 &&
         [diagnostics(q)[@"overflow"][@"consumer_phase"] isEqual:@"wait"],
         @"Resumed consumer must observe oldest pending wait before failing without draining");
     phase_begin(q, PhaseCAFWrite, 1100);
-    observe_overflow(q, 1, SLOT_COUNT + 1, 1150);
+    observe_overflow(q, 1, blockCount + 1, 1150);
     phase_end(q, PhaseCAFWrite, 1100, 1200);
     phase_begin(q, PhaseCAFWrite, 1300);
     phase_end(q, PhaseCAFWrite, 1300, 1320);
@@ -537,7 +709,7 @@ static void selfcheck(void) {
     require(q->timings[PhaseCAFWrite].maxStarted == 1100 && q->timings[PhaseCAFWrite].maxEnded == 1200,
         @"Phase maximum must retain its own interval after a shorter later operation");
     phase_begin(q, PhaseWait, 1320);
-    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 2500);
+    observe_lag(q, &q->blocks[1], 1, blockCount + 1, 2500);
     NSDictionary *summary = diagnostics(q);
     NSDictionary *lagContext = summary[@"consumer_lag"][@"max_context"];
     require([lagContext[@"preceding_phase"][@"phase"] isEqual:@"caf_write"] &&
@@ -548,23 +720,23 @@ static void selfcheck(void) {
         [lagContext[@"ended_ticks"] unsignedLongLongValue] == 2500,
         @"Maximum lag must retain preceding completed phase and phase observed before consume");
     phase_begin(q, PhaseJSONWrite, 2600); phase_end(q, PhaseJSONWrite, 2600, 2650);
-    observe_lag(q, &q->blocks[1], 1, SLOT_COUNT + 1, 2000);
+    observe_lag(q, &q->blocks[1], 1, blockCount + 1, 2000);
     require([diagnostics(q)[@"consumer_lag"][@"max_context"] isEqual:lagContext],
         @"Later short lag or cleanup must not replace maximum lag context");
     require([summary[@"overflow"][@"observed_ticks"] unsignedLongLongValue] == 1150 &&
-        [summary[@"overflow"][@"queued_frames"] unsignedLongLongValue] == SLOT_COUNT * 2 &&
-        [summary[@"overflow"][@"queued_pcm_bytes"] unsignedLongLongValue] == SLOT_COUNT * 2 * CHANNELS * sizeof(float) &&
+        [summary[@"overflow"][@"queued_frames"] unsignedLongLongValue] == blockCount * 2 &&
+        [summary[@"overflow"][@"queued_pcm_bytes"] unsignedLongLongValue] == blockCount * 2 * CHANNELS * sizeof(float) &&
         [summary[@"overflow"][@"consumer_phase"] isEqual:@"caf_write"] &&
         [summary[@"overflow"][@"consumer_phase_started_ticks"] unsignedLongLongValue] == 1100 &&
         [summary[@"overflow"][@"consumer_phase_elapsed_wall_s"] doubleValue] == seconds(50), @"Overflow context must survive phase completion");
     atomic_fetch_add(&q->phaseVersion, 1);
-    observe_overflow(q, 1, SLOT_COUNT + 1, 1400);
+    observe_overflow(q, 1, blockCount + 1, 1400);
     require([diagnostics(q)[@"overflow"][@"consumer_phase"] isEqual:@"transition"], @"Callback phase snapshot must not retry a concurrent transition");
     atomic_fetch_add(&q->phaseVersion, 1);
     @try { measured_identity(q, -1, @"invalid"); require(false, @"Invalid PID unexpectedly resolved"); }
     @catch (NSException *error) { require([error.reason isEqual:@"Target process unavailable"], @"Unexpected selfcheck failure"); }
     require(q->timings[PhaseIdentity].count == 1, @"Failed phase attempts must remain measured");
-    observe_overflow(q, 1, SLOT_COUNT + 1, 1500);
+    observe_overflow(q, 1, blockCount + 1, 1500);
     summary = diagnostics(q);
     NSMutableDictionary *failed = [@{@"status": @"failed", @"capture_diagnostics": summary} mutableCopy];
     record_stop(failed, true, 10, 11, 2);
@@ -577,17 +749,19 @@ static void selfcheck(void) {
         [decoded[@"capture_diagnostics"][@"overflow"][@"observed_monotonic_s"] doubleValue] == seconds(1500) &&
         encoded.length < 8192, @"Serialized diagnostics must preserve clock conversion and stay bounded");
     selfcheck_clock(q);
-    memset(q, 0, sizeof(*q)); q->planar = true;
+    destroy_queue(q); q = calloc(1, sizeof(*q));
+    require(q && prepare_queue(q, blockCount * 2), @"Cannot allocate planar selfcheck queue");
+    q->planar = true;
     struct { UInt32 count; AudioBuffer buffers[2]; } planar = {2, {{1, 8, samples}, {1, 8, samples + 2}}};
     receive(0, NULL, (AudioBufferList *)&planar, &stamp, NULL, NULL, q);
-    require(q->blocks[0].pcm[0] == 0 && q->blocks[0].pcm[1] == -0.25 && q->blocks[0].pcm[2] == 0.5,
+    require(q->pcm[0] == 0 && q->pcm[1] == -0.25 && q->pcm[2] == 0.5,
         @"Planar conversion failed");
     planar.buffers[1].mDataByteSize = 4;
     receive(0, NULL, (AudioBufferList *)&planar, &stamp, NULL, NULL, q);
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     selfcheck_caf(q);
-    free(q);
-    puts("selfcheck passed: bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
+    destroy_queue(q);
+    puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
 }
 
 static dispatch_source_t monitor_safety(NSString *root, pid_t controllingParent, NSMutableDictionary *state) {
@@ -653,6 +827,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
             format.mFramesPerPacket == 1 && format.mBytesPerPacket == format.mBytesPerFrame &&
             isfinite(format.mSampleRate) && format.mSampleRate >= 8000 && format.mSampleRate <= 192000,
             @"Unsupported tap format (expected packed float32 stereo)");
+        require(prepare_queue(q, (unsigned)ceil(format.mSampleRate * BUFFER_SECONDS)), @"Cannot allocate capture buffers");
         CFStringRef uid = NULL;
         property(tap, kAudioTapPropertyUID, sizeof(uid), &uid);
         require(uid != NULL, @"Missing tap UID");
@@ -665,7 +840,9 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
         require(aggregate != kAudioObjectUnknown, @"No aggregate object returned");
         metadata[@"tap_uid"] = tapUID; metadata[@"aggregate_uid"] = composition[@kAudioAggregateDeviceUIDKey];
         metadata[@"sample_rate"] = @(format.mSampleRate); metadata[@"channels"] = @(CHANNELS);
-        metadata[@"source_planar"] = @(q->planar); metadata[@"queue_slots"] = @(SLOT_COUNT);
+        metadata[@"source_planar"] = @(q->planar); metadata[@"queue_slots"] = @(q->capacity);
+        metadata[@"queue_capacity_frames"] = @(q->capacity); metadata[@"queue_capacity_seconds"] = @(q->capacity / format.mSampleRate);
+        metadata[@"queue_allocated_bytes"] = @((size_t)q->capacity * (sizeof(Block) + CHANNELS * sizeof(float)));
         metadata[@"max_callback_frames"] = @(MAX_FRAMES);
         json(q, metadata, session);
         AudioStreamBasicDescription fileFormat = format;
@@ -682,31 +859,14 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
         require(controllingParent > 1 && getppid() == controllingParent, @"Native safety stop: controlling_parent_exited");
         check(AudioDeviceStart(aggregate, io), @"Start tap (Audio Capture consent may be required)"); started = true;
         uint64_t begin = mach_absolute_time(), lastIdentity = begin;
+        float pcm[MAX_FRAMES * CHANNELS];
         metadata[@"capture_started_monotonic_s"] = @(seconds(begin)); json(q, metadata, session);
         for (;;) {
             require_queue_healthy(q, 0);
             unsigned r = atomic_load_explicit(&q->consumed, memory_order_relaxed);
             unsigned w = atomic_load_explicit(&q->produced, memory_order_acquire);
             while (r != w) { @autoreleasepool {
-                Block *b = &q->blocks[r % SLOT_COUNT];
-                uint64_t consumeStarted = mach_absolute_time();
-                observe_lag(q, b, r, atomic_load_explicit(&q->produced, memory_order_acquire), consumeStarted);
-                phase_begin(q, PhaseConsume, consumeStarted);
-                double host = seconds(b->timestamp.mHostTime);
-                require_clock_continuity(q, b, frames, consumeStarted);
-                double blockPeak = 0;
-                for (unsigned i = 0; i < b->frames * CHANNELS; ++i) {
-                    require(isfinite(b->pcm[i]), @"Non-finite captured PCM"); blockPeak = fmax(blockPeak, fabs(b->pcm[i]));
-                }
-                AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, b->frames * CHANNELS * sizeof(float), b->pcm}}};
-                write_caf(q, audio, b->frames, &list);
-                event(q, timeline, @{@"kind": @"audio", @"file_frame_start": @(frames), @"frame_count": @(b->frames),
-                    @"host_ticks": @(b->timestamp.mHostTime), @"monotonic_s": @(host),
-                    @"sample_time": @(b->timestamp.mSampleTime), @"peak": @(blockPeak)});
-                phase_begin(q, PhaseConsume, mach_absolute_time());
-                q->previousClock = clock_block(b, frames); q->previousClockPresent = true;
-                frames += b->frames; peak = fmax(peak, blockPeak);
-                atomic_store_explicit(&q->consumed, ++r, memory_order_release);
+                consume_block(q, audio, timeline, r++, &frames, &peak, pcm);
             } }
             phase_begin(q, PhaseIdle, mach_absolute_time());
             uint64_t now = mach_absolute_time();
@@ -746,7 +906,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     if (aggregate) { OSStatus s = AudioHardwareDestroyAggregateDevice(aggregate); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy aggregate: %d", (int)s]]; }
     if (tap) { OSStatus s = AudioHardwareDestroyProcessTap(tap); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy tap: %d", (int)s]]; }
     metadata[@"capture_diagnostics"] = diagnostics(q);
-    if (callbackDestroyed) free(q);
+    if (callbackDestroyed) destroy_queue(q);
     metadata[@"frames"] = @(frames); metadata[@"peak"] = @(peak); metadata[@"errors"] = errors;
     metadata[@"status"] = errors.count ? @"failed" : @"captured_unqualified";
     metadata[@"finished_monotonic_s"] = @(seconds(mach_absolute_time())); json(NULL, metadata, session);

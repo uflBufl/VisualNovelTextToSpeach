@@ -338,88 +338,39 @@ Remaining defects, missing measurements and native acceptance:
       Preserve original lossless evidence if another background artifact passes;
       do not add minimum-length/dictionary filters or timeout skips.
 
-- [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
-      Native acceptance: game process recorder stopped with `Capture queue
-      overflow` after about78 seconds, while background MOSS generation was
-      producing fresh lines. Window recording continued; session correctly became
-      `degraded`. Restore continuous evidence capture under this load before
-      claiming sound/latency acceptance. Diagnose the recorder scheduling/write
-      path; do not conceal lost samples or mark the partial recording complete.
-      Session: `c6cae803c97e4a3d94406ff2f81df4af`, game recorder32476.
-      Recurred in `d8f1c1208ebf4d7fa10353e8b7145f6c` after about18 minutes:
-      both game and Rust process taps overflowed at359744.72-359744.74, within19ms,
-      while window video continued. Thus cold model loading alone does not explain
-      it. Current64-slot queue buffers only0.743s with observed512-frame callbacks;
-      exact write/scheduling/identity stall remains unmeasured.
-      Third session `fa363219b30447bb88d112530fd69150` also lost both taps together
-      at360268.991 (~7m26s after restart), during the live wait on99. Keep video /
-      log evidence, but do not claim continuous audio or full sound qualification.
-      Video recovered after coincident callback gaps of2.257s,1.891s and1.011s;
-      it was not timely throughout the audio failures. All saved audio callbacks
-      were512frames at44100Hz with continuous sample/file offsets. A common stall
-      is supported; generation activity alone does not establish its cause.
-      Source callback timestamps are not consumer/write completion timestamps.
-      The64 slots reserve about4MiB of PCM storage but hold only256KiB with these
-      callbacks; evaluate a duration-based capacity only after measuring the stall.
-      During the next agreed load run, collect `capture_diagnostics` from both
-      process-tap sessions and correlate overflow time with video/runtime events.
-      Inspect queue high-water, consumer lag and phase at overflow, and CAF,
-      JSON and HAL timing maxima. Durations include descheduling and must not
-      alone be treated as proof of slow I/O. Use these measurements to select
-      and agree the actual write/scheduling fix; do not blindly increase
-      SLOT_COUNT or claim a QoS change solves it. Preserve explicit failure and
-      readable partial CAF when samples are lost, and keep allocation, logging
-      and blocking work out of the real-time callback.
-      New load measurements show game high-water60/64 blocks, max consumer
-      lag0.690s, CAF write wall max0.671s and JSON write wall max0.493s;
-      no overflow in that28m36s game recording. The chapter Rust tap retained
-     25m46s with no sample/file gaps, high-water14 blocks and max lag0.150s.
-      These wall maxima include descheduling; correlate the retained max contexts
-      before selecting a correction. A passing interval does not explain prior
-      overflows or the separate clock-discontinuity failure below.
-      Current9a224f7f campaign126b84e3a90a443387cf225043918c17 reproduced both
-      overflows only2.13ms apart (452205.013842/452205.015976). Both consumers
-      were in CAF writes starting452204.275 and ending452207.414, about3.139s
-      wall time; oldest queued callbacks waited about3.14s. Source clock checks
-      did not fail. Retain these aligned intervals and correlate video/runtime
-      scheduling and output I/O before selecting a writer/scheduling correction.
-      Queue/lag/phase telemetry is already sufficient to locate the stall.
-      Profiling is temporary investigation work under ignored
-      `.codex/investigations/`, never a permanent application feature.
-      Current native recurrence525660ad06bf4e12a529a0956edaab44: both consumers
-      overflow at538368.128907/538368.142669 (13.762ms apart), in CAF calls lasting
-      894.113ms/845.592ms. Thread CPU is only0.224625ms/0.110708ms; consistent
-      snapshots show TH_STATE_UNINTERRUPTIBLE at those instants, not CPU-heavy
-      execution or runnable waiting throughout. Clock checks and retained audio
-      offsets remain continuous before loss. This narrows the wait but does not
-      identify I/O, VM or another kernel dependency. Game helper exited before
-      stack collection; Rust sampler returned255 without a stack. Both overflows
-      preceded sampler launch. Do not treat failed profiling as a cause or proof.
-      - [ ] Agree the proposed buffer contract:5seconds at the actual sample
-            rate, covering the measured3.139s write stall with headroom. Use
-            packed preallocated PCM plus callback descriptors; reserve enough
-            descriptors for the currently supported1-frame minimum rather than
-            reintroducing a short-block limit. At44100Hz, worst-case metadata plus
-            PCM is about18.5MiB per recorder, plus a bounded consumer scratch block.
-            Keep callback queue accounting constant-time and allocation/logging/
-            blocking out of the callback. This improves bounded stall tolerance,
-            not a diagnosis of the underlying kernel wait. No new profiling run
-            or permanent instrumentation is part of this proposal.
-      - [ ] Resolve the platform scope before implementation: diagnostic media
-            recording currently rejects non-macOS platforms. Windows has window
-            capture but no process-audio recorder to repair. Functional parity
-            requires separately implementing recording and artifact/lifecycle
-            support under the Windows10 minimum; do not imply a queue change
-            alone supplies that feature or silently require Windows11.
-      - [ ] After agreement, replace the fixed-slot PCM queue and migrate native
-            consumers/diagnostics in the same change. Extend the native selfcheck
-            for small/mixed/max callback sizes, wraparound, virtual3.139s/4s writer
-            stalls, genuine capacity overflow, source-clock errors and Stop with
-            pending PCM. Preserve readable partial audio and truthful failure;
-            do not use multi-minute sleeps to test the capacity. Run related
-            native/helper/analysis tests before the combined native gate.
-      Gate: sustained dual-tap capture during real generation, with continuous
-      timelines and truthful failure metadata, in the combined native run.
+- [ ] **REC-29-01 - Native acceptance of the five-second recording buffer.**
+      In the combined game run, verify sustained game/speech dual-tap recording
+      under real generation: continuous source/file timelines, readable finalized
+      CAF, correct Stop and truthful failure metadata. Retained historical CAF
+      waits reach3.139s; the buffer contract tolerates5s of queued audio including
+      the block being written. It does not diagnose the underlying kernel wait.
+      Inspect existing queue/lag/phase diagnostics on any recurrence; preserve
+      partial evidence and the original lossless source, never hide dropped PCM.
+      No further profiling or repeated short native runs are required before the
+      combined acceptance gate.
+
+- [ ] **REC-02-01 - Windows diagnostic media recording parity.**
+      Agree the separate implementation plan before adding the missing backend:
+      - Extend the existing Windows native helper with selected-window MP4 and
+        explicit selected-process-tree WASAPI audio recording; reuse the native
+        window target and existing windows crate, with no desktop/microphone
+        fallback, external recorder or automatic target replacement.
+      - Keep the Windows10 2004/build19041 baseline already used by capture.
+        OBS source and guide support this per-process path despite Microsoft's
+        documented20348 minimum. Qualify actual activation and fail explicitly
+        when unavailable; do not silently require Windows11. The Windows audio
+        scope includes the selected process's descendants, whereas Mac currently
+        taps one HAL process; retain the real scope in metadata.
+      - Preserve process.caf/audio.jsonl and real source clocks, with the same
+        five-second bounded audio contract. Add the genuine WASAPI mechanism to
+        analysis rather than labelling Windows output as CoreAudio.
+      - Integrate platform preparation, pointer-sized HWNDs, process identity,
+        cooperative Stop/finalization and owned helper Job Object cleanup into
+        diagnostic_recording; make the existing recording UI available on Windows.
+      - Add native and Python lifecycle/CAF/analysis/export regression tests and
+        Windows build validation. Native Windows10 acceptance must distinguish
+        selected-app audio from an unrelated source, plus Stop/device/process
+        lifecycle. Cross-building alone cannot prove runtime recording or privacy.
 
 - [ ] **REC-29-02 - Process-audio sample clock discontinuity aborts acquisition.**
       Combined follow-up session62335e1525c94a1e8e2f79c735f69d31 failed game-audio
