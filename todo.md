@@ -320,7 +320,7 @@ Post-campaign triage (implementation still requires agreement):
   current cadence/load and post-speech latency under background generation.
   Investigate residual waits from recognized evidence and controls; do not revive
   the removed pixel-comparison/shared-threshold repair plan.
-- For RUN-31-01 and REC-29-01, agree only the missing boundary instrumentation
+- For REC-29-01, agree only the missing boundary instrumentation
   below, then use focused game/load episodes. Existing queue, OCR and native
   query telemetry must be reused rather than duplicated.
 - REC-29-02 and AUDIO-29-01 did not recur in the latest campaign. Inspect existing
@@ -337,43 +337,6 @@ Remaining defects, missing measurements and native acceptance:
       Keep dividerless startup distinct from a previously established divider.
       Preserve original lossless evidence if another background artifact passes;
       do not add minimum-length/dictionary filters or timeout skips.
-
-- [ ] **RUN-31-01 - A dispatched advance can leave the game on the same box.**
-      Session126b84e3a90a443387cf225043918c17, runfcc5079baa6d4778a8a7d9a6e390718f:
-      line54 completed169344PCM frames; one key at452140.594 did not change the
-      displayed line. Video0.5s before/after shows complete text and continuation
-      cue, and later OCR keeps recognizing54 while already_dispatched=true blocks
-      further keys. Foreground was the selected game when checked. Preserve the
-      once-only safeguard; investigate actual key delivery/acknowledgement and
-      game readiness before proposing recovery. Do not label this OCR failure or
-      attribute it to the later recorder overflow at452205. Saved key54 pair and
-      stall54 frame in native-trial-20261031; no manual game key used on54.
-      Earlier37 also timed out after its dispatched key451686.034, before Close
-      stopped Reading at451700.582; distinguish the missing transition from the
-      separate preparation lifecycle defect.
-      Reproduce37/54 or retain the next recurrence during the combined native
-      chapter under real background generation. Inspect its `key-input` UUID,
-      run/generation, native posting spans/errors and selected/foreground identity
-      against video and transition/timeout evidence. OS posting success is not
-      game receipt. Preserve once-only input and control guards; do not add retries
-      or change key-hold duration without a measured failure. Current positive
-      short-run evidence does not explain the two historical misses.
-      New campaign525660ad06bf4e12a529a0956edaab44 reproduces the failure on26,
-      generation23, dispatch4ef175316597490bb347c5bb3111e7dc at538242.599463.
-      Quartz posts successfully; before/after foreground PID3077 matches selected
-      PID/window16034. Posting durations overlap20 successful preceding keys.
-      Video before/after shows the same complete phrase and continuation cue;
-      249 subsequent successful captures/OCRs remain on26. No retry or manual
-      key was sent. Investigate delivery/game event handling using this retained
-      recurrence; don't blame the recorder overflow125.5s later.
-      Do not adopt a50ms hold from the bounded standalone comparison: it did not
-      reproduce a missed key or distinguish the two arms. Before another trial,
-      agree an external delivery-side observation that adds evidence beyond
-      sender timestamps; first qualify exactly which OS/application boundary
-      it observes. Correlate it with existing dispatch IDs, selected identity,
-      readiness and source-video on a real recurrence. OS observation must not
-      be called game receipt. Keep the probe temporary, preserve key release and
-      once-only safeguards, and avoid repeating short sender-only clean runs.
 
 - [ ] **REC-29-01 - Game-audio recording aborts under real generation load.**
       Native acceptance: game process recorder stopped with `Capture queue

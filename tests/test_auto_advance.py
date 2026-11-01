@@ -1,3 +1,4 @@
+import ctypes
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -23,6 +24,9 @@ class FakeKeyboardController:
 
 
 class DialogueAdvancerTest(unittest.TestCase):
+    def setUp(self):
+        self.sleep = self.enterContext(patch("vntts.auto_advance.time.sleep"))
+
     def test_cross_platform_fallback_sends_one_press_and_release(self):
         controller = FakeKeyboardController()
         advancer = DialogueAdvancer(
@@ -37,6 +41,7 @@ class DialogueAdvancerTest(unittest.TestCase):
             controller.events,
             [("press", keyboard.Key.enter), ("release", keyboard.Key.enter)],
         )
+        self.sleep.assert_not_called()
 
     def test_windows_uses_native_send_input(self):
         sender = Mock(return_value=True)
@@ -59,6 +64,7 @@ class DialogueAdvancerTest(unittest.TestCase):
         self.assertTrue(reports[0]["success"])
         self.assertNotIn("press_started_monotonic", reports[0])
         self.assertNotIn("batch_started_monotonic", reports[0])
+        self.sleep.assert_not_called()
 
     def test_diagnostics_are_emitted_once_after_release_in_timestamp_order(self):
         for platform, mechanism in (("linux", "pynput"), ("darwin", "quartz")):
@@ -149,6 +155,7 @@ class DialogueAdvancerTest(unittest.TestCase):
                             report["press_error_type"], error_type.__name__
                         )
                         self.assertIn("release_completed_monotonic", report)
+                        self.sleep.assert_not_called()
                         if platform == "linux":
                             controller.release.assert_called_once_with(
                                 keyboard.Key.enter
@@ -184,25 +191,22 @@ class DialogueAdvancerTest(unittest.TestCase):
         self.assertEqual(reports[0]["release_error_type"], "RuntimeError")
         self.assertNotIn("press_error_type", reports[0])
 
-    def test_windows_partial_send_releases_key_before_reporting_failure(self):
-        user32 = Mock()
-        user32.SendInput.side_effect = (1, 1)
-
-        with self.assertRaisesRegex(OSError, "could not post"):
-            send_windows_key(0x20, user32=user32)
-
-        self.assertEqual(user32.SendInput.call_count, 2)
-        self.assertEqual(user32.SendInput.call_args_list[1].args[0], 1)
-
-    def test_windows_batch_diagnostics_and_partial_send_cleanup(self):
-        for sent in (0, 1, 2):
-            with self.subTest(sent=sent):
+    def test_windows_native_calls_report_failures_and_preserve_primary_error(self):
+        for down_sent, up_sent in ((1, 1), (0, 1), (1, 0), (0, 0), (2, 1)):
+            with self.subTest(down=down_sent, up=up_sent):
                 reports = []
                 user32 = Mock()
+                flags = []
 
                 def send(count, inputs, size):
                     self.assertEqual(reports, [])
-                    return sent if count == 2 else 1
+                    self.assertEqual(count, 1)
+                    event = inputs._obj
+                    self.assertEqual(size, ctypes.sizeof(event))
+                    self.assertEqual(event.type, 1)
+                    self.assertEqual(event.keyboard.virtual_key, 0x20)
+                    flags.append(event.keyboard.flags)
+                    return down_sent if len(flags) == 1 else up_sent
 
                 user32.SendInput.side_effect = send
                 advancer = DialogueAdvancer(
@@ -212,12 +216,12 @@ class DialogueAdvancerTest(unittest.TestCase):
                     patch("vntts.auto_advance._windows_input", return_value=user32),
                     patch(
                         "vntts.auto_advance.ctypes.GetLastError",
-                        return_value=5,
+                        side_effect=(5, 6),
                         create=True,
                     ) as get_last_error,
                     patch("vntts.auto_advance.time.monotonic", side_effect=range(6)),
                 ):
-                    if sent == 2:
+                    if down_sent == up_sent == 1:
                         self.assertTrue(advancer.advance())
                     else:
                         with self.assertRaisesRegex(OSError, "could not post"):
@@ -227,43 +231,115 @@ class DialogueAdvancerTest(unittest.TestCase):
                 report = reports[0]
                 self.assertEqual(report["mechanism"], "sendinput")
                 self.assertEqual(report["input_events_requested"], 2)
-                self.assertEqual(report["input_events_sent"], sent)
-                self.assertEqual(report["batch_started_monotonic"], 1)
-                self.assertEqual(report["batch_completed_monotonic"], 2)
-                self.assertNotIn("press_started_monotonic", report)
-                self.assertEqual(user32.SendInput.call_args_list[0].args[0], 2)
-                if sent == 2:
+                self.assertEqual(report["press_started_monotonic"], 1)
+                self.assertEqual(report["press_completed_monotonic"], 2)
+                self.assertEqual(report["release_started_monotonic"], 3)
+                self.assertEqual(report["release_completed_monotonic"], 4)
+                self.assertEqual(report["completed_monotonic"], 5)
+                self.assertNotIn("batch_started_monotonic", report)
+                self.assertEqual(flags, [0, 0x0002])
+                self.assertEqual(user32.SendInput.call_count, 2)
+                if down_sent == 1:
+                    self.sleep.assert_called_with(0.05)
+                else:
+                    self.sleep.assert_not_called()
+                self.sleep.reset_mock()
+                if down_sent == up_sent == 1:
                     self.assertTrue(report["success"])
-                    self.assertEqual(user32.SendInput.call_count, 1)
-                    self.assertNotIn("release_started_monotonic", report)
+                    self.assertEqual(report["input_events_sent"], 2)
                     self.assertNotIn("native_error_code", report)
                     get_last_error.assert_not_called()
                 else:
                     self.assertFalse(report["success"])
                     self.assertEqual(report["error_type"], "OSError")
-                    self.assertEqual(report["cleanup_events_sent"], 1)
-                    self.assertEqual(report["release_started_monotonic"], 3)
-                    self.assertEqual(report["release_completed_monotonic"], 4)
-                    self.assertEqual(report["completed_monotonic"], 5)
+                    self.assertNotIn("input_events_sent", report)
                     self.assertEqual(report["native_error_code"], 5)
-                    self.assertEqual(user32.SendInput.call_args_list[1].args[0], 1)
+                    phase = "press" if down_sent != 1 else "release"
+                    self.assertEqual(report[f"{phase}_error_type"], "OSError")
 
-    def test_windows_batch_error_is_reported_without_fabricated_event_counts(self):
-        error = OSError("batch failed")
-        user32 = Mock()
-        user32.SendInput.side_effect = error
-        reports = []
-        advancer = DialogueAdvancer(platform="win32", diagnostic_handler=reports.append)
+    def test_windows_native_press_error_still_attempts_release(self):
+        for error_type in (OSError, KeyboardInterrupt):
+            with self.subTest(error=error_type):
+                error = error_type("press failed")
+                user32 = Mock()
+                user32.SendInput.side_effect = [error, 1]
+                reports = []
+                advancer = DialogueAdvancer(
+                    platform="win32", diagnostic_handler=reports.append
+                )
 
-        with patch("vntts.auto_advance._windows_input", return_value=user32):
-            with self.assertRaises(OSError) as raised:
-                advancer.advance()
+                with patch("vntts.auto_advance._windows_input", return_value=user32):
+                    with self.assertRaises(error_type) as raised:
+                        advancer.advance()
 
-        self.assertIs(raised.exception, error)
-        self.assertEqual(reports[0]["batch_error_type"], "OSError")
-        self.assertIn("batch_completed_monotonic", reports[0])
-        self.assertNotIn("input_events_sent", reports[0])
-        user32.SendInput.assert_called_once()
+                self.assertIs(raised.exception, error)
+                self.assertEqual(reports[0]["press_error_type"], error_type.__name__)
+                self.assertIn("release_completed_monotonic", reports[0])
+                self.assertNotIn("input_events_sent", reports[0])
+                self.assertEqual(user32.SendInput.call_count, 2)
+                self.assertEqual(
+                    user32.SendInput.call_args_list[1].args[1]._obj.keyboard.flags,
+                    0x0002,
+                )
+                self.sleep.assert_not_called()
+
+    def test_windows_holds_one_native_key_pair_for_supported_keys(self):
+        for key, code in (
+            ("space", 0x20),
+            ("enter", 0x0D),
+            ("right", 0x27),
+            ("down", 0x28),
+        ):
+            with self.subTest(key=key):
+                events = []
+                user32 = Mock()
+
+                def send(count, inputs, size):
+                    self.assertEqual(count, 1)
+                    events.append(
+                        (inputs._obj.keyboard.virtual_key, inputs._obj.keyboard.flags)
+                    )
+                    return 1
+
+                user32.SendInput.side_effect = send
+                self.sleep.reset_mock()
+                self.sleep.side_effect = lambda seconds: events.append(
+                    ("hold", seconds)
+                )
+                with patch("vntts.auto_advance._windows_input", return_value=user32):
+                    self.assertTrue(DialogueAdvancer(key, platform="win32").advance())
+
+                self.assertEqual(events, [(code, 0), ("hold", 0.05), (code, 0x0002)])
+                self.sleep.assert_called_once_with(0.05)
+
+    def test_windows_interrupted_hold_releases_and_preserves_original_error(self):
+        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+            for release_fails in (False, True):
+                with self.subTest(error=error_type, release_fails=release_fails):
+                    error = error_type("hold interrupted")
+                    user32 = Mock()
+                    user32.SendInput.side_effect = [
+                        1,
+                        ValueError("release failed") if release_fails else 1,
+                    ]
+                    self.sleep.reset_mock()
+                    self.sleep.side_effect = error
+
+                    with self.assertRaises(error_type) as raised:
+                        send_windows_key(0x20, user32=user32)
+
+                    self.assertIs(raised.exception, error)
+                    self.sleep.assert_called_once_with(0.05)
+                    self.assertEqual(user32.SendInput.call_count, 2)
+                    self.assertEqual(
+                        [
+                            call.args[1]._obj.keyboard.flags
+                            for call in user32.SendInput.call_args_list
+                        ],
+                        [0, 0x0002],
+                    )
+                    if release_fails:
+                        self.assertIn("release failed", error.__notes__[0])
 
     def test_setup_failure_is_reported_without_press_markers(self):
         for platform in ("linux", "win32"):
@@ -329,11 +405,11 @@ class DialogueAdvancerTest(unittest.TestCase):
                 quartz.CGEventPost.side_effect = lambda tap, event: events.append(event)
                 user32 = Mock()
 
-                def send_batch(*args):
-                    events.extend(("press", "release"))
-                    return 2
+                def send_event(count, inputs, size):
+                    events.append("release" if inputs._obj.keyboard.flags else "press")
+                    return 1
 
-                user32.SendInput.side_effect = send_batch
+                user32.SendInput.side_effect = send_event
 
                 def setup(backend):
                     events.append("setup")
@@ -393,32 +469,75 @@ class DialogueAdvancerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             DialogueAdvancer("escape")
 
-    def test_macos_posts_native_quartz_events_without_pynput(self):
-        quartz = Mock()
-        quartz.kCGHIDEventTap = 0
-        quartz.CGEventCreateKeyboardEvent.side_effect = ["down", "up"]
-        controller_factory = Mock()
-        advancer = DialogueAdvancer(
-            "space",
-            controller_factory=controller_factory,
-            platform="darwin",
-            quartz_module=quartz,
-        )
+    def test_macos_holds_one_native_key_pair_without_pynput(self):
+        for key, code in (("space", 49), ("enter", 36), ("right", 124), ("down", 125)):
+            with self.subTest(key=key):
+                events = []
+                quartz = Mock(kCGHIDEventTap=0)
+                quartz.CGEventCreateKeyboardEvent.side_effect = ["down", "up"]
+                quartz.CGEventPost.side_effect = lambda tap, event: events.append(event)
+                self.sleep.reset_mock()
+                self.sleep.side_effect = lambda duration: events.append(
+                    ("hold", duration)
+                )
+                controller_factory = Mock()
+                advancer = DialogueAdvancer(
+                    key,
+                    controller_factory=controller_factory,
+                    platform="darwin",
+                    quartz_module=quartz,
+                )
 
-        self.assertTrue(advancer.advance())
+                self.assertTrue(advancer.advance())
 
-        self.assertEqual(
-            quartz.CGEventCreateKeyboardEvent.call_args_list,
-            [
-                call(None, 49, True),
-                call(None, 49, False),
-            ],
-        )
-        self.assertEqual(
-            quartz.CGEventPost.call_args_list,
-            [call(0, "down"), call(0, "up")],
-        )
-        controller_factory.assert_not_called()
+                self.assertEqual(events, ["down", ("hold", 0.05), "up"])
+                self.sleep.assert_called_once_with(0.05)
+                self.assertEqual(
+                    quartz.CGEventCreateKeyboardEvent.call_args_list,
+                    [call(None, code, True), call(None, code, False)],
+                )
+                self.assertEqual(
+                    quartz.CGEventPost.call_args_list,
+                    [call(0, "down"), call(0, "up")],
+                )
+                controller_factory.assert_not_called()
+
+    def test_macos_interrupted_hold_releases_and_preserves_original_error(self):
+        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+            for release_fails in (False, True):
+                with self.subTest(error=error_type, release_fails=release_fails):
+                    error = error_type("hold interrupted")
+                    quartz = Mock(kCGHIDEventTap=0)
+                    quartz.CGEventCreateKeyboardEvent.side_effect = ["down", "up"]
+                    quartz.CGEventPost.side_effect = [
+                        None,
+                        ValueError("release failed") if release_fails else None,
+                    ]
+                    self.sleep.reset_mock()
+                    self.sleep.side_effect = error
+                    reports = []
+                    advancer = DialogueAdvancer(
+                        platform="darwin",
+                        quartz_module=quartz,
+                        diagnostic_handler=reports.append,
+                    )
+
+                    with self.assertRaises(error_type) as raised:
+                        advancer.advance()
+
+                    self.assertIs(raised.exception, error)
+                    self.sleep.assert_called_once_with(0.05)
+                    self.assertEqual(
+                        quartz.CGEventPost.call_args_list,
+                        [call(0, "down"), call(0, "up")],
+                    )
+                    self.assertEqual(len(reports), 1)
+                    self.assertFalse(reports[0]["success"])
+                    self.assertEqual(reports[0]["error_type"], error_type.__name__)
+                    self.assertNotIn("press_error_type", reports[0])
+                    self.assertIn("release_completed_monotonic", reports[0])
+                    if release_fails:
+                        self.assertIn("release failed", error.__notes__[0])
 
     def test_macos_does_not_press_key_until_release_event_exists(self):
         quartz = Mock()
@@ -436,6 +555,7 @@ class DialogueAdvancerTest(unittest.TestCase):
             advancer.advance()
 
         quartz.CGEventPost.assert_not_called()
+        self.sleep.assert_not_called()
         self.assertEqual(reports[0]["error_type"], "RuntimeError")
         self.assertNotIn("press_started_monotonic", reports[0])
 

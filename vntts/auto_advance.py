@@ -26,6 +26,8 @@ windows_virtual_keys = {
     "right": 0x27,
     "down": 0x28,
 }
+# Give games that poll keyboard state time to observe key-down.
+native_key_hold_seconds = 0.05
 
 
 class KeyboardController(Protocol):
@@ -111,34 +113,27 @@ def send_windows_key(
         ),
     )
     user32 = user32 or _windows_input()
-    _collect_input_probe(_diagnostics, _diagnostic_probe)
     if _diagnostics is not None:
         _diagnostics["input_events_requested"] = len(events)
 
-    def send_batch() -> int:
-        sent = user32.SendInput(len(events), ctypes.byref(events), ctypes.sizeof(Input))
-        if sent != len(events) and _diagnostics is not None:
-            get_last_error = getattr(ctypes, "GetLastError", None)
-            if get_last_error is not None:
-                _diagnostics["native_error_code"] = get_last_error()
-        return sent
+    def send_event(index: int) -> None:
+        sent = user32.SendInput(1, ctypes.byref(events[index]), ctypes.sizeof(Input))
+        if sent != 1:
+            if _diagnostics is not None:
+                get_last_error = getattr(ctypes, "GetLastError", None)
+                if get_last_error is not None:
+                    _diagnostics.setdefault("native_error_code", get_last_error())
+            raise OSError("Windows SendInput could not post the auto-advance key")
 
-    sent = _record_input_call(
-        send_batch,
-        "batch",
+    _send_key_pair(
+        lambda: send_event(0),
+        lambda: send_event(1),
         _diagnostics,
+        _diagnostic_probe,
+        hold_seconds=native_key_hold_seconds,
     )
     if _diagnostics is not None:
-        _diagnostics["input_events_sent"] = sent
-    if sent != len(events):
-        cleanup_sent = _record_input_call(
-            lambda: user32.SendInput(1, ctypes.byref(events[1]), ctypes.sizeof(Input)),
-            "release",
-            _diagnostics,
-        )
-        if _diagnostics is not None:
-            _diagnostics["cleanup_events_sent"] = cleanup_sent
-        raise OSError("Windows SendInput could not post the auto-advance key")
+        _diagnostics["input_events_sent"] = len(events)
     return True
 
 
@@ -164,6 +159,8 @@ def _send_key_pair(
     release: Callable[[], object],
     diagnostics: dict[str, object] | None = None,
     diagnostic_probe: Callable[[], dict[str, object]] | None = None,
+    *,
+    hold_seconds: float = 0.0,
 ) -> None:
     def release_key() -> object:
         return _record_input_call(release, "release", diagnostics)
@@ -171,6 +168,8 @@ def _send_key_pair(
     _collect_input_probe(diagnostics, diagnostic_probe)
     try:
         _record_input_call(press, "press", diagnostics)
+        if hold_seconds:
+            time.sleep(hold_seconds)
     except BaseException as error:
         attempt_cleanup(
             release_key,
@@ -315,5 +314,6 @@ class DialogueAdvancer:
             lambda: quartz.CGEventPost(quartz.kCGHIDEventTap, events[1]),
             diagnostics,
             self.diagnostic_probe,
+            hold_seconds=native_key_hold_seconds,
         )
         return True
