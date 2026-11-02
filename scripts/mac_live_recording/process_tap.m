@@ -315,12 +315,13 @@ static void consume_block(Queue *q, ExtAudioFileRef audio, FILE *timeline, unsig
     }
     AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, b->frames * CHANNELS * sizeof(float), pcm}}};
     write_caf(q, audio, b->frames, &list);
-    event(q, timeline, @{@"kind": @"audio", @"file_frame_start": @(*frames), @"frame_count": @(b->frames),
+    uint64_t fileFrame = *frames;
+    *frames += b->frames; *peak = fmax(*peak, blockPeak);
+    event(q, timeline, @{@"kind": @"audio", @"file_frame_start": @(fileFrame), @"frame_count": @(b->frames),
         @"host_ticks": @(b->timestamp.mHostTime), @"monotonic_s": @(seconds(b->timestamp.mHostTime)),
         @"sample_time": @(b->timestamp.mSampleTime), @"peak": @(blockPeak)});
     phase_begin(q, PhaseConsume, mach_absolute_time());
-    q->previousClock = clock_block(b, *frames); q->previousClockPresent = true;
-    *frames += b->frames; *peak = fmax(*peak, blockPeak);
+    q->previousClock = clock_block(b, fileFrame); q->previousClockPresent = true;
     atomic_store_explicit(&q->consumed, r + 1, memory_order_release);
 }
 static double seconds(uint64_t ticks) {
@@ -496,7 +497,7 @@ static void selfcheck_caf(Queue *q) {
             .mFormatFlags = kAudioFormatFlagsNativeFloatPacked, .mBytesPerPacket = CHANNELS * sizeof(float),
             .mFramesPerPacket = 1, .mBytesPerFrame = CHANNELS * sizeof(float), .mChannelsPerFrame = CHANNELS, .mBitsPerChannel = 32};
         float samples[] = {0, 0.5, -0.25, 0};
-        for (unsigned frameCount = 0; frameCount <= 2; frameCount += 2) {
+        for (unsigned frameCount = 0; frameCount <= 4; frameCount += 2) {
             NSURL *url = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:[NSString stringWithFormat:@"%u.caf", frameCount]]];
             check(ExtAudioFileCreateWithURL((__bridge CFURLRef)url, kAudioFileCAFType, &format, NULL, 0, &audio), @"Create selfcheck CAF");
             check(ExtAudioFileSetProperty(audio, kExtAudioFileProperty_ClientDataFormat, sizeof(format), &format), @"Set selfcheck CAF format");
@@ -508,19 +509,31 @@ static void selfcheck_caf(Queue *q) {
                 AudioTimeStamp stamp = {.mSampleTime = 100, .mHostTime = 1000,
                     .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
                 receive(0, NULL, &list, &stamp, NULL, NULL, q);
-                NSString *timelinePath = [root stringByAppendingPathComponent:@"stop-audio.jsonl"];
+                NSString *timelinePath = [root stringByAppendingPathComponent:[NSString stringWithFormat:@"stop-%u.jsonl", frameCount]];
                 FILE *journal = fopen(timelinePath.fileSystemRepresentation, "wx");
                 require(journal != NULL, @"Cannot create Stop selfcheck journal");
                 uint64_t written = 0; double peak = 0; float pending[MAX_FRAMES * CHANNELS];
                 atomic_store(&interrupted, 1);
                 @try { consume_block(q, audio, journal, 0, &written, &peak, pending); }
                 @finally { atomic_store(&interrupted, 0); fclose(journal); }
-                require(written == frameCount && peak == 0.5 && atomic_load(&q->consumed) == atomic_load(&q->produced),
+                require(written == 2 && peak == 0.5 && atomic_load(&q->consumed) == atomic_load(&q->produced),
                     @"Stop must drain already accepted wrapped PCM before CAF finalization");
                 NSDictionary *entry = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:timelinePath] options:0 error:nil];
                 require([entry[@"file_frame_start"] unsignedLongLongValue] == 0 &&
-                    [entry[@"frame_count"] unsignedIntValue] == frameCount && [entry[@"host_ticks"] unsignedLongLongValue] == 1000 &&
+                    [entry[@"frame_count"] unsignedIntValue] == 2 && [entry[@"host_ticks"] unsignedLongLongValue] == 1000 &&
                     [entry[@"sample_time"] doubleValue] == 100, @"Stop must preserve source journal offsets and timestamps");
+                if (frameCount == 4) {
+                    stamp.mSampleTime = 102; stamp.mHostTime = 1001;
+                    receive(0, NULL, &list, &stamp, NULL, NULL, q);
+                    journal = fopen(timelinePath.fileSystemRepresentation, "rb");
+                    require(journal != NULL, @"Cannot open fault-injection journal");
+                    bool rejected = false;
+                    @try { consume_block(q, audio, journal, 1, &written, &peak, pending); }
+                    @catch (NSException *error) { rejected = [error.reason isEqual:@"Cannot write audio timeline"]; }
+                    @finally { fclose(journal); }
+                    require(rejected && written == frameCount && peak == 0.5 && atomic_load(&q->consumed) == 1,
+                        @"Journal failure must retain committed PCM counts without releasing the failed block");
+                }
                 q->previousClock = (ClockBlock){frameCount, 1100, 0, {.mSampleTime = 100, .mHostTime = 1000,
                     .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid}};
                 q->previousClockPresent = true; q->clockFailure = (ClockFailure){0};
@@ -545,11 +558,13 @@ static void selfcheck_caf(Queue *q) {
             check(ExtAudioFileGetProperty(audio, kExtAudioFileProperty_FileLengthFrames, &size, &length), @"Read partial selfcheck CAF length");
             require(length == frameCount, @"Partial CAF frame count changed during finalization");
             if (frameCount) {
-                float decoded[4] = {0}; UInt32 count = frameCount;
+                float decoded[8] = {0}; UInt32 count = frameCount;
                 AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, sizeof(decoded), decoded}}};
                 check(ExtAudioFileSetProperty(audio, kExtAudioFileProperty_ClientDataFormat, sizeof(format), &format), @"Set selfcheck read format");
                 check(ExtAudioFileRead(audio, &count, &list), @"Read partial selfcheck CAF");
-                require(count == frameCount && !memcmp(samples, decoded, sizeof(samples)), @"Partial CAF PCM changed");
+                require(count == frameCount, @"Partial CAF frame count changed");
+                for (unsigned i = 0; i < count * CHANNELS; ++i)
+                    require(samples[i % 4] == decoded[i], @"Partial CAF PCM changed");
             }
             status = ExtAudioFileDispose(audio); audio = NULL; check(status, @"Close selfcheck CAF reader");
         }
@@ -761,7 +776,7 @@ static void selfcheck(void) {
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     selfcheck_caf(q);
     destroy_queue(q);
-    puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
+    puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, journal-failure PCM counts, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
 }
 
 static dispatch_source_t monitor_safety(NSString *root, pid_t controllingParent, NSMutableDictionary *state) {
