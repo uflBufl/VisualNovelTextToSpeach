@@ -90,6 +90,7 @@ from vntts.voices import (
 )
 
 if TYPE_CHECKING:
+    from vntts.moss_cpp_backend import MossCppVoiceRouterBackend
     from vntts.runtime_ownership import RuntimeUse
     from vntts.speech_backend_contract import SpeechBackend
 
@@ -2176,7 +2177,7 @@ def create_chatterbox_worker_backend(
 
 def create_moss_worker_backend(
     registry: CharacterVoiceRegistry, **options: object
-) -> object:
+) -> MossCppVoiceRouterBackend | IsolatedSpeechBackend:
     from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_requested
 
     if moss_cpp_requested(options.get("model_name")):
