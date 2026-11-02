@@ -392,7 +392,7 @@ Remaining defects, missing measurements and native acceptance:
       failure did not recur in native-trial-20261031.
 
 - [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
-      Implementation plan pending agreement:
+      Per-line compatibility implementation remains pending agreement:
       - Add a shared per-line semantic reuse contract built from verified
         story/evidence bindings, canonical entry identity and schema/model/
         preprocessing authority. Preserve aggregate evidence IDs as provenance;
@@ -400,25 +400,14 @@ Remaining defects, missing measurements and native acceptance:
       - Use that contract in both `_reuse_completed_audio` eligibility checks.
         Validate previous/current evidence bytes and membership before comparison;
         preserve all other queue fields, synthesis controls, effective voice/
-        narrator route, reference bytes, terminal decisions and WAV validation.
+        narrator route, reference identity and terminal decisions. Reuse local
+        completed WAVs by reference, without repeated audio integrity auditing.
         Do not weaken exact-document checks for authoring merges or queue IDs.
-      - Retain content-derived WAV quality/speech measurements for the whole
-        serial generation session, covering its admitted working set rather than
-        thrashing the global 256-entry caches across one-item batches. Keep fresh
-        byte hashes and stored-quality comparisons at each trust boundary;
-        measurements are not file-integrity receipts. Preserve analysis-version
-        and short-event keys, bounded session ownership and cleanup. Do not
-        substitute partial state reads for complete publication authority.
       - Promote the isolated selection-expansion reproduction to regression tests:
         unchanged lines must already be ready before any backend starts. Cover
         add/remove/reorder and unrelated catalog changes; reject changed semantic
-        authority, text, media, voice/reference/model/profile, damaged evidence or
-        WAVs; preserve audio events, narrator routes and saved decisions.
-      - Add a multi-batch working set larger than 256 WAVs. Each distinct content/
-        analysis-version is decoded once per session; same-size corruption with
-        restored mtime must still fail. Check session restart, cancellation,
-        failed repairs and foreign state changes; retain existing standalone
-        validation guarantees. Run affected tests and current-data profiles.
+        authority, text, media, voice/reference/model/profile and damaged external
+        evidence; preserve audio events, narrator routes and saved decisions.
       - In the combined chapter run confirm prepared hits are available without
         queue waiting and new work keeps current-line priority. Reuse existing
         timings; original line11 has 3.153s to previous publication, 15.005s to
@@ -1679,6 +1668,12 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Restore pre-existing repository quality gates
 
+- [ ] Diagnose `test_complete_ocr_typo_after_early_audio_continues_once` in
+      `tests/test_story_ocr_authority.py`: both long-line cases keep
+      `advance_calls=[]` instead of `[1]` after playback. Reproduces with untouched
+      code/tests exported from HEAD7963d9b6, independently of local-audio cleanup.
+      Check the fake-frame timer/authority sequence before changing product code
+      or weakening the expected automatic transition.
 - [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
       process reports `The prepared pack was not activated`. Reproduces alone
       on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the

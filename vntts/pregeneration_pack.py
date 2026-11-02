@@ -416,6 +416,7 @@ class StoryAudioInspector:
             cached.queue_sha256,
             state_document=None,
             selected_line_ids=requested,
+            validate_files=False,
         )
         self._check_saved_input(directory, document, paths, before)
         state_items = _state_items(state)
@@ -491,11 +492,6 @@ class StoryAudioInspector:
                             selection.line_ids
                         )
                     recordings = saved_recordings.get(line_id, ())
-                    for audio, digest in recordings:
-                        if sha256_file(audio) != digest:
-                            raise OfflinePackError(
-                                f"Saved recording changed for {line_id}"
-                            )
                     if recordings:
                         route = "generated"
                         unpublished_recordings = True
@@ -632,10 +628,6 @@ def _story_audio_route(
     if not effective.speakable:
         return "non_spoken"
     if library and library.has_entry(record.line_id, record.text_sha256):
-        if library.find(record.line_id, record.text_sha256) is None:
-            raise OfflinePackError(
-                f"Saved audio is missing or damaged for {record.line_id}. Prepare this story again."
-            )
         return "generated"
     if library and library.find_live_fallback(record.line_id, record.text_sha256):
         return "live"
@@ -703,7 +695,9 @@ class OfflinePackPublisher:
             raise OfflinePackError("Generation queue changed before confirmation")
         state_path = generation_state_path(_generation_output(generation_input))
         state = (
-            load_generation_state_from_snapshot(state_path, queue, queue_sha256)
+            load_generation_state_from_snapshot(
+                state_path, queue, queue_sha256, validate_files=False
+            )
             if state_path.exists()
             else {"items": {}}
         )
@@ -727,13 +721,8 @@ class OfflinePackPublisher:
         phase_started, cpu_started = perf_counter(), process_time()
         if base is not None and base.generated_audio_manifest is not None:
             document = load_generated_audio_document(base.generated_audio_manifest)
-            library = GeneratedAudioLibrary(document, cache_size=1)
             for record in document.records:
                 _raise_if_cancelled(cancel_event)
-                if library.find(record.line_id, record.text_sha256) is None:
-                    raise OfflinePackError(
-                        "Existing recording failed verification before confirmation"
-                    )
                 if record.line_id not in selected:
                     preserved += 1
                 elif saved.get(record.line_id) != record.audio_sha256:

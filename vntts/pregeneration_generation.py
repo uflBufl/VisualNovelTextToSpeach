@@ -396,7 +396,11 @@ class OfflineGenerationWorker:
         current = generation_result
         resumed_items = (
             _state_items(
-                load_generation_state(generation_result.state, generation_input.queue)
+                load_generation_state(
+                    generation_result.state,
+                    generation_input.queue,
+                    validate_files=False,
+                )
             )
             if action == "safe_resume"
             else {}
@@ -983,7 +987,7 @@ def _durable_ready_line_ids(
         candidates = set(progress.ready_line_ids)
         for record in story.records:
             if record.line_id in candidates and (
-                library.find(record.line_id, record.text_sha256) is not None
+                library.has_entry(record.line_id, record.text_sha256)
                 or library.find_audio_event_omission(record.line_id, record.text_sha256)
                 is not None
             ):
@@ -1032,7 +1036,9 @@ def _load_result(
             "Offline generation finished without publishing its result"
         )
     try:
-        state = load_generation_state(state_path, generation_input.queue)
+        state = load_generation_state(
+            state_path, generation_input.queue, validate_files=False
+        )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise OfflineGenerationError(
             f"Offline generation result is invalid: {error}"

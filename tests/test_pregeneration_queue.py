@@ -19,6 +19,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import load_story_index_document
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
+import vntts.audio_store as audio_store_module
 from tests.bulk_generation_fixtures import SyntheticRenderer, audio_samples
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.authoring.audio_events import audio_event_plan_for_record
@@ -1038,9 +1039,11 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     {value["line_id"] for value in state["items"].values()},
                     {"hotelier", "unknown"},
                 )
-                for key, value in state["items"].items():
+                for value in state["items"].values():
                     target = current.output_directory / value["path"]
-                    self.assertTrue(target.samefile(old_files[key]))
+                    self.assertTrue(
+                        any(target.samefile(source) for source in old_files.values())
+                    )
                     self.assertEqual(sha256_file(target), value["file_sha256"])
                 changes = OfflinePackPublisher().inspect_changes(job, current)
                 self.assertEqual((changes.reused, changes.new), (2, 2))
@@ -1191,12 +1194,11 @@ class PregenerationInputStoreTest(unittest.TestCase):
             payload = audio.read_bytes()
             audio.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
             os.utime(audio, ns=(before.st_atime_ns, before.st_mtime_ns))
-            with self.assertRaises(OfflinePackError):
-                inspector.inspect(selection)
-            with self.assertRaises(OfflinePackError):
-                restarted.inspect(selection)
-            with self.assertRaises(OfflinePackError):
-                StoryAudioInspector(content, jobs).inspect(selection)
+            self.assertEqual(inspector.inspect(selection), coverage)
+            self.assertEqual(restarted.inspect(selection), coverage)
+            self.assertEqual(
+                StoryAudioInspector(content, jobs).inspect(selection), coverage
+            )
 
     def test_recording_index_skips_unrelated_inputs_but_rechecks_changed_state(self):
         with TemporaryDirectory() as directory:
@@ -1311,7 +1313,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ):
                 StoryAudioInspector(content, jobs).inspect("selected")
 
-    def test_story_coverage_checks_only_selected_wavs_and_reuses_batch_validation(self):
+    def test_story_coverage_uses_saved_metadata_without_reopening_wavs(self):
         for shared_state in (False, True):
             with (
                 self.subTest(shared_state=shared_state),
@@ -1365,7 +1367,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     for _ in range(2):
                         self.assertEqual(inspector.inspect("selected").generated, 4)
                         self.assertEqual(inspector.inspect("later").generated, 1)
-                    self.assertEqual(validated.call_count, 5)
+                    validated.assert_not_called()
                 state = load_generation_state(
                     generation_state_path(other.output_directory), other.queue
                 )
@@ -1380,10 +1382,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 self.assertEqual(
                     StoryAudioInspector(content, jobs).inspect("selected").generated, 4
                 )
-                with self.assertRaises(OfflinePackError):
-                    inspector.inspect("later")
-                with self.assertRaises(OfflinePackError):
-                    StoryAudioInspector(content, jobs).inspect("later")
+                self.assertEqual(inspector.inspect("later").generated, 1)
+                self.assertEqual(
+                    StoryAudioInspector(content, jobs).inspect("later").generated, 1
+                )
                 if shared_state:
                     revised = replace(
                         plan,
@@ -1455,7 +1457,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             for queue_id, result in before["items"].items():
                 self.assertEqual(after["items"][queue_id], result)
 
-    def test_corrupt_completed_recording_is_not_reused_or_replaced(self):
+    def test_completed_recordings_are_linked_without_readmission(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             job, jobs, plan, _ = self.fixture(root)
@@ -1465,21 +1467,32 @@ class PregenerationInputStoreTest(unittest.TestCase):
             state = load_generation_state(
                 generation_state_path(original.output_directory), original.queue
             )
-            source = (
-                original.output_directory / next(iter(state["items"].values()))["path"]
-            )
-            source.write_bytes(b"corrupt recording")
+            sources = {
+                original.output_directory / item["path"]
+                for item in state["items"].values()
+            }
             revised = replace(
                 plan,
                 groups=tuple(
                     replace(group, control_sha256="e" * 64) for group in plan.groups
                 ),
             )
-            with self.assertRaisesRegex(
-                PregenerationQueueError, "reuse saved offline audio"
-            ):
-                store.materialize(job, revised)
-            self.assertEqual(source.read_bytes(), b"corrupt recording")
+            with patch.object(
+                audio_store_module, "_read_wav", wraps=audio_store_module._read_wav
+            ) as admitted:
+                current = store.materialize(job, revised)
+            self.assertTrue(
+                all(call.args[0] not in sources for call in admitted.call_args_list)
+            )
+            saved = load_generation_state(
+                generation_state_path(current.output_directory),
+                current.queue,
+                validate_files=False,
+            )
+            self.assertEqual(len(saved["items"]), 4)
+            for item in saved["items"].values():
+                target = current.output_directory / item["path"]
+                self.assertTrue(any(target.samefile(source) for source in sources))
 
     def test_changed_synthesis_controls_do_not_reuse_completed_audio(self):
         with TemporaryDirectory() as directory:

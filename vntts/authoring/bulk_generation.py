@@ -115,7 +115,6 @@ from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     inspect_generated_wav_with_samples,
     snapshot_recorded_voices,
-    validate_success_file,
     write_generated_manifest_from_state,
     write_runtime_progress_manifest_from_state,
 )
@@ -225,9 +224,6 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.generation_state import (
     validate_generation_state_document as validate_generation_state_document,
-)
-from vntts.authoring.generation_state import (
-    validate_success_item as _validate_success_item,
 )
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
@@ -1180,20 +1176,7 @@ def _skip_existing_generation_item(
             )
         return True
     if existing.get("status") in {"generated", "approved"}:
-        _validate_success_item(
-            queue_id,
-            existing,
-            run.output_directory,
-            item,
-        )
         if not run.regenerate_existing:
-            source = run.output_directory / str(existing["path"])
-            stored = run.audio_store.put(
-                "wav-" + str(existing["file_sha256"]),
-                source,
-                expected_sha256=str(existing["file_sha256"]),
-            )
-            link_shared_audio(stored, source, str(existing["file_sha256"]))
             return True
         if existing.get("review_status") != "pending_review":
             raise BulkGenerationError(
@@ -2877,9 +2860,9 @@ def publish_generated_manifest(
             raise BulkGenerationError(
                 "Workspace generation state requires its canonical queue"
             )
-        state = load_generation_state(state_path, workspace_queue)
+        state = load_generation_state(state_path, workspace_queue, validate_files=False)
     else:
-        state = load_generation_state(state_path)
+        state = load_generation_state(state_path, validate_files=False)
     if not _lease_held:
         with _GenerationLease(
             output_directory,
@@ -2895,7 +2878,9 @@ def publish_generated_manifest(
             "Generated-audio manifest must stay in the state directory"
         )
     validate_authoring_publication_authority(state_path, state)
-    _write_generated_manifest_from_state(state, output_directory, manifest_path)
+    _write_generated_manifest_from_state(
+        state, output_directory, manifest_path, validate_files=False
+    )
     return manifest_path
 
 
@@ -3109,7 +3094,9 @@ def _load_or_create_state(
         raise BulkGenerationError(str(error)) from error
     if state_path.is_file():
         state = read_generation_state_document(state_path)
-        _validate_state_document(state, output_directory, queue, queue_sha256)
+        _validate_state_document(
+            state, output_directory, queue, queue_sha256, validate_files=False
+        )
         return state
     state = {
         "schema": STATE_SCHEMA,
@@ -3123,9 +3110,6 @@ def _load_or_create_state(
     }
     write_generation_state(state_path, state)
     return state
-
-
-_validate_success_file = validate_success_file
 
 
 def _reconcile_interrupted_attempt(

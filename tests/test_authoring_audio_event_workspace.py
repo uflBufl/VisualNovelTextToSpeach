@@ -354,12 +354,18 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             tampered_state = generation_database.read_state(successor_state_path)
             tampered_state["items"][queue_item.queue_id].pop("audio_event_composition")
             replace_generation_state(successor_state_path, tampered_state)
-            with self.assertRaisesRegex(
-                BulkGenerationError, "composition ledger changed"
-            ):
-                load_generation_state(
-                    successor_state_path, created.directory / "queue.jsonl"
-                )
+            for validate_files in (True, False):
+                with (
+                    self.subTest(validate_files=validate_files),
+                    self.assertRaisesRegex(
+                        BulkGenerationError, "composition ledger changed"
+                    ),
+                ):
+                    load_generation_state(
+                        successor_state_path,
+                        created.directory / "queue.jsonl",
+                        validate_files=validate_files,
+                    )
 
     def test_config_rebase_carries_complete_composition_authority(self):
         with TemporaryDirectory() as directory:

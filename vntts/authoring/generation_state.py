@@ -176,9 +176,12 @@ def generation_state_file(path: str | Path) -> Path:
 
 
 def load_generation_state(
-    state_path: str | Path, queue_path: str | Path | None = None
+    state_path: str | Path,
+    queue_path: str | Path | None = None,
+    *,
+    validate_files: bool = True,
 ) -> StateObject:
-    """Load current SQLite state and verify its files."""
+    """Load state identity, optionally auditing the referenced audio files."""
     state_path = generation_state_file(state_path)
     state = _read_generation_state(state_path)
     queue = None
@@ -187,7 +190,9 @@ def load_generation_state(
     if queue_path is not None:
         queue_path = Path(queue_path).expanduser().resolve()
         queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    _validate_state_document(state, state_path.parent, queue, queue_sha256)
+    _validate_state_document(
+        state, state_path.parent, queue, queue_sha256, validate_files=validate_files
+    )
     return state
 
 
@@ -198,8 +203,9 @@ def load_generation_state_from_snapshot(
     *,
     state_document: StateObject | None = None,
     selected_line_ids: frozenset[str] | None = None,
+    validate_files: bool = True,
 ) -> StateObject:
-    """Validate captured queue authority and optionally only selected lines' WAVs."""
+    """Load captured queue authority with optional selected-line audio auditing."""
     state_path = generation_state_file(state_path)
     if state_document is None and selected_line_ids is not None:
         try:
@@ -222,6 +228,7 @@ def load_generation_state_from_snapshot(
         queue,
         queue_sha256,
         selected_line_ids=selected_line_ids,
+        validate_files=validate_files,
     )
     return state
 
@@ -460,6 +467,7 @@ def _validate_state_document(
     queue_sha256: str | None,
     *,
     selected_line_ids: frozenset[str] | None = None,
+    validate_files: bool = True,
 ) -> None:
     schema_pair = (state.get("schema"), state.get("schema_version"))
     if type(state.get("schema_version")) is not int or schema_pair != (
@@ -490,9 +498,12 @@ def _validate_state_document(
             output_directory,
             queue_by_id,
             validate_files=(
-                selected_line_ids is None
-                or item is None
-                or item.line_id in selected_line_ids
+                validate_files
+                and (
+                    selected_line_ids is None
+                    or item is None
+                    or item.line_id in selected_line_ids
+                )
             ),
         )
     _validate_reviewed_waveform_publication(state, queue_by_id)
@@ -2662,10 +2673,10 @@ def _validate_success_item(
         result.get("path"), f"State item {queue_id!r} path"
     )
     audio = contained_generation_path(output_directory, relative, "Generated WAV")
+    _validate_success_audio_event_composition(result, queue_id, output_directory)
     if not validate_files:
         return
     _validate_success_speech_quality(result, queue_id, audio)
-    _validate_success_audio_event_composition(result, queue_id, output_directory)
 
 
 def _validate_success_item_inputs(result: StateObject, queue_id: str) -> None:
@@ -2872,6 +2883,8 @@ def validate_generation_state_document(
     output_directory: str | Path,
     queue: VoiceGenerationQueue | None,
     queue_sha256: str | None,
+    *,
+    validate_files: bool = True,
 ) -> StateObject:
     """Validate captured state semantics without reopening its JSON path."""
     if not isinstance(document, dict):
@@ -2882,6 +2895,7 @@ def validate_generation_state_document(
         Path(output_directory).expanduser().resolve(),
         queue,
         queue_sha256,
+        validate_files=validate_files,
     )
     return state
 

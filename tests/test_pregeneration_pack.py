@@ -516,7 +516,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             with self.assertRaises(OfflinePackError):
                 inspect_story_audio(content, selection_id, store)
 
-    def test_story_batch_revalidates_wav_bytes_and_new_batch_rejects_changed_pack(self):
+    def test_story_batch_reuses_local_coverage_and_new_import_checks_changed_pack(self):
         for changed in ("wav", "manifest"):
             with self.subTest(changed=changed), TemporaryDirectory() as directory:
                 job, inputs, result, _items = fixture(Path(directory) / "source")
@@ -525,14 +525,16 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 store = PregenerationJobStore(Path(directory) / "jobs")
                 inspector = StoryAudioInspector(content, store)
                 selection_id = content.selections[0].selection_id
-                inspector.inspect(selection_id, manifest=published.manifest)
+                coverage = inspector.inspect(selection_id, manifest=published.manifest)
                 if changed == "wav":
                     document = load_generated_audio_document(
                         published.imported.generated_audio_manifest
                     )
                     document.records[0].audio.write_bytes(b"damaged")
-                    with self.assertRaises(OfflinePackError):
-                        inspector.inspect(selection_id, manifest=published.manifest)
+                    self.assertEqual(
+                        inspector.inspect(selection_id, manifest=published.manifest),
+                        coverage,
+                    )
                 else:
                     published.manifest.write_text("{}")
                 with self.assertRaises(GamePackError):

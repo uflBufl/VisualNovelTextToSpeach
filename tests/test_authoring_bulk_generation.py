@@ -2447,8 +2447,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = generation_database.read_state(result.state)
             manifest = GeneratedAudioIndex.load(result.manifest)
 
-            with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
-                publish_generated_manifest(result.state)
+            publish_generated_manifest(result.state)
 
         self.assertEqual(set(checked), {second["queue_id"]})
         self.assertEqual(checked.count(second["queue_id"]), 2)
@@ -2699,7 +2698,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(manifest.entries, ())
 
-    def test_tampered_completed_wav_blocks_resume_and_review(self):
+    def test_resume_trusts_completed_wav_and_explicit_review_checks_it(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -2709,10 +2708,42 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
             write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
 
-            with self.assertRaisesRegex(BulkGenerationError, "checksum"):
-                self.run_generation(queue, root / "output", SyntheticRenderer())
+            resumed = self.run_generation(queue, root / "output", SyntheticRenderer())
+            self.assertEqual(resumed.skipped_existing, 1)
             with self.assertRaisesRegex(BulkGenerationError, "checksum"):
                 review_generation_item(result.state, item["queue_id"], "approved")
+
+    def test_local_resume_publication_and_failure_counts_do_not_read_completed_wavs(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(),
+                approve_validated_audio=True,
+            )
+            renderer = SyntheticRenderer()
+            with patch.object(
+                manifest_module,
+                "read_regular_bytes",
+                side_effect=AssertionError("Completed local WAV must not be reopened"),
+            ):
+                for _ in range(2):
+                    resumed = self.run_generation(queue, root / "output", renderer)
+                    self.assertEqual(resumed.skipped_existing, 1)
+                    self.assertEqual(
+                        load_generation_state(
+                            result.state, queue, validate_files=False
+                        )["items"][item["queue_id"]]["status"],
+                        "approved",
+                    )
+                    generation_failure_report(result.state, queue)
+                    publish_generated_manifest(result.state)
+            self.assertEqual(renderer.requests, [])
 
     def test_skip_filters_and_limit_apply_before_existing_skip(self):
         with TemporaryDirectory() as directory:
@@ -4095,10 +4126,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             review_generation_item(
                                 result.state, item["queue_id"], "approved"
                             )
-                        with self.assertRaisesRegex(
-                            BulkGenerationError, "quality.*mismatch"
-                        ):
-                            publish_generated_manifest(result.state)
                         self.assertEqual(result.state.read_bytes(), state_before)
                         self.assertEqual(result.manifest.read_bytes(), manifest_before)
 

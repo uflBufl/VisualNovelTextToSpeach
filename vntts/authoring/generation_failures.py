@@ -210,7 +210,7 @@ def generation_failure_report(
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
     state_document, state_sha256, _payload = generation_state_snapshot(state_path)
     state = _validate_state_document(
-        state_document, state_path.parent, queue, queue_sha256
+        state_document, state_path.parent, queue, queue_sha256, validate_files=False
     )
     queue_by_id = {item.queue_id: item for item in queue.items}
     records: list[_FailureReportRecord] = []

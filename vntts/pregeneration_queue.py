@@ -439,7 +439,9 @@ def _reuse_completed_audio(
     state_path = generation_state_path(current.output_directory)
     queue, queue_sha256 = load_stable_generation_queue(current.queue)
     existing = (
-        load_generation_state_from_snapshot(state_path, queue, queue_sha256)
+        load_generation_state_from_snapshot(
+            state_path, queue, queue_sha256, validate_files=False
+        )
         if state_path.exists()
         else None
     )
@@ -572,6 +574,7 @@ def _reuse_completed_audio(
                 selected_line_ids=frozenset(
                     current_items[queue_id].line_id for queue_id in eligible
                 ),
+                validate_files=False,
             )
             for queue_id in eligible:
                 result = old_items[queue_id]
@@ -587,23 +590,14 @@ def _reuse_completed_audio(
     if not saved:
         return
     try:
-        store = SharedAudioStore(current.directory.parent.parent / "audio-store")
         with staged_directory(
             current.directory.parent, prefix=".generation-reuse-"
         ) as staging:
             for queue_id, result in saved.items():
                 digest = str(result["file_sha256"])
                 source = sources[queue_id]
-                if sha256_file(source) != digest:
-                    raise ValueError("Saved recording changed before reuse")
-                canonical = store.put(
-                    canonical_document_sha256({"legacy_completed_audio": result}),
-                    source,
-                    expected_sha256=digest,
-                )
-                link_shared_audio(canonical, source, expected_sha256=digest)
                 relative = f"audio/{digest}.wav"
-                link_shared_audio(canonical, staging / relative, expected_sha256=digest)
+                link_shared_audio(source, staging / relative, expected_sha256=digest)
                 result["path"] = relative
             state = {
                 "schema": STATE_SCHEMA,
@@ -617,7 +611,10 @@ def _reuse_completed_audio(
             }
             write_generation_state(staging / "generation-state.sqlite3", state)
             load_generation_state_from_snapshot(
-                staging / "generation-state.sqlite3", queue, queue_sha256
+                staging / "generation-state.sqlite3",
+                queue,
+                queue_sha256,
+                validate_files=False,
             )
             if existing is None:
                 rename_directory_no_replace(staging, current.output_directory)
@@ -628,7 +625,7 @@ def _reuse_completed_audio(
                     process_checker=process_is_alive,
                 ):
                     latest = load_generation_state_from_snapshot(
-                        state_path, queue, queue_sha256
+                        state_path, queue, queue_sha256, validate_files=False
                     )
                     if latest.get("active") is not None:
                         return
@@ -689,7 +686,11 @@ def initialize_audio_event_omissions(
                 )
             state, state_sha256, _payload = generation_state_snapshot(state_path)
             state = load_generation_state_from_snapshot(
-                state_path, queue, queue_sha256, state_document=state
+                state_path,
+                queue,
+                queue_sha256,
+                state_document=state,
+                validate_files=False,
             )
             items = generation_state_items(state)
             changed = []

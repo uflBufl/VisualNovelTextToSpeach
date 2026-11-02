@@ -816,7 +816,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertEqual(progress.runtime_status, "Loading model...")
         self.assertIsNone(progress.active_phase)
 
-    def test_cold_progress_does_not_admit_missing_corrupt_or_foreign_audio(self):
+    def test_cold_progress_uses_local_manifest_without_reopening_wavs(self):
         for failure in (
             "missing",
             "corrupt",
@@ -843,7 +843,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     backend_factory=Mock()
                 ).inspect_progress(inputs)
                 self.assertEqual(progress.generated, 1)
-                self.assertEqual(progress.ready_line_ids, ())
+                expected = ("saved",) if failure in {"missing", "corrupt"} else ()
+                self.assertEqual(progress.ready_line_ids, expected)
 
     def test_invalid_sql_authority_refuses_models_and_retained_sessions_before_startup(
         self,
@@ -1070,7 +1071,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             )
             generation_database.write_state(path, state)
             audio.write_bytes(b"corrupt audio")
-            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ())
+            self.assertEqual(worker.inspect_progress(inputs).ready_line_ids, ("saved",))
 
     def test_runs_exact_private_inputs_and_reports_terminal_counts(self):
         with TemporaryDirectory() as temporary_directory:
