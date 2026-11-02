@@ -368,6 +368,20 @@ Remaining defects, missing measurements and native acceptance:
       before Reading began, at406761.9098 after15.91s, with
       `Sample-time discontinuity`. Window video continued. New diagnostics show
       no overflow, queue high-water11 blocks/5632frames and max consumer lag0.123s.
+      All three retained clock failures predate `clock_failure` snapshots; the
+      rejected block is absent, so they cannot distinguish a gap from a clock
+      restart. In this session all 1364 saved 512-frame blocks are continuous;
+      that does not establish continuity across the missing boundary.
+      Pending implementation agreement: remove the obsolete negative-sample
+      sentinel exception from the macOS check now that previous-block presence
+      is explicit; preserve valid negative origins and the half-frame tolerance,
+      with native/analysis regressions. This mismatch is not the historical cause.
+      Add Windows first-failure previous/current packet metadata, accepted source
+      frame offset, expected position, raw flags and source-clock deltas. Return
+      the bounded snapshot through the existing acquisition-thread result; retain
+      all rejection rules, exclude rejected PCM and preserve Stop/join deadlines.
+      Test first/later failures and serialized partial metadata. macOS already
+      retains the needed audio-boundary snapshot; do not duplicate its stream.
       Correlate source host/sample timestamps with output activation, focus and
       process lifecycle using `clock_failure.previous/current`, receipt times
       and file-frame offsets. Align phase-max and consumer-lag contexts to
@@ -375,7 +389,6 @@ Remaining defects, missing measurements and native acceptance:
       valid clock restart before proposing a continuity policy. Preserve the
       partial recording and truthful failed qualification; do not conceal a gap
       by removing the check without evidence. New native acceptance is required.
-      Existing previous/current clock snapshots already cover the audio boundary.
       If recurrence is needed, add correlated output/device/process lifecycle
       events around it, rather than another duplicate timestamp stream. This
       failure did not recur in native-trial-20261031.
