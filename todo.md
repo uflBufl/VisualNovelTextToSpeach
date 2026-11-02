@@ -392,19 +392,38 @@ Remaining defects, missing measurements and native acceptance:
       failure did not recur in native-trial-20261031.
 
 - [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
-      In the real chapter campaign with the original8 stages plus7 Bkornblume
-      stages,314001:11 routed to waiting-for-generation at538046.628683.
-      Publication538064.797 and prepared-source538065.542 used the existing WAV
-      (cache_source=shared-wav, synthesis_ms=0, matching prior audio SHA), about19s
-      later. Voice/reference remained the same; queue documents differ only in
-      global source_audio_semantic_evidence_id while their entry IDs are unchanged.
-      `_reuse_completed_audio` rejects that whole-document mismatch. Verify entry
-      authority before changing the reuse contract. Also account for the15s after
-      the preceding render: result-to-publication is only11ms, so that earlier
-      interval is not established projection work. Preserve cache/provenance validation
-      and reading priority; do not weaken identities or hide waiting as synthesis.
-      Evidence: session525660ad06bf4e12a529a0956edaab44,
-      run47e713e3c1de44659b1f92834e8b10ed, joba5bf53c0e131502c56d1a1a5.
+      Implementation plan pending agreement:
+      - Add a shared per-line semantic reuse contract built from verified
+        story/evidence bindings, canonical entry identity and schema/model/
+        preprocessing authority. Preserve aggregate evidence IDs as provenance;
+        selection changes must not change an unchanged line's reusable identity.
+      - Use that contract in both `_reuse_completed_audio` eligibility checks.
+        Validate previous/current evidence bytes and membership before comparison;
+        preserve all other queue fields, synthesis controls, effective voice/
+        narrator route, reference bytes, terminal decisions and WAV validation.
+        Do not weaken exact-document checks for authoring merges or queue IDs.
+      - Retain content-derived WAV quality/speech measurements for the whole
+        serial generation session, covering its admitted working set rather than
+        thrashing the global 256-entry caches across one-item batches. Keep fresh
+        byte hashes and stored-quality comparisons at each trust boundary;
+        measurements are not file-integrity receipts. Preserve analysis-version
+        and short-event keys, bounded session ownership and cleanup. Do not
+        substitute partial state reads for complete publication authority.
+      - Promote the isolated selection-expansion reproduction to regression tests:
+        unchanged lines must already be ready before any backend starts. Cover
+        add/remove/reorder and unrelated catalog changes; reject changed semantic
+        authority, text, media, voice/reference/model/profile, damaged evidence or
+        WAVs; preserve audio events, narrator routes and saved decisions.
+      - Add a multi-batch working set larger than 256 WAVs. Each distinct content/
+        analysis-version is decoded once per session; same-size corruption with
+        restored mtime must still fail. Check session restart, cancellation,
+        failed repairs and foreign state changes; retain existing standalone
+        validation guarantees. Run affected tests and current-data profiles.
+      - In the combined chapter run confirm prepared hits are available without
+        queue waiting and new work keeps current-line priority. Reuse existing
+        timings; original line11 has 3.153s to previous publication, 15.005s to
+        cached render-result, 0.011s publication and 0.744s readiness propagation.
+        Historical aggregate phase times cannot apportion that 15s exactly.
 
 - [ ] **OCR-29-01 remaining native edges:** line43 passed in
       native-trial-20261031; retain only genuine typewriter-prefix and ambiguous
