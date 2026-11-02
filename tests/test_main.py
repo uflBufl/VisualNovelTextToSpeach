@@ -4094,7 +4094,10 @@ class MainTest(unittest.TestCase):
             stub_route_trace("source-game", lines[0].line_id),
         )
         outcome = PlaybackOutcome(
-            PlaybackStatus.COMPLETED, 1.0, first_audio_ms=0.0, audio_source="source-game"
+            PlaybackStatus.COMPLETED,
+            1.0,
+            first_audio_ms=0.0,
+            audio_source="source-game",
         )
 
         def dispatch(*_args):
@@ -4164,7 +4167,8 @@ class MainTest(unittest.TestCase):
         with patch.object(reader, "wait_until_playable", side_effect=resume):
             self.assertTrue(
                 controller._play_live_chunk(
-                    chunk, PreparedLiveChunkRoutes(dialogue, announcement, chunk.character)
+                    chunk,
+                    PreparedLiveChunkRoutes(dialogue, announcement, chunk.character),
                 )
             )
         self.assertEqual(played, ["announcement", "dialogue"])

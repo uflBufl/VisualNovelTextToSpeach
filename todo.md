@@ -1663,8 +1663,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
       activation scheduling and fixture contract; preserve the real fresh-install
       preparation/restart path rather than weakening its assertion.
-- [ ] Format the existing `vntts/moss_runtime.py` signature. Gate: the full
-      configured Ruff format check passes.
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
 ## Qualify SQLite-only storage
