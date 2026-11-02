@@ -406,6 +406,10 @@ def _save_review(
 class AuthoringWorkbenchDialog(CloseGuardedDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
+    _review_status_explicit: bool
+    _stored_review_character_scope: str
+    _stored_review_collection: str
+
     settings_group = "authoring/workbench"
     all_speakers_scope = "review-scope:all"
     narrator_scope = "review-scope:narrator"

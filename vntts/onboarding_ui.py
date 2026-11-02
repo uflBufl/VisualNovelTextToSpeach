@@ -1243,11 +1243,15 @@ class DiagnosticsPage(QWizardPage):
             if remediation is not None
             else "Show installation help"
         )
-        icon = {
-            "settings": "settings",
-            "voices": "audio-lines",
-            "permissions": "key-round",
-        }.get(remediation, "circle-help")
+        icon = (
+            {
+                "settings": "settings",
+                "voices": "audio-lines",
+                "permissions": "key-round",
+            }.get(remediation, "circle-help")
+            if remediation is not None
+            else "circle-help"
+        )
         if self.flow.reading_setup and remediation in {"settings", "voices"}:
             icon = (
                 "settings"
