@@ -1652,12 +1652,16 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Restore pre-existing repository quality gates
 
-- [ ] Diagnose `test_complete_ocr_typo_after_early_audio_continues_once` in
-      `tests/test_story_ocr_authority.py`: both long-line cases keep
-      `advance_calls=[]` instead of `[1]` after playback. Reproduces with untouched
-      code/tests exported from HEAD7963d9b6, independently of local-audio cleanup.
-      Check the fake-frame timer/authority sequence before changing product code
-      or weakening the expected automatic transition.
+- [ ] Update `test_complete_ocr_typo_after_early_audio_continues_once` in
+      `tests/test_story_ocr_authority.py` to the fresh-capture advance contract.
+      The timer requests OCR rather than dispatching input; this fixture supplies
+      no post-request frame. Keep product behavior unchanged. After the timer,
+      assert no key, submit the same raw OCR typo in a fresh complete frame with
+      canonical expected recognition, then require one key and successor
+      confirmation without repeated audio. Preserve the existing stale-capture
+      and changed-dialogue refusal regressions. Do not use `fire_advance()` here:
+      its default observation expectation is raw text, not the canonical result.
+      Gate: both long-line cases and related authority/live regressions pass.
 - [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
       process reports `The prepared pack was not activated`. Reproduces alone
       on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
