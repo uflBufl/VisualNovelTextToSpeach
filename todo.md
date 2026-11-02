@@ -376,12 +376,10 @@ Remaining defects, missing measurements and native acceptance:
       sentinel exception from the macOS check now that previous-block presence
       is explicit; preserve valid negative origins and the half-frame tolerance,
       with native/analysis regressions. This mismatch is not the historical cause.
-      Add Windows first-failure previous/current packet metadata, accepted source
-      frame offset, expected position, raw flags and source-clock deltas. Return
-      the bounded snapshot through the existing acquisition-thread result; retain
-      all rejection rules, exclude rejected PCM and preserve Stop/join deadlines.
-      Test first/later failures and serialized partial metadata. macOS already
-      retains the needed audio-boundary snapshot; do not duplicate its stream.
+      Resolve and qualify this failure on macOS first. Reuse its existing
+      audio-boundary snapshot; do not add Windows instrumentation to investigate
+      a macOS failure. After the cause and correction are verified, inspect
+      whether the actual repair applies to Windows and port it only if needed.
       Correlate source host/sample timestamps with output activation, focus and
       process lifecycle using `clock_failure.previous/current`, receipt times
       and file-frame offsets. Align phase-max and consumer-lag contexts to
