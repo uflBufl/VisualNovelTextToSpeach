@@ -309,62 +309,96 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-The combined run supplied new measurements, but older overflows and the new
-sample-clock failure still lack the boundary context needed for a causal repair.
+The November2 combined run reached chapter end104 with recovery, not
+autonomously. It retained the first rejected44.1kHz clock boundary; analyze that
+evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: one combined Mac campaign. Refactoring, complexity and linter debt
-are deferred and do not block it. Fix a failing relevant test or demonstrated
-startup/recording blocker if one appears; do not add speculative repairs or
-instrumentation before this run. Existing recording/query/input journals suffice.
+Next action: agree and implement RUN-02-01 first, then investigate RUN-02-02
+and the recording/device failures below one at a time. Refactoring, complexity
+and linter debt remain deferred. Repeat autonomous acceptance after agreed
+repairs; existing evidence must guide any additional instrumentation.
 
-- [ ] Record the tested commit, active pack/selection/voices/model/profile,
-      output device/rate, selected game window and source references. Use the
-      ordinary current-source launch and its source-hashed native helper builds.
-- [ ] Before chapter capture, check Stories/Voices/Support at minimum window
-      size and enlarged font: selection/resume, long labels, Original/Preview,
-      explicit activation, progress, failure reasons and saved-session actions.
-      Record unnecessary actions and uncertain UI behavior immediately.
-- [ ] Select enough genuinely unfinished generation to overlap the chapter,
-      retaining existing approved audio. Confirm unchanged selected lines are
-      ready before the new backend starts; keep a different background job from
-      implicitly replacing the active pack.
-- [ ] Open314001 at its first narrator line. In Support enable media recording,
-      set and verify3600s, then Start session. Confirm video/game audio started
-      and the Rust tap arms before PCM. Record actual44.1/48kHz configuration;
-      a48kHz pass does not qualify the historical44.1kHz failure.
-- [ ] Start Reading once through the normal UI, focus the game and run to the
-      chapter end without manual Space, Stop/Start, replay or settings changes.
-      Audit original/prepared/live routing, fresh OCR before each automatic key,
-      actual game transitions, one-time speech and fresh synthesis/publication
-      overlap. Mark any load gap rather than counting cache reuse as generation.
-- [ ] On a stall, save frame/video/time/route/PCM/key/focus/queue evidence before
-      recovery; record interventions and keep autonomous acceptance failed.
-      Save recorder overflow/clock-failure/query boundaries on recurrence.
-- [ ] After the autonomous chapter, separately record controlled episodes for
-      live/announcement Pause/Resume, preparation Close/resume, partly prepared
-      catch-up, manual punctuation, fullscreen/window/HUD, focus and Stop/restart.
-      Keep unencountered or unavailable scenarios pending rather than simulating
-      a native pass. Use separate capped recordings if the campaign exceeds1h.
-- [ ] Stop and audit finalized video and both CAF/journals, source/output matches,
-      capture/OCR/first-PCM/continuation timings, queues, CPU/memory and actual
-      generation overlap. Verify recording closure and process cleanup, restore
-      selected stages, close VNTTS and leave the game running. Remove only
-      verified completed TODO items; retain failures and unexercised gates.
+- [ ] **RUN-02-01 - Punctuation-only Cornerstone dialogue holds after66.**
+      Current Mac campaign reaches `...` without manual keys, then generation59
+      waits over145s despite fresh OCR and the app displaying Cornerstone/`...`.
+      Automatic input is withheld as `owned-frame-not-visible-and-stable`; current
+      story resolution reports `ocr-uncertain`. Preserve captured raw/effective
+      OCR, confidence, route/owner binding and fixed-anchor pair; establish which
+      missing comparison evidence blocks this real punctuation frame before
+      choosing a repair. Do not skip unreadable text or lower global confidence.
+      Initial trace localizes the mismatch: visual ellipsis validation admits
+      reliable Cornerstone/`...` while the cached effective OCR confidence stays0;
+      frame equivalence later requires confident OCR for both frames. Carry
+      validated-symbol evidence consistently through admission/comparison, with
+      negative speaker/context/freshness cases, after agreeing the exact plan.
+
+- [ ] **RUN-02-02 - Prepared Duvalle43 falls back to live Narrator.**
+      Capture8ef79e5e141842bf8a41a19d0c0cb8b1 reads Narrator / "Thank you ever
+      so much, madam." with confidence96. Text exactly matches314001:43
+      (Duvalle, generated audio ready), but generation39 routes live MOSS/no-match
+      between canonical42 and44, produces PCM and advances. Inspect missing-name
+      evidence, expected candidate scope and admission authority before choosing
+      a repair. Do not globally widen text matching or infer a speaker from an
+      unreadable name. Preserve the original capture and route/PCM evidence.
+
+- [ ] **REC-02-02 - Retained44.1kHz sample-clock failure in the new campaign.**
+      Session ea228c reports game-audio `Sample-time discontinuity` and
+      rust-58042 `Target process unavailable` during the recovered chapter tail.
+      The retained clock_failure snapshot shows expected33777864 versus actual
+      33781724 (+3860frames /87.53ms), no overflow or host-clock discontinuity.
+      Analyze previous/current callbacks and existing lifecycle events before
+      selecting a repair. Video/Reading continue; sound continuity is failed. Distinguish source clock reset/gap
+      from separate speech-worker retirement; no silence insertion or guessed
+      clock offset, and do not attribute it to the earlier punctuation stall.
+
+- [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
+      Native run receives Qt `audioOutputsChanged` at575256.467, stops Rust
+      worker58042 mid-recording (158848/264600 frames) and holds generation65.
+      Preserve actual device identities and relation to private recorder aggregate
+      devices; establish real device change versus recorder-induced notification.
+      Do not suppress all output-change events or advance after failed playback.
+- [ ] **CAPTURE-02-01 - System stops both diagnostic and Reading window streams.**
+      The same campaign reports ScreenCaptureKit SCStreamErrorDomain -3821,
+      diagnostic window failure at575308.034 and product capture error afterward.
+      Recovery-tail video fails again with -3821 at575577.122 while audio continues.
+      A later check finds game available and screen unlocked; lock state at the
+      exact failure is unproven. Correlate stream/system lifecycle and qualify
+      ordinary recovery before changing retry policy. Keep the control recording
+      fullscreen bounds-change guard failure separate from these system stops.
+      After paused fullscreen/restore, key6 times out, then7 appears about30s
+      after dispatch without manual retry. Determine game versus OCR delay from
+      better evidence; failed video cannot establish when the game changed.
+
+- [ ] Complete the unexercised UI cases: enlarged font/smaller height, failure
+      inspector and diagnostic-session history actions. Preserve actual usability
+      observations; do not redesign merely because automation requires extra clicks.
+- [ ] After fixes, repeat314001 from first narrator through104 with genuine
+      generation/publication overlap and no manual Space or Stop/Start. The
+      November2 run needed one manual Space after66 and Stop/Start at73; reaching
+      the chapter-end screen qualifies only recovered completion.
+- [ ] Complete unexercised controls: live/announcement Pause/Resume, partly
+      prepared catch-up and failed/not-ready policy, manual punctuation, explicit
+      volume HUD, focus and active-speech preparation Close. Prepared-file Pause
+      continuation and preparation Close while paused were verified using the
+      same clip and retained PCM; do not repeat them without a related change.
+      Fullscreen geometry changed correctly, but continuous capture/continuation
+      acceptance remains open because recording failed and a late recognition
+      followed restore. Keep separate capped recordings for longer campaigns.
 
 Post-campaign triage (implementation still requires agreement):
 
-- Qualify RUN-29-02's serialized OCR in the combined native run below: measure
-  current cadence/load and post-speech latency under background generation.
-  Investigate residual waits from recognized evidence and controls; do not revive
-  the removed pixel-comparison/shared-threshold repair plan.
-- For REC-29-01, agree only the missing boundary instrumentation
-  below, then use focused game/load episodes. Existing queue, OCR and native
-  query telemetry must be reused rather than duplicated.
-- REC-29-02 and AUDIO-29-01 did not recur in the latest campaign. Inspect existing
-  clock/query evidence first; a passing run does not close either historical
-  failure. Keep broader unexercised acceptance below distinct from confirmed bugs.
+- Use the November2 cadence/load and successful post-speech measurements for
+  RUN-29-02. Investigate the remaining punctuation and control-transition waits;
+  do not revive the removed pixel-comparison/shared-threshold repair plan.
+- For REC-29-01, inspect retained queue/lag/phase and failure snapshots first.
+  Add only specifically missing context after agreeing its purpose; existing
+  queue, OCR and native query telemetry must be reused rather than duplicated.
+- REC-29-02 recurred at44.1kHz and now has a rejected-boundary snapshot.
+  AUDIO-29-01 query timeout did not recur; the later outputsChanged interruption
+  is a separate failure. Inspect existing evidence before requesting more probes.
+  Keep broader unexercised acceptance distinct from confirmed bugs.
 - Repeat the autonomous chapter only after the resulting repairs; a recovered
   reading or a partial sound capture cannot satisfy that final gate.
 
@@ -407,18 +441,18 @@ Remaining defects, missing measurements and native acceptance:
       before Reading began, at406761.9098 after15.91s, with
       `Sample-time discontinuity`. Window video continued. New diagnostics show
       no overflow, queue high-water11 blocks/5632frames and max consumer lag0.123s.
-      All three retained clock failures predate `clock_failure` snapshots; the
-      rejected block is absent, so they cannot distinguish a gap from a clock
-      restart. In this session all 1364 saved 512-frame blocks are continuous;
+      The three older retained failures predate `clock_failure` snapshots; their
+      rejected blocks are absent. November2 sessionea228c now retains the first
+      rejected boundary at44.1kHz (REC-02-02); analyze it before another probe.
+      In the older session all1364 saved512-frame blocks are continuous;
       that does not establish continuity across the missing boundary.
       Resolve and qualify this failure on macOS first. Reuse its existing
       audio-boundary snapshot; do not add Windows instrumentation to investigate
       a macOS failure. After the cause and correction are verified, inspect
       whether the actual repair applies to Windows and port it only if needed.
-      The next native evidence must cover the historical 44.1 kHz configuration
-      and real generation/reading load; a healthy 48 kHz bounded probe does not
-      qualify that setup. Retain the first rejected boundary on recurrence
-      rather than repeating short healthy probes or weakening the checks.
+      The November2 snapshot covers historical44.1kHz under real generation and
+      Reading load. Use it first; a healthy48kHz bounded probe does not qualify
+      that setup. Do not repeat short healthy probes or weaken the checks.
       Correlate source host/sample timestamps with output activation, focus and
       process lifecycle using `clock_failure.previous/current`, receipt times
       and file-frame offsets. Align phase-max and consumer-lag contexts to
@@ -444,8 +478,9 @@ Remaining defects, missing measurements and native acceptance:
       actual playback evidence for these unexercised paths.
 
 1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
-   The user approved one combined game campaign covering all accumulated fixes
-   and REC-29-01 measurements. Keep the recorder failure open until measurements
+   Repeat the combined game campaign after the November2 defects are repaired.
+   Its recovered end104, failed AV and unexercised controls are not acceptance.
+   Keep the recorder failure open until measurements
    identify and qualify its correction; it does not postpone the other checks.
    Start with Stories/voice UI and confirmation-resume checks, then record the
    chapter under real background generation. Preserve baseline WAV hashes and
@@ -456,8 +491,9 @@ Remaining defects, missing measurements and native acceptance:
    Repeat autonomous chapter acceptance after the remaining startup/admission
    repairs. The follow-up reaches104 but includes two operator Stop/Start
    interventions; do not treat its automatic recovery from long waits as a pass.
-   The chapter game/Rust taps are continuous; the earlier clock failure and
-   post-chapter diagnostic-worker retirement remain separate incomplete captures.
+   Historical recovered follow-up taps were continuous. In the November2 run,
+   main game/Rust taps failed; recovery-tail taps finalized consistently but video
+   failed. Neither supplies continuous full-chapter AV acceptance.
    Include native confirmation that authorized silent events do not wait for a
    WAV during generation/resume, and a newly accepted occurrence releases an
    older unstarted wait without interrupting already dispatched speech.
@@ -483,8 +519,8 @@ Remaining defects, missing measurements and native acceptance:
      the existing recovery/tracing implementation, extend timeouts or infer a
      native-stall fix from successful queries alone.
    - **Preparation Close (UX-31-01), native acceptance:** close completed/partial
-     preparation during speech, Pause and advance wait. Reading must keep its
-     source, current speech position and continuation without a controller restart.
+     preparation during speech and advance wait (paused prepared playback was
+     verified November2). Reading must keep its source, current speech position and continuation without a controller restart.
      Reopen the same job and use Stop/Start; another preparation must not replace
      the source implicitly. For stopped partial preparation, ready audio remains
      usable and missing audio reports that preparation must be continued.
