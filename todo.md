@@ -391,20 +391,6 @@ Remaining defects, missing measurements and native acceptance:
       events around it, rather than another duplicate timestamp stream. This
       failure did not recur in native-trial-20261031.
 
-- [ ] **AUDIO-29-01 - Initial prepared playback fails native format check under load.**
-      Follow-up session09406def638a43caaf28b2de23f07bf1 routed314001:6 correctly
-      at407105.493 but reported `Rust audio check_format timed out (44100 Hz,
-      1 channels)`. No PCM completion, speech tap or game key followed. Game-audio
-      and window recording remained active while fresh MOSS generation continued.
-      Query tracing was enabled in native-trial-20261031; the timeout did not
-      recur. Reuse these parent/native phase records and verify query_trace on
-      the actual worker before adding more instrumentation or rerunning.
-      Correlate query/worker IDs and parent/native phase times to identify the
-      last completed boundary before choosing a fix. Check ordinary recovery
-      under load. Do not mask it by extending timeouts or advancing
-      the game without speech. Gate: prepared mono playback starts and completes
-      under the real generation/recording load, with truthful failure recovery.
-
 - [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
       In the real chapter campaign with the original8 stages plus7 Bkornblume
       stages,314001:11 routed to waiting-for-generation at538046.628683.
@@ -456,6 +442,15 @@ Remaining defects, missing measurements and native acceptance:
    approved WAV bytes and complete independent capture; cache hits alone are
    not background-generation load. Include recording continuity (REC-27-01)
    and the following deferred checks:
+   - **Audio query startup (AUDIO-29-01), remaining native acceptance:** cold-start
+     prepared 44.1 kHz mono playback under real generation and recording load.
+     Verify `query_trace` on the actual worker and reuse existing parent/native
+     phase records. If the historical `check_format` timeout recurs, retain
+     query/worker IDs and the last completed boundary before selecting a repair;
+     verify ordinary Stop/Start replaces the failed worker and the phrase then
+     completes once. A failed playback must not advance the game. Do not repeat
+     the existing recovery/tracing implementation, extend timeouts or infer a
+     native-stall fix from successful queries alone.
    - **Preparation Close (UX-31-01), native acceptance:** close completed/partial
      preparation during speech, Pause and advance wait. Reading must keep its
      source, current speech position and continuation without a controller restart.
