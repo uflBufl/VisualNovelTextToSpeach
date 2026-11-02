@@ -149,6 +149,75 @@ class StoryOCRAuthorityTest(unittest.TestCase):
 
                 self.assert_generated_route(controller, line, actual)
 
+    def test_partial_name_loss_cannot_move_scope_before_complete_generated_line(self):
+        previous = replace(
+            story_line(
+                "The previous complete dialogue.",
+                "Cornerstone",
+                "reverse1999:314001:42",
+                "314001",
+            ),
+            sequence=42,
+        )
+        line = replace(
+            story_line(
+                "Thank you ever so much, madam.",
+                "Duvalle",
+                "reverse1999:314001:43",
+                "314001",
+            ),
+            sequence=43,
+        )
+        foreign = story_line(
+            "Lore picks up her uniform and signs a thank-you.",
+            "Narrator",
+            "reverse1999:302002:15",
+            "302002",
+        )
+        controller = self.controller((foreign, previous, line))
+        preloader = controller.chapter_voice_preloader
+        self.assertIs(preloader.select_line_id(previous.line_id), previous)
+        anchor = preloader.current_match
+
+        for prefix in ("Thank yo", "Thank you eve", "Thank you ever so much, m"):
+            with self.subTest(prefix=prefix):
+                raw = replace(
+                    observed(prefix, "Narrator", dialogue_confidence=96), confidence=96
+                )
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
+                ):
+                    actual = controller._recognize_live_frame(
+                        CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                    )
+                self.assertIsInstance(actual, tuple)
+                self.assertTrue(controller._dialog_observed(*actual))
+                if prefix in {"Thank yo", "Thank you eve"}:
+                    self.assertIs(preloader.current_match, anchor)
+                self.assertEqual(preloader.current_match.chapter, line.chapter)
+
+        raw = replace(
+            observed(line.text, "Narrator", dialogue_confidence=96), confidence=96
+        )
+        with patch(
+            "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
+        ):
+            actual = controller._recognize_live_frame(
+                CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+            )
+
+        self.assertEqual(
+            actual,
+            RecognizedDialog(
+                line.speaker,
+                line.text,
+                line.line_id,
+                exact_match=True,
+                allow_unheard_replacement=False,
+            ),
+        )
+        self.assert_generated_route(controller, line, actual)
+
     def test_full_owned_successor_recovers_unreadable_speaker(self):
         line = story_line("Thank you ever so much, madam.", "Duvalle")
         for text in (line.text, line.text.upper()):

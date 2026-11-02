@@ -17,7 +17,11 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
 from tests.native_capture_fixtures import native_frame
-from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.chapter_voice_preload import (
+    ChapterDialogue,
+    ChapterMatch,
+    ChapterVoicePreloader,
+)
 from vntts.controller import PreparedLiveChunkRoutes, SequenceEventLease
 from vntts.controller_components import _is_live_voice_router, _is_xtts_voice_router
 from vntts.diagnostics import DiagnosticSnapshot
@@ -6394,9 +6398,7 @@ class MainTest(unittest.TestCase):
 
                     self.assertFalse(controller.can_start_live_from_ocr())
                     self.assertIsNone(controller.unresolved_live_speakers())
-                    controller.chapter_voice_preloader.recommend(
-                        "Rhiannon", "Known line."
-                    )
+                    controller.chapter_voice_preloader.select_line_id(line.line_id)
                     self.assertEqual(controller.unresolved_live_speakers(), ())
                     self.assertFalse(controller.start_live_from_ocr())
 
@@ -6458,7 +6460,7 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
-        preloader.recommend("Selene", "This is not Selone.")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
@@ -6628,7 +6630,7 @@ class MainTest(unittest.TestCase):
         )
 
         self.assertIsNone(controller.unresolved_live_speakers())
-        preloader.recommend("Selone", "Original first")
+        preloader.current_match = ChapterMatch("1", 5, 1.0)
         self.assertEqual(
             controller.unresolved_live_speakers(),
             ("Selone", "Hotelier"),
@@ -6647,7 +6649,7 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
-        preloader.recommend("Hotelier", "Welcome.")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
@@ -6678,7 +6680,7 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
-        preloader.recommend("Selone", "Line")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
@@ -6725,7 +6727,7 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
-        preloader.recommend("Selone", "Line")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
@@ -6883,7 +6885,7 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
-        preloader.recommend("Rhiannon", "Line")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         controller = AppController(
             AppSettings(live_speaker_corpus="missing-speakers.json"),
             tts_factory=Mock(),
@@ -6930,7 +6932,7 @@ class MainTest(unittest.TestCase):
         self.assertIn("read the current dialog once", statuses[-1])
         controller.live_reader.toggle.assert_not_called()
 
-        preloader.recommend("Selone", "Line")
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         self.assertTrue(controller.toggle_live())
         controller.live_reader.toggle.assert_called_once_with()
 
@@ -6968,7 +6970,10 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(preloader.current_match)
         self.assertTrue(controller._dialog_observed("Selone", "Line"))
         self.assertEqual(offered, ["Selone"])
+        self.assertIsNone(preloader.current_match)
         controller._live_sequence_audio_active = Mock(return_value=True)
+        self.assertIsNone(controller.unresolved_live_speakers())
+        preloader.current_match = ChapterMatch("1", 1, 1.0)
         self.assertEqual(controller.unresolved_live_speakers(), ("Selone",))
 
     def test_direct_live_toggle_does_not_require_staged_voice_approval(self):

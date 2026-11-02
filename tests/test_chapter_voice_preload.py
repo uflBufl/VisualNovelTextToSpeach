@@ -356,14 +356,51 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         )
 
         self.assertEqual(recommendations, ("Fatutu", "Selone"))
+        self.assertIsNone(preloader.current_match)
 
     def test_retains_chapter_during_short_following_ocr_observation(self):
         preloader = ChapterVoicePreloader.from_document(dialogue_document())
-        preloader.recommend("Kamuta", "These old ones are enough to carry")
+        preloader.current_match = ChapterMatch("24006", 10, 1.0)
 
         recommendations = preloader.recommend("Narrator", "A")
 
         self.assertEqual(recommendations, ("Kamuta", "Fatutu", "Selone"))
+
+    def test_warmup_stays_in_known_chapter_when_partial_text_matches_another(self):
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "foreign",
+                    "other",
+                    1,
+                    "Narrator",
+                    "Lore picks up her uniform and signs a thank-you.",
+                    "a" * 64,
+                ),
+                ChapterDialogue(
+                    "foreign-next", "other", 2, "Bkornblume", "Hello.", "b" * 64
+                ),
+                ChapterDialogue(
+                    "current", "chapter", 42, "Cornerstone", "Who can say?", "c" * 64
+                ),
+                ChapterDialogue(
+                    "next",
+                    "chapter",
+                    43,
+                    "Duvalle",
+                    "Thank you ever so much, madam.",
+                    "d" * 64,
+                ),
+            )
+        )
+        preloader.select_line_id("current")
+        context = preloader.current_match
+        for text in ("Thank yo", "Thank you eve", "Thank you ever so much, madam."):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    preloader.recommend("Narrator", text), ("Cornerstone", "Duvalle")
+                )
+                self.assertIs(preloader.current_match, context)
 
     def test_does_not_guess_from_ambiguous_speaker_without_enough_text(self):
         preloader = ChapterVoicePreloader.from_document(dialogue_document())

@@ -797,11 +797,8 @@ class ChapterVoicePreloader:
     ) -> tuple[str, ...]:
         if limit <= 0 or not self.dialogue:
             return ()
-        match = self._match(character, text)
-        if match is not None:
-            self.current_match = match
-        else:
-            match = self.current_match
+        # Voice warmup must not change the story scope used by OCR resolution.
+        match = self.current_match or self._match(character, text)
         if match is None:
             return ()
 

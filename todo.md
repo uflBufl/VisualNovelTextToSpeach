@@ -315,10 +315,11 @@ evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: investigate RUN-02-02 and propose its concrete repair, then the
-recording/device failures below one at a time. RUN-02-01 retains only its native
-acceptance gate. Refactoring, complexity and linter debt remain deferred. Repeat autonomous acceptance after agreed
-repairs; existing evidence must guide any additional instrumentation.
+Next action: investigate the retained REC-02-02 clock boundary and propose its
+concrete repair, then the recording/device failures below one at a time.
+RUN-02-01 and RUN-02-02 retain only their native acceptance gates. Refactoring,
+complexity and linter debt remain deferred. Repeat autonomous acceptance after
+agreed repairs; existing evidence must guide any additional instrumentation.
 
 - [ ] **RUN-02-01 - Native acceptance of punctuation continuation.**
       Verify the captured Cornerstone `...` after66 in the next agreed game run:
@@ -328,31 +329,13 @@ repairs; existing evidence must guide any additional instrumentation.
       repair passes focused integration and retained-frame OCR checks, but those
       do not qualify this native gate or autonomous chapter acceptance.
 
-- [ ] **RUN-02-02 - Isolate advisory voice warmup from OCR story context.**
-      Reproduced with the main campaign input and actual OCR prefixes: established
-      314001:42 -> Narrator / `Thank yo` -> recommend() overwrites current_match
-      with302002:302002015 (Narrator's unrelated thank-you description). Full
-      Duvalle43 then searches the wrong chapter and returns expected-no-match.
-      Reanchoring42 immediately resolves the same full text to Duvalle43. Its WAV
-      was approved before the campaign. Proposed implementation, awaiting approval:
-      - Make ChapterVoicePreloader.recommend() read-only: use established
-        current_match first; only infer a local advisory match if context is
-        unknown. Never publish a warmup guess as OCR/canonical position. Keep
-        existing recommendation ranking/lookahead; no new context/state service.
-      - Keep existing explicit startup/canonical selection as context writers.
-        Migrate tests that used recommend() merely to seed context to explicit
-        select_line_id or actual canonical resolution. Controller's warmup caller
-        and generated/source-audio routing need no new policy or fallback.
-      - Add a two-chapter regression with the recorded partial-text pattern:
-        known context stays314001, warmup recommendations stay in that chapter;
-        unknown context remains unknown after advisory recommendations.
-      - Exercise raw prefixes -> real controller recognition/observation/warmup
-        -> full Duvalle43 with canonical line_id -> GeneratedAudioRoute, no live
-        MOSS call. Preserve ambiguous/growing-prefix, confidence/checksum and
-        source-audio precedence coverage; do not widen global text matching.
-      - Run the required local changed-test selector first, then affected matcher,
-        story OCR authority and route tests missed by static selection; commit.
-        Native43 and full autonomous acceptance remain deferred to the agreed run.
+- [ ] **RUN-02-02 - Native acceptance of voice warmup scope.**
+      In the next agreed game run, verify partial OCR/name loss before Duvalle43
+      retains the current chapter and warms only that chapter's voices. The full
+      phrase must use canonical43 and its ready generated recording without live
+      Narrator synthesis. Read-only recommendation, unknown-context preservation,
+      actual retained-input replay and prefix-to-generated-route checks pass;
+      they do not substitute for native/full autonomous acceptance.
 
 - [ ] **REC-02-02 - Retained44.1kHz sample-clock failure in the new campaign.**
       Session ea228c reports game-audio `Sample-time discontinuity` and
