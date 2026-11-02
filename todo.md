@@ -314,6 +314,45 @@ sample-clock failure still lack the boundary context needed for a causal repair.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
+Next action: one combined Mac campaign. Refactoring, complexity and linter debt
+are deferred and do not block it. Fix a failing relevant test or demonstrated
+startup/recording blocker if one appears; do not add speculative repairs or
+instrumentation before this run. Existing recording/query/input journals suffice.
+
+- [ ] Record the tested commit, active pack/selection/voices/model/profile,
+      output device/rate, selected game window and source references. Use the
+      ordinary current-source launch and its source-hashed native helper builds.
+- [ ] Before chapter capture, check Stories/Voices/Support at minimum window
+      size and enlarged font: selection/resume, long labels, Original/Preview,
+      explicit activation, progress, failure reasons and saved-session actions.
+      Record unnecessary actions and uncertain UI behavior immediately.
+- [ ] Select enough genuinely unfinished generation to overlap the chapter,
+      retaining existing approved audio. Confirm unchanged selected lines are
+      ready before the new backend starts; keep a different background job from
+      implicitly replacing the active pack.
+- [ ] Open314001 at its first narrator line. In Support enable media recording,
+      set and verify3600s, then Start session. Confirm video/game audio started
+      and the Rust tap arms before PCM. Record actual44.1/48kHz configuration;
+      a48kHz pass does not qualify the historical44.1kHz failure.
+- [ ] Start Reading once through the normal UI, focus the game and run to the
+      chapter end without manual Space, Stop/Start, replay or settings changes.
+      Audit original/prepared/live routing, fresh OCR before each automatic key,
+      actual game transitions, one-time speech and fresh synthesis/publication
+      overlap. Mark any load gap rather than counting cache reuse as generation.
+- [ ] On a stall, save frame/video/time/route/PCM/key/focus/queue evidence before
+      recovery; record interventions and keep autonomous acceptance failed.
+      Save recorder overflow/clock-failure/query boundaries on recurrence.
+- [ ] After the autonomous chapter, separately record controlled episodes for
+      live/announcement Pause/Resume, preparation Close/resume, partly prepared
+      catch-up, manual punctuation, fullscreen/window/HUD, focus and Stop/restart.
+      Keep unencountered or unavailable scenarios pending rather than simulating
+      a native pass. Use separate capped recordings if the campaign exceeds1h.
+- [ ] Stop and audit finalized video and both CAF/journals, source/output matches,
+      capture/OCR/first-PCM/continuation timings, queues, CPU/memory and actual
+      generation overlap. Verify recording closure and process cleanup, restore
+      selected stages, close VNTTS and leave the game running. Remove only
+      verified completed TODO items; retain failures and unexercised gates.
+
 Post-campaign triage (implementation still requires agreement):
 
 - Qualify RUN-29-02's serialized OCR in the combined native run below: measure
@@ -1650,7 +1689,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       intact; do not add a silent copy fallback. Controlled Mac UI runs and unit
       tests do not qualify these platforms or neural-model/hardware behavior.
 
-## Restore pre-existing repository quality gates
+## Deferred - Restore pre-existing repository quality gates
 
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 
