@@ -376,6 +376,7 @@ class RustOutputStream:
         )
 
     def _event(self, timeout: float) -> dict[str, Any]:
+        assert self.clip_id is not None
         worker = self._worker()
         event = worker.receive(timeout)
         while (
