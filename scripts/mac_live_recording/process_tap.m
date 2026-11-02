@@ -216,7 +216,7 @@ static void require_clock_continuity(Queue *q, Block *b, uint64_t fileFrame, uin
     double expected = q->previousClock.timestamp.mSampleTime + q->previousClock.frames;
     // Keep the existing half-frame tolerance and source-host comparison unchanged.
     double previousHost = seconds(q->previousClock.timestamp.mHostTime);
-    bool sampleFailure = expected >= 0 && !(fabs(b->timestamp.mSampleTime - expected) < 0.5);
+    bool sampleFailure = !(fabs(b->timestamp.mSampleTime - expected) < 0.5);
     bool hostFailure = !(seconds(b->timestamp.mHostTime) > previousHost);
     if ((sampleFailure || hostFailure) && !q->clockFailure.present) {
         q->clockFailure = (ClockFailure){true, sampleFailure, hostFailure, observed,
@@ -439,7 +439,11 @@ static void selfcheck_clock(Queue *q) {
         {100, 102.5, 1001, true, false}, {100, 101.5, 1001, true, false}, {100, 120, 1001, true, false},
         {100, 90, 1001, true, false}, {100, 0, 1001, true, false},
         {100, 102, 1000, false, true}, {100, 102, 900, false, true}, {100, 0, 900, true, true},
-        {-10, 999, 1001, false, false}, {-2, 999, 1001, true, false}, {-10, 999, 1000, false, true}};
+        {-10, -8, 1001, false, false}, {-10, -7.51, 1001, false, false}, {-10, -8.49, 1001, false, false},
+        {-2, 0, 1001, false, false}, {-1, 1, 1001, false, false},
+        {-10, -7.5, 1001, true, false}, {-10, -8.5, 1001, true, false},
+        {-10, 999, 1001, true, false}, {-10, -9, 1001, true, false},
+        {-2, 999, 1001, true, false}, {-10, 999, 1000, true, true}};
     Block *b = &q->blocks[0];
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         q->clockFailure = (ClockFailure){0};

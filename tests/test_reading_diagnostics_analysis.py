@@ -726,6 +726,28 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "callback timeline"):
             _capture_clock(capture)
 
+    def test_negative_sample_origins_preserve_continuity_through_zero(self):
+        capture, _ = self.fixture()
+        path = capture / "audio.jsonl"
+        original = [json.loads(line) for line in path.read_text().splitlines()]
+        for origin in (-1000, -480):
+            with self.subTest(origin=origin):
+                rows = [
+                    dict(row, sample_time=origin + row["file_frame_start"])
+                    for row in original
+                ]
+                self.journal(path, rows)
+                offset, residual = _capture_clock(capture)
+                self.assertAlmostEqual(offset, 10)
+                self.assertAlmostEqual(residual, 0)
+                for delta in (-1, 1):
+                    with self.subTest(delta=delta):
+                        changed = [dict(row) for row in rows]
+                        changed[1]["sample_time"] += delta
+                        self.journal(path, changed)
+                        with self.assertRaisesRegex(ValueError, "Discontinuous"):
+                            _capture_clock(capture)
+
     def test_single_precision_fft_cannot_select_near_silence_over_the_source(self):
         rng = np.random.default_rng(73)
         source = rng.normal(0, 0.1, RATE // 10).astype(np.float32)

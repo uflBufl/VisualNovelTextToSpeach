@@ -372,10 +372,11 @@ Remaining defects, missing measurements and native acceptance:
       rejected block is absent, so they cannot distinguish a gap from a clock
       restart. In this session all 1364 saved 512-frame blocks are continuous;
       that does not establish continuity across the missing boundary.
-      Pending implementation agreement: remove the obsolete negative-sample
-      sentinel exception from the macOS check now that previous-block presence
-      is explicit; preserve valid negative origins and the half-frame tolerance,
-      with native/analysis regressions. This mismatch is not the historical cause.
+      Run one bounded macOS dual-tap episode with the current production
+      helper, an owned playback worker and fresh generation. Require readiness
+      before playback, record actual load overlap, audit finalized CAF/journals
+      and preserve any first clock-failure snapshot. Stop all owned processes;
+      a passing non-reproduction does not close the historical defect.
       Resolve and qualify this failure on macOS first. Reuse its existing
       audio-boundary snapshot; do not add Windows instrumentation to investigate
       a macOS failure. After the cause and correction are verified, inspect
