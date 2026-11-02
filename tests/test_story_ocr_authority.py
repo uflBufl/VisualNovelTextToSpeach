@@ -407,6 +407,15 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                         self.assertEqual(harness.advance_calls, [])
                         harness.finish_playback()
                         harness.timer_scheduler.fire_next("_run_auto_advance")
+                        self.assertEqual(harness.advance_calls, [])
+                        harness.push(
+                            line.speaker,
+                            canonical.replace(old, new),
+                            background="advance-recheck",
+                            fingerprint="full",
+                            complete=True,
+                            expected=(line.speaker, canonical),
+                        )
                         self.assertEqual(harness.advance_calls, [1])
                         self.assertEqual(len(harness.played), 1)
                         self.assertEqual(harness.speech_executor.jobs, [])
