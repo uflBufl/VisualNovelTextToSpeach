@@ -1,11 +1,9 @@
 import hashlib
 import io
-import os
 import subprocess
 import sys
 import unittest
 import wave
-from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -91,7 +89,7 @@ class SharedReferenceAudioTest(unittest.TestCase):
                 (first.read_bytes(), first.stat().st_ino), (original, inode)
             )
 
-    def test_corrupt_saved_reference_fails_without_replacing_previous_input(self):
+    def test_missing_saved_reference_fails_without_replacing_previous_input(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source, expected = self.source(root)
@@ -100,7 +98,6 @@ class SharedReferenceAudioTest(unittest.TestCase):
             store = SharedAudioStore(root / "jobs" / "audio-store")
             saved = store.get(f"reference-pcm16-v1-{expected}")
             saved.unlink()
-            saved.write_bytes(b"corrupt")
             with self.assertRaises(SharedAudioStoreError):
                 materialize(root, source, expected, "second")
             self.assertEqual(
@@ -185,7 +182,7 @@ with patch("vntts.pregeneration_queue._normalize_reference_wav", side_effect=nor
 
 
 class AudioSnapshotTest(unittest.TestCase):
-    def test_store_put_reads_twice_and_cache_hit_reads_one_verified_snapshot(self):
+    def test_store_admits_once_and_cache_decodes_one_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.wav"
@@ -195,7 +192,7 @@ class AudioSnapshotTest(unittest.TestCase):
                 "vntts.audio_store.open_regular_binary", wraps=open_regular_binary
             ) as read:
                 store.put("key", source)
-            self.assertEqual(read.call_count, 2)
+            self.assertEqual(read.call_count, 1)
             cache = PersistentAudioCache(store.directory, sample_rate=16000)
             with (
                 patch(
@@ -205,16 +202,10 @@ class AudioSnapshotTest(unittest.TestCase):
             ):
                 np.testing.assert_array_equal(cache.get("key"), [0.125, 0.25])
             self.assertEqual(read.call_count, 1)
-            # The shared decoder validates store bytes, then decodes that snapshot.
-            self.assertEqual(decode.call_count, 2)
-            for call in decode.call_args_list:
-                self.assertIsInstance(call.args[0], io.BytesIO)
-            self.assertEqual(
-                decode.call_args_list[0].args[0].getvalue(),
-                decode.call_args_list[1].args[0].getvalue(),
-            )
+            self.assertEqual(decode.call_count, 1)
+            self.assertIsInstance(decode.call_args.args[0], io.BytesIO)
 
-    def test_cache_decodes_verified_bytes_and_rechecks_replacement_next_time(self):
+    def test_cache_decodes_saved_snapshot_and_reports_actual_decode_failure(self):
         with TemporaryDirectory() as directory:
             cache = PersistentAudioCache(directory, sample_rate=16000)
             saved = cache.put("key", [0.125, 0.25])
@@ -233,44 +224,40 @@ class AudioSnapshotTest(unittest.TestCase):
             with self.assertRaises(AudioCatalogError):
                 PersistentAudioCache(directory, sample_rate=16000).get("key")
 
-    def test_path_replacement_during_snapshot_is_rejected(self):
+    def test_get_bytes_reads_once_without_hashing_or_decoding(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.wav"
             write_pcm16_wav(source, [0.125, 0.25], 16000)
             store = SharedAudioStore(root / "store")
-            store.put("key", source)
+            saved = store.put("key", source)
+            with (
+                patch(
+                    "vntts.audio_store.open_regular_binary", wraps=open_regular_binary
+                ) as read,
+                patch(
+                    "vntts.audio_store.wave.open",
+                    side_effect=AssertionError("WAV revalidation"),
+                ),
+                patch(
+                    "vntts.audio_store.hashlib.sha256",
+                    side_effect=AssertionError("checksum revalidation"),
+                ),
+            ):
+                self.assertEqual(store.get_bytes("key"), saved.read_bytes())
+            self.assertEqual(read.call_count, 1)
 
-            @contextmanager
-            def replace_after_read(path):
-                with open_regular_binary(path) as stream:
-                    yield stream
-                payload = path.read_bytes()
-                path.unlink()
-                path.write_bytes(payload)
-
-            with patch("vntts.audio_store.open_regular_binary", replace_after_read):
-                with self.assertRaisesRegex(
-                    SharedAudioStoreError, "changed while reading"
-                ):
+    def test_get_bytes_preserves_real_read_failure(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            write_pcm16_wav(source, [0.125, 0.25], 16000)
+            store = SharedAudioStore(root / "store")
+            saved = store.put("key", source)
+            with patch(
+                "vntts.audio_store.open_regular_binary",
+                side_effect=PermissionError("denied"),
+            ):
+                with self.assertRaisesRegex(AudioCatalogError, "denied"):
                     store.get_bytes("key")
-
-    def test_mutation_between_snapshot_and_publication_never_publishes_binding(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source.wav"
-            write_pcm16_wav(source, [0.125, 0.25], 16000)
-            before = source.stat()
-            store = SharedAudioStore(root / "store")
-            store.initialize()
-            link = os.link
-
-            def mutate_then_link(original, target):
-                write_pcm16_wav(source, [0.5, 0.75], 16000)
-                os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
-                link(original, target)
-
-            with patch("vntts.audio_store.os.link", side_effect=mutate_then_link):
-                with self.assertRaisesRegex(SharedAudioStoreError, "checksum changed"):
-                    store.put("key", source)
-            self.assertIsNone(store.get("key"))
+            self.assertEqual(store.get("key"), saved)

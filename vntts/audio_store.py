@@ -36,46 +36,13 @@ def _regular(path: Path) -> Path:
 
 
 def _digest(path: Path) -> str:
-    path = _regular(path)
-    with open_regular_binary(path) as source:
-        before = os.fstat(source.fileno())
-        digest = hashlib.file_digest(source, "sha256").hexdigest()
-        after = os.fstat(source.fileno())
-    if any(
-        _file_identity(before) != _file_identity(info)
-        for info in (after, path.stat(follow_symlinks=False))
-    ):
-        raise SharedAudioStoreError(f"Audio changed while reading: {path}")
-    return digest
-
-
-def _file_identity(info: os.stat_result) -> tuple[int, ...]:
-    return tuple(
-        getattr(info, field)
-        for field in (
-            "st_dev",
-            "st_ino",
-            "st_mode",
-            "st_size",
-            "st_mtime_ns",
-        )
-    )
+    with open_regular_binary(_regular(path)) as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _read_wav(path: Path, expected_sha256: str | None = None) -> tuple[bytes, str]:
-    path = _regular(path)
-    with open_regular_binary(path) as source:
-        before = os.fstat(source.fileno())
+    with open_regular_binary(_regular(path)) as source:
         payload = source.read()
-        after = os.fstat(source.fileno())
-    current = path.stat(follow_symlinks=False)
-    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns")
-    if len(payload) != before.st_size or any(
-        getattr(before, field) != getattr(info, field)
-        for info in (after, current)
-        for field in fields
-    ):
-        raise SharedAudioStoreError(f"Audio changed while reading: {path}")
     digest = hashlib.sha256(payload).hexdigest()
     if expected_sha256 is not None and digest != expected_sha256:
         raise SharedAudioStoreError(f"Saved audio checksum changed: {path}")
@@ -119,67 +86,13 @@ def _sync_regular_file(path: Path) -> None:
         os.fsync(source.fileno())
 
 
-def _verify_linked_audio(
-    source: Path, temporary: Path, source_info: os.stat_result, digest: str
-) -> None:
-    linked_info = temporary.stat(follow_symlinks=False)
-    if _digest(temporary) != digest:
-        raise SharedAudioStoreError(f"Audio checksum changed: {source}")
-    if any(
-        path.stat(follow_symlinks=False).st_ctime_ns != linked_info.st_ctime_ns
-        for path in (temporary, source)
-    ):
-        # Concurrent hard links also change ctime; verify bytes before rejecting them.
-        if _digest(temporary) != digest:
-            raise SharedAudioStoreError(f"Audio changed while linking: {source}")
-    if (
-        (source_info.st_dev, source_info.st_ino)
-        != (linked_info.st_dev, linked_info.st_ino)
-        or _file_identity(temporary.stat(follow_symlinks=False))
-        != _file_identity(linked_info)
-        or _file_identity(source.stat(follow_symlinks=False))
-        != _file_identity(linked_info)
-    ):
-        raise SharedAudioStoreError(f"Audio changed while linking: {source}")
-
-
-def _publish_audio_link(
-    temporary: Path,
-    destination: Path,
-    destination_info: os.stat_result | None,
-    digest: str,
-) -> None:
-    if destination_info is None:
-        try:
-            os.link(temporary, destination)
-        except FileExistsError as error:
-            raise SharedAudioStoreError(
-                f"Audio destination changed while linking: {destination}"
-            ) from error
-        temporary.unlink()
-    else:
-        current = destination.stat(follow_symlinks=False)
-        # Windows ctime is creation time, so existing bytes need an unconditional check.
-        if _file_identity(current) != _file_identity(destination_info) or (
-            (os.name == "nt" or current.st_ctime_ns != destination_info.st_ctime_ns)
-            and _digest(destination) != digest
-        ):
-            raise SharedAudioStoreError(
-                f"Audio destination changed while linking: {destination}"
-            )
-        os.replace(temporary, destination)
-    _sync_directory(destination.parent)
-
-
 def link_shared_audio(
     source: str | Path,
     destination: str | Path,
     expected_sha256: str | None = None,
 ) -> None:
-    """Atomically link verified bytes; never mutate an existing recording inode."""
+    """Atomically link saved audio without overwriting different recording bytes."""
     source = _regular(Path(source))
-    source_info = source.stat(follow_symlinks=False)
-    digest = expected_sha256 if expected_sha256 is not None else _digest(source)
     destination = Path(destination).expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination = destination.parent.resolve() / destination.name
@@ -187,13 +100,12 @@ def link_shared_audio(
         raise SharedAudioStoreError(
             f"Audio destination is a symbolic link: {destination}"
         )
-    destination_info = None
-    if destination.exists():
-        destination_info = _regular(destination).stat(follow_symlinks=False)
+    destination_exists = destination.exists()
+    if destination_exists:
+        _regular(destination)
         if source.samefile(destination):
-            if expected_sha256 is not None and _digest(source) != digest:
-                raise SharedAudioStoreError(f"Audio checksum changed: {source}")
             return
+        digest = expected_sha256 if expected_sha256 is not None else _digest(source)
         if _digest(destination) != digest:
             raise SharedAudioStoreError(
                 f"Audio destination has different content: {destination}"
@@ -201,10 +113,11 @@ def link_shared_audio(
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.link")
     try:
         os.link(source, temporary)
-        _verify_linked_audio(source, temporary, source_info, digest)
-        _publish_audio_link(temporary, destination, destination_info, digest)
-    except SharedAudioStoreError:
-        raise
+        if destination_exists:
+            os.replace(temporary, destination)
+        else:
+            os.link(temporary, destination)
+        _sync_directory(destination.parent)
     except OSError as error:
         raise SharedAudioStoreError(
             f"Cannot hard-link saved audio from {source} to {destination}; "
@@ -247,17 +160,15 @@ class SharedAudioStore:
         ):
             raise ValueError("Invalid audio synthesis key")
 
-    def _read_object(self, digest: str) -> tuple[Path, bytes]:
+    def _object_path(self, digest: str) -> Path:
         if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
             raise AudioCatalogError("Invalid audio object digest")
         try:
-            path = self._directory("objects") / f"{digest}.wav"
-            payload, _ = _read_wav(path, digest)
+            return _regular(self._directory("objects") / f"{digest}.wav")
         except OSError as error:
             raise AudioCatalogError(
                 f"Saved audio object {digest} is unavailable; restore its verified WAV before generating: {error}"
             ) from error
-        return path, payload
 
     def _check_catalog_paths(self, path: Path) -> None:
         if self.directory.is_symlink():
@@ -421,14 +332,21 @@ class SharedAudioStore:
 
     def get(self, key: str) -> Path | None:
         digest = self._binding_digest(key)
-        return self._read_object(digest)[0] if digest is not None else None
+        return self._object_path(digest) if digest is not None else None
 
     def get_bytes(self, key: str) -> bytes | None:
-        """Return the exact verified snapshot without requiring a second file read."""
+        """Read saved bytes once; decoding belongs to the consumer."""
         digest = self._binding_digest(key)
         if digest is None:
             return None
-        return self._read_object(digest)[1]
+        path = self._object_path(digest)
+        try:
+            with open_regular_binary(path) as source:
+                return source.read()
+        except OSError as error:
+            raise AudioCatalogError(
+                f"Saved audio object {digest} cannot be read: {error}"
+            ) from error
 
     def put(
         self,
@@ -440,8 +358,20 @@ class SharedAudioStore:
         self._validate_key(key)
         self.initialize()
         source = _regular(Path(source))
-        digest = _read_wav(source, expected_sha256)[1]
         objects = self._directory("objects")
+        digest = None
+        if source.parent == objects and source.suffix == ".wav":
+            with self._catalog() as connection:
+                assert connection is not None
+                if connection.execute(
+                    "SELECT 1 FROM bindings WHERE audio_sha256 = ? LIMIT 1",
+                    (source.stem,),
+                ).fetchone():
+                    digest = source.stem
+            if digest is not None and expected_sha256 not in (None, digest):
+                raise SharedAudioStoreError(f"Saved audio checksum differs: {source}")
+        if digest is None:
+            digest = _read_wav(source, expected_sha256)[1]
         objects.mkdir(parents=True, exist_ok=True)
         destination = objects / f"{digest}.wav"
         if destination.is_symlink():
@@ -457,7 +387,7 @@ class SharedAudioStore:
                 raise SharedAudioStoreError(
                     "The shared WAV store and audio source must support hard links on the same filesystem"
                 ) from error
-        _read_wav(destination, digest)
+        _regular(destination)
         _sync_regular_file(destination)
         _sync_directory(objects)
         with self._catalog(create=True) as connection:
