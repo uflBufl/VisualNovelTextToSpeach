@@ -1,7 +1,14 @@
+mod audio_buffer;
+mod caf;
 #[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod media_writer;
 mod pixels;
+#[cfg(windows)]
+mod process_audio;
 mod protocol;
+mod recording;
 
 #[cfg(not(windows))]
 use protocol::Failure;
@@ -9,6 +16,13 @@ use protocol::{Request, Response};
 use std::io::{self, Write};
 
 fn main() {
+    if std::env::args_os().len() > 1 {
+        if let Err(error) = recording::run(std::env::args_os().skip(1).collect()) {
+            eprintln!("recording failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("capture worker I/O failed: {error}");
         std::process::exit(1);

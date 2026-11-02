@@ -141,6 +141,55 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         )
         return capture, digest
 
+    def test_windows_capture_clock_accepts_explicit_process_tree_evidence(self):
+        capture, _ = self.fixture()
+        metadata_path = capture / "session.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.update(
+            mechanism="WASAPI ActivateAudioInterfaceAsync process loopback",
+            scope="selected_process_tree",
+            sample_format="float32_le",
+            target={
+                "pid": 123,
+                "executable": r"C:\App\speech.exe",
+                "creation_time": 12345,
+            },
+        )
+        self.write_json(metadata_path, metadata)
+        journal = capture / "audio.jsonl"
+        packets = [json.loads(line) for line in journal.read_text().splitlines()]
+        for index, packet in enumerate(packets):
+            packet["flags"] = 1 if index == 0 else 0
+            packet["qpc_100ns"] = round(packet["monotonic_s"] * 10_000_000)
+        self.journal(journal, packets)
+        offset, drift = _capture_clock(capture)
+        self.assertAlmostEqual(offset, 10)
+        self.assertAlmostEqual(drift, 0)
+
+        for changes in (
+            {"scope": "system_loopback"},
+            {"scope": "exclude_selected_process"},
+            {"microphone": True},
+            {"global_fallback": True},
+            {"sample_format": "pcm16"},
+            {"channels": 1},
+            {"target": {"pid": 123}},
+            {"target": {"pid": 123, "executable": "relative", "creation_time": 12345}},
+            {"target": None},
+        ):
+            with self.subTest(changes=changes):
+                self.write_json(metadata_path, metadata | changes)
+                with self.assertRaises(ValueError):
+                    _capture_clock(capture)
+        self.write_json(metadata_path, metadata)
+        for changes in ({"flags": 1}, {"flags": 4}, {"qpc_100ns": 1}, {"flags": True}):
+            with self.subTest(packet_changes=changes):
+                damaged = [dict(packet) for packet in packets]
+                damaged[1].update(changes)
+                self.journal(journal, damaged)
+                with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
+                    _capture_clock(capture)
+
     def test_generated_source_matches_exact_admitted_digest_and_true_owner(self):
         _capture, digest = self.fixture()
         # A later replacement for the same line must never replace the admitted WAV.

@@ -349,28 +349,19 @@ Remaining defects, missing measurements and native acceptance:
       No further profiling or repeated short native runs are required before the
       combined acceptance gate.
 
-- [ ] **REC-02-01 - Windows diagnostic media recording parity.**
-      Agree the separate implementation plan before adding the missing backend:
-      - Extend the existing Windows native helper with selected-window MP4 and
-        explicit selected-process-tree WASAPI audio recording; reuse the native
-        window target and existing windows crate, with no desktop/microphone
-        fallback, external recorder or automatic target replacement.
-      - Keep the Windows10 2004/build19041 baseline already used by capture.
-        OBS source and guide support this per-process path despite Microsoft's
-        documented20348 minimum. Qualify actual activation and fail explicitly
-        when unavailable; do not silently require Windows11. The Windows audio
-        scope includes the selected process's descendants, whereas Mac currently
-        taps one HAL process; retain the real scope in metadata.
-      - Preserve process.caf/audio.jsonl and real source clocks, with the same
-        five-second bounded audio contract. Add the genuine WASAPI mechanism to
-        analysis rather than labelling Windows output as CoreAudio.
-      - Integrate platform preparation, pointer-sized HWNDs, process identity,
-        cooperative Stop/finalization and owned helper Job Object cleanup into
-        diagnostic_recording; make the existing recording UI available on Windows.
-      - Add native and Python lifecycle/CAF/analysis/export regression tests and
-        Windows build validation. Native Windows10 acceptance must distinguish
-        selected-app audio from an unrelated source, plus Stop/device/process
-        lifecycle. Cross-building alone cannot prove runtime recording or privacy.
+- [ ] **REC-02-01 - Native Windows recorder qualification.**
+      Complete the MSVC link/portable packaging build on Windows and run the
+      bundled helper preflight/selfcheck. Local cross-target checks and COFF
+      emission validate code generation but do not substitute for a linked EXE.
+      On Windows10 2004/build19041+, record distinct selected-game and unrelated
+      audio signals and prove only the selected process tree is present. Check
+      speech-worker arming before PCM, late/retired workers, Stop/deadline,
+      source/parent exit, device changes, partial CAF recovery, MP4 decode and
+      truthful dropped-video metadata. Ordinary OCR capture must remain usable
+      when optional Media Foundation components are absent. Native runtime and
+      privacy acceptance are separate from the passing portable unit tests.
+      Keep this Windows qualification separate from the combined Mac chapter;
+      it does not block the other remaining code fixes.
 
 - [ ] **REC-29-02 - Process-audio sample clock discontinuity aborts acquisition.**
       Combined follow-up session62335e1525c94a1e8e2f79c735f69d31 failed game-audio

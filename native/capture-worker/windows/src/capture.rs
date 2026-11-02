@@ -687,6 +687,27 @@ unsafe fn creation_time(process: HANDLE) -> Result<u64, Failure> {
     GetProcessTimes(process, &mut created, &mut exit, &mut kernel, &mut user)?;
     Ok(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
 }
+pub fn selected_window_size(
+    window_id: i64,
+    pid: u32,
+    expected_created: u64,
+) -> Result<(u32, u32), Failure> {
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
+        let result = geometry(
+            &Target::Window { window_id, pid },
+            Some(process),
+            expected_created,
+        )
+        .and_then(|(bounds, _)| {
+            pixels::dimensions(bounds[2], bounds[3])?;
+            Ok((bounds[2] as u32, bounds[3] as u32))
+        });
+        let _ = CloseHandle(process);
+        result
+    }
+}
 unsafe fn monitor(id: i64) -> HMONITOR {
     if id == 0 {
         MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY)

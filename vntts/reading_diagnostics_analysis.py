@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import ntpath
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +21,8 @@ RATE = 16000
 MAX_SOURCE_SECONDS = 60
 MATCH_STEP = RATE * 30
 MAX_MATCH_SAMPLES = 1 << 22
+_WASAPI_DATA_DISCONTINUITY = 1
+_WASAPI_TIMESTAMP_ERROR = 4
 
 
 def normalized_match(audio: np.ndarray, source: np.ndarray) -> tuple[int, float] | None:
@@ -209,19 +212,35 @@ def _capture_clock(
     audio_path: Path | None = None,
 ) -> tuple[float, float]:
     metadata = _json(directory / "session.json")
+    target = metadata.get("target")
+    mechanism = metadata.get("mechanism")
+    windows = mechanism == "WASAPI ActivateAudioInterfaceAsync process loopback"
     if (
         metadata.get("status") != "captured_unqualified"
         or metadata.get("errors")
-        or metadata.get("mechanism") != "CoreAudio explicit process tap"
+        or (mechanism != "CoreAudio explicit process tap" and not windows)
+        or not isinstance(target, dict)
         or metadata.get("microphone") is not False
         or metadata.get("global_fallback") is not False
     ):
         raise ValueError("Process capture is incomplete or has an unexpected scope")
+    if windows and (
+        metadata.get("scope") != "selected_process_tree"
+        or metadata.get("channels") != 2
+        or metadata.get("sample_format") != "float32_le"
+        or type(target.get("creation_time")) is not int
+        or not 0 < target["creation_time"] <= 2**64 - 1
+        or not isinstance(target.get("executable"), str)
+        or not ntpath.isabs(target["executable"])
+    ):
+        raise ValueError(
+            "Windows process capture has an unexpected source scope or format"
+        )
     rate = _number(metadata.get("sample_rate"))
     if not 8000 <= rate <= 192000:
         raise ValueError("Invalid capture rate")
     identity = re.fullmatch(r"rust-([1-9][0-9]*)(?:-[1-9][0-9]*)?", directory.name)
-    if identity is None or metadata.get("target", {}).get("pid") != int(identity[1]):
+    if identity is None or target.get("pid") != int(identity[1]):
         raise ValueError(
             "Captured process identity differs from its evidence directory"
         )
@@ -241,6 +260,18 @@ def _capture_clock(
             _number(event.get("monotonic_s")),
             _number(event.get("sample_time")),
         )
+        if windows:
+            flags, qpc = event.get("flags"), event.get("qpc_100ns")
+            if (
+                type(flags) is not int
+                or not 0 <= flags <= 2**32 - 1
+                or flags & _WASAPI_TIMESTAMP_ERROR
+                or (previous_sample is not None and flags & _WASAPI_DATA_DISCONTINUITY)
+                or type(qpc) is not int
+                or not 0 < qpc <= 2**64 - 1
+                or abs(host - qpc / 10_000_000) > 0.000001
+            ):
+                raise ValueError("Invalid or discontinuous WASAPI packet clock")
         if (
             not isinstance(count, int)
             or isinstance(count, bool)
@@ -568,16 +599,16 @@ def analyze_session(
                 line_id = route.get("line_id")
                 if not isinstance(playback_id, str) or not isinstance(line_id, str):
                     continue
-                key = _playback_key(route)
-                digests = admitted.get(key, set())
+                playback_key = _playback_key(route)
+                digests = admitted.get(playback_key, set())
                 entry = (
                     sources.get((line_id, next(iter(digests))))
                     if len(digests) == 1
                     else None
                 )
-                dispatch = dispatches.get(key)
-                worker_pids = owners.get(key, set())
-                tokens = owner_tokens.get(key, set())
+                dispatch = dispatches.get(playback_key)
+                worker_pids = owners.get(playback_key, set())
+                tokens = owner_tokens.get(playback_key, set())
                 captured_token = record.get("worker_identity", {}) or {}
                 identity_verified = bool(worker_pids) and (
                     tokens == {captured_token.get("worker_id")}
@@ -595,7 +626,7 @@ def analyze_session(
                     or (tokens and not identity_verified)
                 ):
                     continue
-                leads = source_leads.get((key, entry["audio_sha256"]), set())
+                leads = source_leads.get((playback_key, entry["audio_sha256"]), set())
                 source_lead = next(iter(leads)) if len(leads) == 1 else None
                 expected_start = dispatch + (
                     source_lead / 1000 if source_lead is not None else 0
@@ -640,8 +671,10 @@ def analyze_session(
                 position, score = match
                 onset = offset + (left + position) / RATE
                 dispatch_to_admission = admission_to_onset = None
-                phase_dispatches = dispatch_times.get(key, [])
-                admissions = admission_times.get((key, entry["audio_sha256"]), [])
+                phase_dispatches = dispatch_times.get(playback_key, [])
+                admissions = admission_times.get(
+                    (playback_key, entry["audio_sha256"]), []
+                )
                 if len(phase_dispatches) == len(admissions) == 1:
                     try:
                         phase_dispatch = _number(phase_dispatches[0])
@@ -686,7 +719,7 @@ def analyze_session(
                 shifts = [w["offset_ms"] for w in windows]
                 qualified = (
                     full_source
-                    and len(dispatch_times.get(key, [])) == 1
+                    and len(dispatch_times.get(playback_key, [])) == 1
                     and score >= 0.9
                     and residual < 0.1
                     and identity_verified

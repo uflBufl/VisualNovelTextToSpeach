@@ -151,11 +151,12 @@ class SupportCenterDialog(QDialog):
             self.operation_status.fontMetrics().lineSpacing() * 3 + 12
         )
         self.operation_status.installEventFilter(self)
-        self.reading_media = QCheckBox("Record game video and audio (macOS)")
+        self.reading_media = QCheckBox("Record game video and audio")
         self.reading_media.setToolTip(
             "Opt-in: includes selected game video, game and speech audio, used source "
             "WAVs, recognized text and matched story dialogue in the session export. "
             "Dialogue text may be retained even if media recording fails. "
+            "On Windows, includes child processes of the selected applications. "
             "Never records the desktop or microphone."
         )
         self.reading_seconds = QSpinBox()

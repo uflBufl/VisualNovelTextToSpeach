@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import math
+import ntpath
 import os
 import shutil
 import signal
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
+from contextlib import ExitStack
 from itertools import islice
 from pathlib import Path
 from threading import Condition, Event, Lock
@@ -21,14 +23,23 @@ from uuid import uuid4
 import psutil
 
 from vntts.path_safety import open_regular_binary
+from vntts.windows_recording_process import RecorderJob, request_stop
 
 MAX_DIAGNOSTIC_SECONDS = 3600
 MAX_DIAGNOSTIC_MEDIA_BYTES = 9 * 1024**3
 
 
 def process_executable(pid: int) -> str:
+    if sys.platform == "win32":
+        try:
+            executable = psutil.Process(pid).exe()
+        except psutil.Error as error:
+            raise RuntimeError("Selected recording process is unavailable") from error
+        if not executable:
+            raise RuntimeError("Selected recording process has no executable")
+        return executable
     if sys.platform != "darwin":
-        raise RuntimeError("Process recording currently requires macOS")
+        raise RuntimeError("Process recording requires macOS or Windows")
     library = ctypes.CDLL("/usr/lib/libproc.dylib")
     library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     library.proc_pidpath.restype = ctypes.c_int
@@ -38,7 +49,31 @@ def process_executable(pid: int) -> str:
     return buffer.value.decode()
 
 
+def _same_executable(actual: object, expected: str) -> bool:
+    if not isinstance(actual, str):
+        return False
+    if sys.platform == "win32":
+        return ntpath.normcase(ntpath.normpath(actual)) == ntpath.normcase(
+            ntpath.normpath(expected)
+        )
+    return actual == expected
+
+
+def _launch_options() -> dict:
+    if sys.platform == "win32":
+        return {"stdin": subprocess.PIPE, "creationflags": 0x08000000}
+    return {"start_new_session": True}
+
+
 def _stop_process(process: subprocess.Popen, timeout: float) -> None:
+    if sys.platform == "win32":
+        request_stop(process)
+        try:
+            process.wait(timeout=max(0.01, timeout))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+        return
     # The owned group can retain compiler children after its parent exits.
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -68,32 +103,35 @@ def _run_checked(
         raise InterruptedError("Recorder preparation cancelled")
     if deadline is not None and monotonic() >= deadline:
         raise TimeoutError("Diagnostic session deadline reached during preparation")
-    with tempfile.TemporaryFile() as log:
+    with tempfile.TemporaryFile() as log, ExitStack() as ownership:
+        job = RecorderJob() if sys.platform == "win32" else None
+        if job is not None:
+            ownership.callback(job.close)
         process = subprocess.Popen(
-            command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+            command, stdout=log, stderr=subprocess.STDOUT, **_launch_options()
         )
+        ownership.callback(_stop_process, process, 2)
+        if job is not None:
+            job.assign(process)
         deadline = (
             min(monotonic() + timeout, deadline)
             if deadline is not None
             else monotonic() + timeout
         )
-        try:
-            while process.poll() is None:
-                if cancelled.wait(0.05):
-                    raise InterruptedError("Recorder preparation cancelled")
-                if monotonic() >= deadline:
-                    raise TimeoutError("Recorder preparation timed out")
-                if os.fstat(log.fileno()).st_size > 2 * 1024**2:
-                    raise RuntimeError("Recorder preparation log exceeded its limit")
-            if process.returncode:
-                log.seek(max(0, os.fstat(log.fileno()).st_size - 4096))
-                detail = log.read(4096).decode("utf-8", errors="replace").strip()
-                raise RuntimeError(
-                    "Native recorder preparation failed: "
-                    + (detail or "no diagnostic output")
-                )
-        finally:
-            _stop_process(process, 2)
+        while process.poll() is None:
+            if cancelled.wait(0.05):
+                raise InterruptedError("Recorder preparation cancelled")
+            if monotonic() >= deadline:
+                raise TimeoutError("Recorder preparation timed out")
+            if os.fstat(log.fileno()).st_size > 2 * 1024**2:
+                raise RuntimeError("Recorder preparation log exceeded its limit")
+        if process.returncode:
+            log.seek(max(0, os.fstat(log.fileno()).st_size - 4096))
+            detail = log.read(4096).decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                "Native recorder preparation failed: "
+                + (detail or "no diagnostic output")
+            )
 
 
 def prepare_recorders(
@@ -101,8 +139,15 @@ def prepare_recorders(
 ) -> tuple[Path, Path]:
     """Build before measurement; Stop also owns any compiler/preflight children."""
     cancelled = cancelled if cancelled is not None else Event()
+    if sys.platform == "win32":
+        from vntts.native_capture import worker_executable
+
+        worker = worker_executable()
+        _run_checked([str(worker), "--preflight"], cancelled, 10, deadline=deadline)
+        _run_checked([str(worker), "--selfcheck"], cancelled, 10, deadline=deadline)
+        return worker, worker
     if sys.platform != "darwin":
-        raise RuntimeError("Window/process recording currently requires macOS")
+        raise RuntimeError("Window/process recording requires macOS or Windows")
     compiler = shutil.which("xcrun")
     source = Path(__file__).resolve().parents[1] / "scripts" / "mac_live_recording"
     files = [
@@ -241,6 +286,7 @@ class NativeDiagnosticRecording:
         self.deadline = deadline
         self.cancelled = _RecordingStop()
         self.processes: list[tuple[subprocess.Popen[bytes], Path]] = []
+        self._jobs: dict[int, RecorderJob] = {}
         self.status = "preparing"
         self.error_type: str | None = None
         self.error_message: str | None = None
@@ -308,11 +354,22 @@ class NativeDiagnosticRecording:
     def _launch(self, command: list[str], output: Path) -> None:
         if self.cancelled.is_set():
             raise InterruptedError("Recording cancelled")
-        with (self.directory / (output.name + "-launcher.log")).open("xb") as log:
+        with (
+            (self.directory / (output.name + "-launcher.log")).open("xb") as log,
+            ExitStack() as ownership,
+        ):
+            job = RecorderJob() if sys.platform == "win32" else None
+            if job is not None:
+                ownership.callback(job.close)
             process = subprocess.Popen(
-                command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+                command, stdout=log, stderr=subprocess.STDOUT, **_launch_options()
             )
-        self.processes.append((process, output))
+            ownership.callback(_stop_process, process, 2)
+            if job is not None:
+                job.assign(process)
+                self._jobs[process.pid] = job
+            self.processes.append((process, output))
+            ownership.pop_all()
         self._launched_at[output.name] = monotonic()
         try:
             self._helper_created[output.name] = psutil.Process(
@@ -337,10 +394,12 @@ class NativeDiagnosticRecording:
                 int(str(self.target["pid"])),
                 int(str(self.target["window_id"])),
             )
-            if not 0 < pid <= 2**31 - 1 or not 0 < window <= 2**32 - 1:
+            max_window = 2**63 - 1 if sys.platform == "win32" else 2**32 - 1
+            max_pid = 2**32 - 1 if sys.platform == "win32" else 2**31 - 1
+            if not 0 < pid <= max_pid or not 0 < window <= max_window:
                 raise ValueError("Explicit positive process and window IDs required")
             executable = process_executable(pid)
-            if executable != self.target["executable"]:
+            if not _same_executable(executable, str(self.target["executable"])):
                 raise RuntimeError("Selected game process changed before recording")
             self.started_monotonic = monotonic()
             if deadline is None:
@@ -401,7 +460,7 @@ class NativeDiagnosticRecording:
                         worker_path = str(worker["worker_path"])
                         worker_id = str(worker.get("worker_id", worker_pid))
                         if (
-                            not 0 < worker_pid <= 2**31 - 1
+                            not 0 < worker_pid <= max_pid
                             or not Path(worker_path).is_absolute()
                             or not 1 <= len(worker_id) <= 160
                         ):
@@ -503,12 +562,12 @@ class NativeDiagnosticRecording:
                             raise RuntimeError(
                                 f"Recorder failed for {output.name}; inspect its session.json"
                             )
-                        identity = self._identities.get(output.name)
-                        if identity is not None:
+                        worker_identity = self._identities.get(output.name)
+                        if worker_identity is not None:
                             worker_key = (
-                                identity["worker_pid"],
-                                identity["worker_path"],
-                                identity["worker_id"],
+                                worker_identity["worker_pid"],
+                                worker_identity["worker_path"],
+                                worker_identity["worker_id"],
                             )
                             target = metadata.get("target")
                             started = metadata.get("capture_started_monotonic_s")
@@ -516,9 +575,13 @@ class NativeDiagnosticRecording:
                                 process.poll() is None
                                 and metadata.get("status") == "in_progress"
                                 and isinstance(target, dict)
-                                and target.get("pid") == identity["worker_pid"]
-                                and target.get("executable") == identity["worker_path"]
-                                and type(started) in (int, float)
+                                and target.get("pid") == worker_identity["worker_pid"]
+                                and _same_executable(
+                                    target.get("executable"),
+                                    str(worker_identity["worker_path"]),
+                                )
+                                and isinstance(started, (int, float))
+                                and not isinstance(started, bool)
                                 and math.isfinite(started)
                                 and started > 0
                             ):
@@ -652,6 +715,19 @@ class NativeDiagnosticRecording:
         if process.poll() is not None:
             return
         started = self._failed_stop_started.get(output.name)
+        if sys.platform == "win32":
+            if started is None:
+                self._failed_stop_started[output.name] = monotonic()
+                request_stop(process)
+            elif monotonic() - started >= 2:
+                try:
+                    job = self._jobs.get(process.pid)
+                    if job is not None:
+                        job.close()
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+            return
         if started is None:
             self._failed_stop_started[output.name] = monotonic()
             action = signal.SIGTERM
@@ -667,6 +743,30 @@ class NativeDiagnosticRecording:
     def _stop_processes(self) -> None:
         # Signal every recorder first so their orderly finalization runs concurrently.
         running = [process for process, _ in self.processes if process.poll() is None]
+        if sys.platform == "win32":
+            try:
+                for process, _ in self.processes:
+                    request_stop(process)
+                deadline = monotonic() + 10
+                for process in running:
+                    try:
+                        process.wait(timeout=max(0.01, deadline - monotonic()))
+                    except subprocess.TimeoutExpired:
+                        pass
+            finally:
+                try:
+                    with ExitStack() as ownership:
+                        for job in self._jobs.values():
+                            ownership.callback(job.close)
+                        self._jobs.clear()
+                finally:
+                    for process in running:
+                        if process.poll() is None:
+                            process.kill()
+                    deadline = monotonic() + 2
+                    for process in running:
+                        process.wait(timeout=max(0.01, deadline - monotonic()))
+            return
         for process in running:
             try:
                 os.killpg(process.pid, signal.SIGTERM)

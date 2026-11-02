@@ -629,8 +629,9 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         process.poll.return_value = None
         output = self.root / "rust-123"
         with (
+            patch("vntts.diagnostic_recording.sys.platform", "darwin"),
             patch("vntts.diagnostic_recording.monotonic", side_effect=[10, 11, 12]),
-            patch("vntts.diagnostic_recording.os.killpg") as kill,
+            patch("vntts.diagnostic_recording.os.killpg", create=True) as kill,
         ):
             recording._stop_failed_capture(process, output)
             recording._stop_failed_capture(process, output)
@@ -795,7 +796,12 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                     process for process in processes if process.pid == pid
                 ).returncode = -9
 
-        with patch("vntts.diagnostic_recording.os.killpg", side_effect=kill):
+        with (
+            patch("vntts.diagnostic_recording.sys.platform", "darwin"),
+            patch(
+                "vntts.diagnostic_recording.os.killpg", side_effect=kill, create=True
+            ),
+        ):
             recording._stop_processes()
         self.assertEqual(events[:3], [(signal.SIGTERM, pid) for pid in (101, 102, 103)])
         self.assertTrue(all(process.returncode == -9 for process in processes))
