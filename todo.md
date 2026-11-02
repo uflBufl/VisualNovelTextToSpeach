@@ -372,15 +372,14 @@ Remaining defects, missing measurements and native acceptance:
       rejected block is absent, so they cannot distinguish a gap from a clock
       restart. In this session all 1364 saved 512-frame blocks are continuous;
       that does not establish continuity across the missing boundary.
-      Run one bounded macOS dual-tap episode with the current production
-      helper, an owned playback worker and fresh generation. Require readiness
-      before playback, record actual load overlap, audit finalized CAF/journals
-      and preserve any first clock-failure snapshot. Stop all owned processes;
-      a passing non-reproduction does not close the historical defect.
       Resolve and qualify this failure on macOS first. Reuse its existing
       audio-boundary snapshot; do not add Windows instrumentation to investigate
       a macOS failure. After the cause and correction are verified, inspect
       whether the actual repair applies to Windows and port it only if needed.
+      The next native evidence must cover the historical 44.1 kHz configuration
+      and real generation/reading load; a healthy 48 kHz bounded probe does not
+      qualify that setup. Retain the first rejected boundary on recurrence
+      rather than repeating short healthy probes or weakening the checks.
       Correlate source host/sample timestamps with output activation, focus and
       process lifecycle using `clock_failure.previous/current`, receipt times
       and file-frame offsets. Align phase-max and consumer-lag contexts to
