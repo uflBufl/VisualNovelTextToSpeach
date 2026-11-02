@@ -315,24 +315,18 @@ evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: agree and implement RUN-02-01 first, then investigate RUN-02-02
-and the recording/device failures below one at a time. Refactoring, complexity
-and linter debt remain deferred. Repeat autonomous acceptance after agreed
+Next action: investigate RUN-02-02 and propose its concrete repair, then the
+recording/device failures below one at a time. RUN-02-01 retains only its native
+acceptance gate. Refactoring, complexity and linter debt remain deferred. Repeat autonomous acceptance after agreed
 repairs; existing evidence must guide any additional instrumentation.
 
-- [ ] **RUN-02-01 - Punctuation-only Cornerstone dialogue holds after66.**
-      Current Mac campaign reaches `...` without manual keys, then generation59
-      waits over145s despite fresh OCR and the app displaying Cornerstone/`...`.
-      Automatic input is withheld as `owned-frame-not-visible-and-stable`; current
-      story resolution reports `ocr-uncertain`. Preserve captured raw/effective
-      OCR, confidence, route/owner binding and fixed-anchor pair; establish which
-      missing comparison evidence blocks this real punctuation frame before
-      choosing a repair. Do not skip unreadable text or lower global confidence.
-      Initial trace localizes the mismatch: visual ellipsis validation admits
-      reliable Cornerstone/`...` while the cached effective OCR confidence stays0;
-      frame equivalence later requires confident OCR for both frames. Carry
-      validated-symbol evidence consistently through admission/comparison, with
-      negative speaker/context/freshness cases, after agreeing the exact plan.
+- [ ] **RUN-02-01 - Native acceptance of punctuation continuation.**
+      Verify the captured Cornerstone `...` after66 in the next agreed game run:
+      one silent admission, one automatic key, next dialogue confirms transition,
+      no duplicate speech or key. Include other recognized punctuation and manual
+      mode; unreadable text must continue holding. The shared admission/comparison
+      repair passes focused integration and retained-frame OCR checks, but those
+      do not qualify this native gate or autonomous chapter acceptance.
 
 - [ ] **RUN-02-02 - Prepared Duvalle43 falls back to live Narrator.**
       Capture8ef79e5e141842bf8a41a19d0c0cb8b1 reads Narrator / "Thank you ever

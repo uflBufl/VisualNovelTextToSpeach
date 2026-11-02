@@ -518,26 +518,26 @@ def fingerprint_dialog_frame(frame: object) -> bytes:
 
 
 class DialogFrameEquivalence:
-    """Compare validated OCR evidence; missing or uncertain evidence cannot authorize a key."""
+    """Compare admitted dialogue identities within their original frame/run/owner."""
 
     def __init__(
         self,
-        minimum_confidence: float,
         context: Callable[[], tuple[str, str | None] | None],
     ) -> None:
-        self.minimum_confidence = minimum_confidence
         self.context = context
         self._results: BoundedCache[
-            int, tuple[object, tuple[str, str | None], OCRResult]
+            int, tuple[object, tuple[str, str | None], str, str]
         ] = BoundedCache(8)
 
-    def record(
-        self, frame: object, result: OCRResult, context: tuple[str, str | None]
+    def record_admitted(
+        self,
+        frame: object,
+        character: str,
+        text: str,
+        context: tuple[str, str | None],
     ) -> None:
-        self._results.put(
-            id(frame),
-            (frame, context, replace(result, processed_image=None, speaker_image=None)),
-        )
+        if text.strip():
+            self._results.put(id(frame), (frame, context, character, text))
 
     def bind_route(self, frame: object, context: tuple[str, str | None]) -> None:
         evidence = self._results.get(id(frame))
@@ -546,7 +546,7 @@ class DialogFrameEquivalence:
             and evidence[0] is frame
             and evidence[1][0] == context[0]
         ):
-            self._results.put(id(frame), (frame, context, evidence[2]))
+            self._results.put(id(frame), (frame, context, evidence[2], evidence[3]))
 
     def __call__(self, previous: object, current: object) -> bool:
         # Touch the fixed route anchor even while the latest frame lacks OCR.
@@ -560,13 +560,9 @@ class DialogFrameEquivalence:
             and before[0] is previous
             and after[0] is current
             and before[1] == after[1] == context
-            and before[2].is_confident(self.minimum_confidence)
-            and after[2].is_confident(self.minimum_confidence)
         ):
-            equivalent = ocr_texts_equivalent(
-                before[2].character, after[2].character
-            ) and ocr_texts_equivalent(
-                before[2].text, after[2].text, punctuation_fallback=True
+            equivalent = ocr_texts_equivalent(before[2], after[2]) and ocr_texts_equivalent(
+                before[3], after[3], punctuation_fallback=True
             )
             return equivalent and self.context() == context
         return False

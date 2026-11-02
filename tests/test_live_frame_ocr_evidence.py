@@ -1,10 +1,11 @@
 import unittest
 from dataclasses import replace
 from threading import Event
+from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from vntts_artifacts.generated_audio import text_sha256
 
 from tests import test_controller_transition_observation
@@ -15,7 +16,7 @@ from vntts.dialog_capture import (
     DialogFrameEquivalence,
     OCRUncertainError,
 )
-from vntts.live import RecognizedDialog
+from vntts.live import IncrementalDialogTracker, RecognizedDialog, SilentDialogRoute
 from vntts.ocr import OCRResult
 from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.settings import AppSettings
@@ -44,6 +45,15 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
     @staticmethod
     def frame():
         return CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+
+    @staticmethod
+    def ellipsis_frame(offset=0):
+        image = Image.new("RGB", (300, 100), "#202020")
+        for left in (12, 24, 36):
+            ImageDraw.Draw(image).rectangle(
+                (left + offset, 60, left + offset + 3, 63), fill="white"
+            )
+        return CapturedDialogFrame(image, 0)
 
     def recognize(self, frame, result):
         with patch(
@@ -84,7 +94,6 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
 
         comparison = self.reader.frame_equivalent
         self.assertIsNot(comparison, previous_comparison)
-        self.assertEqual(comparison.minimum_confidence, 90)
         self.assertFalse(comparison(before, after))
         for frame in (before, after):
             with self.assertRaises(OCRUncertainError):
@@ -93,6 +102,135 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         for frame in (before, after):
             self.recognize(frame, replace(result, confidence=95))
         self.assertTrue(comparison(before, after))
+
+    def test_visual_ellipsis_with_zero_ocr_confidence_advances_once_after_fresh_ocr(self):
+        fixture = (
+            test_controller_transition_observation.ControllerTransitionObservationTest()
+        )
+        controller, lines = fixture.controller()
+        controller.settings = replace(
+            controller.settings, auto_advance_enabled=True, capture_mode="window"
+        )
+        plan = controller.live_sequence_plan
+        plan.events["event-2"] = replace(
+            plan.events["event-2"], kind="silent", line_id=None
+        )
+        controller.voice_router = SimpleNamespace(registry=CharacterVoiceRegistry())
+        controller.uncertain_frame_recorder = None
+        controller._publish_diagnostic = Mock()
+        controller._resolve_voice_label = Mock(return_value="Story voice")
+        controller._is_game_focused = Mock(return_value=True)
+        controller.error_handler = Mock()
+        controller.thread_pool_executor_factory = Mock(return_value=Mock())
+        with patch(
+            "vntts.controller_components.RuntimeLifecycleComponent._configure_dialog_read"
+        ):
+            controller.runtime_lifecycle._construct_live_runtime()
+        reader = controller.live_reader
+        cursor = controller.story_cursor
+        cursor.anchor_event("event-1")
+        cursor.begin_playback()
+        cursor.finish_playback()
+        cursor.dispatch_advance()
+        before, after = self.ellipsis_frame(), self.ellipsis_frame(offset=1)
+        result = OCRResult(
+            "Cornerstone", "", 0, "balanced", 1, speaker_confidence=95
+        )
+        tracker = IncrementalDialogTracker()
+        reader.tracker_factory = lambda **_options: tracker
+        reader.adaptive_policy_factory = lambda **_options: Mock(
+            observe=Mock(return_value=reader.interval_seconds)
+        )
+
+        def process(frame, raw_result, fingerprint):
+            stop = Event()
+
+            def recognize(*_args, **_kwargs):
+                stop.set()
+                return raw_result
+
+            reader.latest_frame = frame
+            reader.latest_frame_fingerprint = fingerprint
+            reader.latest_frame_captured_at = monotonic()
+            reader.latest_frame_visible = reader.latest_frame_complete = True
+            reader.frame_version += 1
+            with patch(
+                "vntts.dialog_capture.recognize_dialog_image_result",
+                side_effect=recognize,
+            ) as ocr:
+                reader._run_ocr(stop)
+                ocr.assert_called_once()
+
+        with (
+            patch("vntts.live.Timer"),
+            patch("vntts.controller.DialogueAdvancer") as advancer,
+        ):
+            advancer.return_value.advance.return_value = True
+            self.assertEqual(controller._stable_live_frame_owner(), "event-1")
+            process(before, result, "route")
+            self.assertEqual(cursor.current_event_id, "event-2")
+            self.assertEqual(
+                reader.last_accepted_observation, SilentDialogRoute("event-2")
+            )
+            self.assertEqual(reader.dialog_ready_generation, tracker.generation)
+            self.assertIs(reader.routed_frame, before)
+            reader._run_auto_advance(tracker.generation)
+            advancer.return_value.advance.assert_not_called()
+            process(after, result, "fresh-offset")
+            self.assertTrue(reader.frame_equivalent(before, after))
+            advancer.return_value.advance.assert_called_once_with()
+            generation = tracker.generation
+            self.assertEqual(reader.pending_auto_advance_generation, generation)
+            process(self.ellipsis_frame(offset=2), result, "duplicate")
+            reader._run_auto_advance(tracker.generation)
+            advancer.return_value.advance.assert_called_once_with()
+            self.assertEqual(reader.active_generation, generation)
+            self.assertEqual(
+                controller._publish_diagnostic.call_args.args[0].confidence, 0
+            )
+            self.assertEqual(result.confidence, 0)
+            reader.speech_executor.submit.assert_not_called()
+            reader.playback_executor.submit.assert_not_called()
+            process(
+                self.frame(),
+                OCRResult(lines[2].speaker, lines[2].text, 95, "balanced", 1),
+                "next-dialogue",
+            )
+            self.assertEqual(cursor.current_event_id, "event-3")
+            self.assertIsNone(reader.pending_auto_advance_generation)
+            advancer.return_value.advance.assert_called_once_with()
+            controller.error_handler.assert_not_called()
+
+    def test_visual_admission_keeps_unreadable_and_uncertain_speaker_rejected(self):
+        before = self.ellipsis_frame()
+        accepted = OCRResult("Cornerstone", "...", 0, "balanced", 1)
+        self.recognize(before, accepted)
+        for frame, rejected in (
+            (self.frame(), replace(accepted, text="???")),
+            (self.frame(), replace(accepted, text="\ufffd")),
+            (self.frame(), accepted),
+            (self.ellipsis_frame(), replace(accepted, speaker_confidence=20)),
+            (self.ellipsis_frame(), replace(accepted, speaker_note="Unreadable name")),
+        ):
+            with self.subTest(text=rejected.text, note=rejected.speaker_note):
+                with self.assertRaises(OCRUncertainError):
+                    self.recognize(frame, rejected)
+                self.assertFalse(self.reader.frame_equivalent(before, frame))
+
+        empty = self.frame()
+        self.recognize(empty, replace(accepted, text=""))
+        self.assertFalse(self.reader.frame_equivalent(before, empty))
+
+    def test_admitted_symbol_evidence_preserves_distinct_symbol_identity(self):
+        before = self.ellipsis_frame()
+        self.recognize(before, OCRResult("Cornerstone", "...", 0, "balanced", 1))
+        for symbols in ("?", "?!", "♪"):
+            with self.subTest(symbols=symbols):
+                after = self.frame()
+                self.recognize(
+                    after, OCRResult("Cornerstone", symbols, 95, "balanced", 1)
+                )
+                self.assertFalse(self.reader.frame_equivalent(before, after))
 
     def test_canonical_speaker_resolution_supplies_validated_evidence(self):
         text = "The prepared story contains this complete sentence."

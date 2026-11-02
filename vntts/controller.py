@@ -1230,7 +1230,6 @@ class AppController:
             identity = {}
 
         raw_result: OCRResult | None = None
-        effective_result: OCRResult | None = None
         canonical_line: ChapterDialogue | None = None
         canonical_exact = False
         reader = self.live_reader
@@ -1244,14 +1243,13 @@ class AppController:
             raw_result = result
 
         def resolve_result(result: OCRResult) -> OCRResult:
-            nonlocal canonical_line, canonical_exact, effective_result
+            nonlocal canonical_line, canonical_exact
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
             resolution: dict[str, object] = {}
             try:
                 resolved = self._resolve_story_ocr_result(result, resolution=resolution)
-                effective_result = resolved
                 line = resolution.get("line")
                 canonical_line = line if isinstance(line, ChapterDialogue) else None
                 canonical_exact = resolution.get("match_result") in {
@@ -1296,16 +1294,8 @@ class AppController:
             raw_result_observer=observe_raw_result,
         )
         character = self._canonical_observed_character(character, text)
-        if (
-            isinstance(comparison, DialogFrameEquivalence)
-            and evidence_context is not None
-            and effective_result is not None
-        ):
-            comparison.record(
-                frame,
-                replace(effective_result, character=character or "", text=text),
-                evidence_context,
-            )
+        if isinstance(comparison, DialogFrameEquivalence) and evidence_context is not None:
+            comparison.record_admitted(frame, character, text, evidence_context)
         if (
             canonical_line is not None
             and canonical_line.line_id is not None

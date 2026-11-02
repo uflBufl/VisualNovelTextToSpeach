@@ -3,11 +3,10 @@ from unittest.mock import Mock
 
 from vntts.dialog import ocr_texts_equivalent
 from vntts.dialog_capture import DialogFrameEquivalence
-from vntts.ocr import OCRResult
 
 
-def result(text="Hello, world!", speaker="Ada", confidence=95):
-    return OCRResult(speaker, text, confidence, "sauvola", 1)
+def result(text="Hello, world!", speaker="Ada"):
+    return speaker, text
 
 
 class OCRTextEquivalenceTest(unittest.TestCase):
@@ -54,38 +53,37 @@ class OCRTextEquivalenceTest(unittest.TestCase):
 class OCRFrameEquivalenceTest(unittest.TestCase):
     def setUp(self):
         self.context = ("run", "owner")
-        self.compare = DialogFrameEquivalence(60, lambda: self.context)
+        self.compare = DialogFrameEquivalence(lambda: self.context)
         self.before, self.after = object(), object()
 
     def record(self, before, after):
-        self.compare.record(self.before, before, self.context)
-        self.compare.record(self.after, after, self.context)
+        self.compare.record_admitted(self.before, *before, self.context)
+        self.compare.record_admitted(self.after, *after, self.context)
 
-    def test_confident_raw_pair_uses_text_without_mutation(self):
+    def test_admitted_pair_uses_text_without_mutation(self):
         before, after = result("cluttered,.room:"), result("cluttered, room. .")
         self.record(before, after)
         self.assertTrue(self.compare(self.before, self.after))
-        self.assertEqual(before.text, "cluttered,.room:")
-        self.assertEqual(after.text, "cluttered, room. .")
+        self.assertEqual(before[1], "cluttered,.room:")
+        self.assertEqual(after[1], "cluttered, room. .")
 
-    def test_confident_different_text_or_name_rejects_evidence(self):
+    def test_different_admitted_text_or_name_rejects_evidence(self):
         for after in (result("A different phrase."), result(speaker="Beatrice")):
             with self.subTest(after=after):
                 self.record(result(), after)
                 self.assertFalse(self.compare(self.before, self.after))
 
-    def test_missing_or_uncertain_ocr_never_authorizes_equivalence(self):
+    def test_missing_or_empty_admitted_text_never_authorizes_equivalence(self):
         for after in (
             None,
-            result(confidence=59),
             result(text=""),
-            result(text="???", confidence=0),
+            result(text="  "),
         ):
             with self.subTest(after=after):
-                self.compare = DialogFrameEquivalence(60, lambda: self.context)
-                self.compare.record(self.before, result(), self.context)
+                self.compare = DialogFrameEquivalence(lambda: self.context)
+                self.compare.record_admitted(self.before, *result(), self.context)
                 if after is not None:
-                    self.compare.record(self.after, after, self.context)
+                    self.compare.record_admitted(self.after, *after, self.context)
                 self.assertFalse(self.compare(self.before, self.after))
 
     def test_changed_run_owner_or_missing_context_rejects_cached_evidence(self):
@@ -96,17 +94,17 @@ class OCRFrameEquivalenceTest(unittest.TestCase):
                 self.assertFalse(self.compare(self.before, self.after))
 
     def test_cache_is_bounded_and_does_not_slide_the_original_anchor(self):
-        self.compare.record(self.before, result("Mira"), self.context)
+        self.compare.record_admitted(self.before, *result("Mira"), self.context)
         related = object()
-        self.compare.record(related, result("Mila"), self.context)
+        self.compare.record_admitted(related, *result("Mila"), self.context)
         self.assertTrue(self.compare(self.before, related))
         for _ in range(24):
             frame = object()
-            self.compare.record(frame, result("Milo"), self.context)
+            self.compare.record_admitted(frame, *result("Milo"), self.context)
             self.assertFalse(self.compare(self.before, frame))
         stale = frame
         for _ in range(8):
-            self.compare.record(object(), result(), self.context)
+            self.compare.record_admitted(object(), *result(), self.context)
         self.assertFalse(self.compare(self.before, stale))
 
     def test_context_change_during_semantic_comparison_invalidates_it(self):
@@ -114,8 +112,8 @@ class OCRFrameEquivalenceTest(unittest.TestCase):
         self.compare.context = Mock(side_effect=[self.context, ("new-run", "owner")])
         self.assertFalse(self.compare(self.before, self.after))
 
-    def test_confidence_setting_is_respected(self):
-        compare = DialogFrameEquivalence(97, Mock(return_value=self.context))
-        compare.record(self.before, result(), self.context)
-        compare.record(self.after, result(), self.context)
-        self.assertFalse(compare(self.before, self.after))
+    def test_admitted_symbol_identity_preserves_distinct_punctuation(self):
+        self.record(result("..."), result("…"))
+        self.assertTrue(self.compare(self.before, self.after))
+        self.record(result("..."), result("?!"))
+        self.assertFalse(self.compare(self.before, self.after))

@@ -7,6 +7,8 @@ from PIL import Image
 from vntts import ocr_worker
 from vntts.controller import AppController
 from vntts.ocr import OCRPreviewCancelled, OCRResult
+from vntts.settings import AppSettings
+from vntts.voices import CharacterVoiceRegistry
 
 
 class OCRWorkerStageDiagnosticsTest(unittest.TestCase):
@@ -143,17 +145,12 @@ class StoryResultResolutionDiagnosticsTest(unittest.TestCase):
         }
         self.frame = SimpleNamespace(image=self.image)
         self.result = OCRResult("Speaker", "private dialogue", 95, "balanced", 1)
-        self.controller = SimpleNamespace(
-            voice_router=SimpleNamespace(registry=object()),
-            settings=SimpleNamespace(ocr_minimum_confidence=60, ocr_language="eng"),
-            _reject_uncertain_live_frame=Mock(),
-            uncertain_frame_recorder=None,
-            _publish_diagnostic=Mock(),
-            _resolve_voice_label=Mock(),
-            correction_dictionary=None,
-            chapter_voice_preloader=None,
-            _canonical_observed_character=lambda character, text: character,
+        self.controller = AppController(AppSettings())
+        self.controller.voice_router = SimpleNamespace(
+            registry=CharacterVoiceRegistry()
         )
+        self.controller._publish_diagnostic = Mock()
+        self.controller._resolve_voice_label = Mock()
 
     def recognize(self, _frame, *_args, result_resolver, **_kwargs):
         resolved = result_resolver(self.result)

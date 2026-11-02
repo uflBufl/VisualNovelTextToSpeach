@@ -535,7 +535,6 @@ class RuntimeLifecycleComponent:
             ocr_uncertain=controller._admit_live_ocr_uncertainty,
             frame_fingerprint=fingerprint_dialog_frame,
             frame_equivalent=DialogFrameEquivalence(
-                controller.settings.ocr_minimum_confidence,
                 controller._live_frame_evidence_context,
             ),
             frame_presence=dialog_glyphs_visible,
@@ -679,7 +678,6 @@ class RuntimeLifecycleComponent:
         reader.interval_seconds = interval_seconds
         reader.tracker_options = dict(tracker_options)
         reader.frame_equivalent = DialogFrameEquivalence(
-            controller.settings.ocr_minimum_confidence,
             controller._live_frame_evidence_context,
         )
         reader.require_visible_auto_advance = True

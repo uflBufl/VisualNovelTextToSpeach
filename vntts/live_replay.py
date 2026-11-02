@@ -57,7 +57,7 @@ from vntts.live import (
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.numeric_values import optional_finite_number
-from vntts.ocr import DialogRegion, OCRResult
+from vntts.ocr import DialogRegion
 from vntts.path_safety import ensure_separate_output, open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
@@ -1205,11 +1205,7 @@ class LiveReplayRunner:
             )
             comparison = reader.frame_equivalent
             if isinstance(comparison, DialogFrameEquivalence) and context is not None:
-                comparison.record(
-                    frame,
-                    OCRResult(result[0], result[1], 100, "replay", 1),
-                    context,
-                )
+                comparison.record_admitted(frame, result[0], result[1], context)
             return result
 
         def frame_routed(
@@ -1357,7 +1353,6 @@ class LiveReplayRunner:
             recognize_frame=recognize,
             frame_fingerprint=_fingerprint_replay_frame,
             frame_equivalent=DialogFrameEquivalence(
-                settings.ocr_minimum_confidence,
                 controller._live_frame_evidence_context,
             ),
             frame_presence=dialog_glyphs_visible,
