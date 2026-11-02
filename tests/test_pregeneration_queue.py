@@ -43,6 +43,7 @@ from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
     _may_have_saved_recordings,
+    _queue_item_reuse_identities,
     _voice_content_identity,
     load_generation_input_metadata,
 )
@@ -513,10 +514,21 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     ):
                         load_source_audio_semantic_evidence(evidence_path)
 
-    def fixture(self, root, *, narrator=True, backend="pocket-tts"):
-        content = inspect_story_index(write_content(root / "content"))
+    def fixture(
+        self,
+        root,
+        *,
+        narrator=True,
+        backend="pocket-tts",
+        semantic_evidence=False,
+        selected=("selected",),
+    ):
+        story = write_content(root / "content")
+        if semantic_evidence:
+            add_semantic_evidence(story)
+        content = inspect_story_index(story)
         jobs = PregenerationJobStore(root / "jobs")
-        job = jobs.create_or_resume(content, ("selected",))
+        job = jobs.create_or_resume(content, selected)
         manifest = write_manifest(root / "voices")
         settings = AppSettings(
             speech_backend=backend,
@@ -534,6 +546,184 @@ class PregenerationInputStoreTest(unittest.TestCase):
             job, settings, manifest_path=manifest
         )
         return job, jobs, voice_plan, manifest
+
+    def test_selection_changes_reuse_semantic_lines_before_generation(self):
+        for before_selection, after_selection in (
+            (("selected",), ("selected", "later")),
+            (("selected", "later"), ("selected",)),
+            (("later", "selected"), ("selected", "later")),
+        ):
+            with (
+                self.subTest(before=before_selection, after=after_selection),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                job, jobs, plan, manifest = self.fixture(
+                    root, semantic_evidence=True, selected=before_selection
+                )
+                store = PregenerationInputStore(jobs)
+                original = store.materialize(job, plan)
+                generate_prepared(original, PocketRenderer())
+                before = load_generation_state(
+                    generation_state_path(original.output_directory),
+                    original.queue,
+                    validate_files=False,
+                )
+                old_queue_bytes = original.queue.read_bytes()
+                catalog = root / "content/story-index.jsonl"
+                if before_selection == ("selected",):
+                    story = load_story_index_document(catalog)
+                    records = [line.to_record() for line in story.records]
+                    for record in records:
+                        if record["line_id"] == "not-selected":
+                            record["speaker"] = record["voice_character"] = "New role"
+                    write_story_index_document(catalog, story.metadata, records)
+                content = inspect_story_index(catalog)
+                next_job = jobs.create_or_resume(content, after_selection)
+                next_plan = VoicePlanStore(
+                    jobs, voice_library=VoiceLibrary(root / "library")
+                ).create(
+                    next_job,
+                    AppSettings(
+                        speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                    ),
+                    manifest_path=manifest,
+                )
+                with patch(
+                    "vntts.pregeneration_queue.load_source_audio_semantic_evidence",
+                    wraps=load_source_audio_semantic_evidence,
+                ) as evidence_reads:
+                    current = store.materialize(next_job, next_plan)
+                # One current projection check and one binding read per input, not per line.
+                self.assertLessEqual(evidence_reads.call_count, 3)
+                if before_selection == ("selected",):
+                    self.assertIn("New role", current.narrator_fallback_roles)
+                    self.assertNotIn("New role", original.narrator_fallback_roles)
+                after = load_generation_state(
+                    generation_state_path(current.output_directory),
+                    current.queue,
+                    validate_files=False,
+                )
+                selected = {
+                    item.queue_id
+                    for item in VoiceGenerationQueue.load(current.queue).items
+                }
+                expected = before["items"].keys() & selected
+                self.assertEqual(after["items"].keys(), expected)
+                for queue_id in expected:
+                    self.assertEqual(
+                        after["items"][queue_id]["file_sha256"],
+                        before["items"][queue_id]["file_sha256"],
+                    )
+                self.assertEqual(original.queue.read_bytes(), old_queue_bytes)
+                restarted = PregenerationInputStore(PregenerationJobStore(jobs.root))
+                self.assertEqual(restarted.materialize(next_job, next_plan), current)
+
+    def test_reuse_identity_checks_queue_semantic_binding_and_keeps_other_fields(self):
+        with TemporaryDirectory() as directory:
+            job, jobs, plan, _ = self.fixture(Path(directory), semantic_evidence=True)
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            baseline = _queue_item_reuse_identities(
+                prepared.directory, VoiceGenerationQueue.load(prepared.queue)
+            )
+            for field in (
+                "source_audio_semantic_evidence_id",
+                "source_audio_semantic_evidence_entry_id",
+            ):
+                with self.subTest(field=field):
+                    queue = VoiceGenerationQueue.load(prepared.queue)
+                    item = next(
+                        item for item in queue.items if item.line_id == "original"
+                    )
+                    item.document[field] = "f" * 64
+                    with self.assertRaisesRegex(
+                        SourceAudioSemanticEvidenceError, "queue semantic binding"
+                    ):
+                        _queue_item_reuse_identities(prepared.directory, queue)
+            queue = VoiceGenerationQueue.load(prepared.queue)
+            item = next(item for item in queue.items if item.line_id == "original")
+            item.document["source_audio_extension"] = {"version": 2}
+            self.assertNotEqual(
+                _queue_item_reuse_identities(prepared.directory, queue)[item.queue_id],
+                baseline[item.queue_id],
+            )
+
+    def test_reopening_input_reports_unreadable_previous_semantic_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, manifest = self.fixture(root, semantic_evidence=True)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            content = inspect_story_index(root / "content/story-index.jsonl")
+            next_job = jobs.create_or_resume(content, ("selected", "later"))
+            next_plan = VoicePlanStore(
+                jobs, voice_library=VoiceLibrary(root / "library")
+            ).create(
+                next_job,
+                AppSettings(
+                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                ),
+                manifest_path=manifest,
+            )
+            store.materialize(next_job, next_plan)
+            generate_prepared(original, PocketRenderer())
+            original.source_audio_semantic_evidence.write_text("not JSON")
+            with self.assertRaisesRegex(PregenerationQueueError, "semantic evidence"):
+                store.materialize(next_job, next_plan)
+
+    def test_changed_semantic_model_authority_does_not_reuse_its_line(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, manifest = self.fixture(root, semantic_evidence=True)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            path = root / "content/story-index.jsonl"
+            story = load_story_index_document(path)
+            evidence_path = path.parent / "source-audio-semantic-evidence.json"
+            evidence = json.loads(evidence_path.read_bytes())
+            evidence["model"]["revision"] = "changed-model-authority"
+            evidence["evidence_id"] = canonical_document_sha256(
+                {
+                    key: value
+                    for key, value in evidence.items()
+                    if key not in {"evidence_id", "generated_at"}
+                }
+            )
+            atomic_write_json(evidence_path, evidence, sort_keys=True)
+            metadata = dict(story.metadata)
+            metadata["source_audio_semantics"] = dict(
+                metadata["source_audio_semantics"],
+                evidence_id=evidence["evidence_id"],
+                evidence_sha256=sha256_file(evidence_path),
+            )
+            records = [line.to_record() for line in story.records]
+            for record in records:
+                if record.get("source_audio_semantic_evidence_entry_id") is not None:
+                    record["source_audio_semantic_evidence_id"] = evidence[
+                        "evidence_id"
+                    ]
+            write_story_index_document(path, metadata, records)
+            next_job = jobs.create_or_resume(inspect_story_index(path), ("selected",))
+            next_plan = VoicePlanStore(
+                jobs, voice_library=VoiceLibrary(root / "library")
+            ).create(
+                next_job,
+                AppSettings(
+                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                ),
+                manifest_path=manifest,
+            )
+            current = store.materialize(next_job, next_plan)
+            state = load_generation_state(
+                generation_state_path(current.output_directory),
+                current.queue,
+                validate_files=False,
+            )
+            self.assertEqual(
+                {item["line_id"] for item in state["items"].values()},
+                {"rhiannon", "hotelier", "unknown"},
+            )
 
     def test_voice_confirmation_survives_reopen_without_changing_input_metadata(self):
         with TemporaryDirectory() as directory:

@@ -364,8 +364,19 @@ def validate_story_semantic_evidence(
         raise SourceAudioSemanticEvidenceError(
             "Story source-audio semantic evidence binding changed"
         )
+    _story_semantic_entries(story, evidence)
+    return evidence
+
+
+def _story_semantic_entries(
+    story: StoryIndexDocument, evidence: SourceAudioSemanticEvidence
+) -> dict[str, SourceAudioSemanticEvidenceEntry]:
     entry_by_id = {entry["entry_id"]: entry for entry in evidence["entries"]}
-    matched = 0
+    line_ids_by_entry = {
+        entry_id: set(entry["source_line_ids"])
+        for entry_id, entry in entry_by_id.items()
+    }
+    matched = {}
     for line in story.records:
         record = line.to_record()
         entry_id = record.get("source_audio_semantic_evidence_entry_id")
@@ -375,7 +386,7 @@ def validate_story_semantic_evidence(
         if (
             record.get("source_audio_semantic_evidence_id") != evidence["evidence_id"]
             or entry is None
-            or line.line_id not in entry["source_line_ids"]
+            or line.line_id not in line_ids_by_entry[entry_id]
             or entry["locale"] != story.metadata.get("language")
             or entry["media_sha256"] != record.get("source_audio_duration_media_sha256")
             or entry["displayed_text_sha256"] != record.get("text_sha256")
@@ -387,13 +398,43 @@ def validate_story_semantic_evidence(
             raise SourceAudioSemanticEvidenceError(
                 f"Story semantic evidence changed for {record.get('line_id')!r}"
             )
-        matched += 1
-    applied_count = metadata.get("applied_count")
-    if type(applied_count) is not int or matched != applied_count or matched <= 0:
+        matched[line.line_id] = entry
+    metadata = story.metadata.get("source_audio_semantics")
+    applied_count = (
+        metadata.get("applied_count") if isinstance(metadata, dict) else None
+    )
+    if type(applied_count) is not int or len(matched) != applied_count or not matched:
         raise SourceAudioSemanticEvidenceError(
             "Story semantic evidence applied count changed"
         )
-    return evidence
+    return matched
+
+
+def source_audio_semantic_reuse_identities(
+    story: StoryIndexDocument, evidence: SourceAudioSemanticEvidence
+) -> dict[str, str]:
+    """Bind each semantic line to authority from already validated story evidence.
+
+    Aggregate IDs and membership describe publication, while canonical entry IDs
+    and the full semantic authority determine whether a line's verdict is reusable.
+    The caller must validate the evidence bytes against the story before calling.
+    """
+    entries = _story_semantic_entries(story, evidence)
+    authority = {
+        key: value
+        for key, value in evidence.items()
+        if key
+        not in {"evidence_id", "generated_at", "entries", "source_story_index_sha256"}
+    }
+    identities = {
+        entry_id: _semantic_document_sha256(
+            {"authority": authority, "entry_id": entry_id}
+        )
+        for entry_id in {entry["entry_id"] for entry in entries.values()}
+    }
+    return {
+        line_id: identities[entry["entry_id"]] for line_id, entry in entries.items()
+    }
 
 
 def project_source_audio_semantics(

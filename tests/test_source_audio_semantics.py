@@ -24,9 +24,11 @@ from vntts.source_audio_semantics import (
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
     merge_source_audio_semantics,
+    project_source_audio_semantics,
     reset_stale_source_audio_semantics,
     semantic_preprocessing_is_current,
     semantic_text_sha256,
+    source_audio_semantic_reuse_identities,
     source_audio_semantics_need_migration,
     validate_source_audio_semantic_evidence,
 )
@@ -83,7 +85,198 @@ def semantic_story(root, *, current=False, partial=False, line_id="test:0"):
     return write_story_index_document(path, metadata, [record, native])
 
 
+def publish_semantic_story(story, evidence, records=None):
+    evidence["evidence_id"] = canonical_document_sha256(
+        {k: v for k, v in evidence.items() if k not in {"evidence_id", "generated_at"}}
+    )
+    path = story.path.with_name("source-audio-semantic-evidence.json")
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    records = records if records is not None else [r.to_record() for r in story.records]
+    for record in records:
+        if record.get("source_audio_semantic_evidence_entry_id") is not None:
+            record["source_audio_semantic_evidence_id"] = evidence["evidence_id"]
+    metadata = deepcopy(story.metadata)
+    metadata["source_audio_semantics"].update(
+        evidence_id=evidence["evidence_id"],
+        evidence_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        applied_count=sum(
+            r.get("source_audio_semantic_evidence_entry_id") is not None
+            for r in records
+        ),
+    )
+    story = write_story_index_document(story.path, metadata, records)
+    return story, load_source_audio_semantic_evidence(path, story)
+
+
 class SourceAudioSemanticEvidenceTest(unittest.TestCase):
+    def test_reuse_identity_survives_selection_changes_without_reading_files(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = semantic_story(root / "source", current=True)
+            evidence = load_source_audio_semantic_evidence(
+                story.path.with_name("source-audio-semantic-evidence.json"), story
+            )
+            original = story.records[0].to_record()
+            sibling = {**original, "line_id": "test:1", "sequence": 12}
+            evidence["entries"][0]["source_line_ids"].append("test:1")
+            text = "Another line."
+            extra_entry, extra_entry_id = semantic_evidence_entry(
+                line_id="test:2",
+                text=text,
+                displayed_text_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                media_id=71,
+                media_sha256="d" * 64,
+            )
+            evidence["entries"].append(extra_entry)
+            extra = {
+                **original,
+                "line_id": "test:2",
+                "sequence": 13,
+                "text": text,
+                "text_sha256": extra_entry["displayed_text_sha256"],
+                "source_audio_duration_media_sha256": "d" * 64,
+                "source_audio_semantic_evidence_entry_id": extra_entry_id,
+            }
+            story, evidence = publish_semantic_story(
+                story,
+                evidence,
+                [original, sibling, extra, story.records[1].to_record()],
+            )
+            original_records = [record.to_record() for record in story.records]
+            original_evidence = deepcopy(evidence)
+            expected = source_audio_semantic_reuse_identities(story, evidence)
+            self.assertNotIn("test:0:native", expected)
+            aggregate_ids = set()
+            for index, selection in enumerate(
+                ((0,), (0, 1), (2, 0), (2, 1, 0), (0, 1, 2))
+            ):
+                with self.subTest(selection=selection):
+                    destination = root / str(index)
+                    metadata, records, evidence_path = project_source_audio_semantics(
+                        story,
+                        [story.records[i].to_record() for i in selection],
+                        destination,
+                    )
+                    selected = write_story_index_document(
+                        destination / "story-index.jsonl", metadata, records
+                    )
+                    selected_evidence = load_source_audio_semantic_evidence(
+                        evidence_path, selected
+                    )
+                    aggregate_ids.add(selected_evidence["evidence_id"])
+                    with patch(
+                        "vntts.source_audio_semantics.read_regular_bytes",
+                        side_effect=AssertionError(
+                            "Reuse identity must not read files"
+                        ),
+                    ):
+                        actual = source_audio_semantic_reuse_identities(
+                            selected, selected_evidence
+                        )
+                    self.assertEqual(
+                        actual, {line_id: expected[line_id] for line_id in actual}
+                    )
+                    self.assertEqual(actual["test:0"], expected["test:0"])
+            self.assertGreater(len(aggregate_ids), 1)
+            self.assertEqual(evidence, original_evidence)
+            self.assertEqual([r.to_record() for r in story.records], original_records)
+
+    def test_reuse_identity_preserves_complete_semantic_authority(self):
+        with TemporaryDirectory() as directory:
+            story = semantic_story(Path(directory), current=True)
+            evidence_path = story.path.with_name("source-audio-semantic-evidence.json")
+            baseline = load_source_audio_semantic_evidence(evidence_path, story)
+            expected = source_audio_semantic_reuse_identities(story, baseline)
+            changes = (
+                ("model", "snapshot", "different-snapshot"),
+                ("model", "sha256", "e" * 64),
+                ("model", "preprocessing", "different-preprocessing"),
+                ("model", "extension", {"version": 2}),
+                ("entry", "extension", {"version": 2}),
+                ("evidence", "extension", {"version": 2}),
+                ("evidence", "locale", "fr"),
+            )
+            for owner, field, value in changes:
+                with self.subTest(owner=owner, field=field):
+                    evidence = deepcopy(baseline)
+                    entry = evidence["entries"][0]
+                    target = {
+                        "model": evidence["model"],
+                        "entry": entry,
+                        "evidence": evidence,
+                    }[owner]
+                    target[field] = value
+                    if field == "sha256":
+                        entry["model_sha256"] = value
+                    source = deepcopy(story)
+                    if field == "locale":
+                        entry["locale"] = value
+                        source.metadata["language"] = value
+                    entry["entry_id"] = canonical_document_sha256(
+                        {
+                            k: v
+                            for k, v in entry.items()
+                            if k not in {"entry_id", "source_line_ids"}
+                        }
+                    )
+                    records = [r.to_record() for r in story.records]
+                    records[0]["source_audio_semantic_evidence_entry_id"] = entry[
+                        "entry_id"
+                    ]
+                    changed, validated = publish_semantic_story(
+                        source, evidence, records
+                    )
+                    self.assertNotEqual(
+                        source_audio_semantic_reuse_identities(changed, validated),
+                        expected,
+                    )
+
+    def test_reuse_identity_ignores_catalog_hash_and_publication_time(self):
+        with TemporaryDirectory() as directory:
+            story = semantic_story(Path(directory), current=True)
+            evidence = load_source_audio_semantic_evidence(
+                story.path.with_name("source-audio-semantic-evidence.json"), story
+            )
+            expected = source_audio_semantic_reuse_identities(story, evidence)
+            aggregate_id = evidence["evidence_id"]
+            evidence["source_story_index_sha256"] = "f" * 64
+            evidence["generated_at"] = "2026-11-02T00:00:00+00:00"
+            changed, validated = publish_semantic_story(story, evidence)
+            self.assertNotEqual(validated["evidence_id"], aggregate_id)
+            self.assertEqual(
+                source_audio_semantic_reuse_identities(changed, validated), expected
+            )
+
+    def test_reuse_identity_rejects_changed_record_binding_or_membership(self):
+        with TemporaryDirectory() as directory:
+            story = semantic_story(Path(directory), current=True)
+            evidence = load_source_audio_semantic_evidence(
+                story.path.with_name("source-audio-semantic-evidence.json"), story
+            )
+            changes = {
+                "source_audio_semantic_evidence_id": "f" * 64,
+                "source_audio_semantic_evidence_entry_id": "f" * 64,
+                "source_audio_duration_media_sha256": "f" * 64,
+                "text_sha256": "f" * 64,
+                "text": "Different text.",
+                "source_audio_completeness": "partial",
+                "source_audio_completeness_reason": "changed",
+            }
+            for field, value in changes.items():
+                with self.subTest(field=field):
+                    changed = deepcopy(story)
+                    changed.records[0].document[field] = value
+                    with self.assertRaises(SourceAudioSemanticEvidenceError):
+                        source_audio_semantic_reuse_identities(changed, evidence)
+            for field in ("source_line_ids", "locale"):
+                with self.subTest(field=field):
+                    changed = deepcopy(evidence)
+                    changed["entries"][0][field] = (
+                        ["another-line"] if field == "source_line_ids" else "fr"
+                    )
+                    with self.assertRaises(SourceAudioSemanticEvidenceError):
+                        source_audio_semantic_reuse_identities(story, changed)
+
     def test_punctuation_variants_keep_exact_evidence_through_merge(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -19,6 +19,7 @@ from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
+    load_story_index_document,
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import (
@@ -91,6 +92,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
     project_source_audio_semantics,
+    source_audio_semantic_reuse_identities,
 )
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -105,6 +107,7 @@ from vntts.voices import (
 generation_input_schema_version = 4
 VoiceChoice: TypeAlias = tuple[CharacterVoice | None, tuple[str, ...], str]
 StoryRecordDocument: TypeAlias = dict[str, object]
+QueueItemReuseIdentity: TypeAlias = tuple[dict[str, object], str | None]
 
 
 class EffectiveVoiceRoutes(TypedDict):
@@ -452,6 +455,7 @@ def _reuse_completed_audio(
         return
     voices = CharacterVoiceRegistry.from_file(current.voice_manifest)
     current_items = {item.queue_id: item for item in queue.items}
+    current_reuse: dict[str, QueueItemReuseIdentity] | None = None
     voice_identities: dict[str, object] = {}
     saved: dict[str, dict[str, object]] = {}
     controls: dict[str, object] = {}
@@ -494,13 +498,16 @@ def _reuse_completed_audio(
                 for field in ("game", "game_id", "language")
             ):
                 continue
-            if not any(
-                item.queue_id not in protected
-                and item.queue_id not in saved
-                and item.queue_id in current_items
-                and item.document == current_items[item.queue_id].document
+            candidates = {
+                item.queue_id
                 for item in old_queue.items
-            ):
+                if (
+                    item.queue_id not in protected
+                    and item.queue_id not in saved
+                    and item.queue_id in current_items
+                )
+            }
+            if not candidates:
                 continue
             for name, suffix in (
                 ("story_index", "story-index.jsonl"),
@@ -509,6 +516,16 @@ def _reuse_completed_audio(
             ):
                 if sha256_file(previous / suffix) != document.get(f"{name}_sha256"):
                     raise ValueError(f"Previous {name} changed")
+            if current_reuse is None:
+                current_reuse = _queue_item_reuse_identities(current.directory, queue)
+            previous_reuse = _queue_item_reuse_identities(previous, old_queue)
+            compatible = {
+                queue_id
+                for queue_id in candidates
+                if current_reuse[queue_id] == previous_reuse[queue_id]
+            }
+            if not compatible:
+                continue
             state = read_state(
                 previous_state,
                 selected_line_ids=frozenset(
@@ -526,13 +543,9 @@ def _reuse_completed_audio(
             eligible: list[str] = []
             old_identities: dict[str, object] = {}
             for item in old_queue.items:
-                target = current_items.get(item.queue_id)
                 result = old_items.get(item.queue_id)
                 if (
-                    target is None
-                    or item.queue_id in protected
-                    or item.queue_id in saved
-                    or target.document != item.document
+                    item.queue_id not in compatible
                     or not isinstance(result, dict)
                     or result.get("status") not in {"generated", "approved"}
                     or "audio_event_composition" in result
@@ -583,7 +596,14 @@ def _reuse_completed_audio(
             registry = state.get("synthesis_controls")
             if isinstance(registry, dict):
                 controls.update(registry)
-        except (BulkGenerationError, OSError, ValueError, VoiceManifestError) as error:
+        except (
+            BulkGenerationError,
+            OSError,
+            ValueError,
+            VoiceManifestError,
+            SourceAudioSemanticEvidenceError,
+            StoryIndexError,
+        ) as error:
             raise PregenerationQueueError(
                 f"Unable to reuse saved offline audio: {error}"
             ) from error
@@ -647,6 +667,49 @@ def _reuse_completed_audio(
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"
         ) from error
+
+
+def _queue_item_reuse_identities(
+    directory: Path, queue: VoiceGenerationQueue
+) -> dict[str, QueueItemReuseIdentity]:
+    semantic: dict[str, str] = {}
+    semantic_records = {}
+    if any(
+        "source_audio_semantic_evidence_id" in item.document for item in queue.items
+    ):
+        story = load_story_index_document(directory / "story-index.jsonl")
+        evidence = load_source_audio_semantic_evidence(
+            directory / "source-audio-semantic-evidence.json", story
+        )
+        semantic = source_audio_semantic_reuse_identities(story, evidence)
+        semantic_records = {
+            line.line_id: line.document
+            for line in story.records
+            if line.line_id in semantic
+        }
+    identities = {}
+    for item in queue.items:
+        binding = semantic.get(item.line_id)
+        document = item.document
+        if binding is not None:
+            if any(
+                document.get(field) != semantic_records[item.line_id].get(field)
+                for field in (
+                    "source_audio_semantic_evidence_id",
+                    "source_audio_semantic_evidence_entry_id",
+                )
+            ):
+                raise SourceAudioSemanticEvidenceError(
+                    f"Generation queue semantic binding changed for {item.line_id}"
+                )
+            # The envelope belongs to the selection; semantic authority belongs to the line.
+            document = {
+                key: value
+                for key, value in document.items()
+                if key != "source_audio_semantic_evidence_id"
+            }
+        identities[item.queue_id] = document, binding
+    return identities
 
 
 def initialize_audio_event_omissions(

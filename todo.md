@@ -392,27 +392,11 @@ Remaining defects, missing measurements and native acceptance:
       failure did not recur in native-trial-20261031.
 
 - [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
-      Per-line compatibility implementation remains pending agreement:
-      - Add a shared per-line semantic reuse contract built from verified
-        story/evidence bindings, canonical entry identity and schema/model/
-        preprocessing authority. Preserve aggregate evidence IDs as provenance;
-        selection changes must not change an unchanged line's reusable identity.
-      - Use that contract in both `_reuse_completed_audio` eligibility checks.
-        Validate previous/current evidence bytes and membership before comparison;
-        preserve all other queue fields, synthesis controls, effective voice/
-        narrator route, reference identity and terminal decisions. Reuse local
-        completed WAVs by reference, without repeated audio integrity auditing.
-        Do not weaken exact-document checks for authoring merges or queue IDs.
-      - Promote the isolated selection-expansion reproduction to regression tests:
-        unchanged lines must already be ready before any backend starts. Cover
-        add/remove/reorder and unrelated catalog changes; reject changed semantic
-        authority, text, media, voice/reference/model/profile and damaged external
-        evidence; preserve audio events, narrator routes and saved decisions.
-      - In the combined chapter run confirm prepared hits are available without
-        queue waiting and new work keeps current-line priority. Reuse existing
-        timings; original line11 has 3.153s to previous publication, 15.005s to
-        cached render-result, 0.011s publication and 0.744s readiness propagation.
-        Historical aggregate phase times cannot apportion that 15s exactly.
+      In the combined chapter run confirm prepared hits are available without
+      queue waiting and new work keeps current-line priority. Reuse existing
+      timings; original line11 has 3.153s to previous publication, 15.005s to
+      cached render-result, 0.011s publication and 0.744s readiness propagation.
+      Historical aggregate phase times cannot apportion that 15s exactly.
 
 - [ ] **OCR-29-01 remaining native edges:** line43 passed in
       native-trial-20261031; retain only genuine typewriter-prefix and ambiguous
