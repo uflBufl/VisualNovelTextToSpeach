@@ -1248,7 +1248,7 @@ class MainTest(unittest.TestCase):
             PreparedGeneratedAudio(
                 line.line_id, line.text_sha256, np.zeros(1, dtype=np.float32), 24_000
             ),
-            "generated-audio-entry-verified",
+            "generated-audio-entry-ready",
         )
         backend = GeneratedAudioFallbackBackend(
             live_backend, library, preloader, audio_output=Mock()
@@ -7351,7 +7351,7 @@ class MainTest(unittest.TestCase):
                 None,
                 None,
                 "game:1",
-                "generated-audio-entry-verified",
+                "generated-audio-entry-ready",
             ),
         )
 
@@ -7433,7 +7433,7 @@ class MainTest(unittest.TestCase):
                 None,
                 None,
                 "game:1",
-                "generated-audio-entry-verified",
+                "generated-audio-entry-ready",
             ),
         )
 
@@ -8043,7 +8043,7 @@ class MainTest(unittest.TestCase):
                 None,
                 None,
                 "game:1",
-                "generated-audio-entry-verified",
+                "generated-audio-entry-ready",
             ),
         )
 

@@ -2402,7 +2402,7 @@ class LiveDialogReaderTest(unittest.TestCase):
                 None,
                 None,
                 "game:1",
-                "generated-audio-entry-verified",
+                "generated-audio-entry-ready",
             ),
         )
 

@@ -82,7 +82,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         library.find_audio_event_omission.return_value = None
         library.find_with_preflight.return_value = (
             prepared,
-            "generated-audio-entry-verified",
+            "generated-audio-entry-ready",
         )
         backend = GeneratedAudioFallbackBackend(
             live,

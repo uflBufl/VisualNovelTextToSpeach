@@ -229,7 +229,7 @@ class GeneratedAudioTest(unittest.TestCase):
 
     def test_lossless_document_lookup_uses_the_library_identity_index(self):
         with TemporaryDirectory() as directory:
-            legacy, audio = self.create_library(Path(directory))
+            legacy, _audio = self.create_library(Path(directory))
             document = load_generated_audio_document(legacy.manifest_path)
             library = GeneratedAudioLibrary(document)
             entry = document.records[0]
@@ -240,8 +240,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 self.assertFalse(library.has_entry("missing", entry.text_sha256))
                 prepared = library.find(" " + entry.line_id, entry.text_sha256 + " ")
                 self.assertIsNotNone(prepared)
-                audio.write_bytes(b"damaged")
-                self.assertIsNone(library.find(entry.line_id, entry.text_sha256))
+                self.assertIsNotNone(library.find(entry.line_id, entry.text_sha256))
 
     def test_manual_override_restores_story_match_when_lookup_fails(self):
         for result_aware in (False, True):
@@ -514,7 +513,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(old_results[0].narrator_fallback_role, "Unknown")
         self.assertIsNone(new_result.narrator_fallback_role)
 
-    def test_reload_revalidates_metadata_when_wav_is_unchanged(self):
+    def test_reload_updates_route_metadata_without_reading_cached_pcm(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             library, _audio = self.create_library(root)
@@ -522,16 +521,15 @@ class GeneratedAudioTest(unittest.TestCase):
             line_hash = text_sha256("Hello.")
             self.assertIsNotNone(library.find("game:1", line_hash))
             entry = json.loads(manifest.read_text(encoding="utf-8"))["entries"][0]
-
-            write_generated_audio_manifest(manifest, {}, [{**entry, "sample_count": 5}])
-            invalid, state = library.find_with_preflight("game:1", line_hash)
             write_generated_audio_manifest(
                 manifest, {}, [{**entry, "provider": "updated-provider"}]
             )
-            updated = library.find("game:1", line_hash)
 
-        self.assertIsNone(invalid)
-        self.assertEqual(state, "generated-audio-metadata-mismatch")
+            with patch("vntts.generated_audio.read_regular_bytes") as read_audio:
+                updated, state = library.find_with_preflight("game:1", line_hash)
+
+        read_audio.assert_not_called()
+        self.assertEqual(state, "generated-audio-entry-ready")
         self.assertEqual(updated.provider, "updated-provider")
 
     def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
@@ -715,7 +713,7 @@ class GeneratedAudioTest(unittest.TestCase):
         )
         return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest)), audio
 
-    def test_returned_samples_cannot_change_verified_cache(self):
+    def test_returned_samples_cannot_change_cached_pcm(self):
         with TemporaryDirectory() as directory:
             library, _audio = self.create_library(Path(directory))
             line_hash = text_sha256("Hello.")
@@ -728,6 +726,31 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsNotNone(second)
         self.assertEqual(float(second.samples[0]), 0.0)
         self.assertFalse(np.shares_memory(first.samples, second.samples))
+
+    def test_generated_pcm_is_read_and_decoded_once(self):
+        from vntts.generated_audio import _read_pcm16_mono_wav_bytes
+        from vntts.path_safety import read_regular_bytes
+
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            with (
+                patch(
+                    "vntts.generated_audio.read_regular_bytes", wraps=read_regular_bytes
+                ) as read_audio,
+                patch(
+                    "vntts.generated_audio._read_pcm16_mono_wav_bytes",
+                    wraps=_read_pcm16_mono_wav_bytes,
+                ) as decode,
+                patch("vntts.generated_audio._validate_generated_audio_path") as paths,
+            ):
+                first = library.find("game:1", text_sha256("Hello."))
+                second = library.find("game:1", text_sha256("Hello."))
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        read_audio.assert_called_once_with(library.index.entries[0].audio)
+        decode.assert_called_once()
+        paths.assert_not_called()
 
     def test_optional_library_rejects_symlink_escape_from_manifest(self):
         with TemporaryDirectory() as directory:
@@ -1562,7 +1585,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.trace.line_id, "game:1")
         self.assertEqual(
             route.trace.artifact_preflight_state,
-            "generated-audio-entry-verified",
+            "generated-audio-entry-ready",
         )
 
     def test_verified_generation_resolves_live_voice_preflight(self):
@@ -1756,7 +1779,7 @@ class GeneratedAudioTest(unittest.TestCase):
             self.assertFalse(backend.has_generated_line(resolver.dialogue[0]))
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO admission")
-    def test_special_generated_wav_is_missing_before_hash_and_decode(self):
+    def test_special_generated_wav_is_missing_before_decode(self):
         native_open, native_path_open = os.open, Path.open
         for swap in (False, True):
             with self.subTest(swap=swap), TemporaryDirectory() as directory:
@@ -1789,13 +1812,11 @@ class GeneratedAudioTest(unittest.TestCase):
                 with (
                     patch("vntts.path_safety.os.open", side_effect=admit),
                     patch.object(Path, "open", reject_blocking_path_open),
-                    patch("vntts.generated_audio.hashlib.sha256") as hash_audio,
                     patch("vntts.generated_audio._read_pcm16_mono_wav_bytes") as decode,
                 ):
                     prepared, state = library.find_with_preflight("game:1", line_hash)
                     self.assertIsNone(prepared)
                     self.assertEqual(state, "generated-audio-entry-missing")
-                    hash_audio.assert_not_called()
                     decode.assert_not_called()
                 self.assertEqual(len(descriptors), 1)
                 with self.assertRaises(OSError):
@@ -1803,45 +1824,6 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio.unlink()
                 audio.write_bytes(original)
                 self.assertIsNotNone(library.find("game:1", line_hash))
-
-    def test_generated_wav_swap_between_identity_lookup_and_read_is_rejected(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            library, audio = self.create_library(root)
-            original_find = library._entry
-
-            def swap_after_lookup(line_id, text_hash):
-                entry = original_find(line_id, text_hash)
-                if entry is not None:
-                    write_wav(audio, [0.75, 0.75, 0.75, 0.75])
-                return entry
-
-            library._entry = swap_after_lookup
-
-            prepared, state = library.find_with_preflight(
-                "game:1", text_sha256("Hello.")
-            )
-
-        self.assertIsNone(prepared)
-        self.assertEqual(state, "generated-audio-checksum-failed")
-
-    def test_loaded_generated_wav_replaced_by_external_symlink_is_rejected(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest_root = root / "manifest"
-            manifest_root.mkdir()
-            library, audio = self.create_library(manifest_root)
-            external = root / "external.wav"
-            external.write_bytes(audio.read_bytes())
-            audio.unlink()
-            symlink_or_skip(audio, external)
-
-            prepared, state = library.find_with_preflight(
-                "game:1", text_sha256("Hello.")
-            )
-
-        self.assertIsNone(prepared)
-        self.assertEqual(state, "generated-audio-entry-unsafe-path")
 
     def test_game_audio_fallback_reason_is_kept_with_generated_route(self):
         with TemporaryDirectory() as directory:
@@ -2291,7 +2273,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
             )
 
-    def test_modified_audio_falls_back_and_warns_once(self):
+    def test_undecodable_audio_falls_back_and_warns_once(self):
         warnings = []
         with TemporaryDirectory() as directory:
             library, audio = self.create_library(Path(directory))
@@ -2309,7 +2291,7 @@ class GeneratedAudioTest(unittest.TestCase):
             self.assertIsInstance(backend.prepare_route("Ada", "Hello."), LiveTTSRoute)
 
         self.assertEqual(len(warnings), 1)
-        self.assertIn("missing or modified", warnings[0])
+        self.assertIn("Generated audio is invalid", warnings[0])
 
     def test_generated_playback_applies_volume_and_honors_guard(self):
         audio_output = FakeAudioOutput()

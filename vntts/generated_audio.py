@@ -465,23 +465,6 @@ class GeneratedAudioLibrary:
         narrator_fallback_role = narrator_fallback_roles.get(
             (entry.line_id, entry.text_sha256)
         )
-        try:
-            _validate_generated_audio_path(entry.audio, self.manifest_path.parent)
-        except GeneratedAudioManifestError:
-            self._warn_once(entry, f"Generated audio path is unsafe: {entry.audio}")
-            return None, "generated-audio-entry-unsafe-path"
-        try:
-            payload = read_regular_bytes(entry.audio)
-        except OSError:
-            self._warn_once(
-                entry, f"Generated audio is missing or modified: {entry.audio}"
-            )
-            return None, "generated-audio-entry-missing"
-        if hashlib.sha256(payload).hexdigest() != entry.audio_sha256:
-            self._warn_once(
-                entry, f"Generated audio is missing or modified: {entry.audio}"
-            )
-            return None, "generated-audio-checksum-failed"
         cache_key = (
             entry.line_id,
             entry.text_sha256,
@@ -489,6 +472,13 @@ class GeneratedAudioLibrary:
         )
         cached = self.cache.get(cache_key)
         if cached is None:
+            try:
+                payload = read_regular_bytes(entry.audio)
+            except OSError:
+                self._warn_once(
+                    entry, f"Generated audio is missing or unreadable: {entry.audio}"
+                )
+                return None, "generated-audio-entry-missing"
             try:
                 samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
             except Pcm16MonoWavError as error:
@@ -499,12 +489,6 @@ class GeneratedAudioLibrary:
             self.cache.put(cache_key, (samples, sample_rate))
         else:
             samples, sample_rate = cached
-        if sample_rate != entry.sample_rate or len(samples) != entry.sample_count:
-            self._warn_once(
-                entry,
-                f"Generated audio metadata does not match the WAV file: {entry.audio}",
-            )
-            return None, "generated-audio-metadata-mismatch"
         prepared = PreparedGeneratedAudio(
             line_id=entry.line_id,
             text_sha256=entry.text_sha256,
@@ -518,7 +502,7 @@ class GeneratedAudioLibrary:
             audio_path=entry.audio,
             audio_sha256=entry.audio_sha256,
         )
-        return prepared, "generated-audio-entry-verified"
+        return prepared, "generated-audio-entry-ready"
 
     def find_live_fallback(
         self, line_id: str, text_sha256: str
@@ -1208,7 +1192,7 @@ class GeneratedAudioFallbackBackend:
                 replace(
                     route.trace,
                     effective_source="generated",
-                    artifact_preflight_state="generated-audio-entry-verified",
+                    artifact_preflight_state="generated-audio-entry-ready",
                 ),
                 source_audio_lead_seconds=self._remaining_source_audio_lead(route),
             )
