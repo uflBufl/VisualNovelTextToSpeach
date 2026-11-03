@@ -359,11 +359,21 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       distinguish neither callback CPU work from descheduling/VM nor establish
       that the overlapping file write caused it. Private HAL zero fault metrics
       have undocumented scope and cannot exclude client VM faults.
-      - Distinguish callback execution from descheduling/VM at this retained
-        receive boundary before choosing a repair; do not add another healthy
-        whole-chapter run. Audio System Trace could separate these, but
-        xctrace/Instruments is unavailable. Propose the smallest targeted next
-        measurement without installing tools. Keep this investigation macOS-only.
+      - Distinguish callback execution from descheduling/VM before choosing a
+        repair. A temporary CPU-clock/copy-boundary probe passed native selfcheck;
+        one180s44100Hz game-audio run during real MLX generation did not reproduce
+        the callback gap. Its120.455ms CAF-write stall retained continuous source
+        samples; consumer delay alone is not sufficient to explain the earlier
+        callback stall. This narrower run omitted diagnostic video/Reading and
+        used a different recorder parent; it does not qualify the original load.
+        Next: one bounded scheduler/VM trace alongside the CPU probe under the
+        original capture/load conditions, not another healthy chapter run.
+        Installed ktrace requires root; sudo noninteractive authorization is
+        unavailable. Obtain authorization through the normal system dialog before
+        tracing. Bound time45s and retained data64MiB; kernel buffer size alone
+        does not bound output, and ownership cleanup must survive early stopping.
+        Audio System Trace/xctrace is unavailable; no install or system-policy
+        change. Keep temporary probes local and this investigation macOS-only.
       Do not hide the gap, increase consumer buffers again, insert guessed silence,
       change drift/master topology or wire memory without evidence. Continuing a
       gapped CAF would need explicit time mapping and consumer migration; it does
