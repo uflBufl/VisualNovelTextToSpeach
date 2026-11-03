@@ -338,8 +338,7 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       they do not substitute for native/full autonomous acceptance.
 
 - [ ] **CAPTURE-02-01 - Native capture acceptance after storage cleanup.**
-      Before the combined run, remove unneeded diagnostic recordings through the
-      existing history and verify storage headroom. Qualify continuous diagnostic
+      Before the combined run, verify storage headroom. Qualify continuous diagnostic
       video throughout the run without macOS low-disk CacheDelete purges. Reading's
       existing selected-window recovery needs no new retry implementation.
       Keep the control recording fullscreen bounds-change guard separate.
