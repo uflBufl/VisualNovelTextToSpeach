@@ -349,16 +349,21 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       Private HAL_client_IO_duration raw86138583 is retained without assuming
       undocumented units. Cleanup is later; output-change interruption follows
       about18.8s later and cannot cause the earlier gap.
-      Remaining distinction: work/preemption/VM inside our callback versus HAL
-      work around it. No callback completion tick or scheduler trace was retained.
-      IO-cycle inNow and completion-before-publication timing now travel with
-      PCM under the producer release-store and appear only in bounded failure
-      context. Native virtual-clock selfcheck and failed-collection tests pass.
-      This is diagnostic evidence, not a claimed capture repair.
-      - Capture one agreed original44.1kHz/load recurrence, then choose a repair
-        from the measured location. Audio System Trace can separate scheduler/VM
-        from CPU, but xctrace/Instruments is currently unavailable; no install or
-        new recording was performed. Keep this investigation macOS-only.
+      November3 instrumented44.1kHz recurrence localizes the stall inside receive:
+      previous callback body92.375ms, entry34.292us after IO-cycle timestamp;
+      current callback body1.750us. Uncovered4102frames=93.016ms. The recorder
+      logs a matching HAL overload. Failure occurs27.199s after capture starts,
+      during background generation and28.132s before the Reading Rust tap starts.
+      Consumer CAF-write wall time110.145ms overlaps the stalled callback;
+      high-water is only5blocks/2560frames, without overflow. These observations
+      distinguish neither callback CPU work from descheduling/VM nor establish
+      that the overlapping file write caused it. Private HAL zero fault metrics
+      have undocumented scope and cannot exclude client VM faults.
+      - Distinguish callback execution from descheduling/VM at this retained
+        receive boundary before choosing a repair; do not add another healthy
+        whole-chapter run. Audio System Trace could separate these, but
+        xctrace/Instruments is unavailable. Propose the smallest targeted next
+        measurement without installing tools. Keep this investigation macOS-only.
       Do not hide the gap, increase consumer buffers again, insert guessed silence,
       change drift/master topology or wire memory without evidence. Continuing a
       gapped CAF would need explicit time mapping and consumer migration; it does
