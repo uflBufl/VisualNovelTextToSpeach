@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, get_ident
+from threading import Event, Lock, get_ident
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
@@ -52,6 +52,7 @@ from vntts.app import (  # noqa: E402
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
+from vntts.controller_components import LiveSessionComponent  # noqa: E402
 from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
@@ -83,6 +84,7 @@ from vntts.settings import (  # noqa: E402
     AppSettings,
     content_path_setting_names,
     load_app_settings,
+    preserve_loaded_runtime_settings,
     settings_schema_version,
 )
 from vntts.versioned_json import (  # noqa: E402
@@ -2045,6 +2047,247 @@ class TrayApplicationTest(unittest.TestCase):
                 preparation._cancel_or_reject.assert_not_called()
                 tray.pregeneration_dialog = None
                 tray.shutdown()
+
+    def _progressive_pack_reading_tray(self, root, *, pending=True, selected=True):
+        tray, controller, preparation, _wav = self._prepared_pack_reading_tray(
+            root, loaded=True
+        )
+        tray.settings = tray.settings.updated(
+            capture_mode="window", force_live_narrator=True
+        )
+        paths = []
+        for name in ("story.jsonl", "voices.json", "audio.json", "sequence.json"):
+            path = root / ("progress-" + name)
+            path.touch()
+            paths.append(str(path))
+        progress = tray.settings.updated(
+            game_pack=None,
+            story_index=paths[0],
+            voice_manifest=paths[1],
+            generated_audio_manifest=paths[2],
+            live_sequence_plan=paths[3],
+            live_sequence_mode="audio-auto",
+            audio_source_policy="prefer-game-audio",
+            force_live_narrator=False,
+        )
+        preparation.runtime_playback_settings.return_value = progress
+        preparation.has_pending_work.return_value = pending
+        controller.speech_backend = Mock()
+        controller.unresolved_live_speakers.return_value = ()
+        controller.toggle_live.return_value = True
+        if selected:
+            controller.settings = progress
+            tray._retain_preparation_reading(progress)
+        return tray, controller, preparation, progress
+
+    def test_progressive_options_keep_selected_source_after_preparation(self):
+        edits = (
+            ("audio_source_policy", "live-tts-only"),
+            ("force_live_narrator", False),
+            ("live_sequence_mode", "audio-manual"),
+            ("auto_advance_enabled", False),
+        )
+        for pending in (True, False):
+            for name, value in edits:
+                with (
+                    self.subTest(pending=pending, option=name),
+                    TemporaryDirectory() as directory,
+                ):
+                    tray, _controller, _preparation, progress = (
+                        self._progressive_pack_reading_tray(
+                            Path(directory), pending=pending
+                        )
+                    )
+                    self.assertEqual(
+                        tray._runtime_settings().audio_source_policy,
+                        progress.audio_source_policy,
+                    )
+                    tray.settings = tray.settings.updated(**{name: value})
+                    effective = tray._runtime_settings()
+                    self.assertEqual(getattr(effective, name), value)
+                    self.assertEqual(
+                        tray._reading_pack_identity(effective),
+                        tray._reading_pack_identity(progress),
+                    )
+                    self.assertEqual(tray._reading_source_choice(), (effective, True))
+                    self.assertEqual(
+                        tray._runtime_control_state().ready,
+                        name != "live_sequence_mode",
+                    )
+                    tray.pregeneration_dialog = None
+                    tray.shutdown()
+
+    def test_progressive_restart_keeps_source_after_auto_advance_toggle(self):
+        for pending in (True, False):
+            for entry in ("main", "menu"):
+                with (
+                    self.subTest(pending=pending, entry=entry),
+                    TemporaryDirectory() as directory,
+                ):
+                    tray, controller, _preparation, progress = (
+                        self._progressive_pack_reading_tray(
+                            Path(directory), pending=pending
+                        )
+                    )
+                    with patch.object(tray, "_save_settings_candidate"):
+                        tray.toggle_auto_advance(False)
+                        self.assertEqual(
+                            tray._runtime_settings().live_sequence_mode, "audio-auto"
+                        )
+                        tray.toggle_auto_advance(True)
+                        self.assertEqual(
+                            tray._runtime_settings().live_sequence_mode, "audio-auto"
+                        )
+                    tray._apply_controller_action_state()
+                    if entry == "main":
+                        tray.dashboard.live_button.click()
+                    else:
+                        tray.live_action.trigger()
+                    controller.toggle_live.assert_called_once_with()
+                    controller.start.assert_not_called()
+                    self.assertEqual(
+                        tray._reading_pack_identity(tray._runtime_settings()),
+                        tray._reading_pack_identity(progress),
+                    )
+                    self.assertFalse(tray._controller_busy)
+                    self.assertIsNone(tray.last_controller_error)
+                    tray.pregeneration_dialog = None
+                    tray.shutdown()
+
+    def test_progressive_auto_advance_preserves_manual_sequence_mode(self):
+        for mode in ("off", "audio-auto", "audio-manual"):
+            with self.subTest(mode=mode), TemporaryDirectory() as directory:
+                tray, controller, preparation, progress = (
+                    self._progressive_pack_reading_tray(Path(directory), pending=False)
+                )
+                tray.settings = tray.settings.updated(auto_advance_enabled=False)
+                progress = progress.updated(
+                    auto_advance_enabled=False, live_sequence_mode=mode
+                )
+                controller.settings = progress
+                preparation.runtime_playback_settings.return_value = progress
+                tray._retain_preparation_reading(progress)
+                tray.settings = tray.settings.updated(auto_advance_enabled=True)
+                effective = tray._runtime_settings()
+                self.assertEqual(effective.live_sequence_mode, mode)
+                self.assertEqual(
+                    tray._reading_pack_identity(effective),
+                    tray._reading_pack_identity(progress),
+                )
+                tray.pregeneration_dialog = None
+                tray.shutdown()
+
+    def test_progressive_auto_advance_toggle_keeps_reader_state(self):
+        for live in (False, True):
+            for mode in ("off", "audio-auto", "audio-manual"):
+                with (
+                    self.subTest(live=live, mode=mode),
+                    TemporaryDirectory() as directory,
+                ):
+                    tray, controller, preparation, progress = (
+                        self._progressive_pack_reading_tray(Path(directory))
+                    )
+                    tray.settings = tray.settings.updated(
+                        auto_advance_enabled=False, live_sequence_mode=mode
+                    )
+                    progress = progress.updated(
+                        auto_advance_enabled=False, live_sequence_mode=mode
+                    )
+                    controller.settings = progress
+                    controller.is_live_running = live
+                    preparation.runtime_playback_settings.return_value = progress
+                    tray._retain_preparation_reading(progress)
+                    tray._bind_preparation_callbacks()
+                    backend = controller.speech_backend
+                    wait_callback = backend.progress_wait_request
+                    controller.story_cursor_lock = Lock()
+                    controller.set_auto_advance_enabled.side_effect = (
+                        LiveSessionComponent(controller).set_auto_advance_enabled
+                    )
+                    with (
+                        patch.object(tray, "_save_settings_candidate"),
+                        patch.object(tray.initial_start_runner, "start") as initialize,
+                    ):
+                        tray.toggle_auto_advance(True)
+                        self.assertEqual(
+                            controller.settings.auto_advance_enabled,
+                            mode != "audio-manual",
+                        )
+                        tray.toggle_auto_advance(False)
+                        self.assertFalse(controller.settings.auto_advance_enabled)
+                        initialize.assert_not_called()
+                    self.assertEqual(controller.settings.live_sequence_mode, mode)
+                    self.assertEqual(tray._runtime_settings().live_sequence_mode, mode)
+                    self.assertEqual(controller.is_live_running, live)
+                    controller.apply_settings.assert_not_called()
+                    controller.start.assert_not_called()
+                    controller.toggle_live.assert_not_called()
+                    controller.live_reader.start.assert_not_called()
+                    controller.live_reader.stop.assert_not_called()
+                    controller._load_live_sequence_plan.assert_not_called()
+                    self.assertTrue(tray._runtime_control_state().ready)
+                    self.assertFalse(tray._controller_busy)
+                    self.assertIs(controller.speech_backend, backend)
+                    self.assertIs(backend.progress_wait_request, wait_callback)
+                    backend.progress_wait_request("line", "digest")
+                    self.application.processEvents()
+                    preparation.prioritize_line.assert_called_once_with("line", "digest")
+                    self.assertEqual(
+                        tray._reading_pack_identity(controller.settings),
+                        tray._reading_pack_identity(progress),
+                    )
+                    tray.pregeneration_dialog = None
+                    tray.shutdown()
+
+    def test_progressive_handoff_restarts_loaded_voice_manifest(self):
+        with TemporaryDirectory() as directory:
+            tray, controller, _preparation, progress = (
+                self._progressive_pack_reading_tray(Path(directory), selected=False)
+            )
+
+            def apply_settings(requested, **_kwargs):
+                controller.settings = (
+                    preserve_loaded_runtime_settings(controller.settings, requested)
+                    if controller.is_ready
+                    else requested
+                )
+                return True
+
+            controller.apply_settings.side_effect = apply_settings
+            controller.shutdown.side_effect = lambda: setattr(
+                controller, "is_ready", False
+            )
+            controller.start.side_effect = lambda: (
+                setattr(controller, "is_ready", True) or True
+            )
+            pool = ManualThreadPool()
+            tray.initial_start_runner.thread_pool = pool
+            with patch.object(tray, "schedule_hotkeys"):
+                tray._read_prepared_story()
+                self.assertLessEqual(len(pool.tasks), 1)
+                if pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+            self.assertEqual(pool.tasks, [])
+            self.assertEqual(
+                tray._reading_pack_identity(controller.settings),
+                tray._reading_pack_identity(progress),
+            )
+            controller.toggle_live.assert_called_once_with()
+            self.assertTrue(tray._runtime_control_state().ready)
+            self.assertFalse(tray._controller_busy)
+            self.assertIsNone(tray.last_controller_error)
+            backend = controller.speech_backend
+            backend.progress_wait_request("line", "digest")
+            backend.progress_line_observed("line", "digest")
+            self.application.processEvents()
+            _preparation.prioritize_line.assert_called_once_with("line", "digest")
+            _preparation.readingLineObserved.emit.assert_called_once_with(
+                "line", "digest"
+            )
+            self.assertIsNone(backend.progress_wait_description())
+            tray.pregeneration_dialog = None
+            tray.shutdown()
 
     def test_active_pack_is_selected_until_explicit_progressive_handoff(self):
         with TemporaryDirectory() as directory:
@@ -7829,6 +8072,29 @@ class TrayApplicationTest(unittest.TestCase):
                     tray._initial_start_finished(True, None)
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
+
+    def test_initial_start_completion_preserves_nested_start_intent(self):
+        tray, _controller, _pool = self._cold_reading_tray()
+        tray._initial_start_generation = tray._begin_controller_lifecycle()
+        tray._start_live_after_initial_start = True
+
+        def initialize_again():
+            tray._initial_start_generation = tray._begin_controller_lifecycle()
+            tray._start_live_after_initial_start = True
+
+        with (
+            patch.object(tray, "schedule_hotkeys"),
+            patch.object(tray, "toggle_live", side_effect=initialize_again) as start,
+        ):
+            tray._initial_start_finished(True, None)
+            self.assertTrue(tray._start_live_after_initial_start)
+            self.assertIsNotNone(tray._initial_start_generation)
+            start.side_effect = None
+            tray._initial_start_finished(True, None)
+            self.assertEqual(start.call_count, 2)
+        self.assertFalse(tray._start_live_after_initial_start)
+        self.assertFalse(tray._controller_busy)
+        tray.shutdown()
 
     def test_ready_read_starts_without_initializing_again(self):
         tray, controller, pool = self._cold_reading_tray()

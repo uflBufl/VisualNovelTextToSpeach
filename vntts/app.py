@@ -179,6 +179,7 @@ from vntts.settings import (
     get_settings_path,
     is_live_sequence_audio_mode,
     load_app_settings,
+    restart_required_setting_changes,
     user_preferences,
 )
 from vntts.speech_backend import default_moss_tts_model
@@ -1961,7 +1962,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             PreparedPlaybackStore() if uses_saved_settings else None
         )
         self._prepared_settings: AppSettings | None = None
-        self._prepared_source: tuple[str | bool | None, ...] | None = None
+        self._prepared_base_settings: AppSettings | None = None
         runtime_settings = self._runtime_settings()
         self.profile_store = profile_store or GameProfileStore.load()
         if uses_saved_settings:
@@ -2117,6 +2118,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._controller_ready = False
         self._controller_busy = False
         self._start_live_after_initial_start = False
+        self._initial_start_settings: AppSettings | None = None
         self._shutting_down = False
         self._quit_requested = False
         self._reported_live = False
@@ -2599,22 +2601,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return True
 
     @staticmethod
-    def _playback_source(settings: AppSettings) -> tuple[str | bool | None, ...]:
+    def _playback_source(settings: AppSettings) -> tuple[str | None, ...]:
         return (
             settings.active_profile_id,
             *TrayApplication._reading_pack_identity(settings),
             settings.live_speaker_corpus,
-            settings.audio_source_policy,
-            settings.force_live_narrator,
-            settings.live_sequence_mode,
-            settings.auto_advance_enabled,
         )
 
     def _runtime_settings(self, settings: AppSettings | None = None) -> AppSettings:
         settings = self.settings if settings is None else settings
-        source = self._playback_source(settings)
-        if source != self._prepared_source:
-            self._prepared_source = source
+        base = self._prepared_base_settings
+        if base is None or self._playback_source(settings) != self._playback_source(base):
+            self._prepared_base_settings = base = settings
             self._progress_preparation_active = False
             restored = (
                 self.playback_store.restore(settings)
@@ -2625,6 +2623,31 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         prepared = self._prepared_settings
         if prepared is None:
             return settings
+        if (
+            settings.audio_source_policy != base.audio_source_policy
+            or settings.force_live_narrator != base.force_live_narrator
+            or settings.live_sequence_mode != base.live_sequence_mode
+        ):
+            # Preference edits change routing, not the selected preparation.
+            prepared = prepared.updated(
+                audio_source_policy=(
+                    settings.audio_source_policy
+                    if settings.audio_source_policy != base.audio_source_policy
+                    else prepared.audio_source_policy
+                ),
+                force_live_narrator=(
+                    settings.force_live_narrator
+                    if settings.force_live_narrator != base.force_live_narrator
+                    else prepared.force_live_narrator
+                ),
+                live_sequence_mode=(
+                    settings.live_sequence_mode
+                    if settings.live_sequence_mode != base.live_sequence_mode
+                    else prepared.live_sequence_mode
+                ),
+            )
+            self._prepared_settings = prepared
+            self._prepared_base_settings = settings
         files = tuple(
             Path(path) for path in self._reading_pack_identity(prepared) if path
         )
@@ -2674,7 +2697,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _retain_preparation_reading(self, settings: AppSettings) -> None:
-        self._prepared_source = self._playback_source(self.settings)
+        self._prepared_base_settings = self.settings
         self._prepared_settings = settings
         candidate = self._preparation_runtime_settings()
         self._progress_preparation_active = bool(
@@ -2880,7 +2903,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not self.settings.onboarding_completed:
             self.run_onboarding()
             return
-        if runtime_settings is not None:
+        if (
+            runtime_settings is not None
+            and not restart_required_setting_changes(
+                self.controller.settings, runtime_settings
+            )
+            and self.controller.settings.live_sequence_mode
+            == runtime_settings.live_sequence_mode
+        ):
             generation = self._begin_controller_lifecycle()
             applied = self.session_owner.attach(generation, runtime_settings)
             if applied is not False:
@@ -2901,6 +2931,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 return
         generation = self._begin_controller_lifecycle()
         self._start_live_after_initial_start = bool(start_live)
+        self._initial_start_settings = runtime_settings
         self.set_status(
             "Preparing reading; it will start automatically when ready."
             if start_live
@@ -2909,25 +2940,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._initial_start_generation = generation
         self.initial_start_runner.start(
-            self._initialize_controller, generation, runtime_settings
+            self._initialize_controller,
+            generation,
+            runtime_settings or self._runtime_settings(),
         )
 
     def _initialize_controller(
         self, generation: int, runtime_settings: AppSettings | None = None
     ) -> bool:
-        runtime_settings = (
-            runtime_settings
-            or self._reading_source_choice()[0]
-            or self._runtime_settings()
-        )
+        runtime_settings = runtime_settings or self._runtime_settings()
         loaded = getattr(self.controller, "settings", None)
-        if (
-            isinstance(loaded, AppSettings)
-            and self._reading_pack_identity(loaded)
+        if isinstance(loaded, AppSettings) and (
+            self._reading_pack_identity(loaded)
             != self._reading_pack_identity(runtime_settings)
-            and not self.session_owner.attach(generation, runtime_settings)
+            or loaded.live_sequence_mode != runtime_settings.live_sequence_mode
+            or restart_required_setting_changes(loaded, runtime_settings)
         ):
-            return False
+            return self.session_owner.start(generation, settings=runtime_settings)
         return self.session_owner.start(generation)
 
     def _initial_start_finished(
@@ -2937,6 +2966,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._initial_start_generation = None
         if not self._lifecycle_is_current(generation):
             return
+        start_live = self._start_live_after_initial_start
+        self._start_live_after_initial_start = False
+        settings = self._initial_start_settings
+        self._initial_start_settings = None
+        if ready and error is None and settings is not None:
+            self._retain_preparation_reading(settings)
         self._finish_controller_lifecycle()
         if error is not None:
             self.last_controller_error = f"Unable to initialize controller: {error}"
@@ -2947,9 +2982,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.ready_changed.emit(ready)
         if ready:
             self.schedule_hotkeys()
-            if self._start_live_after_initial_start:
+            if start_live and not self.controller.is_live_running:
                 self.toggle_live()
-        self._start_live_after_initial_start = False
 
     def _refresh_hotkeys(self) -> None:
         if sys.platform != "darwin":
@@ -4378,7 +4412,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Unable to activate prepared offline audio: activation result is invalid"
             )
             return
-        self._prepared_source = self._playback_source(self.settings)
+        self._prepared_base_settings = self.settings
         self._prepared_settings = result.settings
         runtime_settings = self._runtime_settings()
         self.dashboard.set_configuration(runtime_settings)
@@ -5606,15 +5640,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 and not self._shutting_down
             )
         loaded = getattr(self.controller, "settings", None)
-        if (
-            enabled
-            and isinstance(loaded, AppSettings)
-            and self._reading_pack_identity(loaded)
-            != self._reading_pack_identity(self._runtime_settings())
-            and not self._preparation_playback_active()
-        ):
-            enabled = False
-            initialization_needed = True
+        if enabled and isinstance(loaded, AppSettings):
+            runtime_settings = self._runtime_settings()
+            if (
+                self._reading_pack_identity(loaded)
+                != self._reading_pack_identity(runtime_settings)
+                and not self._preparation_playback_active()
+            ) or loaded.live_sequence_mode != runtime_settings.live_sequence_mode:
+                enabled = False
+                initialization_needed = True
         snapshot = None
         reader = getattr(self.controller, "live_reader", None)
         snapshot_loader = getattr(self.controller, "runtime_control_snapshot", None)

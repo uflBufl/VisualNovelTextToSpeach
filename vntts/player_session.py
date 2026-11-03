@@ -13,7 +13,7 @@ from vntts.pregeneration_activation import (
     OfflinePackActivator,
 )
 from vntts.pregeneration_pack import OfflinePackResult
-from vntts.settings import AppSettings
+from vntts.settings import AppSettings, restart_required_setting_changes
 
 if TYPE_CHECKING:
     from vntts.controller import AppController
@@ -121,14 +121,26 @@ class PlayerSessionOwner:
             primary_error=error,
         )
 
-    def start(self, generation: int) -> bool:
+    def start(self, generation: int, *, settings: AppSettings | None = None) -> bool:
         return self.run(
             generation,
-            lambda cancellation: self._start_runtime(generation, cancellation),
+            lambda cancellation: self._start_runtime(generation, cancellation, settings),
             False,
         )
 
-    def _start_runtime(self, generation: int, cancellation: Event) -> bool:
+    def _start_runtime(
+        self, generation: int, cancellation: Event, settings: AppSettings | None = None
+    ) -> bool:
+        loaded = self.controller.settings
+        if settings is not None and loaded != settings:
+            restart = bool(restart_required_setting_changes(loaded, settings))
+            current, applied = self._configure_runtime(
+                generation, settings, cancellation, restart=restart
+            )
+            if not current or not applied:
+                return False
+            if restart:
+                return True
         self.controller.prepare_startup()
         if cancellation.is_set() or not self.is_current(generation):
             self.controller.request_shutdown()

@@ -28,6 +28,46 @@ class _BackgroundWarmupBackend:
 
 
 class PlayerSessionOwnerTest(unittest.TestCase):
+    def test_start_with_new_voices_restores_previous_runtime_after_failure(self):
+        previous = AppSettings(voice_manifest="previous-voices.json")
+        requested = previous.updated(voice_manifest="new-voices.json")
+        controller = Mock(settings=previous, is_ready=True)
+        controller.apply_settings.side_effect = lambda settings, **_kwargs: (
+            setattr(controller, "settings", settings) or True
+        )
+        controller.start.side_effect = (False, True)
+        owner = PlayerSessionOwner(controller)
+        generation = owner.begin()
+
+        self.assertFalse(owner.start(generation, settings=requested))
+
+        self.assertEqual(controller.settings, previous)
+        self.assertEqual(controller.start.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in controller.apply_settings.call_args_list],
+            [requested, previous],
+        )
+
+    def test_start_handoff_uses_owned_cancellation_and_does_not_start_after_cancel(self):
+        cancellation = Event()
+        previous = AppSettings(story_index="previous-story.jsonl")
+        requested = previous.updated(story_index="new-story.jsonl")
+        controller = Mock(settings=previous, is_ready=True)
+
+        def apply_settings(settings, **kwargs):
+            self.assertIs(kwargs["cancellation"], cancellation)
+            cancellation.set()
+            return False
+
+        controller.apply_settings.side_effect = apply_settings
+        owner = PlayerSessionOwner(controller)
+        generation = owner.begin(cancellation)
+
+        self.assertFalse(owner.start(generation, settings=requested))
+
+        controller.start.assert_not_called()
+        self.assertEqual(controller.settings, previous)
+
     def test_pack_activation_saves_preferences_and_restores_actual_previous_runtime(
         self,
     ):

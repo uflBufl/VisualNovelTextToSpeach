@@ -309,23 +309,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate the recorded November3 findings below, then propose one
-concrete implementation plan at a time. The autonomous chapter and separate
+Next action: review and implement REC-03-01 below, one agreed repair at a time. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
 session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
-
-- [ ] **UX-03-01 - Repair reading-source ownership and restart intent (plan approval pending).**
-      Reproduced: ordinary auto-advance off/on invalidates retained progressive
-      source; recovery can combine old/new pack settings and lose Start in nested
-      initialization. Keep selected source through audio policy, force narrator,
-      sequence mode and auto-advance edits while applying those edits. Consume
-      completion's Start intent before invoking another start. For changed
-      restart-required voice settings, use existing restart-aware handoff rather
-      than reporting readiness with a hybrid loaded identity. Different saved-pack
-      activation stays explicit. Cover real loaded-settings preservation in app/
-      session tests, completed preparation Stop/Read and nested-start completion.
 
 - [ ] **REC-03-01 - Repair first-source analysis eligibility (plan approval pending).**
       Full line6 is captured (6.96s, correlation0.99635); the analyzer wrongly
@@ -364,6 +352,14 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       current events do not expose warmup scope. First inspect existing ownership
       and prefix evidence before proposing any additional measurement. Do not
       repeat canonical43 routing merely to reprove the completed part of this gate.
+
+- [ ] **UX-03-01 - Remaining native acceptance of repeat Read.**
+      In the next combined run, toggle auto advance during pending/completed
+      preparation, then Stop/Read through main and menu controls. Keep the same
+      selected source and current reader mode; no unexpected replay or activation
+      of another saved pack. Verify explicit different-voice handoff, usable
+      missing-line priority callbacks, and failure/cancel rollback. Do not repeat
+      the chapter just for this gate before the other agreed repairs.
 
 - [ ] Complete the unexercised UI cases: enlarged font/smaller height and failure
       inspector. History export/delete have been exercised. Preserve actual
