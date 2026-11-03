@@ -315,8 +315,8 @@ evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: agree AUDIO-02-01's concrete repair below, implement and verify it,
-then investigate the capture failure below.
+Next action: investigate CAPTURE-02-01's retained stream/system lifecycle and
+prepare a concrete repair from the evidence below.
 RUN-02-01 and RUN-02-02 retain only their native acceptance gates. Refactoring,
 complexity and linter debt remain deferred. Repeat autonomous acceptance after
 agreed repairs; existing evidence must guide any additional instrumentation.
@@ -337,29 +337,6 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
-      After plan agreement, separate discovery invalidation from active-output
-      invalidation in the shared audio owner. Qt output-list notifications must
-      wake the background probe and retire cached discovery for future use without
-      cancelling speech. Compare the selected output's native identity, availability
-      and format separately from unrelated inventory changes on macOS and Windows.
-      Keep CoreAudio object ID and UID; on Windows include the selected endpoint's
-      format and expose PortAudio's backend type in native device discovery. Resolve
-      its effective default through WASAPI's multimedia endpoint, MME's preferred
-      waveOut endpoint or DirectSound's default-device GUID; do not infer the route
-      from a friendly name or assume both MMDevice default roles are in use.
-      Do not query native devices or reset PortAudio on the Qt thread.
-      Migrate Rust query/idle worker reuse and dedicated clip loading to a separate
-      discovery-stale flag. Let active playback finish; replace stale workers before
-      their next use, preserving completed-clip status. A real selected-output
-      change must retain existing interruption/error handling. Recovery of a probe
-      with the same known route must not itself interrupt playback.
-      Gates: related unit tests for unchanged notifications, unrelated hotplug,
-      default disappearance/return and format changes, probe recovery and worker
-      reuse across Reading and voice previews; repeat the controlled native clip
-      notification test. Run changed-test selection first after implementation.
-      Full chapter acceptance remains in the combined run; no Windows hardware
-      gate or new recording campaign is required for this repair.
 - [ ] **CAPTURE-02-01 - System stops both diagnostic and Reading window streams.**
       The same campaign reports ScreenCaptureKit SCStreamErrorDomain -3821,
       diagnostic window failure at575308.034 and product capture error afterward.

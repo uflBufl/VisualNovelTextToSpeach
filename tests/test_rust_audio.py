@@ -26,6 +26,8 @@ from vntts.rust_audio import (
     _ClipPlayback,
     check_audio_runtime,
     portaudio_library,
+    notify_audio_discovery_changed,
+    notify_audio_device_changed,
     worker_executable,
 )
 from vntts.rust_output import RustAudioModule
@@ -229,6 +231,21 @@ class RustAudioProtocolTest(unittest.TestCase):
             self.assertEqual(worker.next_id, clip_id)
             self.assertEqual(record.call_args.kwargs["worker_pid"], worker.process.pid)
         self.assertFalse(worker.closed.is_set())
+
+    def test_worker_startup_does_not_miss_discovery_notification(self):
+        receive = RustAudioWorker.receive
+
+        for notify in (notify_audio_discovery_changed, notify_audio_device_changed):
+            with self.subTest(notification=notify.__name__):
+
+                def receive_ready(worker, timeout):
+                    notify()
+                    return receive(worker, timeout)
+
+                with patch.object(RustAudioWorker, "receive", receive_ready):
+                    worker = self.worker()
+                self.assertTrue(worker.discovery_stale.is_set())
+                self.assertFalse(worker.device_changed.is_set())
 
     def test_zero_frame_callback_does_not_claim_audio_onset(self):
         worker = self.worker("zero-first")

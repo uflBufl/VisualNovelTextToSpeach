@@ -1,6 +1,6 @@
 import builtins
 import unittest
-from threading import Event, RLock, Thread
+from threading import Event, RLock, Thread, current_thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -14,6 +14,7 @@ from vntts.system_audio import (
     SystemAudioOutput,
     _DefaultOutputMonitor,
 )
+from vntts.system_audio_devices import OutputDeviceSnapshot
 
 
 class DeviceModule:
@@ -103,7 +104,7 @@ class SystemAudioTest(unittest.TestCase):
         return module, SystemAudioOutput(module)
 
     def create_monitor(self, output):
-        probe = Mock(return_value=("headphones",))
+        probe = Mock(return_value=OutputDeviceSnapshot("headphones", ("headphones",)))
         monitor = _DefaultOutputMonitor(output, lambda: probe)
         self.addCleanup(monitor.close)
         return probe, monitor
@@ -119,7 +120,7 @@ class SystemAudioTest(unittest.TestCase):
         monitor.check()
         stream.write(np.zeros((480, 2), np.float32))
         self.assertIs(stream.native, opened)
-        probe.return_value = ("replacement-headphones",)
+        probe.return_value = OutputDeviceSnapshot("replacement-headphones", ())
         monitor.check()
         # The background probe requests refresh; only the playback owner closes.
         self.assertIs(stream.native, opened)
@@ -140,14 +141,12 @@ class SystemAudioTest(unittest.TestCase):
             self.assertEqual(record.call_args.kwargs["reason"], "OSError")
             self.assertFalse(output.pending.is_set())
             probe.side_effect = None
-            probe.return_value = ("headphones",)
+            probe.return_value = OutputDeviceSnapshot("headphones", ("headphones",))
             monitor.check()
-            self.assertEqual(record.call_count, 3)
-            self.assertEqual(record.call_args.args, ("device-refresh-request",))
-            self.assertEqual(
-                record.call_args.kwargs["reason"], "native-probe-recovered"
-            )
-        self.assertTrue(output.pending.is_set())
+            self.assertEqual(record.call_count, 2)
+            self.assertEqual(record.call_args.args, ("device-probe",))
+            self.assertEqual(record.call_args.kwargs["reason"], "probe-recovered")
+        self.assertFalse(output.pending.is_set())
 
     def test_refresh_requests_report_distinct_origins_without_device_identity(self):
         from vntts import system_audio
@@ -166,7 +165,7 @@ class SystemAudioTest(unittest.TestCase):
             monitor.check()
             probe.side_effect = None
             monitor.check()
-            system_audio._request_system_refresh()
+            system_audio._request_discovery_refresh()
         refresh = [
             call
             for call in record.call_args_list
@@ -177,13 +176,11 @@ class SystemAudioTest(unittest.TestCase):
             [
                 "caller-request",
                 "native-probe-identity-changed",
-                "native-probe-recovered",
-                "qt-audio-outputs-changed",
             ],
         )
         self.assertTrue(all(call.kwargs["outcome"] == "requested" for call in refresh))
         self.assertNotIn("PRIVATE", repr(record.call_args_list))
-        self.assertEqual(notify.call_count, 4)
+        self.assertEqual(notify.call_count, 2)
         self.assertTrue(output.pending.is_set())
         self.assertEqual(module.events, [])
 
@@ -200,18 +197,68 @@ class SystemAudioTest(unittest.TestCase):
         notify.assert_called_once_with()
         self.assertTrue(output.pending.is_set())
 
+    def test_inventory_change_preserves_the_open_stream_and_retires_discovery(self):
+        module, output = self.create_output()
+        probe, monitor = self.create_monitor(output)
+        monitor.check()
+        stream = self.open_stream(output)
+        stream.start()
+        opened = stream.native
+        probe.return_value = OutputDeviceSnapshot(
+            "headphones", ("headphones", "unrelated-bluetooth")
+        )
+        with (
+            patch("vntts.rust_audio.notify_audio_device_changed") as interrupt,
+            patch("vntts.rust_audio.notify_audio_discovery_changed") as stale,
+        ):
+            monitor.check()
+            monitor.check()
+        interrupt.assert_not_called()
+        stale.assert_called_once_with()
+        self.assertFalse(output.pending.is_set())
+        stream.write(np.zeros((480, 2), np.float32))
+        self.assertIs(stream.native, opened)
+        self.assertEqual(module.events.count("terminate"), 1)
+
+    def test_probe_recovery_with_a_different_route_requests_real_refresh(self):
+        _module, output = self.create_output()
+        probe, monitor = self.create_monitor(output)
+        monitor.check()
+        output.pending.clear()
+        probe.side_effect = OSError("temporarily unavailable")
+        monitor.check()
+        probe.side_effect = None
+        probe.return_value = OutputDeviceSnapshot("new-headphones", ())
+        with patch("vntts.rust_audio.notify_audio_device_changed") as interrupt:
+            monitor.check()
+        interrupt.assert_called_once_with()
+        self.assertTrue(output.pending.is_set())
+
+    def test_unavailable_discovery_journal_does_not_prevent_retirement_or_wakeup(self):
+        _module, output = self.create_output()
+        _probe, monitor = self.create_monitor(output)
+        output.device_monitor = monitor
+        with (
+            patch("vntts.system_audio.record_audio_lifecycle", side_effect=OSError),
+            patch("vntts.rust_audio.notify_audio_discovery_changed") as stale,
+        ):
+            output.request_discovery_refresh(reason="qt-audio-outputs-changed")
+        stale.assert_called_once_with()
+        self.assertTrue(monitor.wakeup.is_set())
+        self.assertFalse(output.pending.is_set())
+
     def test_no_output_and_its_return_are_real_identity_changes(self):
         _module, output = self.create_output()
         probe, monitor = self.create_monitor(output)
         monitor.check()
         output.pending.clear()
-        probe.return_value = None
+        probe.return_value = OutputDeviceSnapshot(None, ())
         monitor.check()
         self.assertTrue(output.pending.is_set())
         output.pending.clear()
         monitor.check()
         self.assertFalse(output.pending.is_set())
-        probe.return_value = ("headphones",)
+        probe.return_value = OutputDeviceSnapshot("headphones", ())
         monitor.check()
         self.assertTrue(output.pending.is_set())
 
@@ -226,7 +273,7 @@ class SystemAudioTest(unittest.TestCase):
             checking.set()
             if not release.wait(2):
                 raise AssertionError("Test did not release the probe")
-            return ("headphones",)
+            return OutputDeviceSnapshot("headphones", ())
 
         monitor = _DefaultOutputMonitor(output, lambda: probe)
         output.device_monitor = monitor
@@ -259,7 +306,7 @@ class SystemAudioTest(unittest.TestCase):
                     entered.set()
                     if not release.wait(2):
                         raise AssertionError("Test did not release the initial probe")
-                    return ("headphones",)
+                    return OutputDeviceSnapshot("headphones", ())
 
                 monitor = _DefaultOutputMonitor(output, lambda: probe)
                 output.device_monitor = monitor
@@ -350,7 +397,7 @@ class SystemAudioTest(unittest.TestCase):
 
     def test_probe_factory_failure_retries_and_shutdown_prevents_late_refresh(self):
         _module, output = self.create_output()
-        probe = Mock(return_value=("headphones",))
+        probe = Mock(return_value=OutputDeviceSnapshot("headphones", ()))
         factory = Mock(side_effect=[OSError("temporarily unavailable"), probe])
         monitor = _DefaultOutputMonitor(output, factory)
         monitor.check()
@@ -363,6 +410,28 @@ class SystemAudioTest(unittest.TestCase):
         self.assertEqual(factory.call_count, 2)
         probe.assert_called_once()
         self.assertFalse(output.pending.is_set())
+
+    def test_failed_initial_probe_does_not_release_the_playback_baseline_gate(self):
+        _module, output = self.create_output()
+        failed = Event()
+        recovered = Event()
+
+        def probe():
+            if not recovered.is_set():
+                failed.set()
+                raise OSError("audio service temporarily unavailable")
+            return OutputDeviceSnapshot("headphones", ())
+
+        monitor = _DefaultOutputMonitor(output, lambda: probe)
+        monitor.thread.start()
+        try:
+            self.assertTrue(failed.wait(1))
+            self.assertFalse(monitor.ready.wait(0.05))
+            recovered.set()
+            monitor.wakeup.set()
+            self.assertTrue(monitor.ready.wait(1))
+        finally:
+            monitor.close()
 
     def test_cli_shared_output_starts_one_native_monitor_without_importing_qt(self):
         from vntts import system_audio
@@ -405,6 +474,32 @@ class SystemAudioTest(unittest.TestCase):
             output = system_audio.get_system_audio_output()
             self.assertIsNotNone(output.device_monitor)
             self.assertEqual(thread.call_count, 2)
+
+    def test_windows_backend_bootstrap_runs_in_monitor_before_opening_audio(self):
+        from vntts import system_audio
+
+        module = DeviceModule()
+        module.device["host_api_type"] = 2
+        calls = []
+
+        def create_probe(*, host_api_type):
+            calls.append((host_api_type, current_thread().name))
+            return lambda: OutputDeviceSnapshot("headphones", ())
+
+        with (
+            patch.object(system_audio, "sys", Mock(platform="win32")),
+            patch("vntts.rust_output.RustAudioModule", return_value=module),
+            patch.object(system_audio, "_system_output", None),
+            patch.object(system_audio, "create_default_output_probe", create_probe),
+            patch.object(system_audio.atexit, "register"),
+        ):
+            output = system_audio.get_system_audio_output()
+            try:
+                self.assertTrue(output.device_monitor.ready.wait(1))
+                self.assertEqual(calls, [(2, "vntts-default-audio-device")])
+                self.assertEqual(module.events, [])
+            finally:
+                output.device_monitor.close()
 
     def open_stream(self, output, **options):
         stream = output.OutputStream(
@@ -876,22 +971,31 @@ class SystemAudioTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "closed"):
             stream.write(np.zeros((480, 2), np.float32))
 
-    def test_qt_notification_only_requests_refresh_and_has_one_owner(self):
+    def test_qt_notification_retires_discovery_without_interrupting_and_has_one_owner(
+        self,
+    ):
         from vntts import system_audio
 
         module, output = self.create_output()
+        _probe, monitor = self.create_monitor(output)
+        output.device_monitor = monitor
         media = Mock()
         with (
             patch.object(system_audio, "_system_output", output),
             patch.object(system_audio, "_media_devices", None),
             patch("PySide6.QtCore.QCoreApplication.instance", return_value=Mock()),
             patch("PySide6.QtMultimedia.QMediaDevices", return_value=media) as create,
+            patch("vntts.rust_audio.notify_audio_device_changed") as interrupt,
+            patch("vntts.rust_audio.notify_audio_discovery_changed") as stale,
         ):
             system_audio.initialize_audio_device_monitor()
             system_audio.initialize_audio_device_monitor()
             media.audioOutputsChanged.connect.call_args.args[0]()
             create.assert_called_once()
-        self.assertTrue(output.pending.is_set())
+        self.assertFalse(output.pending.is_set())
+        self.assertTrue(monitor.wakeup.is_set())
+        interrupt.assert_not_called()
+        stale.assert_called_once_with()
         self.assertEqual(module.events, [])
 
     def test_qt_watcher_does_not_import_or_initialize_sounddevice(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import sys
 from collections.abc import Callable
 from threading import Event, Lock, RLock, Thread, current_thread, main_thread
 from time import monotonic
@@ -12,6 +13,7 @@ import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.system_audio_devices import OutputDeviceSnapshot, create_default_output_probe
 
 
 class AudioDeviceChangedError(RuntimeError):
@@ -24,15 +26,16 @@ class _DefaultOutputMonitor:
     def __init__(
         self,
         output: SystemAudioOutput,
-        probe_factory: Callable[[], Callable[[], object]],
+        probe_factory: Callable[[], Callable[[], OutputDeviceSnapshot]],
     ) -> None:
         self.output = output
         self.probe_factory = probe_factory
-        self.probe: Callable[[], object] | None = None
-        self.identity: object = object()
+        self.probe: Callable[[], OutputDeviceSnapshot] | None = None
+        self.snapshot: OutputDeviceSnapshot | None = None
         self.failed = False
         self.ready = Event()
         self.stopping = Event()
+        self.wakeup = Event()
         self.thread = Thread(
             target=self._run, name="vntts-default-audio-device", daemon=True
         )
@@ -43,7 +46,7 @@ class _DefaultOutputMonitor:
         try:
             if self.probe is None:
                 self.probe = self.probe_factory()
-            identity = self.probe()
+            snapshot = self.probe()
         except Exception as error:
             if self.stopping.is_set():
                 return
@@ -61,24 +64,27 @@ class _DefaultOutputMonitor:
                 "device-probe", outcome="complete", reason="probe-recovered"
             )
             self.failed = False
-        if recovered or identity != self.identity:
-            self.identity = identity
-            self.output.request_refresh(
-                reason="native-probe-recovered"
-                if recovered
-                else "native-probe-identity-changed"
+        previous, self.snapshot = self.snapshot, snapshot
+        if previous is None or snapshot.selected != previous.selected:
+            self.output.request_refresh(reason="native-probe-identity-changed")
+        elif snapshot.inventory != previous.inventory:
+            self.output.request_discovery_refresh(
+                reason="native-probe-identity-changed"
             )
 
     def _run(self) -> None:
         while not self.stopping.is_set():
+            self.wakeup.clear()
             try:
                 self.check()
             finally:
-                self.ready.set()
-            self.stopping.wait(0.5)
+                if self.snapshot is not None:
+                    self.ready.set()
+            self.wakeup.wait(0.5)
 
     def close(self) -> None:
         self.stopping.set()
+        self.wakeup.set()
         if self.thread.ident is not None and current_thread() is not self.thread:
             self.thread.join(timeout=2)
 
@@ -107,6 +113,19 @@ class SystemAudioOutput:
         from vntts.rust_audio import notify_audio_device_changed
 
         notify_audio_device_changed()
+
+    def request_discovery_refresh(self, *, reason: str) -> None:
+        from vntts.rust_audio import notify_audio_discovery_changed
+
+        notify_audio_discovery_changed()
+        if self.device_monitor is not None:
+            self.device_monitor.wakeup.set()
+        try:
+            record_audio_lifecycle(
+                "device-discovery-refresh-request", outcome="requested", reason=reason
+            )
+        except Exception:
+            pass
 
     def _refresh(self) -> None:
         # Establish the first baseline before opening streams, avoiding a late
@@ -514,9 +533,17 @@ def get_system_audio_output() -> SystemAudioOutput:
             output = SystemAudioOutput(RustAudioModule())
             # Earlier read-only probes may have initialized a stale device list.
             output.request_refresh()
-            from vntts.system_audio_devices import create_default_output_probe
 
-            monitor = _DefaultOutputMonitor(output, create_default_output_probe)
+            def create_probe() -> Callable[[], OutputDeviceSnapshot]:
+                if sys.platform == "win32":
+                    # Bootstrap through the native owner, outside Qt and the facade lock.
+                    device = output.module.query_devices(kind="output")
+                    return create_default_output_probe(
+                        host_api_type=device["host_api_type"]
+                    )
+                return create_default_output_probe()
+
+            monitor = _DefaultOutputMonitor(output, create_probe)
             output.device_monitor = monitor
             atexit.register(monitor.close)
             monitor.thread.start()
@@ -536,13 +563,13 @@ def initialize_audio_device_monitor() -> None:
     if application is None:
         return
     _media_devices = QMediaDevices(application)
-    _media_devices.audioOutputsChanged.connect(_request_system_refresh)
+    _media_devices.audioOutputsChanged.connect(_request_discovery_refresh)
     QMediaDevices.defaultAudioOutput()
 
 
-def _request_system_refresh() -> None:
+def _request_discovery_refresh() -> None:
     if _system_output is not None:
-        _system_output.request_refresh(reason="qt-audio-outputs-changed")
+        _system_output.request_discovery_refresh(reason="qt-audio-outputs-changed")
 
 
 __all__ = [

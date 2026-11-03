@@ -375,6 +375,7 @@ class RustClipControllerTest(unittest.TestCase):
     def worker(self):
         worker = Mock()
         worker.device_changed = Event()
+        worker.discovery_stale = Event()
         return worker
 
     def finished_event(self, *, sample_rate=24000, channels=1):
@@ -446,6 +447,33 @@ class RustClipControllerTest(unittest.TestCase):
             [call.args[0]["op"] for call in worker.send.call_args_list],
             ["query_device", "start", "status"],
         )
+
+    def test_discovery_change_preserves_clip_until_next_load(self):
+        old, new = self.worker(), self.worker()
+        status = self.finished_event()
+        status.update(event="status", playing=True, finished=False)
+        old.receive.side_effect = [
+            {"event": "loaded", "id": 1},
+            {"event": "started", "id": 1},
+            status,
+            {"event": "paused", "id": 1},
+            self.finished_event(),
+        ]
+        new.receive.return_value = {"event": "loaded", "id": 2}
+        controller = RustClipController(Mock(side_effect=[old, new]))
+        self.addCleanup(controller.close)
+        samples = np.zeros((2, 1), np.float32)
+        controller.load(samples, 24000, 1, 0.1)
+        controller.start()
+        old.discovery_stale.set()
+        self.assertFalse(controller.device_changed)
+        self.assertTrue(controller.status()["playing"])
+        controller.pause()
+        old.close.assert_not_called()
+        controller.load(samples, 24000, 1, 0.1)
+        old.close.assert_called_once_with()
+        self.assertEqual(old.send.call_args.args[0]["op"], "stop")
+        self.assertEqual(new._send_bounded.call_args.args[0]["id"], 2)
 
     def test_finished_summary_is_validated_once_with_distinct_native_counters(self):
         worker = self.worker()

@@ -182,6 +182,10 @@ class RustClipController:
             )
         with self._lock:
             self.stop()
+            worker = self._get_worker()
+            if worker.discovery_stale.is_set():
+                worker.close()
+                self._worker = None
             self._last_id += 1
             self._clip_id = self._last_id
             self._terminal = False

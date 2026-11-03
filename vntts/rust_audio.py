@@ -31,6 +31,7 @@ MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
 _workers: WeakSet[RustAudioWorker] = WeakSet()
 _workers_lock = Lock()
+_discovery_generation = 0
 
 
 AUDIO_WORKER_BUILD_COMMAND = (
@@ -136,6 +137,7 @@ class RustAudioWorker:
         self.close_lock = Lock()
         self.events: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(64)
         self.device_changed = Event()
+        self.discovery_stale = Event()
         self.closed = Event()
         self.next_id = 0
         self._active_id: int | None = None
@@ -143,6 +145,8 @@ class RustAudioWorker:
         self.diagnostic_worker_id = uuid4().hex
         self._audio_used = False
         self.stderr = tempfile.TemporaryFile()
+        with _workers_lock:
+            discovery_generation = _discovery_generation
         started = monotonic()
         try:
             command = command or [
@@ -182,6 +186,9 @@ class RustAudioWorker:
             self.startup_ms = (monotonic() - started) * 1000
             self.ready = ready
             with _workers_lock:
+                # Notifications can arrive while the child initializes PortAudio.
+                if discovery_generation != _discovery_generation:
+                    self.discovery_stale.set()
                 _workers.add(self)
         except BaseException:
             self.close()
@@ -779,8 +786,18 @@ def active_audio_workers() -> tuple[dict[str, object], ...]:
 
 
 def notify_audio_device_changed() -> None:
+    notify_audio_discovery_changed()
     with _workers_lock:
         workers = tuple(_workers)
     for worker in workers:
         worker.device_changed.set()
         worker.cancel_active()
+
+
+def notify_audio_discovery_changed() -> None:
+    global _discovery_generation
+    with _workers_lock:
+        _discovery_generation += 1
+        workers = tuple(_workers)
+    for worker in workers:
+        worker.discovery_stale.set()

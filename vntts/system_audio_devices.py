@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
+import re
 import shutil
 import struct
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
 
-def create_default_output_probe() -> Callable[[], object]:
+@dataclass(frozen=True)
+class OutputDeviceSnapshot:
+    selected: object
+    inventory: object
+
+
+def create_default_output_probe(
+    host_api_type: int | None = None,
+) -> Callable[[], OutputDeviceSnapshot]:
     """Return a probe; missing output is a value, failed observation raises."""
     if sys.platform == "darwin":
         return _MacOutputProbe()
     if sys.platform == "win32":
-        return _WindowsOutputProbe()
+        return _WindowsOutputProbe(host_api_type)
     if sys.platform.startswith("linux"):
         return _linux_output_fingerprint
     raise OSError(f"System audio device probing is unsupported on {sys.platform}")
@@ -107,7 +118,7 @@ class _MacOutputProbe:
         finally:
             self.cf.CFRelease(value)
 
-    def __call__(self) -> object:
+    def __call__(self) -> OutputDeviceSnapshot:
         default = struct.unpack("=I", self._property(1, "dOut"))[0]
         ids = self._property(1, "dev#")
         devices = []
@@ -117,14 +128,19 @@ class _MacOutputProbe:
                 continue
             uid = self._uid(device)
             alive = struct.unpack("=I", self._property(device, "livn"))[0]
+            devices.append((device, uid, alive))
+        if default and not any(device[0] == default for device in devices):
+            raise OSError("CoreAudio default output disappeared during observation")
+        selected = None
+        if default:
+            identity = next(device for device in devices if device[0] == default)
+            streams = self._property(default, "stm#", "outp")
             formats = tuple(
                 (stream, struct.unpack("=d8I", self._property(stream, "sfmt"))[:-1])
                 for (stream,) in struct.iter_unpack("=I", streams)
             )
-            devices.append((device, uid, alive, formats))
-        if default and not any(device[0] == default for device in devices):
-            raise OSError("CoreAudio default output disappeared during observation")
-        return ("coreaudio", default or None, tuple(sorted(devices)))
+            selected = ("coreaudio", *identity, formats)
+        return OutputDeviceSnapshot(selected, ("coreaudio", tuple(sorted(devices))))
 
 
 class _GUID(ctypes.Structure):
@@ -133,6 +149,18 @@ class _GUID(ctypes.Structure):
         ("data2", ctypes.c_uint16),
         ("data3", ctypes.c_uint16),
         ("data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _PropertyKey(ctypes.Structure):
+    _fields_ = [("fmtid", _GUID), ("pid", ctypes.c_uint32)]
+
+
+class _PropVariant(ctypes.Structure):
+    _fields_ = [
+        ("vt", ctypes.c_uint16),
+        ("reserved", ctypes.c_uint16 * 3),
+        ("payload", ctypes.c_void_p * 2),
     ]
 
 
@@ -156,7 +184,10 @@ def _com_method(
 
 
 class _WindowsOutputProbe:
-    def __init__(self) -> None:
+    def __init__(self, host_api_type: int | None = None) -> None:
+        if host_api_type not in (1, 2, 13):
+            raise OSError(f"Unsupported Windows PortAudio host API: {host_api_type}")
+        self.host_api_type = host_api_type
         self.ole = getattr(ctypes, "WinDLL")("ole32")
         self.ole.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         self.ole.CoInitializeEx.restype = ctypes.c_int32
@@ -172,6 +203,30 @@ class _WindowsOutputProbe:
         self.ole.CoCreateInstance.restype = ctypes.c_int32
         self.ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
         self.ole.CoTaskMemFree.restype = None
+        self.ole.PropVariantClear.argtypes = [ctypes.c_void_p]
+        self.ole.PropVariantClear.restype = ctypes.c_int32
+        if host_api_type == 2:
+            self.winmm = getattr(ctypes, "WinDLL")("winmm")
+            self.winmm.waveOutMessage.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+            ]
+            self.winmm.waveOutMessage.restype = ctypes.c_uint32
+            for direction in ("In", "Out"):
+                count = getattr(self.winmm, f"wave{direction}GetNumDevs")
+                count.argtypes, count.restype = [], ctypes.c_uint32
+                caps = getattr(self.winmm, f"wave{direction}GetDevCapsW")
+                caps.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint32]
+                caps.restype = ctypes.c_uint32
+        if host_api_type == 1:
+            self.dsound = getattr(ctypes, "WinDLL")("dsound")
+            self.dsound.GetDeviceID.argtypes = [
+                ctypes.POINTER(_GUID),
+                ctypes.POINTER(_GUID),
+            ]
+            self.dsound.GetDeviceID.restype = ctypes.c_int32
 
     def _release(self, pointer: ctypes.c_void_p) -> None:
         if pointer.value:
@@ -201,7 +256,182 @@ class _WindowsOutputProbe:
             if identifier.value:
                 self.ole.CoTaskMemFree(identifier)
 
-    def __call__(self) -> object:
+    def _mix_format(self, device: ctypes.c_void_p) -> bytes:
+        client, value = ctypes.c_void_p(), ctypes.c_void_p()
+        iid = _GUID.from_buffer_copy(
+            UUID("1cb9ad4c-dbfa-4c32-b178-c2f568a703b2").bytes_le
+        )
+        try:
+            _check_hresult(
+                _com_method(
+                    device,
+                    3,
+                    ctypes.POINTER(_GUID),
+                    ctypes.c_uint32,
+                    ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_void_p),
+                )(device, ctypes.byref(iid), 23, None, ctypes.byref(client)),
+                "IMMDevice.Activate(IAudioClient)",
+            )
+            _check_hresult(
+                _com_method(client, 8, ctypes.POINTER(ctypes.c_void_p))(
+                    client, ctypes.byref(value)
+                ),
+                "IAudioClient.GetMixFormat",
+            )
+            if not value.value:
+                raise OSError("IAudioClient returned an empty mix format")
+            header = ctypes.string_at(value, 18)  # Packed WAVEFORMATEX includes cbSize.
+            extra = struct.unpack_from("<H", header, 16)[0]
+            if extra > 4096:
+                raise OSError("IAudioClient returned an invalid mix format size")
+            return header + ctypes.string_at(value.value + 18, extra)
+        finally:
+            try:
+                if value.value:
+                    self.ole.CoTaskMemFree(value)
+            finally:
+                self._release(client)
+
+    def _wave_message(self, device: int, message: int, first: int, second: int) -> None:
+        status = self.winmm.waveOutMessage(
+            ctypes.c_void_p(device), message, first, second
+        )
+        if status:
+            raise OSError(f"waveOutMessage(0x{message:x}) failed: {status}")
+
+    def _mme_endpoint(self) -> str | None:
+        if not self.winmm.waveOutGetNumDevs():
+            return None
+        override = os.environ.get("PA_RECOMMENDED_OUTPUT_DEVICE", "")
+        wave_id = None
+        if override and len(override.encode()) < 32:
+            # PA uses atoi and counts only successful caps, inputs before outputs.
+            match = re.match(r"\s*([+-]?[0-9]+)", override)
+            recommended = int(match[1]) if match else 0
+            local_index = 0
+            for direction in ("In", "Out"):
+                count = getattr(self.winmm, f"wave{direction}GetNumDevs")()
+                for index in range(-1, count) if count else ():
+                    native_id = index & 0xFFFFFFFF
+                    caps = ctypes.create_string_buffer(80 if direction == "In" else 84)
+                    status = getattr(self.winmm, f"wave{direction}GetDevCapsW")(
+                        native_id, caps, len(caps)
+                    )
+                    if status == 7:  # MMSYSERR_NOMEM also aborts PA initialization.
+                        raise OSError("waveGetDevCapsW failed: out of memory")
+                    if status:
+                        continue
+                    if direction == "Out" and local_index == recommended:
+                        wave_id = native_id
+                    local_index += 1
+        if wave_id is None or wave_id == 0xFFFFFFFF:
+            preferred, flags = ctypes.c_uint32(0xFFFFFFFF), ctypes.c_uint32()
+            self._wave_message(
+                0xFFFFFFFF, 0x2015, ctypes.addressof(preferred), ctypes.addressof(flags)
+            )  # DRVM_MAPPER_PREFERRED_GET
+            wave_id = preferred.value
+        size = ctypes.c_uint32()
+        self._wave_message(wave_id, 0x0812, ctypes.addressof(size), 0)
+        if not 2 <= size.value <= 1_048_576 or size.value % 2:
+            raise OSError("waveOut returned an invalid endpoint ID size")
+        buffer = ctypes.create_string_buffer(size.value)
+        self._wave_message(wave_id, 0x0811, ctypes.addressof(buffer), size.value)
+        if not buffer.raw.endswith(b"\0\0"):
+            raise OSError("waveOut returned an unterminated endpoint ID")
+        identifier = buffer.raw.decode("utf-16-le").rstrip("\0")
+        if not identifier:
+            raise OSError("waveOut returned an empty endpoint ID")
+        return identifier
+
+    def _directsound_guid(self, device: ctypes.c_void_p) -> UUID:
+        store = ctypes.c_void_p()
+        value = _PropVariant()
+        key = _PropertyKey(
+            _GUID.from_buffer_copy(
+                UUID("1da5d803-d492-4edd-8c23-e0c0ffee7f0e").bytes_le
+            ),
+            4,
+        )
+        try:
+            _check_hresult(
+                _com_method(
+                    device, 4, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)
+                )(device, 0, ctypes.byref(store)),
+                "IMMDevice.OpenPropertyStore",
+            )
+            _check_hresult(
+                _com_method(store, 5, ctypes.POINTER(_PropertyKey), ctypes.c_void_p)(
+                    store, ctypes.byref(key), ctypes.byref(value)
+                ),
+                "IPropertyStore.GetValue",
+            )
+            if value.vt != 31 or not value.payload[0]:  # VT_LPWSTR
+                raise OSError("MMDevice returned an invalid DirectSound endpoint GUID")
+            return UUID(ctypes.wstring_at(value.payload[0]))
+        finally:
+            try:
+                _check_hresult(
+                    self.ole.PropVariantClear(ctypes.byref(value)), "PropVariantClear"
+                )
+            finally:
+                self._release(store)
+
+    def _selected(
+        self, enumerator: ctypes.c_void_p, endpoints: list[tuple[str, int, UUID | None]]
+    ) -> object:
+        device = ctypes.c_void_p()
+        try:
+            if self.host_api_type == 13:
+                status = _com_method(
+                    enumerator,
+                    4,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_void_p),
+                )(enumerator, 0, 1, ctypes.byref(device))  # WASAPI uses eMultimedia.
+            else:
+                if self.host_api_type == 2:
+                    identifier = self._mme_endpoint()
+                    if identifier is None:
+                        return None
+                else:
+                    if not any(state == 1 for _, state, _ in endpoints):
+                        return None
+                    default = _GUID.from_buffer_copy(
+                        UUID("def00000-9c6d-47ed-aaf1-4dda8f2b5c03").bytes_le
+                    )
+                    concrete = _GUID()
+                    status = self.dsound.GetDeviceID(
+                        ctypes.byref(default), ctypes.byref(concrete)
+                    )
+                    if status & 0xFFFFFFFF == 0x88780078:  # DSERR_NODRIVER
+                        return None
+                    _check_hresult(status, "DirectSound.GetDeviceID")
+                    guid = UUID(bytes_le=bytes(concrete))
+                    identifier = next(
+                        (name for name, _, native in endpoints if native == guid), None
+                    )
+                    if identifier is None:
+                        raise OSError(
+                            "DirectSound default endpoint disappeared during observation"
+                        )
+                status = _com_method(
+                    enumerator, 5, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)
+                )(enumerator, identifier, ctypes.byref(device))
+            if status & 0xFFFFFFFF == 0x80070490:  # ERROR_NOT_FOUND
+                return None
+            _check_hresult(status, "Resolve selected audio endpoint")
+            identity = self._identity(device)
+            return (
+                "mmdevice",
+                *identity,
+                self._mix_format(device) if identity[1] == 1 else None,
+            )
+        finally:
+            self._release(device)
+
+    def __call__(self) -> OutputDeviceSnapshot:
         status = self.ole.CoInitializeEx(None, 0)
         # An existing STA is usable too; only successful calls acquire a COM count.
         if status & 0xFFFFFFFF != 0x80010106:
@@ -225,24 +455,6 @@ class _WindowsOutputProbe:
                 ),
                 "CoCreateInstance(MMDeviceEnumerator)",
             )
-            defaults: list[tuple[str, int] | None] = []
-            for role in (0, 1):
-                device = ctypes.c_void_p()
-                try:
-                    status = _com_method(
-                        enumerator,
-                        4,
-                        ctypes.c_int,
-                        ctypes.c_int,
-                        ctypes.POINTER(ctypes.c_void_p),
-                    )(enumerator, 0, role, ctypes.byref(device))
-                    if status & 0xFFFFFFFF == 0x80070490:
-                        defaults.append(None)
-                    else:
-                        _check_hresult(status, "GetDefaultAudioEndpoint")
-                        defaults.append(self._identity(device))
-                finally:
-                    self._release(device)
             _check_hresult(
                 _com_method(
                     enumerator,
@@ -250,7 +462,7 @@ class _WindowsOutputProbe:
                     ctypes.c_int,
                     ctypes.c_uint32,
                     ctypes.POINTER(ctypes.c_void_p),
-                )(enumerator, 0, 1, ctypes.byref(collection)),
+                )(enumerator, 0, 0xF, ctypes.byref(collection)),
                 "EnumAudioEndpoints",
             )
             count = ctypes.c_uint32()
@@ -273,10 +485,18 @@ class _WindowsOutputProbe:
                         )(collection, index, ctypes.byref(device)),
                         "IMMDeviceCollection.Item",
                     )
-                    devices.append(self._identity(device))
+                    identity = self._identity(device)
+                    guid = (
+                        self._directsound_guid(device)
+                        if self.host_api_type == 1 and identity[1] == 1
+                        else None
+                    )
+                    devices.append((*identity, guid))
                 finally:
                     self._release(device)
-            return "mmdevice", tuple(defaults), tuple(sorted(devices))
+            selected = self._selected(enumerator, devices)
+            inventory = tuple(sorted((name, state) for name, state, _ in devices))
+            return OutputDeviceSnapshot(selected, ("mmdevice", inventory))
         finally:
             try:
                 self._release(collection)
@@ -288,7 +508,7 @@ class _WindowsOutputProbe:
                         self.ole.CoUninitialize()
 
 
-def _linux_output_fingerprint() -> object:
+def _linux_output_fingerprint() -> OutputDeviceSnapshot:
     pactl = shutil.which("pactl")
     if pactl:
 
@@ -316,7 +536,14 @@ def _linux_output_fingerprint() -> object:
                 for sink in sinks
             )
         )
-        return "pulse", info["default_sink_name"] or None, topology
+        default = info["default_sink_name"]
+        selected = next((sink for sink in topology if sink[1] == default), None)
+        if default and selected is None:
+            raise OSError("PulseAudio default sink disappeared during observation")
+        return OutputDeviceSnapshot(
+            ("pulse", selected) if selected is not None else None,
+            ("pulse", tuple((sink[0], sink[1]) for sink in topology)),
+        )
     # shortcut: ALSA topology/config only; install pactl for Pulse/PipeWire routing.
     values: list[bytes | None] = []
     for path in (
@@ -329,4 +556,5 @@ def _linux_output_fingerprint() -> object:
             values.append(path.read_bytes())
         except FileNotFoundError:
             values.append(None)
-    return "alsa", values[0], values[1], tuple(values[2:])
+    fingerprint = ("alsa", values[0], values[1], tuple(values[2:]))
+    return OutputDeviceSnapshot(fingerprint if any(values[:2]) else None, fingerprint)

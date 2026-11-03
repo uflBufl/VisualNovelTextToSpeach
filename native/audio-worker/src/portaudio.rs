@@ -183,6 +183,7 @@ impl PortAudio {
         phase("host_api_info_enter")?;
         let host_api = unsafe { (self.host_api_info)(info.host_api).as_ref() };
         phase("host_api_info_return")?;
+        let host_api_type = host_api.map(|api| api.api_type);
         let host_api = host_api.filter(|api| !api.name.is_null()).map(|api| {
             unsafe { CStr::from_ptr(api.name) }
                 .to_string_lossy()
@@ -199,7 +200,8 @@ impl PortAudio {
         };
         Ok(
             json!({"event":"device", "name":name, "default_samplerate":info.default_sample_rate,
-            "max_output_channels":info.max_output_channels, "hostapi":info.host_api, "host_api":host_api}),
+            "max_output_channels":info.max_output_channels, "hostapi":info.host_api,
+            "host_api":host_api, "host_api_type":host_api_type}),
         )
     }
 
@@ -265,6 +267,11 @@ mod tests {
         static CALLS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
         static DEFAULT: Cell<c_int> = const { Cell::new(0) };
         static MISSING_INFO: Cell<bool> = const { Cell::new(false) };
+        static MISSING_HOST: Cell<bool> = const { Cell::new(true) };
+        static HOST: HostApiInfo = const { HostApiInfo {
+            struct_version: 1, api_type: 13, name: ptr::null(), device_count: 1,
+            default_input_device: -1, default_output_device: 0,
+        } };
         static FORMAT_CODE: Cell<c_int> = const { Cell::new(0) };
         static INFO: DeviceInfo = const { DeviceInfo {
             struct_version: 1, name: ptr::null(), host_api: 0,
@@ -296,7 +303,11 @@ mod tests {
 
     unsafe extern "C" fn host_api_info(_: c_int) -> *const HostApiInfo {
         record("host_api_info_call").unwrap();
-        ptr::null()
+        if MISSING_HOST.get() {
+            ptr::null()
+        } else {
+            HOST.with(|api| api as *const _)
+        }
     }
 
     unsafe extern "C" fn format_supported(
@@ -340,6 +351,7 @@ mod tests {
         CALLS.with_borrow_mut(Vec::clear);
         DEFAULT.set(0);
         MISSING_INFO.set(false);
+        MISSING_HOST.set(true);
         FORMAT_CODE.set(0);
         #[cfg(unix)]
         let library = libloading::os::unix::Library::this().into();
@@ -379,6 +391,7 @@ mod tests {
         let event = pa.device_event(&mut record).unwrap();
         assert_eq!(event["event"], "device");
         assert_eq!(event["host_api"], Value::Null);
+        assert_eq!(event["host_api_type"], Value::Null);
         let mut expected = DEVICE_CALLS.to_vec();
         expected.extend([
             "host_api_info_enter",
@@ -386,6 +399,15 @@ mod tests {
             "host_api_info_return",
         ]);
         CALLS.with_borrow(|calls| assert_eq!(calls, &expected));
+    }
+
+    #[test]
+    fn device_event_exposes_host_type_even_without_host_name() {
+        let pa = fake();
+        MISSING_HOST.set(false);
+        let event = pa.device_event(&mut record).unwrap();
+        assert_eq!(event["host_api_type"], 13);
+        assert_eq!(event["host_api"], Value::Null);
     }
 
     #[test]

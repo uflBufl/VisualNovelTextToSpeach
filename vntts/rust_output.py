@@ -133,6 +133,7 @@ class RustAudioModule:
             if self.query_worker is not None and (
                 self.query_worker.closed.is_set()
                 or self.query_worker.device_changed.is_set()
+                or self.query_worker.discovery_stale.is_set()
             ):
                 worker = self.query_worker
                 self.query_worker = None
@@ -215,14 +216,23 @@ class RustAudioModule:
         with self.lock:
             while self.idle:
                 worker = self.idle.pop()
-                if not worker.closed.is_set() and not worker.device_changed.is_set():
+                if not (
+                    worker.closed.is_set()
+                    or worker.device_changed.is_set()
+                    or worker.discovery_stale.is_set()
+                ):
                     return worker
                 worker.close()
         return RustAudioWorker()
 
     def release(self, worker: RustAudioWorker) -> None:
         with self.lock:
-            if worker.closed.is_set() or worker.device_changed.is_set() or self.idle:
+            if (
+                worker.closed.is_set()
+                or worker.device_changed.is_set()
+                or worker.discovery_stale.is_set()
+                or self.idle
+            ):
                 worker.close()
             else:
                 self.idle.append(worker)
@@ -346,10 +356,17 @@ class RustOutputStream:
             self.worker = self.module.acquire()
         return self.worker
 
+    def _worker_for_open(self) -> RustAudioWorker:
+        worker = self._worker()
+        if worker.discovery_stale.is_set():
+            self.module.release(worker)
+            self.worker = None
+        return self._worker()
+
     def _open(self) -> None:
         if self.opened:
             return
-        worker = self._worker()
+        worker = self._worker_for_open()
         worker.next_id += 1
         self.clip_id = worker.next_id
         worker.active_id = self.clip_id
@@ -508,7 +525,7 @@ class RustOutputStream:
     ) -> tuple[bool, bool]:
         if self.opened:
             raise RuntimeError("Cannot replace an active PCM stream with a clip")
-        worker = self._worker()
+        worker = self._worker_for_open()
         try:
             return worker.play_buffer(
                 samples,

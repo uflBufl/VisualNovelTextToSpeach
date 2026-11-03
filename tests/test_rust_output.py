@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from vntts.audio_output import PlaybackPause, playback_pause_context
-from vntts.rust_audio import RustAudioWorker
+from vntts.rust_audio import RustAudioWorker, notify_audio_discovery_changed
 from vntts.rust_output import RustAudioFormatError, RustAudioModule
 
 # A real pipe peer checks transport and cancellation without Cargo or an audio device.
@@ -406,6 +406,63 @@ class RustOutputProtocolTest(unittest.TestCase):
                 "check_format",
             ],
         )
+
+    def test_discovery_change_replaces_query_and_idle_workers(self):
+        module = self.module()
+        module.query_devices(kind="output")
+        query = module.query_worker
+        idle = module.acquire()
+        module.release(idle)
+        with patch.object(idle, "cancel_active") as cancel:
+            notify_audio_discovery_changed()
+        cancel.assert_not_called()
+        self.assertTrue(query.discovery_stale.is_set())
+        self.assertTrue(idle.discovery_stale.is_set())
+        self.assertFalse(idle.device_changed.is_set())
+        module.query_devices(kind="output")
+        replacement = module.acquire()
+        self.assertIsNot(module.query_worker, query)
+        self.assertIsNot(replacement, idle)
+        self.assertTrue(query.closed.is_set())
+        self.assertTrue(idle.closed.is_set())
+        module.release(replacement)
+
+    def test_discovery_change_replaces_acquired_unopened_worker(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        module = self.module(pcm)
+        with self.stream(module) as stream:
+            old = stream._worker()
+            notify_audio_discovery_changed()
+            stream.write(pcm)
+            self.assertIsNot(stream.worker, old)
+            self.assertTrue(old.closed.is_set())
+
+    def test_discovery_change_keeps_open_stream_until_release(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        module = self.module(pcm)
+        with self.stream(module) as stream:
+            stream._open()
+            worker = stream.worker
+            with patch.object(worker, "cancel_active") as cancel:
+                notify_audio_discovery_changed()
+            cancel.assert_not_called()
+            self.assertFalse(worker.device_changed.is_set())
+            stream.write(pcm)
+            self.assertIs(stream.worker, worker)
+            self.assertFalse(worker.closed.is_set())
+        self.assertTrue(worker.closed.is_set())
+        self.assertEqual(module.idle, [])
+
+    def test_discovery_change_replaces_unopened_worker_before_prepared_clip(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        module = self.module(pcm)
+        with self.stream(module) as stream:
+            old = stream._worker()
+            notify_audio_discovery_changed()
+            complete, _underflow = stream.play_buffer(pcm, lambda: False, None, None)
+            self.assertTrue(complete)
+            self.assertIsNot(stream.worker, old)
+            self.assertTrue(old.closed.is_set())
 
     def test_failed_query_retires_real_pipe_peer_and_next_request_recovers(self):
         for mode, error in (
