@@ -337,47 +337,28 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **REC-02-02 - Isolate the confirmed game-recorder IO deadline overrun.**
-      Retained November2 boundary is an uncovered87.528ms, not a demonstrated
-      clock reset: sample4372frames and host99.138333ms agree within0.012us;
-      ordinary512frame blocks cover11.610ms. Concurrent Rust tap retains8 normal
-      blocks through that interval. Queue overflow is null; rejected-block
-      consumer latency is1.017ms, so the five-second consumer queue is not full.
-      Existing system logs now identify recorder IO overload at that boundary:
-      HAL client start precedes previous callback receipt by93.83us, deadline
-      budget11.61ms, and recorder reports skipping cycles due to overload.
-      Private HAL_client_IO_duration raw86138583 is retained without assuming
-      undocumented units. Cleanup is later; output-change interruption follows
-      about18.8s later and cannot cause the earlier gap.
-      November3 instrumented44.1kHz recurrence localizes the stall inside receive:
-      previous callback body92.375ms, entry34.292us after IO-cycle timestamp;
-      current callback body1.750us. Uncovered4102frames=93.016ms. The recorder
-      logs a matching HAL overload. Failure occurs27.199s after capture starts,
-      during background generation and28.132s before the Reading Rust tap starts.
-      Consumer CAF-write wall time110.145ms overlaps the stalled callback;
-      high-water is only5blocks/2560frames, without overflow. These observations
-      distinguish neither callback CPU work from descheduling/VM nor establish
-      that the overlapping file write caused it. Private HAL zero fault metrics
-      have undocumented scope and cannot exclude client VM faults.
-      - Distinguish callback execution from descheduling/VM before choosing a
-        repair. A temporary CPU-clock/copy-boundary probe passed native selfcheck;
-        one180s44100Hz game-audio run during real MLX generation did not reproduce
-        the callback gap. Its120.455ms CAF-write stall retained continuous source
-        samples; consumer delay alone is not sufficient to explain the earlier
-        callback stall. This narrower run omitted diagnostic video/Reading and
-        used a different recorder parent; it does not qualify the original load.
-        Next: one bounded scheduler/VM trace alongside the CPU probe under the
-        original capture/load conditions, not another healthy chapter run.
-        Installed ktrace requires root; sudo noninteractive authorization is
-        unavailable. Obtain authorization through the normal system dialog before
-        tracing. Bound time45s and retained data64MiB; kernel buffer size alone
-        does not bound output, and ownership cleanup must survive early stopping.
-        Audio System Trace/xctrace is unavailable; no install or system-policy
-        change. Keep temporary probes local and this investigation macOS-only.
-      Do not hide the gap, increase consumer buffers again, insert guessed silence,
-      change drift/master topology or wire memory without evidence. Continuing a
-      gapped CAF would need explicit time mapping and consumer migration; it does
-      not fix the deadline overrun and is outside this item.
+- [ ] **REC-02-02 - Prevent VM faults on the recorder realtime path.**
+      The authorized44100Hz trace reproduces an80.544ms source gap without
+      overflow. Callback wall23.029ms versus CPU35.5us, copy23.026ms, and a
+      unique23.022ms compressor fault on the same IO thread establish blocked
+      VM residency faults. Two further compressor faults take37.645/17.813ms.
+      Native prefault warms allocations once but does not keep them resident.
+      - Identify the affected owned buffer/context pages and the additional
+        HAL/framework/input-buffer working set before selecting a bounded
+        residency repair. Heap fault progression fits PCM-ring stride, but
+        allocation mappings were not retained; PCM-only wiring is not yet a
+        complete repair. Trace/callback alignment uses PID/TID and distinctive
+        intervals, without an independently exported absolute trace origin.
+      - Agree the concrete implementation: prepare required resident memory
+        before IO, preserve clear failure and teardown ownership, and keep
+        memory-management calls outside the callback. Do not wire the whole
+        process or require administrator privileges for ordinary recording.
+      - Qualify acquisition/failure/cleanup with short native checks, then one
+        bounded real game/video/background-generation capture. Preserve truthful
+        continuity rejection and existing CAF/analysis clock contracts; do not
+        hide gaps or insert guessed silence. Keep probes local and Mac-specific.
+      The45s/64MiB diagnostic trace completed and its owner exited; no further
+      admin trace or full chapter run is needed before the implementation plan.
 
 - [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
       Native run receives Qt `audioOutputsChanged` at575256.467, stops Rust
