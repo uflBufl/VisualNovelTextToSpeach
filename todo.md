@@ -337,28 +337,31 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **REC-02-02 - Prevent VM faults on the recorder realtime path.**
-      The authorized44100Hz trace reproduces an80.544ms source gap without
-      overflow. Callback wall23.029ms versus CPU35.5us, copy23.026ms, and a
-      unique23.022ms compressor fault on the same IO thread establish blocked
-      VM residency faults. Two further compressor faults take37.645/17.813ms.
-      Native prefault warms allocations once but does not keep them resident.
-      - Identify the affected owned buffer/context pages and the additional
-        HAL/framework/input-buffer working set before selecting a bounded
-        residency repair. Heap fault progression fits PCM-ring stride, but
-        allocation mappings were not retained; PCM-only wiring is not yet a
-        complete repair. Trace/callback alignment uses PID/TID and distinctive
-        intervals, without an independently exported absolute trace origin.
-      - Agree the concrete implementation: prepare required resident memory
-        before IO, preserve clear failure and teardown ownership, and keep
-        memory-management calls outside the callback. Do not wire the whole
-        process or require administrator privileges for ordinary recording.
-      - Qualify acquisition/failure/cleanup with short native checks, then one
-        bounded real game/video/background-generation capture. Preserve truthful
-        continuity rejection and existing CAF/analysis clock contracts; do not
-        hide gaps or insert guessed silence. Keep probes local and Mac-specific.
-      The45s/64MiB diagnostic trace completed and its owner exited; no further
-      admin trace or full chapter run is needed before the implementation plan.
+- [ ] **REC-02-02 - Implement resident owned recorder memory.**
+      Address-mapped capture proves26 compressor faults in our descriptor array
+      on the IO thread. A temporary resident prototype covers Queue, descriptors
+      and PCM with wired mappings and records zero owned-memory faults during
+      the same bounded game/video/MLX load. This qualifies a concrete ownership
+      repair, not elimination of every historical gap or audible playback faults.
+      - Replace pageable Queue allocation with a dedicated anonymous mapping;
+        allocate descriptors and PCM together in a second mapping. Write-prefault
+        and mlock both before IO. Preserve all queue/PCM/timestamp contracts,
+        including five seconds of one-frame callbacks and supported sample rates.
+      - Report mmap/mlock failure with preserved errno and requested size; abort
+        recording preparation and unwind acquired maps without a pageable fallback.
+        Normal recording must require no administrator privileges or limit changes.
+      - Migrate every native selfcheck allocation to the same owner. Release maps
+        only after successful IOProc destruction; retain them until process exit
+        when destruction fails. Keep error/CAF-finalization ownership intact.
+      - Run the changed-test selector first after implementation, then affected
+        native/collection checks. Gate: all-rate FIFO/wrap/planar/Stop selfchecks,
+        isolated context/arena-lock-denial and partial-unwind checks, and correct
+        teardown. Keep CPU/address/map probes local; reuse the retained native
+        comparison rather than another exploratory full-chapter campaign.
+      The former temporary probe copied max snapshots after its completion tick;
+      its later faults do not justify locking arbitrary HAL/framework/code pages.
+      Production owned memory is about24.72MB per44100Hz recorder including page
+      rounding. No whole-process wiring or continuity-policy relaxation is needed.
 
 - [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
       Native run receives Qt `audioOutputsChanged` at575256.467, stops Rust
