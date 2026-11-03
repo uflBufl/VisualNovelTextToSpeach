@@ -32,7 +32,6 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
 )
-from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import (
     generation_item_status,
     load_generation_state,
@@ -865,9 +864,9 @@ def _generation_output(generation_input: PregenerationInput) -> Path:
     return generation_input.output_directory
 
 
-def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
-    """Return the temporary manifest published while this input is generating."""
-    return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
+def runtime_generation_state_path(generation_input: PregenerationInput) -> Path:
+    """Return the transactional working state used during generation and playback."""
+    return generation_state_path(_generation_output(generation_input))
 
 
 def _progress_readiness_stamp(story_index: Path) -> tuple[tuple[int, ...] | None, ...]:
@@ -936,11 +935,11 @@ def _durable_ready_line_ids(
             generation_input.story_index, generation_input.story_index_sha256
         )
     )
-    manifest = runtime_progress_manifest_path(generation_input)
-    if not manifest.is_file():
+    state_path = runtime_generation_state_path(generation_input)
+    if not state_path.is_file():
         return tuple(sorted(ready))
     try:
-        library = GeneratedAudioLibrary.load_optional(manifest)
+        library = GeneratedAudioLibrary.load_optional(state_path)
         if (
             library is None
             or library.index.metadata.get("source_queue_sha256")
@@ -995,8 +994,7 @@ def _load_result(
     output: Path, generation_input: PregenerationInput
 ) -> OfflineGenerationResult:
     state_path = generation_state_path(output)
-    manifest_path = output / "manifest.json"
-    if not state_path.is_file() or not manifest_path.is_file():
+    if not state_path.is_file():
         raise OfflineGenerationError(
             "Offline generation finished without publishing its result"
         )
@@ -1014,7 +1012,6 @@ def _load_result(
     return OfflineGenerationResult(
         output=output,
         state=state_path,
-        manifest=manifest_path,
         generated=generated,
         failed=failed,
         other_terminal=other_terminal,
@@ -1145,6 +1142,6 @@ __all__ = [
     "OfflineGenerationProgress",
     "OfflineGenerationResult",
     "OfflineGenerationWorker",
-    "runtime_progress_manifest_path",
+    "runtime_generation_state_path",
     "validate_offline_generation_result",
 ]

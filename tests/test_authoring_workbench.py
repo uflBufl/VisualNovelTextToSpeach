@@ -119,16 +119,12 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
             (created.directory / "workspace.json").read_text(encoding="utf-8")
         )
         state_path = created.directory / "generated-audio/generation-state.sqlite3"
-        manifest_path = created.directory / "generated-audio/manifest.json"
         return {
             "workspace": str(created.directory),
             "workspace_id": document["workspace_id"],
             "config_fingerprint": document["config_fingerprint"],
             "queue_sha256": sha256_file(created.directory / "queue.jsonl"),
             "state_sha256": sha256_file(state_path),
-            "manifest_sha256": (
-                sha256_file(manifest_path) if manifest_path.is_file() else None
-            ),
             "runtime_status": inspect_workspace(created.directory).runtime_status.value,
             "active": False,
             "report_scope": "complete_primary_workspace",
@@ -172,7 +168,7 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
     }
     body = {
         "schema": "vntts.authoring-authority-reconciliation",
-        "schema_version": 1,
+        "schema_version": 2,
         "policy": {
             "authority_scope": "workspace-local",
             "cross_workspace_merge": "explicit terminal evidence only",
@@ -957,10 +953,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             workspace = json.loads(
                 (carried.directory / "workspace.json").read_text(encoding="utf-8")
             )
-            manifest = json.loads(
-                (carried.directory / "generated-audio/manifest.json").read_text(
-                    encoding="utf-8"
-                )
+            self.assertFalse(
+                (carried.directory / "generated-audio/manifest.json").exists()
             )
             source_state_sha256_after = sha256_file(source_state)
 
@@ -975,7 +969,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(result["carry_forward"]["mode"], "review-only")
         self.assertEqual(workspace["carry_forward"]["characters"], ["Rhiannon"])
         self.assertEqual(workspace["narrator_character"], "Paper Heron")
-        self.assertEqual(manifest["entries"][0]["carry_forward"]["mode"], "review-only")
         self.assertEqual(source_state_sha256_after, source_state_sha256)
 
     def test_workspace_authority_rejects_non_integer_schema_versions(self):
@@ -1383,7 +1376,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
 
@@ -1397,7 +1389,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = source_state["items"].pop(fixture["queue_id"])
             (output / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, source_state)
-            publish_generated_manifest(source_state_path)
             tone = audio_samples()
             renderer = SyntheticRenderer(
                 diagnostics_backend="moss-tts",
@@ -1721,7 +1712,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
 
@@ -1736,7 +1726,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, initial)
-            publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
                 (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
@@ -1841,7 +1830,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
@@ -1857,7 +1845,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, initial)
-            publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
                 (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
@@ -2042,7 +2029,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         )
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
 
@@ -2057,7 +2043,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source_output / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, initial)
-            publish_generated_manifest(source_state_path)
             tone = audio_samples()
             failed_pcm = np.concatenate(
                 (tone, np.zeros(16_000 * 2, dtype=np.float32), tone)
@@ -2148,7 +2133,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
@@ -2164,7 +2148,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = initial["items"].pop(fixture["queue_id"])
             (source.directory / "generated-audio" / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, initial)
-            publish_generated_manifest(source_state_path)
             failed_renderer = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
             )
@@ -2308,7 +2291,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
@@ -2325,7 +2307,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             old = state["items"].pop(fixture["queue_id"])
             (source.directory / "generated-audio" / old["path"]).unlink()
             replace_generation_state(state_path, state)
-            publish_generated_manifest(state_path)
             initial = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
             )
@@ -2536,10 +2517,8 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 merged.directory / "queue.jsonl",
             )
             item = merged_state["items"][fixture["queue_id"]]
-            manifest = json.loads(
-                (merged.directory / "generated-audio/manifest.json").read_text(
-                    encoding="utf-8"
-                )
+            self.assertFalse(
+                (merged.directory / "generated-audio/manifest.json").exists()
             )
             workspace = json.loads(
                 (merged.directory / "workspace.json").read_text(encoding="utf-8")
@@ -2553,10 +2532,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(
                 item["outcome_merge"]["source_workspace_id"],
                 repaired.directory.name,
-            )
-            self.assertEqual(len(manifest["entries"]), 1)
-            self.assertEqual(
-                manifest["entries"][0]["outcome_merge"], item["outcome_merge"]
             )
             self.assertEqual(
                 workspace["outcome_merge"]["items"][0]["queue_id"], fixture["queue_id"]
@@ -2635,7 +2610,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         from tests.bulk_generation_fixtures import SyntheticRenderer
         from vntts.authoring.bulk_generation import (
             load_generation_state,
-            publish_generated_manifest,
             run_bulk_generation,
         )
         from vntts.synthesis import SynthesisCompletion
@@ -2653,7 +2627,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             initial_item = source_state["items"].pop(queue_id)
             (source.directory / "generated-audio" / initial_item["path"]).unlink()
             replace_generation_state(source_state_path, source_state)
-            publish_generated_manifest(source_state_path)
             failed = SyntheticRenderer(
                 [SynthesisCompletion.LIMITED], diagnostics_backend="moss-tts"
             )
@@ -3031,10 +3004,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
             state_path = source.directory / "generated-audio/generation-state.sqlite3"
-            real_publish = bulk_generation_module.publish_generated_manifest
+            real_validate = workspace_creation_module.validate_generation_output
 
             def mutate_source_after_staging(*args, **kwargs):
-                result = real_publish(*args, **kwargs)
+                result = real_validate(*args, **kwargs)
                 state = generation_database.read_state(state_path)
                 state["external_change"] = True
                 replace_generation_state(state_path, state)
@@ -3043,7 +3016,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             with (
                 patch.object(
                     workspace_creation_module,
-                    "publish_generated_manifest",
+                    "validate_generation_output",
                     side_effect=mutate_source_after_staging,
                 ),
                 self.assertRaisesRegex(AuthoringWorkbenchError, "source state changed"),
@@ -3973,7 +3946,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             review_workspace_item(created.directory, queue_id, "approved")
             before = state_path.read_bytes()
             manifest = created.directory / "generated-audio/manifest.json"
-            manifest_before = manifest.read_bytes()
+            self.assertFalse(manifest.exists())
             with self.assertRaisesRegex(AuthoringWorkbenchError, "authority changed"):
                 review_workspace_item(
                     created.directory,
@@ -3983,7 +3956,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
             self.assertEqual(state_path.read_bytes(), before)
-            self.assertEqual(manifest.read_bytes(), manifest_before)
+            self.assertFalse(manifest.exists())
 
     def test_selected_review_and_replay_do_not_rescan_unrelated_outcomes(self):
         with TemporaryDirectory() as directory:
@@ -4036,7 +4009,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             self.assertEqual(committed.review_status, "approved")
             self.assertEqual(set(wav_reads), {displayed.audio})
 
-    def test_review_decision_rejects_queue_change_before_state_or_manifest_write(self):
+    def test_review_decision_rejects_queue_change_before_state_write(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _fixture, _imported, created = self.create_workspace(root)
@@ -4050,7 +4023,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             displayed = list_review_items(created.directory)[0]
             state_before = state_path.read_bytes()
             manifest = created.directory / "generated-audio/manifest.json"
-            manifest_before = manifest.read_bytes()
+            self.assertFalse(manifest.exists())
             (created.directory / "queue.jsonl").write_bytes(b"changed queue")
 
             with self.assertRaises(AuthoringWorkbenchError):
@@ -4062,7 +4035,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
             self.assertEqual(state_path.read_bytes(), state_before)
-            self.assertEqual(manifest.read_bytes(), manifest_before)
+            self.assertFalse(manifest.exists())
 
     def test_runtime_malformed_pid_blocks_without_inspection_or_record_changes(self):
         with TemporaryDirectory() as directory:
@@ -4633,7 +4606,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             replace_generation_state(state_path, state)
-            bulk_generation_module.publish_generated_manifest(state_path)
 
             ordinary = inspect_generation_readiness(
                 created.directory,

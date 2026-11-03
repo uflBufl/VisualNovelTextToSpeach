@@ -46,7 +46,6 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_plan,
 )
 from vntts.authoring.generation_fallback import authorize_live_fallback
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.robustness_corpus import publish_speech_robustness_corpus
@@ -818,11 +817,6 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
         / _required_text(removed_source["path"], "Fixture audio path")
     ).unlink()
     replace_generation_state(source_state, source_document)
-    write_generated_manifest_from_state(
-        source_document,
-        source / "generated-audio",
-        source / "generated-audio/manifest.json",
-    )
     authorize_live_fallback(
         source_state,
         source / "queue.jsonl",
@@ -842,11 +836,6 @@ def create_explicit_fallback_merge_fixture(root: Path) -> tuple[Path, Path, str]
     )
     audio.unlink()
     replace_generation_state(base_state_path, base_state)
-    write_generated_manifest_from_state(
-        base_state,
-        base_directory / "generated-audio",
-        base_directory / "generated-audio/manifest.json",
-    )
     return base_directory, source, queue_id
 
 
@@ -968,11 +957,6 @@ def create_audio_event_projection_fixture(
     )
     state["queue_sha256"] = sha256_file(fixture["queue"])
     replace_generation_state(state_path, state)
-    write_generated_manifest_from_state(
-        state,
-        state_path.parent,
-        state_path.parent / "manifest.json",
-    )
     write_story_index_document(
         fixture["job"]["story_index"],
         {

@@ -22,7 +22,7 @@ from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.game_pack import _decision_records
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.reviewed_rejection_fallback import (
     _downstream_overlay_queue_ids,
     _validated_rejection_batch,
@@ -64,9 +64,7 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             "successor_state": "carried_terminal",
         }
         replace_generation_state(state_path, state)
-        write_generated_manifest_from_state(
-            state, state_path.parent, state_path.parent / "manifest.json"
-        )
+        approved_manifest_entries(state, state_path.parent)
         return base, queue_item
 
     def test_exact_rejection_is_idempotent_and_routes_current_character(self):
@@ -199,9 +197,7 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
                 }
             )
             replace_generation_state(state_path, state)
-            write_generated_manifest_from_state(
-                state, state_path.parent, state_path.parent / "manifest.json"
-            )
+            approved_manifest_entries(state, state_path.parent)
 
             result = create_reviewed_rejection_fallback_workspace(
                 base, root / "workspaces"

@@ -47,10 +47,6 @@ from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pac
 from vntts.authoring.generation_fallback import (
     authorize_live_fallback,
 )
-from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
-    write_runtime_progress_manifest_from_state,
-)
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.render_hypothesis_review import (
@@ -329,7 +325,6 @@ def prepare_authoring_fixture(
         "queue": queue,
         "output": output,
         "state": result.state,
-        "manifest": result.manifest,
         "source_audio_semantic_evidence": semantic_evidence,
     }
 
@@ -688,7 +683,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                     identity["voice_character"], "Narrator" if narrator else "Hero"
                 )
                 review_generation_item(fixture["state"], item["queue_id"], "approved")
-                direct = GeneratedAudioLibrary.load_optional(fixture["manifest"])
+                direct = GeneratedAudioLibrary.load_optional(fixture["state"])
                 self.assertEqual(
                     direct.find(item["line_id"], item["text_sha256"]).recorded_voice,
                     identity,
@@ -824,7 +819,6 @@ class AuthoringGamePackTest(unittest.TestCase):
                 "queue": queue,
                 "output": base / "generated-audio",
                 "state": generated.state,
-                "manifest": generated.manifest,
             }
         )
         return fixture, evidence, queue_id
@@ -980,12 +974,6 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][1]["queue_id"], "rejected"
             )
-            progress_manifest = fixture["state"].parent / RUNTIME_PROGRESS_MANIFEST_NAME
-            write_runtime_progress_manifest_from_state(
-                generation_database.read_state(fixture["state"]),
-                fixture["state"].parent,
-                progress_manifest,
-            )
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = authoring_main(
@@ -1003,7 +991,7 @@ class AuthoringGamePackTest(unittest.TestCase):
                     ]
                 )
             decision = json.loads(stdout.getvalue())
-            progress_library = GeneratedAudioLibrary.load_optional(progress_manifest)
+            progress_library = GeneratedAudioLibrary.load_optional(fixture["state"])
             progress_fallback = progress_library.find_live_fallback(
                 fixture["items"][1]["line_id"],
                 fixture["items"][1]["text_sha256"],
@@ -1234,20 +1222,19 @@ class AuthoringGamePackTest(unittest.TestCase):
                 root
             )
             before = fixture["state"].read_bytes()
-            real_write = fallback_module._write_generated_manifest_from_state
+            real_validate = fallback_module._assert_live_fallback_commit_sources
 
             def mutate_evidence(*args, **kwargs):
-                result = real_write(*args, **kwargs)
                 workspace_path = evidence / "workspace.json"
                 workspace_path.write_text(
                     workspace_path.read_text(encoding="utf-8") + "\n",
                     encoding="utf-8",
                 )
-                return result
+                return real_validate(*args, **kwargs)
 
             with patch.object(
                 fallback_module,
-                "_write_generated_manifest_from_state",
+                "_assert_live_fallback_commit_sources",
                 side_effect=mutate_evidence,
             ):
                 with self.assertRaisesRegex(BulkGenerationError, "evidence changed"):
@@ -1340,20 +1327,19 @@ class AuthoringGamePackTest(unittest.TestCase):
                 self.prepare_rejected_render_hypothesis_fixture(root)
             )
             before = state.read_bytes()
-            real_write = fallback_module._write_generated_manifest_from_state
+            real_validate = fallback_module._assert_live_fallback_commit_sources
 
             def mutate_review(*args, **kwargs):
-                result = real_write(*args, **kwargs)
                 decision_path = review / "decision.json"
                 decision_path.write_text(
                     decision_path.read_text(encoding="utf-8") + "\n",
                     encoding="utf-8",
                 )
-                return result
+                return real_validate(*args, **kwargs)
 
             with patch.object(
                 fallback_module,
-                "_write_generated_manifest_from_state",
+                "_assert_live_fallback_commit_sources",
                 side_effect=mutate_review,
             ):
                 with self.assertRaisesRegex(BulkGenerationError, "evidence changed"):
@@ -1393,24 +1379,23 @@ class AuthoringGamePackTest(unittest.TestCase):
 
         self.assertEqual(after, before)
 
-    def test_live_fallback_rejects_state_change_during_staging(self):
+    def test_live_fallback_rejects_state_change_before_commit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = prepare_authoring_fixture(root / "source", names=("one",))
             queue_id = fixture["items"][0]["queue_id"]
             review_generation_item(fixture["state"], queue_id, "rejected")
-            real_write = fallback_module._write_generated_manifest_from_state
+            real_validate = fallback_module._assert_live_fallback_commit_sources
 
             def mutate_state(*args, **kwargs):
-                result = real_write(*args, **kwargs)
                 state = generation_database.read_state(fixture["state"])
                 state["external_change"] = True
                 replace_generation_state(fixture["state"], state)
-                return result
+                return real_validate(*args, **kwargs)
 
             with patch.object(
                 fallback_module,
-                "_write_generated_manifest_from_state",
+                "_assert_live_fallback_commit_sources",
                 side_effect=mutate_state,
             ):
                 with self.assertRaisesRegex(BulkGenerationError, "state changed"):
@@ -1578,7 +1563,6 @@ class AuthoringGamePackTest(unittest.TestCase):
                 },
             )
             fixture["state"] = generated.state
-            fixture["manifest"] = generated.manifest
             review_generation_item(
                 fixture["state"], fixture["items"][0]["queue_id"], "approved"
             )
@@ -1691,21 +1675,12 @@ class AuthoringGamePackTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = prepare_authoring_fixture(root)
+            self.assertFalse((fixture["output"] / "manifest.json").exists())
             review_generation_item(
                 fixture["state"], fixture["items"][0]["queue_id"], "approved"
             )
             review_generation_item(
                 fixture["state"], fixture["items"][1]["queue_id"], "rejected"
-            )
-            write_generated_audio_manifest(
-                fixture["manifest"],
-                {
-                    "game": "Synthetic Game",
-                    "language": "en",
-                    "source_queue_sha256": sha256_file(fixture["queue"]),
-                    "generated_at": "2026-08-16T12:04:00+00:00",
-                },
-                [],
             )
             source_paths = (
                 fixture["story"],
@@ -1713,12 +1688,13 @@ class AuthoringGamePackTest(unittest.TestCase):
                 fixture["reference"],
                 fixture["queue"],
                 fixture["state"],
-                fixture["manifest"],
                 *fixture["output"].glob("audio/**/*.wav"),
             )
             before = {path: path.read_bytes() for path in source_paths}
 
             result = publish(fixture, root / "final-pack")
+
+            self.assertFalse((fixture["output"] / "manifest.json").exists())
 
             pack = load_game_pack(result.manifest)
             generated = GeneratedAudioIndex.load(pack.generated_audio.path)

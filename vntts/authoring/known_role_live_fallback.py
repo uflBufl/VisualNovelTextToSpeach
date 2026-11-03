@@ -27,7 +27,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_lease import GenerationLease
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
     LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
@@ -518,9 +518,7 @@ def _mutate_known_role_fallback(
     write_generation_state(
         staged.output / "generation-state.sqlite3", staged.target_state
     )
-    write_generated_manifest_from_state(
-        staged.target_state, staged.output, staged.output / "manifest.json"
-    )
+    approved_manifest_entries(staged.target_state, staged.output)
     workspace = copy.deepcopy(selection.base_document)
     workspace.update(
         {

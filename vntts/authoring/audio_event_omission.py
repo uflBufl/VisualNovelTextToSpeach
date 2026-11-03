@@ -24,7 +24,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
@@ -314,7 +314,7 @@ def _write_staged_omission_workspace(
     target_state: dict[str, object],
 ) -> dict[str, object]:
     write_generation_state(output / "generation-state.sqlite3", target_state)
-    write_generated_manifest_from_state(target_state, output, output / "manifest.json")
+    approved_manifest_entries(target_state, output)
     workspace = copy.deepcopy(selection.base_document)
     workspace.update(
         {

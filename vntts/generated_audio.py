@@ -22,6 +22,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
     GeneratedAudioRecord,
     load_generated_audio_document,
+    parse_generated_audio_document,
 )
 
 from vntts import generation_database
@@ -341,6 +342,56 @@ def _validate_generated_audio_path(audio: Path, root: Path) -> None:
         ) from error
 
 
+def load_generated_audio_source(path: str | Path) -> GeneratedAudioDocument:
+    """Load a package index or project committed SQLite results for playback."""
+    path = Path(path).expanduser()
+    if path.suffix != ".sqlite3":
+        return load_generated_audio_document(path)
+    from vntts.authoring.generation_lease import BulkGenerationError
+    from vntts.authoring.generation_manifest import (
+        runtime_progress_live_fallback_entries,
+        runtime_progress_manifest_entries,
+    )
+    from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
+
+    try:
+        state = generation_database.read_state(path)
+        if (
+            state.get("schema") != STATE_SCHEMA
+            or type(state.get("schema_version")) is not int
+            or state["schema_version"] != STATE_VERSION
+        ):
+            raise ValueError("Unsupported generation working-state schema")
+        entries = runtime_progress_manifest_entries(
+            state, path.parent, validate_files=False
+        )
+        return parse_generated_audio_document(
+            path,
+            {
+                "schema": "vntts.generated-audio",
+                "schema_version": 1,
+                **{
+                    field: state[field]
+                    for field in ("game", "language")
+                    if state.get(field) is not None
+                },
+                "source_queue_sha256": state["queue_sha256"],
+                "vntts.runtime.progress": True,
+                "vntts.authoring.live_fallback": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": runtime_progress_live_fallback_entries(state),
+                },
+                "entry_count": len(entries),
+                "entries": entries,
+            },
+        )
+    except (BulkGenerationError, OSError, KeyError, TypeError, ValueError) as error:
+        raise GeneratedAudioManifestError(
+            f"Unable to load generation playback state {path}: {error}"
+        ) from error
+
+
 class GeneratedAudioLibrary:
     def __init__(
         self,
@@ -404,8 +455,11 @@ class GeneratedAudioLibrary:
             }:
                 return
             try:
-                index = load_generated_audio_document(self.manifest_path)
-                if _manifest_signature(self.manifest_path) != signature:
+                index = load_generated_audio_source(self.manifest_path)
+                if (
+                    self.manifest_path.suffix != ".sqlite3"
+                    and _manifest_signature(self.manifest_path) != signature
+                ):
                     return
                 self._apply_index(index)
             except (GeneratedAudioManifestError, OSError, ValueError) as error:
@@ -427,8 +481,11 @@ class GeneratedAudioLibrary:
         if not path:
             return None
         try:
-            index = load_generated_audio_document(path)
-            return cls(index, warn=warn, cache_size=cache_size)
+            signature = _manifest_signature(Path(path).expanduser())
+            index = load_generated_audio_source(path)
+            library = cls(index, warn=warn, cache_size=cache_size)
+            library.manifest_signature = signature
+            return library
         except (GeneratedAudioManifestError, ValueError) as error:
             if warn is not None:
                 warn(f"Generated audio disabled: {error}")

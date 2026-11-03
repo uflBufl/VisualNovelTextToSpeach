@@ -21,7 +21,7 @@ from vntts.authoring.bulk_generation import (
     synthesis_character_for_line,
 )
 from vntts.authoring.generation_lease import GenerationLease
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     decode_generation_state_snapshot,
     load_stable_generation_queue,
@@ -842,9 +842,7 @@ def _stage_rebase_output(
         snapshots,
     )
     write_generation_state(output / "generation-state.sqlite3", projected_state)
-    write_generated_manifest_from_state(
-        projected_state, output, output / "manifest.json"
-    )
+    approved_manifest_entries(projected_state, output)
 
 
 def _copy_projected_audio(

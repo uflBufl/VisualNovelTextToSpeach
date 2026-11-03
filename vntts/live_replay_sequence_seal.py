@@ -23,6 +23,7 @@ from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
 from vntts.document_identity import is_lowercase_sha256
+from vntts.generated_audio import load_generated_audio_source
 from vntts.json_types import has_schema_version
 from vntts.live_replay import (
     LiveReplayRunner,
@@ -514,22 +515,25 @@ def _snapshot_generated_audio(
 ) -> tuple[JSONDocument | None, set[str]]:
     if manifest is None:
         return None, set()
-    manifest_path, manifest_payload = _read_regular_file(
-        manifest, "Generated audio manifest"
-    )
-    try:
-        document = GeneratedAudioDocument.load(manifest_path)
-    except Exception as error:
-        raise SequenceReplaySealError(
-            f"Generated audio manifest is invalid: {error}"
-        ) from error
-    _current_manifest_path, current_manifest_payload = _read_regular_file(
-        manifest_path, "Generated audio manifest"
-    )
-    if current_manifest_payload != manifest_payload:
-        raise SequenceReplaySealError(
-            "Generated audio manifest changed while it was being loaded"
+    if Path(manifest).suffix == ".sqlite3":
+        document = load_generated_audio_source(Path(manifest))
+    else:
+        manifest_path, manifest_payload = _read_regular_file(
+            manifest, "Generated audio manifest"
         )
+        try:
+            document = GeneratedAudioDocument.load(manifest_path)
+        except Exception as error:
+            raise SequenceReplaySealError(
+                f"Generated audio manifest is invalid: {error}"
+            ) from error
+        _current_manifest_path, current_manifest_payload = _read_regular_file(
+            manifest_path, "Generated audio manifest"
+        )
+        if current_manifest_payload != manifest_payload:
+            raise SequenceReplaySealError(
+                "Generated audio manifest changed while it was being loaded"
+            )
     identities = _generated_audio_identities(mappings, resolver)
     selected = [
         record
@@ -539,7 +543,6 @@ def _snapshot_generated_audio(
     ]
     if not selected:
         return None, set()
-    raw_document = _decode_json(manifest_payload, "Generated audio manifest")
     records: list[JSONDocument] = []
     for record in selected:
         if record.audio.is_symlink():
@@ -565,7 +568,7 @@ def _snapshot_generated_audio(
         records.append(wire)
     sealed_manifest = {
         key: value
-        for key, value in raw_document.items()
+        for key, value in document.metadata.items()
         if key not in {"entries", "entry_count"}
     }
     sealed_manifest["entry_count"] = len(records)

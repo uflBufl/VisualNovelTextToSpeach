@@ -149,20 +149,21 @@ any production module from importing the historical private lease name.
 Lease payload fields, stale-owner PID/start-time checks, advisory guard locking,
 crash archive naming and post-commit cleanup behavior remain unchanged.
 
-## Generated manifest foundation
+## Generated audio projection foundation
 
-`generation_manifest` is the leaf owner of generated-WAV structural validation,
-approved-only entry projection and atomic generated-audio manifest writing. The
-live-fallback, config-rebase, terminal-conflict, workbench and final-pack paths
+`generation_manifest` is the leaf owner of generated-WAV structural validation
+and approved-only entry projection. The live-fallback, config-rebase,
+terminal-conflict, workbench and final-pack paths
 consume its public functions directly instead of importing private helpers from
 the bulk generation orchestrator.
 
 `bulk_generation` retains `AudioQuality`, `inspect_generated_wav`,
-`_approved_manifest_entries`, `_write_generated_manifest_from_state` and
-`_validate_success_file` compatibility names backed by the same leaf objects.
+`_approved_manifest_entries` and `_validate_success_file` compatibility names
+backed by the same leaf objects.
 The projection preserves entry ordering, optional provenance fields, exact WAV
-checksum/quality checks, contained POSIX paths and the existing atomic manifest
-schema. The import-graph regression forbids production callers from importing
+checksum/quality checks and contained POSIX paths. Working results remain in
+SQLite; package writers serialize the projected artifact schema when needed.
+The import-graph regression forbids production callers from importing
 the historical private projection names.
 
 ## Speech-quality foundation

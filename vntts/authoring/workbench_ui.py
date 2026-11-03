@@ -1288,7 +1288,6 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self.workspace_directory / "inputs/story-index.jsonl",
             self.workspace_directory / "inputs/voice/manifest.json",
             output / "generation-state.sqlite3",
-            output / "manifest.json",
             output / ".generation-lease.json",
             output / ".job-process.json",
         )

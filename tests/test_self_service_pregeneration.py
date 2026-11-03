@@ -1793,7 +1793,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             output = first.generation_input().directory.parent / (
                 f"generation-output-{interrupted_input_id[:16]}"
             )
-            (output / "manifest.json").unlink()
+            self.assertFalse((output / "manifest.json").exists())
             first.reject()
             first.deleteLater()
 

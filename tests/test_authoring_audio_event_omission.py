@@ -29,7 +29,7 @@ from vntts.authoring.game_pack import (
     _decision_records,
     _review_counts,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.workbench import AuthoringWorkbenchError, inspect_workspace
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
@@ -55,9 +55,7 @@ class AudioEventOmissionTests(unittest.TestCase):
         state["active"] = None
         state["items"].pop(queue_id)
         replace_generation_state(state_path, state)
-        write_generated_manifest_from_state(
-            state, base / "generated-audio", base / "generated-audio/manifest.json"
-        )
+        approved_manifest_entries(state, base / "generated-audio")
         return base, queue.items[0]
 
     def _rebind_batch(self, directory, workspace, queue_id):

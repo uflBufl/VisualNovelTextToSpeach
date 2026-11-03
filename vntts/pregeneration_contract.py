@@ -16,7 +16,6 @@ class OfflineGenerationCancelled(OfflineGenerationError):
 class OfflineGenerationResult:
     output: Path
     state: Path
-    manifest: Path
     generated: int
     failed: int
     other_terminal: int

@@ -2074,7 +2074,7 @@ class TrayApplicationTest(unittest.TestCase):
         saved = AppSettings(onboarding_completed=True)
         progress = saved.updated(
             story_index="selected-story.jsonl",
-            generated_audio_manifest="live-progress-manifest.json",
+            generated_audio_manifest="generation-state.sqlite3",
             audio_source_policy="prefer-game-audio",
         )
         backend = Mock()

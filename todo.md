@@ -1,5 +1,12 @@
 # TODO
 
+## Active - SQLite runtime generation playback
+
+- [ ] Qualify native Windows background generation and simultaneous playback
+      using SQLite directly, including resume, cancellation, fallback and review.
+      Confirm committed audio appears without working JSON publication or replacing
+      an open database; local concurrency tests do not replace this native gate.
+
 ## Active - Remaining CI qualification
 
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on

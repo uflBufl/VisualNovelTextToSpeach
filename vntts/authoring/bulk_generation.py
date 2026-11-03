@@ -110,17 +110,14 @@ from vntts.authoring.generation_lease import (
 from vntts.authoring.generation_lease import (
     BulkGenerationSourceChangedError as BulkGenerationSourceChangedError,
 )
+from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
+from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
 from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
     approved_manifest_entries,
     inspect_generated_wav_with_samples,
     snapshot_recorded_voices,
     validate_success_file,
-    write_generated_manifest_from_state,
-    write_runtime_progress_manifest_from_state,
 )
-from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
-from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
 from vntts.authoring.generation_manifest import (
     inspect_generated_wav as inspect_generated_wav,
 )
@@ -391,12 +388,10 @@ class BulkGenerationResult:
     skipped_items: int
     cancelled: bool
     state: Path
-    manifest: Path
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["state"] = str(self.state)
-        payload["manifest"] = str(self.manifest)
         return payload
 
 
@@ -2015,22 +2010,6 @@ def _render_and_publish_generation_attempt(
     return prefetched_render
 
 
-def _publish_runtime_progress(
-    run: _GenerationExecutionContext, changed_items: tuple[str, ...]
-) -> None:
-    run.lease.assert_owned()
-    with measure_generation_phase("progress-manifest"):
-        write_runtime_progress_manifest_from_state(
-            run.state,
-            run.output_directory,
-            run.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
-            # Every included WAV was validated before its atomic state update.
-            # Playback independently verifies the file hash before use.
-            validate_files=False,
-        )
-    _notify_progress(run, changed_items=changed_items)
-
-
 @measure_generation_phase("progress-observer")
 def _notify_progress(
     run: _GenerationExecutionContext, *, changed_items: tuple[str, ...] = ()
@@ -2118,7 +2097,8 @@ def _execute_generation_item(
             last_error = failure.last_error
             if failure.captured_silence_failure is not None:
                 captured_silence_failure = failure.captured_silence_failure
-            _publish_runtime_progress(run, (plan.queue_id,))
+            run.lease.assert_owned()
+            _notify_progress(run, changed_items=(plan.queue_id,))
             if failure.cancelled:
                 return _GenerationItemExecutionResult(
                     generated=False,
@@ -2127,7 +2107,8 @@ def _execute_generation_item(
                     prefetched_render=prefetched_render,
                 )
         else:
-            _publish_runtime_progress(run, (plan.queue_id,))
+            run.lease.assert_owned()
+            _notify_progress(run, changed_items=(plan.queue_id,))
             return _GenerationItemExecutionResult(
                 generated=True,
                 cancelled=False,
@@ -2192,7 +2173,6 @@ def _finalize_generation_run(
     lease: GenerationLease,
     state: JsonDocument,
     state_path: Path,
-    manifest_path: Path,
     evidence_directory: Path | None,
     provenance_sha256: str,
     execution: _GenerationExecutionResult,
@@ -2204,10 +2184,8 @@ def _finalize_generation_run(
     if workspace_output_identity is not None:
         _assert_workspace_output_identity(output_argument, workspace_output_identity)
     lease.assert_owned()
-    with measure_generation_phase("final-manifest"):
-        publish_generated_manifest(
-            state_path, manifest_path=manifest_path, _lease_held=True
-        )
+    with measure_generation_phase("final-validation"):
+        state = validate_generation_output(state_path)
     captured = execution.captured_silence_failure
     if captured is not None:
         if evidence_directory is None:
@@ -2245,7 +2223,6 @@ def _finalize_generation_run(
         skipped_items=skipped_items,
         cancelled=execution.cancelled,
         state=state_path,
-        manifest=manifest_path,
     )
 
 
@@ -2636,7 +2613,6 @@ def run_bulk_generation(
         }
     )
     state_path = generation_state_path(output_directory)
-    manifest_path = output_directory / "manifest.json"
     output_directory.mkdir(parents=True, exist_ok=True)
 
     return _run_generation_execution(
@@ -2679,7 +2655,6 @@ def run_bulk_generation(
         synthesis_cache_policy=synthesis_cache_policy,
         recorded_voices=recorded_voices,
         evidence_directory=evidence_directory,
-        manifest_path=manifest_path,
         approve_validated_audio=approve_validated_audio,
         progress_callback=progress_callback,
         progress_observer=progress_observer,
@@ -2726,7 +2701,6 @@ def _run_generation_execution(
     synthesis_cache_policy: SynthesisCachePolicy,
     recorded_voices: dict[str, RecordedVoice],
     evidence_directory: Path | None,
-    manifest_path: Path,
     approve_validated_audio: bool,
     progress_callback: Callable[[JsonDocument], None] | None,
     progress_observer: Callable[[GenerationProgressEvent], None] | None,
@@ -2824,7 +2798,6 @@ def _run_generation_execution(
             lease=lease,
             state=state,
             state_path=state_path,
-            manifest_path=manifest_path,
             evidence_directory=evidence_directory,
             provenance_sha256=provenance_sha256,
             execution=execution,
@@ -2902,49 +2875,27 @@ def _record_interrupted_generation_job(
         write_generation_state(state_path, state)
 
 
-def publish_generated_manifest(
-    state_path: str | Path,
-    *,
-    manifest_path: str | Path | None = None,
-    _lease_held: bool = False,
-) -> Path:
-    """Rebuild the approved-only manifest from authoritative state."""
+def validate_generation_output(state_path: str | Path) -> JsonDocument:
+    """Validate committed state and its canonical workspace without an export."""
     state_path = generation_state_file(state_path)
     output_directory = state_path.parent
-    workspace_queue = state_path.parent.parent / "queue.jsonl"
-    workspace_ledger = state_path.parent.parent / "workspace.json"
-    if workspace_ledger.exists():
-        if workspace_ledger.is_symlink() or not workspace_ledger.is_file():
+    workspace = output_directory.parent / "workspace.json"
+    queue = output_directory.parent / "queue.jsonl"
+    if workspace.exists() or workspace.is_symlink():
+        if workspace.is_symlink() or not workspace.is_file():
             raise BulkGenerationError(
                 "Workspace generation state requires a regular workspace ledger"
             )
-        if workspace_queue.is_symlink() or not workspace_queue.is_file():
+        if queue.is_symlink() or not queue.is_file():
             raise BulkGenerationError(
                 "Workspace generation state requires its canonical queue"
             )
-        state = load_generation_state(state_path, workspace_queue)
+        state = load_generation_state(state_path, queue)
     else:
         state = load_generation_state(state_path)
-    if not _lease_held:
-        with _GenerationLease(
-            output_directory,
-            _generation_text(state.get("queue_sha256"), "Queue SHA-256"),
-            process_checker=process_is_alive,
-        ):
-            return publish_generated_manifest(
-                state_path, manifest_path=manifest_path, _lease_held=True
-            )
-    manifest_path = Path(manifest_path or output_directory / "manifest.json").resolve()
-    if manifest_path.parent != output_directory:
-        raise BulkGenerationError(
-            "Generated-audio manifest must stay in the state directory"
-        )
     validate_authoring_publication_authority(state_path, state)
-    _write_generated_manifest_from_state(state, output_directory, manifest_path)
-    return manifest_path
-
-
-_write_generated_manifest_from_state = write_generated_manifest_from_state
+    approved_manifest_entries(state, output_directory)
+    return state
 
 
 def validate_terminal_conflict_publication_authority(
@@ -3119,10 +3070,7 @@ def reconcile_generation_cancellation(
                 },
             )
         lease.assert_owned()
-        publish_generated_manifest(state_path, _lease_held=True)
-        write_runtime_progress_manifest_from_state(
-            state, witness.output, witness.output / RUNTIME_PROGRESS_MANIFEST_NAME
-        )
+        validate_generation_output(state_path)
     return True
 
 

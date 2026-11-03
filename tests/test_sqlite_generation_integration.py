@@ -11,7 +11,6 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from vntts_artifacts.generated_audio import (
-    GeneratedAudioIndex,
     load_generated_audio_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
@@ -23,6 +22,7 @@ from tests.test_pregeneration_queue import PocketRenderer, write_content, write_
 from vntts.authoring.generation_failures import generation_failure_report
 from vntts.authoring.generation_fallback import authorize_live_fallback
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_review import (
     generation_review_authority,
     review_generation_item,
@@ -193,7 +193,9 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                     )
                     self.assertEqual(sha256_file(audio), digest)
 
-    def test_sqlite_review_approve_reject_reapprove_preserves_audio_and_manifest(self):
+    def test_sqlite_review_approve_reject_reapprove_preserves_audio_and_projection(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             value = queue_item()
@@ -220,7 +222,7 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                     state["items"][value["queue_id"]]["review_status"], decision
                 )
                 self.assertEqual(
-                    len(GeneratedAudioIndex.load(result.manifest).entries),
+                    len(approved_manifest_entries(state, output)),
                     1 if decision == "approved" else 0,
                 )
                 self.assertEqual(
@@ -265,7 +267,12 @@ class SqliteGenerationIntegrationTest(unittest.TestCase):
                 ("live_fallback", "live_fallback"),
             )
             self.assertFalse((output / "generation-state.json").exists())
-            self.assertEqual(GeneratedAudioIndex.load(failed.manifest).entries, ())
+            self.assertEqual(
+                approved_manifest_entries(
+                    load_generation_state(failed.state, queue), output
+                ),
+                [],
+            )
 
     def test_completed_legacy_worker_output_requires_upgrade_without_model_calls(self):
         with TemporaryDirectory() as directory:

@@ -103,7 +103,6 @@ class _WorkspaceSnapshot:
     state: StateObject
     state_items: dict[str, JsonObject]
     state_sha256: str | None
-    manifest_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -394,14 +393,6 @@ def _load_workspace_snapshot(
     else:
         _remember_absence(snapshots, summary.output / "generation-state.sqlite3")
 
-    manifest = summary.output / "manifest.json"
-    manifest_sha256 = None
-    if manifest.is_file():
-        manifest_snapshot = _capture_snapshot(manifest, "generated manifest")
-        _remember_snapshot(snapshots, manifest, manifest_snapshot.sha256)
-        manifest_sha256 = manifest_snapshot.sha256
-    else:
-        _remember_absence(snapshots, manifest)
     return _WorkspaceSnapshot(
         directory,
         workspace,
@@ -411,7 +402,6 @@ def _load_workspace_snapshot(
         state,
         _state_items(state),
         state_sha256,
-        manifest_sha256,
     )
 
 
@@ -708,7 +698,6 @@ def _inspect_workspaces(
         summary = snapshot.summary
         state = snapshot.state
         state_sha256 = snapshot.state_sha256
-        manifest_sha256 = snapshot.manifest_sha256
         if directory == primary:
             terminal_merge = workspace.get("terminal_conflict_merge")
             if isinstance(terminal_merge, dict):
@@ -747,7 +736,6 @@ def _inspect_workspaces(
                 "config_fingerprint": workspace["config_fingerprint"],
                 "queue_sha256": snapshot.queue_sha256,
                 "state_sha256": state_sha256,
-                "manifest_sha256": manifest_sha256,
                 "runtime_status": summary.runtime_status.value,
                 "active": state.get("active") is not None,
                 "report_scope": (

@@ -125,6 +125,8 @@ def copy_workspace_tree_snapshot(
         if path.is_dir():
             continue
         relative = path.relative_to(source)
+        if target.name == "generated-audio" and relative == Path("manifest.json"):
+            continue
         payload = read_regular_file(
             path,
             "outcome merge immutable input",

@@ -12,7 +12,9 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_manifest
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.authoring.publication import AtomicPublicationError
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import CapturedDialogFrame
@@ -21,12 +23,54 @@ from vntts.live_replay_capture import LiveReplayCaptureSession
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     _generated_audio_manifest_for_run,
+    _snapshot_generated_audio,
     build_parser,
     seal_sequence_replay,
 )
 
 
 class LiveReplaySequenceSealTest(unittest.TestCase):
+    def test_seal_snapshots_committed_sqlite_audio_into_a_json_package(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            story = self.write_story(
+                root,
+                [
+                    {
+                        "line_id": item["line_id"],
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": item["speaker"],
+                        "text": item["text"],
+                        "source_audio_status": "absent",
+                    }
+                ],
+            )
+            queue = write_queue(root / "queue.jsonl", [item])
+            generated = run_bulk_generation(
+                queue,
+                root / "generated",
+                SyntheticRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+            )
+            staging = root / "sealed"
+            binding, line_ids = _snapshot_generated_audio(
+                generated.state,
+                staging,
+                [{"line_id": item["line_id"]}],
+                ChapterVoicePreloader.load_optional(story),
+            )
+            self.assertEqual(line_ids, {item["line_id"]})
+            payload = (staging / binding["path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(payload).hexdigest(), binding["sha256"])
+            document = json.loads(payload)
+            self.assertEqual(document["entries"][0]["line_id"], item["line_id"])
+            self.assertTrue(
+                (staging / "generated" / document["entries"][0]["audio"]).is_file()
+            )
+
     def test_generated_audio_manifest_cli_options_are_explicit_and_exclusive(self):
         without_generated = build_parser().parse_args(
             ["capture.json", "sealed", "--no-generated-audio-manifest"]

@@ -72,7 +72,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationProgress,
     OfflineGenerationResult,
     OfflineGenerationWorker,
-    runtime_progress_manifest_path,
+    runtime_generation_state_path,
 )
 from vntts.pregeneration_pack import (
     OfflinePackError,
@@ -3125,8 +3125,8 @@ class OfflineAudioPreparationDialog(QDialog):
         generation_input = self._generation_input
         if generation_input is None:
             return None
-        manifest = runtime_progress_manifest_path(generation_input)
-        if not manifest.is_file():
+        state_path = runtime_generation_state_path(generation_input)
+        if not state_path.is_file():
             return None
         return self.settings.updated(
             game_pack=None,
@@ -3144,7 +3144,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 else "off"
             ),
             live_speaker_corpus=None,
-            generated_audio_manifest=str(manifest),
+            generated_audio_manifest=str(state_path),
             audio_source_policy="prefer-game-audio",
             speech_rate_percent=100,
             force_live_narrator=False,
@@ -3306,7 +3306,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
         state_path = (
             generation_state_path(
-                runtime_progress_manifest_path(self._generation_input).parent
+                runtime_generation_state_path(self._generation_input).parent
             )
             if isinstance(self._generation_input, PregenerationInput)
             else None

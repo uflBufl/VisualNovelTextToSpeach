@@ -1993,7 +1993,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog._selected_collection_ids, expected)
             self.assertEqual(dialog.collection_selection.collection_ids, expected)
 
-    def test_consecutive_review_decisions_remain_ordered_and_manifest_is_derived(self):
+    def test_consecutive_review_decisions_remain_ordered_without_a_working_manifest(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
@@ -2015,14 +2017,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             state = generation_database.read_state(
                 workspace / "generated-audio/generation-state.sqlite3"
             )
-            manifest = json.loads(
-                (workspace / "generated-audio/manifest.json").read_text(
-                    encoding="utf-8"
-                )
-            )
             self.assertEqual(state["items"][queue_id]["status"], "generated")
             self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
-            self.assertEqual(manifest["entries"], [])
+            self.assertFalse((workspace / "generated-audio/manifest.json").exists())
 
     def test_stale_visible_row_cannot_overwrite_newer_review_authority(self):
         with TemporaryDirectory() as directory:
@@ -2225,7 +2222,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace / "inputs/story-index.jsonl",
                 workspace / "inputs/voice/manifest.json",
                 output / "generation-state.sqlite3",
-                output / "manifest.json",
                 output / ".generation-lease.json",
                 output / ".job-process.json",
             )

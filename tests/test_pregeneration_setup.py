@@ -3755,7 +3755,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation_result = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "generation-manifest.json",
                 generated=2,
                 failed=0,
                 other_terminal=0,
@@ -4148,7 +4147,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._generation_input = Mock(progress_items=3)
             dialog.generating = True
             result = OfflineGenerationResult(
-                root / "output", root / "state.json", root / "manifest.json", 2, 1, 0
+                root / "output", root / "state.json", 2, 1, 0
             )
             dialog._generation_finished(result, None)
             self.assertEqual(dialog.progress_phase.text(), "Recovering failed lines")
@@ -4205,7 +4204,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "Generation processed; final checks may still be needed."
             )
             result = OfflineGenerationResult(
-                root / "output", root / "state.json", root / "manifest.json", 3, 0, 0
+                root / "output", root / "state.json", 3, 0, 0
             )
             dialog.show()
 
@@ -4487,7 +4486,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             final = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "generation-manifest.json",
                 generated=2,
                 failed=0,
                 other_terminal=1,
@@ -4601,7 +4599,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "manifest.json",
                 generated=2,
                 failed=1,
                 other_terminal=0,

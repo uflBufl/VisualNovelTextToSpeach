@@ -1,11 +1,9 @@
-"""Exact human-review snapshots and leased state/manifest transactions."""
+"""Exact human-review snapshots and leased SQLite transactions."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
-import os
-import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,13 +18,7 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
 )
 from vntts.authoring.generation_manifest import (
-    approved_manifest_entries as _approved_manifest_entries,
-)
-from vntts.authoring.generation_manifest import (
     validate_success_file as _validate_success_file,
-)
-from vntts.authoring.generation_manifest import (
-    write_generated_manifest_from_state as _write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
     StateItems,
@@ -34,6 +26,7 @@ from vntts.authoring.generation_state import (
     generation_state_file,
     generation_state_snapshot,
     load_generation_state,
+    read_generation_state_document,
     read_generation_state_payload,
     validate_generation_state_document,
     write_generation_state,
@@ -381,7 +374,7 @@ def review_generation_item(
     expected_authority: object = None,
     queue_path: str | Path | None = None,
 ) -> ReviewCommit | JsonDocument:
-    """Commit review with manifest revocation before rejected state."""
+    """Commit one exact review decision to transactional working state."""
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
     state_path = generation_state_file(state_path)
@@ -492,59 +485,23 @@ def _commit_review_generation_cohort(
         proposed, updated_at = _cohort_review_proposed_state(
             state, authorities, decisions, provenance
         )
-        manifest_path = state_path.parent / "manifest.json"
-        entries = _approved_manifest_entries(
-            proposed, state_path.parent, validate_files=False
-        )
         _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
-        transaction_id = secrets.token_hex(16)
-        staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
-        staged_manifest = manifest_path.with_name(
-            f".{manifest_path.name}.{transaction_id}.tmp"
+        _assert_cohort_commit_authority(
+            state_path, queue_path, authorities, authority_values
         )
-        staged_conservative_manifest = manifest_path.with_name(
-            f".{manifest_path.name}.{transaction_id}.conservative.tmp"
-        )
-        is_mixed = len(set(decisions.values())) > 1
+        lease.assert_owned()
+        _save_review_state(state_path, proposed)
         try:
-            write_generation_state(staged_state, proposed)
-            proposed_state_sha256 = sha256_file(staged_state)
-            _write_generated_manifest_from_state(
-                proposed,
-                state_path.parent,
-                staged_manifest,
-                entries=entries,
-                validate_files=False,
-            )
-            _write_conservative_cohort_manifest(
-                is_mixed, state, state_path.parent, staged_conservative_manifest
-            )
-            _assert_cohort_commit_authority(
-                state_path, queue_path, authorities, authority_values, proposed, entries
-            )
-            _publish_cohort_review(
-                is_mixed,
-                decisions,
-                staged_conservative_manifest,
-                staged_state,
-                staged_manifest,
-                manifest_path,
-                state_path,
-                queue_path,
-                authorities,
-                authority_values,
-                proposed_state_sha256,
-                proposed,
-                entries,
-                lease,
-            )
-        finally:
-            for staged in (
-                staged_state,
-                staged_manifest,
-                staged_conservative_manifest,
-            ):
-                staged.unlink(missing_ok=True)
+            lease.assert_owned()
+            if read_generation_state_document(state_path) != proposed:
+                raise BulkGenerationError("Cohort state changed after review commit")
+            if sha256_file(queue_path) != authority_values[0].queue_sha256:
+                raise BulkGenerationError("Cohort review queue changed after commit")
+            _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
+        except BulkGenerationError as error:
+            raise BulkGenerationError(
+                f"Cohort review decision was saved, but authority changed: {error}"
+            ) from error
         lease.mark_committed()
     committed_state_sha256 = sha256_file(state_path)
     proposed_items = _state_items(proposed)
@@ -607,199 +564,18 @@ def _cohort_review_proposed_state(
     return proposed, updated_at
 
 
-def _write_conservative_cohort_manifest(
-    is_mixed: bool, state: JsonDocument, output_directory: Path, path: Path
-) -> None:
-    if is_mixed:
-        _write_generated_manifest_from_state(
-            state,
-            output_directory,
-            path,
-            entries=_approved_manifest_entries(
-                state, output_directory, validate_files=False
-            ),
-            validate_files=False,
-        )
-
-
 @publication_errors(BulkGenerationError)
 def _assert_cohort_commit_authority(
     state_path: Path,
     queue_path: Path,
     authorities: Mapping[str, ReviewAuthority],
     authority_values: Sequence[ReviewAuthority],
-    proposed: JsonDocument,
-    entries: list[dict[str, object]],
 ) -> None:
     assert_review_authorities(state_path, authorities, queue_path)
-    if (
-        _approved_manifest_entries(proposed, state_path.parent, validate_files=False)
-        != entries
-    ):
-        raise BulkGenerationError(
-            "Approved cohort manifest authority changed before the final commit"
-        )
     if sha256_file(state_path) != authority_values[0].state_sha256:
         raise BulkGenerationError("Cohort review state changed before the final commit")
     if sha256_file(queue_path) != authority_values[0].queue_sha256:
         raise BulkGenerationError("Cohort review queue changed before the final commit")
-
-
-def _publish_cohort_review(
-    is_mixed: bool,
-    decisions: Mapping[str, str],
-    conservative_manifest: Path,
-    staged_state: Path,
-    staged_manifest: Path,
-    manifest_path: Path,
-    state_path: Path,
-    queue_path: Path,
-    authorities: Mapping[str, ReviewAuthority],
-    authority_values: Sequence[ReviewAuthority],
-    proposed_state_sha256: str,
-    proposed: JsonDocument,
-    entries: object,
-    lease: GenerationLease,
-) -> None:
-    lease.assert_owned()
-    if is_mixed:
-        _publish_mixed_cohort_review(
-            conservative_manifest,
-            staged_state,
-            staged_manifest,
-            manifest_path,
-            state_path,
-            queue_path,
-            authorities,
-            authority_values,
-            proposed_state_sha256,
-            proposed,
-            decisions,
-            entries,
-            lease,
-        )
-    elif next(iter(decisions.values())) == "rejected":
-        _publish_rejected_review(
-            staged_manifest,
-            staged_state,
-            manifest_path,
-            state_path,
-            lease,
-            context="Cohort",
-        )
-    else:
-        _publish_approved_cohort_review(
-            staged_state,
-            staged_manifest,
-            manifest_path,
-            state_path,
-            proposed,
-            decisions,
-            state_path.parent,
-            lease,
-        )
-
-
-def _publish_mixed_cohort_review(
-    conservative_manifest: Path,
-    staged_state: Path,
-    staged_manifest: Path,
-    manifest_path: Path,
-    state_path: Path,
-    queue_path: Path,
-    authorities: Mapping[str, ReviewAuthority],
-    authority_values: Sequence[ReviewAuthority],
-    proposed_state_sha256: str,
-    proposed: JsonDocument,
-    decisions: Mapping[str, str],
-    entries: object,
-    lease: GenerationLease,
-) -> None:
-    try:
-        os.replace(conservative_manifest, manifest_path)
-        lease.assert_owned()
-        assert_review_authorities(state_path, authorities, queue_path)
-        lease.assert_owned()
-        os.replace(staged_state, state_path)
-        lease.assert_owned()
-        if sha256_file(state_path) != proposed_state_sha256:
-            raise BulkGenerationError(
-                "Mixed cohort state changed before manifest publication"
-            )
-        if sha256_file(queue_path) != authority_values[0].queue_sha256:
-            raise BulkGenerationError(
-                "Cohort review queue changed before manifest publication"
-            )
-        _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
-        if (
-            _approved_manifest_entries(
-                proposed, state_path.parent, validate_files=False
-            )
-            != entries
-        ):
-            raise BulkGenerationError(
-                "Mixed cohort manifest authority changed before publication"
-            )
-        lease.assert_owned()
-        os.replace(staged_manifest, manifest_path)
-    except OSError as error:
-        raise BulkGenerationError(
-            "Mixed cohort review did not fully commit; the published manifest remains fail-closed: "
-            f"{error}"
-        ) from error
-
-
-def _publish_rejected_review(
-    staged_manifest: Path,
-    staged_state: Path,
-    manifest_path: Path,
-    state_path: Path,
-    lease: GenerationLease | None,
-    *,
-    context: str,
-) -> None:
-    try:
-        os.replace(staged_manifest, manifest_path)
-        if lease is not None:
-            lease.assert_owned()
-        os.replace(staged_state, state_path)
-    except OSError as error:
-        raise BulkGenerationError(
-            f"{context} rejection did not fully commit; the published manifest remains fail-closed: "
-            f"{error}"
-        ) from error
-
-
-def _publish_approved_cohort_review(
-    staged_state: Path,
-    staged_manifest: Path,
-    manifest_path: Path,
-    state_path: Path,
-    proposed: JsonDocument,
-    decisions: Mapping[str, str],
-    output_directory: Path,
-    lease: GenerationLease,
-) -> None:
-    try:
-        os.replace(staged_state, state_path)
-    except OSError as error:
-        raise BulkGenerationError(
-            f"Unable to save cohort review decision: {error}"
-        ) from error
-    try:
-        lease.assert_owned()
-        _validate_cohort_approved_wavs(proposed, output_directory, decisions)
-    except BulkGenerationError as error:
-        raise BulkGenerationError(
-            "Cohort review decision was saved, but manifest rebuild was blocked: "
-            f"{error}"
-        ) from error
-    try:
-        os.replace(staged_manifest, manifest_path)
-    except OSError as error:
-        raise BulkGenerationError(
-            f"Cohort review decision was saved, but manifest rebuild failed: {error}"
-        ) from error
 
 
 def _validate_cohort_approved_wavs(
@@ -893,105 +669,29 @@ def _commit_review_item_decision(
     proposed_item["review_status"] = decision
     proposed_item["status"] = "approved" if decision == "approved" else "generated"
     proposed_item["updated_at"] = datetime.now(timezone.utc).isoformat()
-    manifest_path = state_path.parent / "manifest.json"
-    entries = _approved_manifest_entries(
-        proposed,
-        state_path.parent,
-        validate_files=expected_authority is None,
-    )
-    transaction_id = secrets.token_hex(16)
-    staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
-    staged_manifest = manifest_path.with_name(
-        f".{manifest_path.name}.{transaction_id}.tmp"
-    )
-    _write_review_item_transaction(
-        staged_state,
-        staged_manifest,
-        state_path,
-        manifest_path,
-        proposed,
-        entries,
-        queue_id,
-        decision,
-        expected_authority,
-        queue_path,
-        lease,
+    item, audio = _review_locked_item(state, state_path, queue_id)
+    _validate_review_locked_authority(
+        state_path, queue_id, expected_authority, queue_path, item, audio
     )
     if lease is not None:
+        lease.assert_owned()
+    _save_review_state(state_path, proposed)
+    if lease is not None:
+        try:
+            lease.assert_owned()
+        except BulkGenerationError as error:
+            raise BulkGenerationError(
+                f"Review decision was saved, but lease ownership changed: {error}"
+            ) from error
         lease.mark_committed()
     return _review_commit_result(proposed, state_path, queue_id, expected_authority)
 
 
-def _write_review_item_transaction(
-    staged_state: Path,
-    staged_manifest: Path,
-    state_path: Path,
-    manifest_path: Path,
-    proposed: JsonDocument,
-    entries: list[dict[str, object]],
-    queue_id: str,
-    decision: str,
-    authority: ReviewAuthority | None,
-    queue_path: str | Path | None,
-    lease: GenerationLease | None,
-) -> None:
+def _save_review_state(state_path: Path, proposed: JsonDocument) -> None:
     try:
-        write_generation_state(staged_state, proposed)
-        _write_generated_manifest_from_state(
-            proposed,
-            state_path.parent,
-            staged_manifest,
-            entries=entries,
-            validate_files=authority is None,
-        )
-        if authority is not None:
-            _assert_review_authority(state_path, queue_id, authority, queue_path)
-        if lease is not None:
-            lease.assert_owned()
-        if decision == "rejected":
-            _publish_rejected_review(
-                staged_manifest,
-                staged_state,
-                manifest_path,
-                state_path,
-                lease,
-                context="Review",
-            )
-        else:
-            _replace_review_state(staged_state, state_path)
-            _replace_review_manifest(staged_manifest, manifest_path, lease)
-    finally:
-        for staged in (staged_state, staged_manifest):
-            try:
-                staged.unlink()
-            except FileNotFoundError, OSError:
-                pass
-
-
-def _replace_review_state(staged_state: Path, state_path: Path) -> None:
-    try:
-        os.replace(staged_state, state_path)
-    except OSError as error:
+        write_generation_state(state_path, proposed)
+    except (OSError, BulkGenerationError) as error:
         raise BulkGenerationError(f"Unable to save review decision: {error}") from error
-
-
-def _replace_review_manifest(
-    staged_manifest: Path, manifest_path: Path, lease: GenerationLease | None
-) -> None:
-    try:
-        if lease is not None:
-            try:
-                lease.assert_owned()
-            except BulkGenerationError as error:
-                raise BulkGenerationError(
-                    "Review decision was saved, but manifest rebuild was blocked: "
-                    f"{error}"
-                ) from error
-        os.replace(staged_manifest, manifest_path)
-    except OSError as error:
-        raise BulkGenerationError(
-            f"Review decision was saved, but manifest rebuild failed: {error}"
-        ) from error
 
 
 def _review_commit_result(

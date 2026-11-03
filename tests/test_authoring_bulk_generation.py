@@ -2,9 +2,10 @@ import hashlib
 import json
 import os
 import socket
+import sqlite3
 import unittest
 import wave
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,7 +16,6 @@ import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 import vntts.authoring.bulk_generation as bulk_module
 import vntts.authoring.generation_failures as failure_module
@@ -40,7 +40,6 @@ from vntts.authoring.bulk_generation import (
     STATE_SCHEMA,
     BulkGenerationError,
     load_generation_state,
-    publish_generated_manifest,
     run_bulk_generation,
 )
 from vntts.authoring.cli import main as authoring_main
@@ -53,7 +52,6 @@ from vntts.authoring.generation_failures import (
 from vntts.authoring.generation_fallback import (
     authorize_live_fallback,
 )
-from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_review import (
     generation_review_authorities,
     generation_review_authority,
@@ -68,6 +66,7 @@ from vntts.authoring.silence_evidence import (
     SilenceFailureEvidenceError,
     load_silence_failure_evidence,
 )
+from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.support import PerformanceLog
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -155,6 +154,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             **options,
         )
 
+    def approved_entries(self, state_path, *, validate_files=True):
+        return manifest_module.approved_manifest_entries(
+            generation_database.read_state(state_path),
+            state_path.parent,
+            validate_files=validate_files,
+        )
+
     def test_generation_stage_measurements_are_bounded_and_keep_progress(self):
         log = PerformanceLog()
         events = []
@@ -175,7 +181,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(result.generated, 2)
             measurements = {event["operation"]: event for event in log.snapshot()}
             for phase in (
-                "progress-manifest",
                 "wav-quality",
                 "wav-store",
                 "render-wait",
@@ -183,7 +188,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.assertEqual(measurements[f"bulk-generation-{phase}"]["count"], 2)
             self.assertIn("bulk-generation-controls-validation", measurements)
             self.assertIn("bulk-generation-state-validation", measurements)
-            self.assertEqual(measurements["bulk-generation-final-manifest"]["count"], 1)
+            self.assertEqual(
+                measurements["bulk-generation-final-validation"]["count"], 1
+            )
             self.assertIn("bulk-generation-database-read", measurements)
             self.assertIn("bulk-generation-database-write", measurements)
             self.assertEqual(len(log.snapshot()), len(measurements))
@@ -344,7 +351,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
     def test_progress_callback_follows_each_state_commit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            queue = write_queue(root / "queue.jsonl", [queue_item()])
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
             snapshots = []
 
@@ -356,7 +364,13 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 if any(
                     item["status"] == "generated" for item in state["items"].values()
                 ):
-                    self.assertTrue((output / RUNTIME_PROGRESS_MANIFEST_NAME).is_file())
+                    library = GeneratedAudioLibrary.load_optional(
+                        output / "generation-state.sqlite3"
+                    )
+                    self.assertIsNotNone(library)
+                    self.assertTrue(
+                        library.has_entry(item["line_id"], item["text_sha256"])
+                    )
                 snapshots.append(
                     (
                         state["active"]["phase"] if state["active"] else None,
@@ -582,9 +596,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             first = self.run_generation(queue, output, renderer, seed=7)
             second = self.run_generation(queue, output, renderer, seed=7)
             state = load_generation_state(first.state, queue)
-            raw_manifest = json.loads(first.manifest.read_text(encoding="utf-8"))
-            progress_manifest = json.loads(
-                (output / RUNTIME_PROGRESS_MANIFEST_NAME).read_text(encoding="utf-8")
+            approved_entries = self.approved_entries(first.state)
+            progress_library = GeneratedAudioLibrary.load_optional(first.state)
+            self.assertIsNotNone(progress_library)
+            self.assertTrue(
+                progress_library.has_entry(item["line_id"], item["text_sha256"])
             )
             result = state["items"][item["queue_id"]]
             audio = output / result["path"]
@@ -606,16 +622,17 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["review_status"], "pending_review")
         self.assertEqual(result["file_sha256"], audio_hash)
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
-        self.assertEqual(raw_manifest["entry_count"], 0)
-        self.assertTrue(progress_manifest["vntts.runtime.progress"])
+        self.assertEqual(approved_entries, [])
+        self.assertTrue(progress_library.runtime_progress)
         self.assertEqual(
-            progress_manifest["source_queue_sha256"], state["queue_sha256"]
+            progress_library.index.metadata["source_queue_sha256"],
+            state["queue_sha256"],
         )
-        self.assertEqual(progress_manifest["entry_count"], 1)
+        self.assertEqual(len(progress_library.index.entries), 1)
         self.assertEqual(
-            progress_manifest["entries"][0]["review_status"], "pending_review"
+            progress_library.index.entries[0].review_status, "pending_review"
         )
-        self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
+        self.assertEqual(progress_library.index.entries[0].line_id, item["line_id"])
 
     def test_post_render_progress_refreshes_worker_device_and_pid(self):
         for device, exit_code, expected_status, expected_pid in (
@@ -697,7 +714,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ]
             self.assertEqual(result.generated, 1)
             self.assertEqual(len(staged_reads), 1)
-            self.assertTrue(result.manifest.is_file())
+            self.assertTrue(result.state.is_file())
             self.assertEqual(list(output.rglob("*.partial.wav")), [])
 
     def test_validated_player_audio_is_published_and_reused_without_review(self):
@@ -714,7 +731,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 queue, output, renderer, approve_validated_audio=True
             )
             state = load_generation_state(first.state, queue)
-            manifest = json.loads(first.manifest.read_text(encoding="utf-8"))
+            approved_entries = self.approved_entries(first.state)
 
         self.assertEqual(first.generated, 1)
         self.assertEqual(second.skipped_existing, 1)
@@ -726,7 +743,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ),
             ("approved", "approved"),
         )
-        self.assertEqual(manifest["entry_count"], 1)
+        self.assertEqual(len(approved_entries), 1)
 
     def test_explicit_synthesis_cache_policy_reaches_backend(self):
         with TemporaryDirectory() as directory:
@@ -785,7 +802,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             state = load_generation_state(result.state, queue)
-            manifest_published = result.manifest.is_file()
+            state_published = result.state.is_file()
 
         self.assertEqual(result.generated, 2)
         self.assertEqual(active_during_second, [(items[0]["queue_id"], "validating")])
@@ -793,7 +810,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             [request.text for request in renderer.requests],
             [items[0]["text"], items[1]["text"]],
         )
-        self.assertTrue(manifest_published)
+        self.assertTrue(state_published)
         self.assertTrue(
             all(value["status"] == "generated" for value in state["items"].values())
         )
@@ -933,6 +950,64 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(decision["evidence"]["base_result"]["provider"], "moss-tts")
         self.assertEqual(stored["status"], "live_fallback")
 
+    def test_review_commit_updates_existing_database_reader(self):
+        for scope, decision in (
+            ("single", "approved"),
+            ("single", "rejected"),
+            ("cohort", "approved"),
+            ("cohort", "rejected"),
+            ("cohort", "mixed"),
+        ):
+            with (
+                self.subTest(scope=scope, decision=decision),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                items = [queue_item("one"), queue_item("two")]
+                queue = write_queue(root / "queue.jsonl", items)
+                result = self.run_generation(
+                    queue, root / "output", SyntheticRenderer()
+                )
+                authorities = generation_review_authorities(
+                    result.state, tuple(item["queue_id"] for item in items)
+                )
+                with closing(sqlite3.connect(result.state)) as reader:
+                    self.assertEqual(
+                        {
+                            row[0]
+                            for row in reader.execute("SELECT review_status FROM items")
+                        },
+                        {"pending_review"},
+                    )
+                    if scope == "single":
+                        review_generation_item(
+                            result.state,
+                            items[0]["queue_id"],
+                            decision,
+                            expected_authority=authorities[items[0]["queue_id"]],
+                            queue_path=queue,
+                        )
+                    else:
+                        review_module.review_generation_cohort(
+                            result.state,
+                            queue,
+                            authorities,
+                            {
+                                items[0]["queue_id"]: "approved",
+                                items[1]["queue_id"]: "rejected",
+                            }
+                            if decision == "mixed"
+                            else decision,
+                            provenance={"test": "existing-reader"},
+                        )
+                    expected = generation_database.read_state(result.state)["items"]
+                    self.assertEqual(
+                        dict(
+                            reader.execute("SELECT queue_id,review_status FROM items")
+                        ),
+                        {key: item["review_status"] for key, item in expected.items()},
+                    )
+
     def test_interrupted_single_rejection_never_exposes_rejected_wav(self):
         from vntts.generated_audio import GeneratedAudioLibrary
 
@@ -946,18 +1021,20 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
                 review_generation_item(result.state, item["queue_id"], "approved")
                 authority = generation_review_authority(result.state, item["queue_id"])
-                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                library = GeneratedAudioLibrary.load_optional(result.state)
                 self.assertIsNotNone(library.find(item["line_id"], item["text_sha256"]))
-                original = os.replace
+                original = review_module.write_generation_state
 
-                def interrupt_after_commit(source, destination):
-                    original(source, destination)
-                    if Path(destination).resolve() == result.state.resolve():
+                def interrupt_after_commit(path, state, **options):
+                    original(path, state, **options)
+                    if Path(path).resolve() == result.state.resolve():
                         raise OSError("interrupted after rejection state commit")
 
                 with (
                     patch.object(
-                        review_module.os, "replace", side_effect=interrupt_after_commit
+                        review_module,
+                        "write_generation_state",
+                        side_effect=interrupt_after_commit,
                     ),
                     self.assertRaises(BulkGenerationError),
                 ):
@@ -972,11 +1049,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.assertEqual(
                     state["items"][item["queue_id"]]["review_status"], "rejected"
                 )
-                library = GeneratedAudioLibrary.load_optional(result.manifest)
+                library = GeneratedAudioLibrary.load_optional(result.state)
                 self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
                 self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
 
-    def test_single_rejection_lease_takeover_keeps_manifest_revoked(self):
+    def test_single_rejection_lease_takeover_preserves_state(self):
         from vntts.generated_audio import GeneratedAudioLibrary
 
         for exact in (False, True):
@@ -991,20 +1068,19 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 authority = generation_review_authority(result.state, item["queue_id"])
                 state_before = result.state.read_bytes()
                 lease_path = result.state.parent / ".generation-lease.json"
-                original = os.replace
+                original = review_module._validate_review_locked_authority
 
-                def steal_after_manifest_replace(source, destination):
-                    original(source, destination)
-                    if Path(destination).resolve() == result.manifest.resolve():
-                        lease = json.loads(lease_path.read_text(encoding="utf-8"))
-                        lease["lease_id"] = "successor-after-rejection-manifest"
-                        atomic_write_json(lease_path, lease, sort_keys=True)
+                def steal_after_validation(*args, **kwargs):
+                    original(*args, **kwargs)
+                    lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                    lease["lease_id"] = "successor-before-rejection-commit"
+                    atomic_write_json(lease_path, lease, sort_keys=True)
 
                 with (
                     patch.object(
-                        review_module.os,
-                        "replace",
-                        side_effect=steal_after_manifest_replace,
+                        review_module,
+                        "_validate_review_locked_authority",
+                        side_effect=steal_after_validation,
                     ),
                     self.assertRaisesRegex(
                         BulkGenerationError, "lease ownership changed"
@@ -1018,11 +1094,11 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         queue_path=queue if exact else None,
                     )
                 self.assertEqual(result.state.read_bytes(), state_before)
-                library = GeneratedAudioLibrary.load_optional(result.manifest)
-                self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
+                library = GeneratedAudioLibrary.load_optional(result.state)
+                self.assertIsNotNone(library.find(item["line_id"], item["text_sha256"]))
                 successor = json.loads(lease_path.read_text(encoding="utf-8"))
                 self.assertEqual(
-                    successor["lease_id"], "successor-after-rejection-manifest"
+                    successor["lease_id"], "successor-before-rejection-commit"
                 )
                 self.assertEqual(list(result.state.parent.glob(".*.tmp")), [])
 
@@ -1052,7 +1128,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertIs(caught.exception.__cause__, failure)
             self.assertEqual(tree_hashes(root), before)
 
-    def test_cohort_final_read_errors_preserve_authority_and_clean_staging(self):
+    def test_cohort_final_read_errors_preserve_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             items = [queue_item("first"), queue_item("second")]
@@ -1110,7 +1186,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         (result.state.parent / ".generation-lease.json").exists()
                     )
 
-    def test_live_fallback_final_read_error_preserves_authority_and_cleans_staging(
+    def test_live_fallback_final_read_error_preserves_authority(
         self,
     ):
         with TemporaryDirectory() as directory:
@@ -1389,8 +1465,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(result.state, queue)
             generated = state["items"][item["queue_id"]]
             review_generation_item(result.state, item["queue_id"], "approved")
-            manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
-            published = manifest["entries"][0]
+            published = self.approved_entries(result.state)[0]
 
         self.assertEqual(renderer.requests[0].voice, "Narrator")
         self.assertEqual(generated["requested_voice_character"], "Poacher I")
@@ -1710,9 +1785,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         failed_state["items"][item["queue_id"]]["status"], "failed"
                     )
                     self.assertEqual(list((output / "audio").rglob("*.wav")), [])
-                    self.assertEqual(
-                        json.loads(failed.manifest.read_text())["entry_count"], 0
-                    )
+                    self.assertEqual(self.approved_entries(failed.state), [])
                     if completion is SynthesisCompletion.LIMITED:
                         failure = failed_state["items"][item["queue_id"]]["last_error"]
                         self.assertIn("sample_count=4000", failure)
@@ -2194,44 +2267,31 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(resumed.generated, 1)
             self.assertEqual(len(list((output / "interrupted").glob("*.wav"))), 1)
 
-    def test_review_reject_reapprove_and_stale_manifest_recovery(self):
+    def test_review_reject_reapprove_updates_working_state(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
-
+            library = GeneratedAudioLibrary.load_optional(result.state)
             review_generation_item(result.state, item["queue_id"], "approved")
-            approved = GeneratedAudioIndex.load(result.manifest)
-            self.assertIsNotNone(approved.find(item["line_id"], item["text_sha256"]))
-
+            self.assertTrue(library.has_entry(item["line_id"], item["text_sha256"]))
+            self.assertEqual(len(self.approved_entries(result.state)), 1)
             review_generation_item(result.state, item["queue_id"], "rejected")
-            self.assertEqual(GeneratedAudioIndex.load(result.manifest).entries, ())
-
+            self.assertFalse(library.has_entry(item["line_id"], item["text_sha256"]))
+            self.assertEqual(self.approved_entries(result.state), [])
             review_generation_item(result.state, item["queue_id"], "approved")
-            result.manifest.write_text(
-                json.dumps(
-                    {
-                        "schema": "vntts.generated-audio",
-                        "schema_version": 1,
-                        "entry_count": 0,
-                        "entries": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            publish_generated_manifest(result.state)
-            recovered = json.loads(result.manifest.read_text(encoding="utf-8"))
+            self.assertTrue(library.has_entry(item["line_id"], item["text_sha256"]))
+            recovered = self.approved_entries(result.state)
             state = load_generation_state(result.state, queue)
-
-        self.assertEqual(recovered["entry_count"], 1)
-        self.assertEqual(recovered["entries"][0]["queue_id"], item["queue_id"])
+            self.assertFalse((result.state.parent / "manifest.json").exists())
+        self.assertEqual(recovered[0]["queue_id"], item["queue_id"])
         self.assertEqual(
-            recovered["entries"][0]["audio_sha256"],
+            recovered[0]["audio_sha256"],
             state["items"][item["queue_id"]]["file_sha256"],
         )
 
-    def test_review_lease_loss_is_detected_before_state_or_manifest_write(self):
+    def test_review_lease_loss_is_detected_before_state_write(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -2239,22 +2299,21 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
             authority = generation_review_authority(result.state, item["queue_id"])
             state_before = result.state.read_bytes()
-            manifest_before = result.manifest.read_bytes()
-            original_writer = review_module._write_generated_manifest_from_state
+            original_writer = review_module._validate_review_locked_authority
 
-            def steal_lease_during_staging(*arguments, **options):
+            def steal_lease_after_validation(*arguments, **options):
                 written = original_writer(*arguments, **options)
                 lease_path = result.state.parent / ".generation-lease.json"
                 lease = json.loads(lease_path.read_text(encoding="utf-8"))
-                lease["lease_id"] = "stolen-during-manifest-staging"
+                lease["lease_id"] = "stolen-after-review-validation"
                 atomic_write_json(lease_path, lease, sort_keys=True)
                 return written
 
             with (
                 patch.object(
                     review_module,
-                    "_write_generated_manifest_from_state",
-                    side_effect=steal_lease_during_staging,
+                    "_validate_review_locked_authority",
+                    side_effect=steal_lease_after_validation,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
             ):
@@ -2267,9 +2326,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             self.assertEqual(result.state.read_bytes(), state_before)
-            self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
-    def test_review_wav_change_during_staging_prevents_canonical_commit(self):
+    def test_review_wav_change_before_commit_prevents_canonical_commit(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -2279,10 +2337,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(result.state, queue)
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
             state_before = result.state.read_bytes()
-            manifest_before = result.manifest.read_bytes()
-            original_writer = review_module._write_generated_manifest_from_state
+            original_writer = review_module._validate_review_locked_authority
 
-            def change_wav_during_staging(*arguments, **options):
+            def change_wav_after_validation(*arguments, **options):
                 written = original_writer(*arguments, **options)
                 write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
                 return written
@@ -2290,8 +2347,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with (
                 patch.object(
                     review_module,
-                    "_write_generated_manifest_from_state",
-                    side_effect=change_wav_during_staging,
+                    "_validate_review_locked_authority",
+                    side_effect=change_wav_after_validation,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "authority changed"),
             ):
@@ -2304,32 +2361,30 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             self.assertEqual(result.state.read_bytes(), state_before)
-            self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
-    def test_lease_change_after_state_commit_reports_manifest_recovery(self):
+    def test_lease_change_after_state_commit_reports_saved_decision(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
             queue = write_queue(root / "queue.jsonl", [item])
             result = self.run_generation(queue, root / "output", SyntheticRenderer())
             authority = generation_review_authority(result.state, item["queue_id"])
-            manifest_before = result.manifest.read_bytes()
-            original_replace = os.replace
+            original_write = review_module.write_generation_state
 
-            def steal_after_state_replace(source, destination):
-                replaced = original_replace(source, destination)
-                if Path(destination).resolve() == result.state.resolve():
+            def steal_after_state_commit(path, state, **options):
+                saved = original_write(path, state, **options)
+                if Path(path).resolve() == result.state.resolve():
                     lease_path = result.state.parent / ".generation-lease.json"
                     lease = json.loads(lease_path.read_text(encoding="utf-8"))
                     lease["lease_id"] = "stolen-after-state-commit"
                     atomic_write_json(lease_path, lease, sort_keys=True)
-                return replaced
+                return saved
 
             with (
                 patch.object(
-                    review_module.os,
-                    "replace",
-                    side_effect=steal_after_state_replace,
+                    review_module,
+                    "write_generation_state",
+                    side_effect=steal_after_state_commit,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
             ):
@@ -2343,7 +2398,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             saved = generation_database.read_state(result.state)
             self.assertEqual(saved["items"][item["queue_id"]]["status"], "approved")
-            self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
     def test_cohort_authority_uses_one_shared_state_and_queue_snapshot(self):
         with TemporaryDirectory() as directory:
@@ -2445,19 +2499,19 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     provenance={"test": "approved-manifest-integrity"},
                 )
             state = generation_database.read_state(result.state)
-            manifest = GeneratedAudioIndex.load(result.manifest)
+            entries = self.approved_entries(result.state, validate_files=False)
 
             with self.assertRaisesRegex(BulkGenerationError, "checksum mismatch"):
-                publish_generated_manifest(result.state)
+                self.approved_entries(result.state)
 
         self.assertEqual(set(checked), {second["queue_id"]})
         self.assertEqual(checked.count(second["queue_id"]), 2)
         self.assertEqual(
             state["items"][second["queue_id"]]["review_status"], "approved"
         )
-        self.assertEqual(len(manifest.entries), 2)
+        self.assertEqual(len(entries), 2)
 
-    def test_mixed_cohort_commit_projects_each_item_and_only_approved_manifest(self):
+    def test_mixed_cohort_commit_projects_each_item_and_only_approved_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first = queue_item("first")
@@ -2483,7 +2537,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
 
             state = load_generation_state(result.state)
-            manifest = GeneratedAudioIndex.load(result.manifest)
+            entries = self.approved_entries(result.state, validate_files=False)
 
         self.assertEqual(
             {
@@ -2503,7 +2557,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [entry.line_id for entry in manifest.entries],
+            [entry["line_id"] for entry in entries],
             [second["line_id"]],
         )
 
@@ -2538,7 +2592,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             )
 
             state = load_generation_state(result.state)
-            manifest = GeneratedAudioIndex.load(result.manifest)
+            entries = self.approved_entries(result.state, validate_files=False)
 
         self.assertEqual(
             [(commit.queue_id, commit.review_status) for commit in commits],
@@ -2552,11 +2606,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ("generated", "pending_review"),
         )
         self.assertEqual(state["items"][third["queue_id"]], pending_before)
-        self.assertEqual(
-            [entry.line_id for entry in manifest.entries], [second["line_id"]]
-        )
+        self.assertEqual([entry["line_id"] for entry in entries], [second["line_id"]])
 
-    def test_mixed_cohort_wav_change_during_staging_commits_nothing(self):
+    def test_mixed_cohort_wav_change_before_commit_commits_nothing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first = queue_item("first")
@@ -2572,23 +2624,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(result.state, queue)
             audio = result.state.parent / state["items"][first["queue_id"]]["path"]
             state_before = result.state.read_bytes()
-            manifest_before = result.manifest.read_bytes()
-            original_writer = review_module._write_generated_manifest_from_state
+            original_writer = review_module._validate_cohort_approved_wavs
             writes = 0
 
-            def mutate_after_conservative_staging(*arguments, **options):
+            def mutate_after_validation(*arguments, **options):
                 nonlocal writes
                 written = original_writer(*arguments, **options)
                 writes += 1
-                if writes == 2:
+                if writes == 1:
                     write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
                 return written
 
             with (
                 patch.object(
                     review_module,
-                    "_write_generated_manifest_from_state",
-                    side_effect=mutate_after_conservative_staging,
+                    "_validate_cohort_approved_wavs",
+                    side_effect=mutate_after_validation,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "authority changed"),
             ):
@@ -2604,9 +2655,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             self.assertEqual(result.state.read_bytes(), state_before)
-            self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
-    def test_mixed_cohort_lease_loss_after_state_keeps_manifest_conservative(self):
+    def test_mixed_cohort_lease_loss_after_state_reports_saved_decision(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             first = queue_item("first")
@@ -2619,22 +2669,22 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
                 for item in (first, second)
             }
-            original_replace = os.replace
+            original_write = review_module.write_generation_state
 
-            def steal_after_state_replace(source, destination):
-                replaced = original_replace(source, destination)
-                if Path(destination).resolve() == result.state.resolve():
+            def steal_after_state_commit(path, state, **options):
+                saved = original_write(path, state, **options)
+                if Path(path).resolve() == result.state.resolve():
                     lease_path = result.state.parent / ".generation-lease.json"
                     lease = json.loads(lease_path.read_text(encoding="utf-8"))
                     lease["lease_id"] = "stolen-after-mixed-state"
                     atomic_write_json(lease_path, lease, sort_keys=True)
-                return replaced
+                return saved
 
             with (
                 patch.object(
-                    review_module.os,
-                    "replace",
-                    side_effect=steal_after_state_replace,
+                    review_module,
+                    "write_generation_state",
+                    side_effect=steal_after_state_commit,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "lease ownership changed"),
             ):
@@ -2650,15 +2700,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             state = load_generation_state(result.state, queue)
-            manifest = GeneratedAudioIndex.load(result.manifest)
+            entries = self.approved_entries(result.state, validate_files=False)
 
         self.assertEqual(state["items"][first["queue_id"]]["review_status"], "rejected")
         self.assertEqual(
             state["items"][second["queue_id"]]["review_status"], "approved"
         )
-        self.assertEqual(manifest.entries, ())
+        self.assertEqual([entry["line_id"] for entry in entries], [second["line_id"]])
 
-    def test_cohort_approval_wav_change_after_state_keeps_manifest_conservative(self):
+    def test_cohort_approval_wav_change_after_state_reports_saved_decision(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item("cohort-race")
@@ -2667,19 +2717,19 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             authority = generation_review_authority(result.state, item["queue_id"])
             state = load_generation_state(result.state, queue)
             audio = result.state.parent / state["items"][item["queue_id"]]["path"]
-            original_replace = os.replace
+            original_write = review_module.write_generation_state
 
-            def mutate_after_state_replace(source, destination):
-                replaced = original_replace(source, destination)
-                if Path(destination).resolve() == result.state.resolve():
+            def mutate_after_state_commit(path, state, **options):
+                saved = original_write(path, state, **options)
+                if Path(path).resolve() == result.state.resolve():
                     write_pcm16_wav(audio, audio_samples() * 0.5, 16_000)
-                return replaced
+                return saved
 
             with (
                 patch.object(
-                    review_module.os,
-                    "replace",
-                    side_effect=mutate_after_state_replace,
+                    review_module,
+                    "write_generation_state",
+                    side_effect=mutate_after_state_commit,
                 ),
                 self.assertRaisesRegex(BulkGenerationError, "decision was saved"),
             ):
@@ -2692,12 +2742,14 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
 
             committed = generation_database.read_state(result.state)
-            manifest = GeneratedAudioIndex.load(result.manifest)
+            entries = self.approved_entries(result.state, validate_files=False)
+            library = GeneratedAudioLibrary.load_optional(result.state)
+            self.assertIsNone(library.find(item["line_id"], item["text_sha256"]))
 
         self.assertEqual(
             committed["items"][item["queue_id"]]["review_status"], "approved"
         )
-        self.assertEqual(manifest.entries, ())
+        self.assertEqual(len(entries), 1)
 
     def test_tampered_completed_wav_blocks_resume_and_review(self):
         with TemporaryDirectory() as directory:
@@ -3217,7 +3269,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(state["items"], {})
         self.assertEqual(completed, [])
 
-    def test_workspace_manifest_publication_revalidates_canonical_queue_identity(self):
+    def test_state_validation_revalidates_canonical_queue_identity(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -3231,9 +3283,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             replace_generation_state(result.state, state)
 
             with self.assertRaisesRegex(BulkGenerationError, "identity"):
-                publish_generated_manifest(result.state)
+                load_generation_state(result.state, queue)
 
-    def test_review_and_publish_respect_live_generation_lease(self):
+    def test_review_respects_live_generation_lease(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -3257,8 +3309,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with self.assertRaisesRegex(BulkGenerationError, "Another generation"):
                 review_generation_item(result.state, item["queue_id"], "approved")
-            with self.assertRaisesRegex(BulkGenerationError, "Another generation"):
-                publish_generated_manifest(result.state)
 
             state = generation_database.read_state(result.state)
 
@@ -3326,7 +3376,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertTrue(diagnostic.startswith(b"RIFF"))
             self.assertEqual(stored["line_id"], item["line_id"])
             self.assertEqual(stored["text_sha256"], item["text_sha256"])
-            self.assertEqual(GeneratedAudioIndex.load(result.manifest).entries, ())
+            self.assertEqual(self.approved_entries(result.state), [])
 
         self.assertEqual(result.generated, 0)
         self.assertIn("leading silence", state["items"][item["queue_id"]]["last_error"])
@@ -3519,7 +3569,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             ]
             self.assertEqual(stored["failure_audio"], {"created": True})
             self.assertEqual(stored["failure"]["kind"], "missed_eos_audio_limit")
-            self.assertEqual(GeneratedAudioIndex.load(result.manifest).entries, ())
+            self.assertEqual(self.approved_entries(result.state), [])
 
     def test_selected_silence_failure_can_be_captured_only_as_evidence(self):
         with TemporaryDirectory() as directory:
@@ -3603,7 +3653,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 saved = {}
 
                 def fail_publication(*arguments, **options):
-                    for name in ("generation-state.sqlite3", "manifest.json"):
+                    for name in ("generation-state.sqlite3",):
                         saved[name] = (output / name).read_bytes()
                     raise failure
 
@@ -3631,7 +3681,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 self.assertEqual(stored["failure"]["kind"], "speech_silence")
                 self.assertEqual(stored["attempts"], 1)
                 self.assertEqual(
-                    GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+                    self.approved_entries(output / "generation-state.sqlite3"), []
                 )
                 self.assertEqual(queue.read_bytes(), source)
                 self.assertFalse(evidence.exists())
@@ -3738,7 +3788,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 state["items"][item["queue_id"]]["failure"]["kind"], "speech_silence"
             )
             self.assertEqual(
-                GeneratedAudioIndex.load(output / "manifest.json").entries, ()
+                self.approved_entries(output / "generation-state.sqlite3"), []
             )
             for path, payload in sources.items():
                 self.assertEqual(path.read_bytes(), payload)
@@ -4049,7 +4099,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 SyntheticRenderer(pcm=np.tile(audio_samples(), 4)),
             )
             original = generation_database.read_state(result.state)
-            manifest_before = result.manifest.read_bytes()
             generated = original["items"][item["queue_id"]]
             audio = result.state.parent / generated["path"]
             for version in (1, 2):
@@ -4095,12 +4144,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             review_generation_item(
                                 result.state, item["queue_id"], "approved"
                             )
-                        with self.assertRaisesRegex(
-                            BulkGenerationError, "quality.*mismatch"
-                        ):
-                            publish_generated_manifest(result.state)
                         self.assertEqual(result.state.read_bytes(), state_before)
-                        self.assertEqual(result.manifest.read_bytes(), manifest_before)
 
     def test_current_state_records_v2_speech_quality_and_loads_legacy_metrics(self):
         with TemporaryDirectory() as directory:
@@ -4169,7 +4213,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             state = load_generation_state(repaired.state, queue)
             result = state["items"][item["queue_id"]]
             review_generation_item(repaired.state, item["queue_id"], "approved")
-            manifest = json.loads(repaired.manifest.read_text(encoding="utf-8"))
+            approved_entries = self.approved_entries(repaired.state)
 
         self.assertEqual(repaired.generated, 1)
         self.assertEqual(
@@ -4186,7 +4230,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["failure_repair"]["pause_ms"], 180)
         self.assertEqual(result["failure_repair"]["planned_segment_seeds"], [1, 2])
         self.assertEqual(
-            manifest["entries"][0]["failure_repair"], result["failure_repair"]
+            approved_entries[0]["failure_repair"], result["failure_repair"]
         )
 
     def test_sentence_repair_rejects_transformed_segments_before_attempt_or_archive(
@@ -4827,7 +4871,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             with self.assertRaisesRegex(BulkGenerationError, "game"):
                 load_generation_state(result.state, queue)
 
-    def test_cli_generate_review_publish_and_status_use_public_state(self):
+    def test_cli_generate_review_and_status_use_public_state(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -4913,23 +4957,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 )
             self.assertEqual(
                 json.loads(review_output.getvalue())["decision"], "approved"
-            )
-
-            manifest_output = StringIO()
-            with redirect_stdout(manifest_output):
-                self.assertEqual(
-                    authoring_main(
-                        [
-                            "publish",
-                            "--state",
-                            str(output / "generation-state.sqlite3"),
-                        ]
-                    ),
-                    0,
-                )
-            self.assertEqual(
-                Path(json.loads(manifest_output.getvalue())["manifest"]),
-                (output / "manifest.json").resolve(),
             )
 
             status_output = StringIO()

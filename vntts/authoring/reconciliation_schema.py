@@ -13,7 +13,7 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import has_schema_version
 
 AUTHORING_RECONCILIATION_SCHEMA = "vntts.authoring-authority-reconciliation"
-AUTHORING_RECONCILIATION_VERSION = 1
+AUTHORING_RECONCILIATION_VERSION = 2
 WORKSPACE_NAME_PATTERN = re.compile(r"resume-[0-9a-f]{24}-[0-9a-f]{16}")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 RECONCILIATION_ACTIONS = {
@@ -46,7 +46,7 @@ class AuthoringReconciliationSchemaError(RuntimeError):
 
 
 def validate_authoring_reconciliation_document(report: object) -> dict[str, object]:
-    """Return a deep-validated version-1 reconciliation wire document."""
+    """Return a deep-validated reconciliation wire document."""
     if not isinstance(report, dict):
         raise AuthoringReconciliationSchemaError(
             "Authoring reconciliation must be an object"
@@ -203,7 +203,6 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
                 "config_fingerprint",
                 "queue_sha256",
                 "state_sha256",
-                "manifest_sha256",
                 "runtime_status",
                 "active",
                 "report_scope",
@@ -230,7 +229,6 @@ def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
         _required_sha256(workspace.get("config_fingerprint"), "Config fingerprint")
         _required_sha256(workspace.get("queue_sha256"), "Queue SHA-256")
         _optional_sha256(workspace.get("state_sha256"), "State SHA-256")
-        _optional_sha256(workspace.get("manifest_sha256"), "Manifest SHA-256")
         runtime_status = workspace.get("runtime_status")
         if (
             not isinstance(runtime_status, str)

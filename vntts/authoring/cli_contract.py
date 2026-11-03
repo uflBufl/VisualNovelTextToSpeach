@@ -39,7 +39,6 @@ AUTHORING_COMMAND_ORDER = (
     "generate",
     "review",
     "live-fallback",
-    "publish",
     "status",
     "audio-event-review-publish",
     "audio-event-review-decide",

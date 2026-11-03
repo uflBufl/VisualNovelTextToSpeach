@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "command_count": 100,
-  "sha256": "1efd1a9f33680eb6a094a8cc36defcb5c4003e4c7d7cb607d495b7feeb8441eb",
+  "command_count": 99,
+  "sha256": "50bc629c08dd31aa2619bb5944c6f2afcf5eeb8650b3d11c78705f102b5f31b6",
   "commands": [
     "discover-legacy",
     "import-legacy",
@@ -34,7 +34,6 @@
     "generate",
     "review",
     "live-fallback",
-    "publish",
     "status",
     "audio-event-review-publish",
     "audio-event-review-decide",

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import os
-import secrets
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -21,12 +19,6 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationSourceChangedError,
 )
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
-from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
-    approved_manifest_entries,
-    write_generated_manifest_from_state,
-    write_runtime_progress_manifest_from_state,
-)
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -279,26 +271,12 @@ def authorize_missing_voice_live_fallback(
             "updated_at": decided_at,
         }
     validate_generation_state_document(proposed, state_path.parent, queue, queue_sha256)
-    entries = approved_manifest_entries(proposed, state_path.parent)
-    transaction_id = secrets.token_hex(16)
-    staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
-    manifest_path = state_path.parent / "manifest.json"
-    staged_manifest = manifest_path.with_name(
-        f".{manifest_path.name}.{transaction_id}.tmp"
-    )
     try:
         with GenerationLease(
             state_path.parent,
             queue_sha256,
             process_checker=process_is_alive,
         ) as lease:
-            write_generation_state(staged_state, proposed)
-            write_generated_manifest_from_state(
-                proposed,
-                state_path.parent,
-                staged_manifest,
-                entries=entries,
-            )
             if _file_sha256(queue_path) != queue_sha256:
                 raise BulkGenerationSourceChangedError(
                     "Generation queue changed before missing-voice fallback commit"
@@ -317,27 +295,16 @@ def authorize_missing_voice_live_fallback(
                     "Workspace changed before missing-voice fallback commit"
                 )
             lease.assert_owned()
-            os.replace(staged_state, state_path)
-            lease.assert_owned()
-            os.replace(staged_manifest, manifest_path)
+            write_generation_state(state_path, proposed)
+            try:
+                lease.assert_owned()
+            except BulkGenerationError as error:
+                raise BulkGenerationError(
+                    f"Missing-voice fallback decision was saved, but lease ownership changed: {error}"
+                ) from error
             lease.mark_committed()
-            progress_manifest = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
-            if progress_manifest.is_file():
-                write_runtime_progress_manifest_from_state(
-                    proposed,
-                    state_path.parent,
-                    progress_manifest,
-                    validate_files=False,
-                )
     except BulkGenerationError as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
-    finally:
-        for path in (staged_state, staged_manifest):
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
     return MissingVoiceLiveFallbackResult(
         workspace,
         character,

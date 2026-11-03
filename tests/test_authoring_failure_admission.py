@@ -14,7 +14,6 @@ from tests.generation_state_fixtures import replace_generation_state
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    publish_generated_manifest,
     run_bulk_generation,
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
@@ -55,7 +54,6 @@ class AuthoringFailureAdmissionTest(unittest.TestCase):
         old = state["items"].pop(fixture["queue_id"])
         (state_path.parent / old["path"]).unlink()
         replace_generation_state(state_path, state)
-        publish_generated_manifest(state_path)
         self.generate(
             source.directory,
             self.moss_renderer([SynthesisCompletion.LIMITED]),

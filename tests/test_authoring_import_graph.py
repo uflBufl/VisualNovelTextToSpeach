@@ -26,7 +26,6 @@ from vntts.authoring.bulk_generation import (
     _review_generation_cohort,
     _sentence_repair_matches_failure,
     _snapshot_control_files,
-    _write_generated_manifest_from_state,
     generated_mono_pcm,
     inline_pause_matches_failure,
     review_generation_cohort,
@@ -43,7 +42,6 @@ from vntts.authoring.failure_reference_binding import (
 from vntts.authoring.generation_lease import GenerationLease, process_started_at
 from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
-    write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
     load_stable_generation_queue,
@@ -341,10 +339,6 @@ print(json.dumps([name for name in blocked if name in sys.modules]))
                     [],
                 )
         self.assertIs(_approved_manifest_entries, approved_manifest_entries)
-        self.assertIs(
-            _write_generated_manifest_from_state,
-            write_generated_manifest_from_state,
-        )
         graph = _authoring_import_graph()
         self.assertFalse(
             _reachable(

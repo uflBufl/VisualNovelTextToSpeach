@@ -20,7 +20,7 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     REVIEWED_WAVEFORM_PUBLICATION_REASON,
     REVIEWED_WAVEFORM_PUBLICATION_SCHEMA,
@@ -301,7 +301,7 @@ def _write_staged_reviewed_waveform_workspace(
     config_fingerprint: str,
 ) -> dict[str, object]:
     write_generation_state(output / "generation-state.sqlite3", target_state)
-    write_generated_manifest_from_state(target_state, output, output / "manifest.json")
+    approved_manifest_entries(target_state, output)
     workspace = copy.deepcopy(base_document)
     workspace.update(
         {

@@ -41,7 +41,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
-    runtime_progress_manifest_path,
+    runtime_generation_state_path,
     validate_offline_generation_result,
 )
 from vntts.pregeneration_queue import PregenerationInput
@@ -592,7 +592,7 @@ def _generation_queue_statuses(
 def _saved_generation_state(
     generation_input: PregenerationInput,
 ) -> tuple[OfflineGenerationResult | None, dict[str, str]]:
-    output = runtime_progress_manifest_path(generation_input).parent
+    output = runtime_generation_state_path(generation_input).parent
     state_path = generation_state_path(output)
     if not state_path.is_file():
         return None, {}
@@ -614,7 +614,6 @@ def _saved_generation_state(
     result = OfflineGenerationResult(
         output=output,
         state=state_path,
-        manifest=output / "manifest.json",
         generated=generated,
         failed=failed,
         other_terminal=sum(

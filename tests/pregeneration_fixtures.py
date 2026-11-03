@@ -208,7 +208,6 @@ def fixture(
     result = OfflineGenerationResult(
         output,
         generated.state,
-        generated.manifest,
         1,
         0,
         1,

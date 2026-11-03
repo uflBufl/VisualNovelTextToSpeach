@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import os
-import secrets
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,16 +25,6 @@ from vntts.authoring.generation_lease import (
     BulkGenerationSourceChangedError,
     GenerationLease,
     process_is_alive,
-)
-from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
-    write_runtime_progress_manifest_from_state,
-)
-from vntts.authoring.generation_manifest import (
-    approved_manifest_entries as _approved_manifest_entries,
-)
-from vntts.authoring.generation_manifest import (
-    write_generated_manifest_from_state as _write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -203,16 +191,7 @@ def authorize_live_fallback(
             state, existing, queue_id, queue_item, requested, reason, decision
         )
         _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
-        entries = _approved_manifest_entries(proposed, state_path.parent)
-        transaction_id = secrets.token_hex(16)
-        staged_state = state_path.with_name(f".{state_path.name}.{transaction_id}.tmp")
-        manifest_path = state_path.parent / "manifest.json"
-        staged_manifest = manifest_path.with_name(
-            f".{manifest_path.name}.{transaction_id}.tmp"
-        )
         _commit_live_fallback(
-            staged_state,
-            staged_manifest,
             state_path,
             queue_path,
             queue_sha256,
@@ -221,16 +200,7 @@ def authorize_live_fallback(
             proposed,
             queue,
             lease,
-            entries,
         )
-        progress_manifest = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
-        if progress_manifest.is_file():
-            write_runtime_progress_manifest_from_state(
-                proposed,
-                state_path.parent,
-                progress_manifest,
-                validate_files=False,
-            )
     return decision
 
 
@@ -356,8 +326,6 @@ def _live_fallback_proposed_state(
 
 
 def _commit_live_fallback(
-    staged_state: Path,
-    staged_manifest: Path,
     state_path: Path,
     queue_path: Path,
     queue_sha256: str,
@@ -366,34 +334,20 @@ def _commit_live_fallback(
     proposed: JsonDocument,
     queue: VoiceGenerationQueue,
     lease: GenerationLease,
-    entries: list[dict[str, object]],
 ) -> None:
+    _assert_live_fallback_commit_sources(
+        state_path, queue_path, state_sha256, queue_sha256, evidence_sources
+    )
+    _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
+    lease.assert_owned()
+    write_generation_state(state_path, proposed)
     try:
-        write_generation_state(staged_state, proposed)
-        _write_generated_manifest_from_state(
-            proposed, state_path.parent, staged_manifest, entries=entries
-        )
-        _assert_live_fallback_commit_sources(
-            state_path, queue_path, state_sha256, queue_sha256, evidence_sources
-        )
-        _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
         lease.assert_owned()
-        os.replace(staged_state, state_path)
-        try:
-            lease.assert_owned()
-        except BulkGenerationError as error:
-            raise BulkGenerationError(
-                f"Live fallback was saved, but manifest rebuild was blocked: {error}"
-            ) from error
-        os.replace(staged_manifest, state_path.parent / "manifest.json")
-        lease.mark_committed()
-    finally:
-        for path in (staged_state, staged_manifest):
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
+    except BulkGenerationError as error:
+        raise BulkGenerationError(
+            f"Live fallback decision was saved, but lease ownership changed: {error}"
+        ) from error
+    lease.mark_committed()
 
 
 @publication_errors(BulkGenerationError)
