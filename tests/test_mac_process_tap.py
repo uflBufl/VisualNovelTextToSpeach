@@ -35,7 +35,7 @@ class ProcessTapRecorderTest(unittest.TestCase):
                 "-framework",
                 "AudioToolbox",
                 "-Wl,-sectcreate,__TEXT,__info_plist,scripts/mac_live_recording/process_tap_info.plist",
-                "scripts/mac_live_recording/process_tap.m",
+                "tests/fixtures/mac_process_tap_memory.m",
                 "-o",
                 str(cls.binary),
             ],
@@ -68,6 +68,16 @@ class ProcessTapRecorderTest(unittest.TestCase):
         self.assertIn("one-frame descriptors", result.stdout)
         self.assertIn("pending Stop PCM finalization", result.stdout)
         self.assertIn("journal-failure PCM counts", result.stdout)
+
+    def test_capture_queue_memory_is_resident_and_released(self):
+        result = self.run_helper("--memory-resident")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_allocation_fails_closed_when_memory_locking_is_denied(self):
+        for stage in ("context", "arena"):
+            with self.subTest(stage=stage):
+                result = self.run_helper(f"--memory-deny-{stage}")
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_capture_requires_explicit_authorization_and_valid_target_arguments(self):
         output = Path(self.directory.name) / "must-not-exist"

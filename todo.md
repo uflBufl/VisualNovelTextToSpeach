@@ -337,32 +337,6 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **REC-02-02 - Implement resident owned recorder memory.**
-      Address-mapped capture proves26 compressor faults in our descriptor array
-      on the IO thread. A temporary resident prototype covers Queue, descriptors
-      and PCM with wired mappings and records zero owned-memory faults during
-      the same bounded game/video/MLX load. This qualifies a concrete ownership
-      repair, not elimination of every historical gap or audible playback faults.
-      - Replace pageable Queue allocation with a dedicated anonymous mapping;
-        allocate descriptors and PCM together in a second mapping. Write-prefault
-        and mlock both before IO. Preserve all queue/PCM/timestamp contracts,
-        including five seconds of one-frame callbacks and supported sample rates.
-      - Report mmap/mlock failure with preserved errno and requested size; abort
-        recording preparation and unwind acquired maps without a pageable fallback.
-        Normal recording must require no administrator privileges or limit changes.
-      - Migrate every native selfcheck allocation to the same owner. Release maps
-        only after successful IOProc destruction; retain them until process exit
-        when destruction fails. Keep error/CAF-finalization ownership intact.
-      - Run the changed-test selector first after implementation, then affected
-        native/collection checks. Gate: all-rate FIFO/wrap/planar/Stop selfchecks,
-        isolated context/arena-lock-denial and partial-unwind checks, and correct
-        teardown. Keep CPU/address/map probes local; reuse the retained native
-        comparison rather than another exploratory full-chapter campaign.
-      The former temporary probe copied max snapshots after its completion tick;
-      its later faults do not justify locking arbitrary HAL/framework/code pages.
-      Production owned memory is about24.72MB per44100Hz recorder including page
-      rounding. No whole-process wiring or continuity-policy relaxation is needed.
-
 - [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
       Native run receives Qt `audioOutputsChanged` at575256.467, stops Rust
       worker58042 mid-recording (158848/264600 frames) and holds generation65.

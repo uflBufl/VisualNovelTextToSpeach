@@ -10,6 +10,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
+#include <sys/mman.h>
+#include <errno.h>
 #import <dispatch/dispatch.h>
 #include <math.h>
 #include <float.h>
@@ -69,19 +71,39 @@ static void prefault(void *memory, size_t bytes) {
     for (size_t i = 0; i < bytes; i += 4096) data[i] = 0;
     if (bytes) data[bytes - 1] = 0;
 }
+static void *resident_alloc(size_t bytes) {
+    void *memory = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    const char *operation = "mmap";
+    int error;
+    if (memory != MAP_FAILED) {
+        // Touching alone does not prevent later compression on the IO thread.
+        prefault(memory, bytes);
+        operation = "mlock";
+        if (mlock(memory, bytes) == 0) return memory;
+        error = errno;
+        munmap(memory, bytes);
+    } else {
+        error = errno;
+    }
+    @throw [NSException exceptionWithName:@"CaptureError"
+        reason:[NSString stringWithFormat:@"Cannot %s resident recorder memory (%zu bytes): %s (errno %d)",
+            operation, bytes, strerror(error), error] userInfo:nil];
+}
+static size_t queue_bytes(unsigned frames) {
+    return (size_t)frames * (sizeof(Block) + CHANNELS * sizeof(float));
+}
 static bool prepare_queue(Queue *q, unsigned frames) {
     q->capacity = frames;
-    q->blocks = calloc(frames, sizeof(*q->blocks));
-    q->pcm = calloc((size_t)frames * CHANNELS, sizeof(*q->pcm));
-    if (!q->blocks || !q->pcm) return false;
-    // Touch storage before starting IO, including worst-case one-frame descriptors.
-    prefault(q->blocks, (size_t)frames * sizeof(*q->blocks));
-    prefault(q->pcm, (size_t)frames * CHANNELS * sizeof(*q->pcm));
+    q->blocks = resident_alloc(queue_bytes(frames));
+    q->pcm = (float *)(q->blocks + frames);
     return true;
 }
-static void destroy_queue(Queue *q) {
-    if (!q) return;
-    free(q->blocks); free(q->pcm); free(q);
+static int destroy_queue(Queue *q) {
+    if (!q) return 0;
+    int error = 0;
+    if (q->blocks && munmap(q->blocks, queue_bytes(q->capacity))) error = errno;
+    if (munmap(q, sizeof(*q)) && !error) error = errno;
+    return error;
 }
 static bool queue_lock_free(Queue *q) {
     return q && atomic_is_lock_free(&q->produced) && atomic_is_lock_free(&q->consumed) &&
@@ -630,7 +652,7 @@ static void selfcheck_duration_queue(void) {
     unsigned rates[] = {8000, 44100, 48000, 192000};
     unsigned sizes[] = {1, 2, 512, MAX_FRAMES};
     for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
-        Queue *q = calloc(1, sizeof(*q));
+        Queue *q = resident_alloc(sizeof(*q));
         require(q && prepare_queue(q, rates[i] * BUFFER_SECONDS), @"Cannot allocate duration selfcheck queue");
         unsigned blocks = 0;
         while (q->nextFrame < q->capacity) {
@@ -646,25 +668,25 @@ static void selfcheck_duration_queue(void) {
         require(atomic_load(&q->failure) == 1 && atomic_load(&q->produced) == blocks && q->overflowFrames == q->capacity,
             @"A real duration overflow must fail without overwriting accepted PCM");
         for (unsigned r = 0; r < blocks; ++r) selfcheck_block(q, r);
-        destroy_queue(q);
+        require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
     }
-    Queue *q = calloc(1, sizeof(*q));
+    Queue *q = resident_alloc(sizeof(*q));
     require(q && prepare_queue(q, 8000 * BUFFER_SECONDS), @"Cannot allocate tiny-callback selfcheck queue");
     for (unsigned i = 0; i < q->capacity; ++i) selfcheck_receive(q, 1);
     require(!atomic_load(&q->failure) && atomic_load(&q->produced) == q->capacity,
         @"Descriptor capacity must preserve five seconds of one-frame callbacks");
     selfcheck_receive(q, 1);
     require(atomic_load(&q->failure) == 1, @"Descriptor limit must remain bounded");
-    destroy_queue(q);
-    q = calloc(1, sizeof(*q));
+    require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
+    q = resident_alloc(sizeof(*q));
     require(q && prepare_queue(q, 17), @"Cannot allocate partial-space selfcheck queue");
     selfcheck_receive(q, 14); selfcheck_receive(q, 4);
     require(atomic_load(&q->failure) == 1 && atomic_load(&q->produced) == 1 && q->nextFrame == 14 &&
         q->overflowFrames == 14, @"Insufficient remaining frames must reject the entire callback");
     selfcheck_block(q, 0);
-    destroy_queue(q);
+    require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
     for (unsigned planar = 0; planar < 2; ++planar) {
-        q = calloc(1, sizeof(*q));
+        q = resident_alloc(sizeof(*q));
         require(q && prepare_queue(q, 17), @"Cannot allocate wrap selfcheck queue"); q->planar = planar;
         for (unsigned i = 0; i < 1000; ++i) {
             unsigned r = atomic_load(&q->consumed), w = atomic_load(&q->produced);
@@ -677,13 +699,13 @@ static void selfcheck_duration_queue(void) {
         for (unsigned r = atomic_load(&q->consumed); r != atomic_load(&q->produced); ++r) selfcheck_block(q, r);
         require(queued_frames(q, atomic_load(&q->consumed), atomic_load(&q->produced)) == 0,
             @"Stopped producer must leave all pending blocks drainable");
-        destroy_queue(q);
-        q = calloc(1, sizeof(*q));
+        require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
+        q = resident_alloc(sizeof(*q));
         require(q && prepare_queue(q, MAX_FRAMES + 3), @"Cannot allocate maximum-wrap queue"); q->planar = planar;
         selfcheck_receive(q, MAX_FRAMES); selfcheck_block(q, 0);
         selfcheck_receive(q, MAX_FRAMES); selfcheck_block(q, 1);
         require(!atomic_load(&q->failure), @"Maximum callback must cross PCM wrap intact");
-        destroy_queue(q);
+        require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
     }
 }
 
@@ -700,7 +722,7 @@ static void selfcheck(void) {
     record_stop(stopped, false, 10, 12, 2);
     require([stopped[@"stop_reason"] isEqual:@"duration"] && [stopped[@"duration_completed"] boolValue],
         @"Duration completion must be explicit");
-    Queue *q = calloc(1, sizeof(*q));
+    Queue *q = resident_alloc(sizeof(*q));
     require(q != NULL, @"Allocation failed");
     require(queue_lock_free(q), @"IO atomics must be lock free");
     NSDictionary *empty = diagnostics(q);
@@ -796,7 +818,7 @@ static void selfcheck(void) {
         [decoded[@"capture_diagnostics"][@"overflow"][@"observed_monotonic_s"] doubleValue] == seconds(1500) &&
         encoded.length < 8192, @"Serialized diagnostics must preserve clock conversion and stay bounded");
     selfcheck_clock(q);
-    destroy_queue(q); q = calloc(1, sizeof(*q));
+    require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue"); q = resident_alloc(sizeof(*q));
     require(q && prepare_queue(q, blockCount * 2), @"Cannot allocate planar selfcheck queue");
     q->planar = true;
     struct { UInt32 count; AudioBuffer buffers[2]; } planar = {2, {{1, 8, samples}, {1, 8, samples + 2}}};
@@ -807,7 +829,7 @@ static void selfcheck(void) {
     receive(0, NULL, (AudioBufferList *)&planar, &stamp, NULL, NULL, q);
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     selfcheck_caf(q);
-    destroy_queue(q);
+    require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
     puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, journal-failure PCM counts, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
 }
 
@@ -850,12 +872,13 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     AudioDeviceIOProcID io = NULL;
     ExtAudioFileRef audio = NULL;
     FILE *timeline = NULL;
-    Queue *q = calloc(1, sizeof(*q));
+    Queue *q = NULL;
     bool started = false;
     uint64_t frames = 0;
     double peak = 0;
     NSMutableArray *errors = [NSMutableArray array];
     @try {
+        q = resident_alloc(sizeof(*q));
         require(queue_lock_free(q), @"Cannot allocate lock-free capture queue");
         timing_add(&q->timings[PhaseIdentity], identityBegin, identityEnd);
         phase_begin(q, PhaseIdle, mach_absolute_time());
@@ -889,7 +912,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
         metadata[@"sample_rate"] = @(format.mSampleRate); metadata[@"channels"] = @(CHANNELS);
         metadata[@"source_planar"] = @(q->planar); metadata[@"queue_slots"] = @(q->capacity);
         metadata[@"queue_capacity_frames"] = @(q->capacity); metadata[@"queue_capacity_seconds"] = @(q->capacity / format.mSampleRate);
-        metadata[@"queue_allocated_bytes"] = @((size_t)q->capacity * (sizeof(Block) + CHANNELS * sizeof(float)));
+        metadata[@"queue_allocated_bytes"] = @(queue_bytes(q->capacity));
         metadata[@"max_callback_frames"] = @(MAX_FRAMES);
         json(q, metadata, session);
         AudioStreamBasicDescription fileFormat = format;
@@ -953,7 +976,10 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     if (aggregate) { OSStatus s = AudioHardwareDestroyAggregateDevice(aggregate); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy aggregate: %d", (int)s]]; }
     if (tap) { OSStatus s = AudioHardwareDestroyProcessTap(tap); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy tap: %d", (int)s]]; }
     metadata[@"capture_diagnostics"] = diagnostics(q);
-    if (callbackDestroyed) destroy_queue(q);
+    if (callbackDestroyed) {
+        int error = destroy_queue(q);
+        if (error) [errors addObject:[NSString stringWithFormat:@"Release resident recorder memory: %s (errno %d)", strerror(error), error]];
+    }
     metadata[@"frames"] = @(frames); metadata[@"peak"] = @(peak); metadata[@"errors"] = errors;
     metadata[@"status"] = errors.count ? @"failed" : @"captured_unqualified";
     metadata[@"finished_monotonic_s"] = @(seconds(mach_absolute_time())); json(NULL, metadata, session);
