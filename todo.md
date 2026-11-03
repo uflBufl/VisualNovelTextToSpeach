@@ -351,14 +351,10 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       about18.8s later and cannot cause the earlier gap.
       Remaining distinction: work/preemption/VM inside our callback versus HAL
       work around it. No callback completion tick or scheduler trace was retained.
-      Proposed bounded diagnostic change (not a claimed capture repair), awaiting
-      agreement:
-      - Add IO-cycle inNow and callback completion-before-publication timestamps
-        to existing block/clock-failure evidence. Complete all fields before the
-        producer's release-store; keep callback free of JSON, locks and syscalls.
-        Persist only existing bounded failure context, not another event stream.
-      - Extend native selfcheck and collection tests using virtual timestamps;
-        check producer publication and immutable failure fields without live waits.
+      IO-cycle inNow and completion-before-publication timing now travel with
+      PCM under the producer release-store and appear only in bounded failure
+      context. Native virtual-clock selfcheck and failed-collection tests pass.
+      This is diagnostic evidence, not a claimed capture repair.
       - Capture one agreed original44.1kHz/load recurrence, then choose a repair
         from the measured location. Audio System Trace can separate scheduler/VM
         from CPU, but xctrace/Instruments is currently unavailable; no install or

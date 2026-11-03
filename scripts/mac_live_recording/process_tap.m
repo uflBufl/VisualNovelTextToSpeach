@@ -27,7 +27,7 @@ typedef struct { uint64_t count, total, maximum, maxStarted, maxEnded; } Timing;
 typedef struct { ConsumerPhase phase; uint64_t started, ended; bool present; } PhaseContext;
 typedef struct {
     UInt32 frames;
-    uint64_t received, fileFrame;
+    uint64_t received, fileFrame, ioCycle, completed;
     AudioTimeStamp timestamp;
 } ClockBlock;
 typedef struct {
@@ -37,7 +37,7 @@ typedef struct {
 } ClockFailure;
 typedef struct {
     UInt32 frames;
-    uint64_t received, frameStart;
+    uint64_t received, frameStart, ioCycle, completed;
     AudioTimeStamp timestamp;
 } Block;
 typedef struct {
@@ -146,7 +146,7 @@ static void observe_lag(Queue *q, Block *b, unsigned r, unsigned w, uint64_t tic
 static OSStatus receive(AudioObjectID device, const AudioTimeStamp *now,
     const AudioBufferList *input, const AudioTimeStamp *time,
     AudioBufferList *output, const AudioTimeStamp *outputTime, void *context) {
-    (void)device; (void)now; (void)output; (void)outputTime;
+    (void)device; (void)output; (void)outputTime;
     uint64_t received = mach_absolute_time();
     Queue *q = context;
     if (atomic_load_explicit(&q->failure, memory_order_relaxed)) return noErr;
@@ -176,6 +176,7 @@ static OSStatus receive(AudioObjectID device, const AudioTimeStamp *now,
     }
     Block *b = &q->blocks[w % q->capacity];
     b->frames = frames; b->timestamp = *time; b->received = received; b->frameStart = q->nextFrame;
+    b->ioCycle = now && (now->mFlags & kAudioTimeStampHostTimeValid) ? now->mHostTime : 0;
     unsigned offset = q->nextFrame % q->capacity;
     if (q->planar) {
         for (UInt32 i = 0; i < b->frames; ++i) {
@@ -190,13 +191,15 @@ static OSStatus receive(AudioObjectID device, const AudioTimeStamp *now,
         memcpy(q->pcm, source + first * CHANNELS, (frames - first) * CHANNELS * sizeof(float));
     }
     q->nextFrame += frames;
-    atomic_store_explicit(&q->produced, w + 1, memory_order_release);
     r = atomic_load_explicit(&q->consumed, memory_order_acquire);
     uint64_t blocks = w + 1 - r, pendingFrames = queued_frames(q, r, w + 1);
     if (blocks > atomic_load_explicit(&q->highBlocks, memory_order_relaxed))
         atomic_store_explicit(&q->highBlocks, blocks, memory_order_relaxed);
     if (pendingFrames > atomic_load_explicit(&q->highFrames, memory_order_relaxed))
         atomic_store_explicit(&q->highFrames, pendingFrames, memory_order_relaxed);
+    // Publish timing with PCM so the consumer never sees an unfinished callback snapshot.
+    b->completed = mach_absolute_time();
+    atomic_store_explicit(&q->produced, w + 1, memory_order_release);
     return noErr;
 }
 
@@ -208,7 +211,7 @@ static void require(bool condition, NSString *reason) {
     if (!condition) @throw [NSException exceptionWithName:@"CaptureError" reason:reason userInfo:nil];
 }
 static ClockBlock clock_block(Block *b, uint64_t fileFrame) {
-    return (ClockBlock){b->frames, b->received, fileFrame, b->timestamp};
+    return (ClockBlock){b->frames, b->received, fileFrame, b->ioCycle, b->completed, b->timestamp};
 }
 static double seconds(uint64_t ticks);
 static void require_clock_continuity(Queue *q, Block *b, uint64_t fileFrame, uint64_t observed) {
@@ -349,6 +352,10 @@ static NSDictionary *clock_block_summary(ClockBlock block) {
     AudioTimeStamp stamp = block.timestamp;
     return @{@"frame_count": @(block.frames), @"file_frame_start": @(block.fileFrame),
         @"callback_received_ticks": @(block.received), @"callback_received_monotonic_s": @(seconds(block.received)),
+        @"callback_completed_ticks": block.completed ? @(block.completed) : (id)NSNull.null,
+        @"callback_completed_monotonic_s": block.completed ? @(seconds(block.completed)) : (id)NSNull.null,
+        @"io_cycle_host_ticks": block.ioCycle ? @(block.ioCycle) : (id)NSNull.null,
+        @"io_cycle_monotonic_s": block.ioCycle ? @(seconds(block.ioCycle)) : (id)NSNull.null,
         @"host_ticks": @(stamp.mHostTime), @"monotonic_s": @(seconds(stamp.mHostTime)),
         @"sample_time": finite_number(stamp.mSampleTime), @"timestamp_flags": @(stamp.mFlags),
         @"host_time_valid": @((stamp.mFlags & kAudioTimeStampHostTimeValid) != 0),
@@ -448,9 +455,9 @@ static void selfcheck_clock(Queue *q) {
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         q->clockFailure = (ClockFailure){0};
         q->previousClockPresent = true;
-        q->previousClock = (ClockBlock){2, 1100, 10, {.mSampleTime = cases[i].previousSample, .mHostTime = 1000,
+        q->previousClock = (ClockBlock){2, 1100, 10, 1050, 1125, {.mSampleTime = cases[i].previousSample, .mHostTime = 1000,
             .mRateScalar = 1, .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid | kAudioTimeStampRateScalarValid}};
-        b->frames = 2; b->received = 1200;
+        b->frames = 2; b->received = 1200; b->ioCycle = 1150; b->completed = 1225;
         b->timestamp = (AudioTimeStamp){.mSampleTime = cases[i].sample, .mHostTime = cases[i].host,
             .mRateScalar = NAN, .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
         bool failed = false;
@@ -473,6 +480,12 @@ static void selfcheck_clock(Queue *q) {
                 [failure[@"previous"][@"frame_count"] unsignedIntValue] == 2 &&
                 [failure[@"previous"][@"callback_received_ticks"] unsignedLongLongValue] == 1100 &&
                 [failure[@"current"][@"callback_received_ticks"] unsignedLongLongValue] == 1200 &&
+                [failure[@"previous"][@"callback_completed_ticks"] unsignedLongLongValue] == 1125 &&
+                [failure[@"current"][@"callback_completed_ticks"] unsignedLongLongValue] == 1225 &&
+                [failure[@"previous"][@"io_cycle_host_ticks"] unsignedLongLongValue] == 1050 &&
+                [failure[@"current"][@"io_cycle_host_ticks"] unsignedLongLongValue] == 1150 &&
+                [failure[@"current"][@"callback_completed_monotonic_s"] doubleValue] == seconds(1225) &&
+                [failure[@"current"][@"io_cycle_monotonic_s"] doubleValue] == seconds(1150) &&
                 [failure[@"current"][@"host_ticks"] unsignedLongLongValue] == cases[i].host &&
                 [failure[@"current"][@"sample_time"] doubleValue] == cases[i].sample &&
                 [failure[@"observed_ticks"] unsignedLongLongValue] == 1300,
@@ -482,11 +495,18 @@ static void selfcheck_clock(Queue *q) {
                 failure[@"current"][@"rate_scalar"] == NSNull.null &&
                 [NSJSONSerialization dataWithJSONObject:failure options:0 error:nil] != nil,
                 @"Timestamp flags and non-finite optional scalars must remain serializable");
-            b->timestamp.mSampleTime = -100; b->received = 9999;
+            b->timestamp.mSampleTime = -100; b->received = 9999; b->ioCycle = 9998; b->completed = 10000;
             @try { require_clock_continuity(q, b, 9999, 9999); } @catch (NSException *error) { (void)error; }
             require([clock_failure_summary(q->clockFailure) isEqual:failure], @"First clock failure must remain immutable");
         }
     }
+    b->ioCycle = 0; b->completed = 0;
+    NSDictionary *missingTiming = clock_block_summary(clock_block(b, 0));
+    require(missingTiming[@"io_cycle_host_ticks"] == NSNull.null &&
+        missingTiming[@"io_cycle_monotonic_s"] == NSNull.null &&
+        missingTiming[@"callback_completed_ticks"] == NSNull.null &&
+        missingTiming[@"callback_completed_monotonic_s"] == NSNull.null,
+        @"Unavailable optional callback timing must remain unknown");
     q->clockFailure = (ClockFailure){0}; q->previousClockPresent = false;
     require_clock_continuity(q, b, 0, 1300);
     require(!q->clockFailure.present, @"First block has no preceding clock boundary");
@@ -538,7 +558,7 @@ static void selfcheck_caf(Queue *q) {
                     require(rejected && written == frameCount && peak == 0.5 && atomic_load(&q->consumed) == 1,
                         @"Journal failure must retain committed PCM counts without releasing the failed block");
                 }
-                q->previousClock = (ClockBlock){frameCount, 1100, 0, {.mSampleTime = 100, .mHostTime = 1000,
+                q->previousClock = (ClockBlock){frameCount, 1100, 0, 0, 1125, {.mSampleTime = 100, .mHostTime = 1000,
                     .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid}};
                 q->previousClockPresent = true; q->clockFailure = (ClockFailure){0};
                 Block *bad = &q->blocks[0]; bad->frames = 2; bad->received = 1200;
@@ -695,7 +715,15 @@ static void selfcheck(void) {
     AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{2, sizeof(samples), samples}}};
     AudioTimeStamp stamp = {.mHostTime = 100, .mSampleTime = 0,
         .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
-    for (unsigned i = 0; i < blockCount; ++i) receive(0, NULL, &list, &stamp, NULL, NULL, q);
+    AudioTimeStamp cycle = {.mHostTime = 90, .mFlags = kAudioTimeStampHostTimeValid};
+    for (unsigned i = 0; i < blockCount; ++i) {
+        cycle.mFlags = i == 0 ? kAudioTimeStampHostTimeValid : kAudioTimeStampSampleTimeValid;
+        receive(0, i < 2 ? &cycle : NULL, &list, &stamp, NULL, NULL, q);
+        Block *published = &q->blocks[i];
+        require(published->completed >= published->received && published->completed <= mach_absolute_time(),
+            @"Published PCM must include callback completion timing");
+        require(published->ioCycle == (i == 0 ? 90 : 0), @"Only valid IO-cycle host time may be retained");
+    }
     require(atomic_load(&q->produced) == blockCount && !atomic_load(&q->failure), @"Queue capacity failed");
     require(q->blocks[0].frames == 2 && q->pcm[1] == 0.5, @"PCM copy failed");
     atomic_store(&q->consumed, 1);

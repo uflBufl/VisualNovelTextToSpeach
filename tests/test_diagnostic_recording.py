@@ -468,6 +468,10 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             "frame_count": 480,
             "file_frame_start": 960,
             "callback_received_ticks": 1200,
+            "callback_completed_ticks": 1250,
+            "callback_completed_monotonic_s": 1.25,
+            "io_cycle_host_ticks": 1150,
+            "io_cycle_monotonic_s": 1.15,
             "host_ticks": 1100,
             "sample_time": 960.0,
             "timestamp_flags": 3,
@@ -508,7 +512,15 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                 "expected_sample_time": 1440.0,
                 "sample_delta_frames": 10.0,
                 "previous": block,
-                "current": {**block, "sample_time": 1450.0, "timestamp_flags": 0},
+                "current": {
+                    **block,
+                    "sample_time": 1450.0,
+                    "timestamp_flags": 0,
+                    "callback_completed_ticks": 1350,
+                    "callback_completed_monotonic_s": 1.35,
+                    "io_cycle_host_ticks": None,
+                    "io_cycle_monotonic_s": None,
+                },
             },
         }
         fake_launch = self.fake_launch
