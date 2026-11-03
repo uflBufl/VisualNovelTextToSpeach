@@ -309,73 +309,64 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-The November2 combined run reached chapter end104 with recovery, not
-autonomously. It retained the first rejected44.1kHz clock boundary; analyze that
-evidence before adding instrumentation. Older overflow causes remain unresolved.
-Each coherent change gets its own commit and focused checks; the full native
-chapter remains a final gate, not a per-fix test.
+Next action: investigate the recorded November3 findings below, then propose one
+concrete implementation plan at a time. The autonomous chapter and separate
+fullscreen/HUD controls have been run; do not repeat the whole chapter before
+triaging their retained evidence. Refactoring and linter debt remain deferred.
+Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
+session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
 
-Next action: prepare the combined native acceptance with storage headroom and
-qualify capture/continuation below; no new capture retry policy is justified.
-RUN-02-01 and RUN-02-02 retain only their native acceptance gates. Refactoring,
-complexity and linter debt remain deferred. Repeat autonomous acceptance after
-agreed repairs; existing evidence must guide any additional instrumentation.
+- [ ] **UX-03-01 - Read silently fails before completed preparation activation.**
+      After preparation reaches Step4 and Reading is stopped, Read/Start reading
+      shows Ready to start but does not start or explain a required action. Normal
+      Use prepared audio followed by Start succeeds. Trace preparation completion,
+      pack identity and readiness ownership; preserve explicit activation of the
+      saved pack. Gate: Read either starts the retained usable source or clearly
+      exposes the necessary activation; it must not silently return to Ready.
+      Do not attribute this to auto-advance settings without reproducing that cause.
 
-- [ ] **RUN-02-01 - Native acceptance of punctuation continuation.**
-      Verify the captured Cornerstone `...` after66 in the next agreed game run:
-      one silent admission, one automatic key, next dialogue confirms transition,
-      no duplicate speech or key. Include other recognized punctuation and manual
-      mode; unreadable text must continue holding. The shared admission/comparison
-      repair passes focused integration and retained-frame OCR checks, but those
-      do not qualify this native gate or autonomous chapter acceptance.
+- [ ] **REC-03-01 - First prepared route is excluded from source analysis.**
+      Existing source/admission evidence exists for line6; dispatch precedes worker
+      tap startup by2.285s, while first PCM follows arming. The analyzer rejects its
+      dispatch-derived expected start before attempting correlation. Inspect the
+      retained first source/output and playback clock contract; distinguish actual
+      missing samples from an incorrect eligibility/onset assumption. Gate: first
+      playback receives a truthful, evidence-based result without weakening source
+      identity, capture coverage or correlation requirements.
 
-- [ ] **RUN-02-02 - Native acceptance of voice warmup scope.**
-      In the next agreed game run, verify partial OCR/name loss before Duvalle43
-      retains the current chapter and warms only that chapter's voices. The full
-      phrase must use canonical43 and its ready generated recording without live
-      Narrator synthesis. Read-only recommendation, unknown-context preservation,
-      actual retained-input replay and prefix-to-generated-route checks pass;
-      they do not substitute for native/full autonomous acceptance.
+- [ ] **R12 - Localize the remaining captured-output shift.**
+      Reuse November3 line31 source and process CAF: full correlation0.728, local
+      offset changes from0 to21.8125ms around monotonic611158.622-611159.422. Native
+      taps report no overflow, clock failure or acquisition gap. Compare waveform
+      and existing callback/output evidence to separate playback from recording;
+      do not call it an audible dropout or fix an unproven component. The detailed
+      R12 gate below retains related historical evidence. No new full chapter or
+      profiler is needed before this retained-evidence investigation.
 
-- [ ] **CAPTURE-02-01 - Native capture acceptance after storage cleanup.**
-      Before the combined run, verify storage headroom. Qualify continuous diagnostic
-      video throughout the run without macOS low-disk CacheDelete purges. Reading's
-      existing selected-window recovery needs no new retry implementation.
-      Keep the control recording fullscreen bounds-change guard separate.
-      After paused fullscreen/restore, key6 times out, then7 appears about30s
-      after dispatch without manual retry. Determine game versus OCR delay from
-      better evidence; failed video cannot establish when the game changed.
+- [ ] **OCR-03-01 - Transient no-match starts unnecessary live synthesis.**
+      In generation70, `Remember Nowa Mied:z` routes live without a canonical ID;
+      the next OCR `Remember Nowa Miedz?` resolves canonical76 and supersedes it
+      before observed onset. Inspect current matching/admission against the saved
+      frames and expected candidate. Preserve uncertain text, protected tokens and
+      started speech; do not add dictionary autocorrection or claim an audible
+      duplicate without captured-output evidence.
 
-- [ ] Complete the unexercised UI cases: enlarged font/smaller height, failure
-      inspector and diagnostic-session history actions. Preserve actual usability
-      observations; do not redesign merely because automation requires extra clicks.
-- [ ] After fixes, repeat314001 from first narrator through104 with genuine
-      generation/publication overlap and no manual Space or Stop/Start. The
-      November2 run needed one manual Space after66 and Stop/Start at73; reaching
-      the chapter-end screen qualifies only recovered completion.
-- [ ] Complete unexercised controls: live/announcement Pause/Resume, partly
-      prepared catch-up and failed/not-ready policy, manual punctuation, explicit
-      volume HUD, focus and active-speech preparation Close. Prepared-file Pause
-      continuation and preparation Close while paused were verified using the
-      same clip and retained PCM; do not repeat them without a related change.
-      Fullscreen geometry changed correctly, but continuous capture/continuation
-      acceptance remains open because recording failed and a late recognition
-      followed restore. Keep separate capped recordings for longer campaigns.
+- [ ] **RUN-02-02 - Remaining native voice warmup-scope evidence.**
+      Canonical43 used its ready generated recording after partial/name-loss OCR.
+      Verify that retained chapter context warms only that chapter's voices; the
+      current events do not expose warmup scope. First inspect existing ownership
+      and prefix evidence before proposing any additional measurement. Do not
+      repeat canonical43 routing merely to reprove the completed part of this gate.
 
-Post-campaign triage (implementation still requires agreement):
-
-- Use the November2 cadence/load and successful post-speech measurements for
-  RUN-29-02. Investigate the remaining punctuation and control-transition waits;
-  do not revive the removed pixel-comparison/shared-threshold repair plan.
-- For REC-29-01, inspect retained queue/lag/phase and failure snapshots first.
-  Add only specifically missing context after agreeing its purpose; existing
-  queue, OCR and native query telemetry must be reused rather than duplicated.
-- REC-29-02 recurred at44.1kHz and now has a rejected-boundary snapshot.
-  AUDIO-29-01 query timeout did not recur; the later outputsChanged interruption
-  is a separate failure. Inspect existing evidence before requesting more probes.
-  Keep broader unexercised acceptance distinct from confirmed bugs.
-- Repeat the autonomous chapter only after the resulting repairs; a recovered
-  reading or a partial sound capture cannot satisfy that final gate.
+- [ ] Complete the unexercised UI cases: enlarged font/smaller height and failure
+      inspector. History export/delete have been exercised. Preserve actual
+      usability observations; do not redesign for automation convenience.
+- [ ] Complete only unexercised controls: live/announcement Pause/Resume, partly
+      prepared active-chapter catch-up and failed/not-ready policy, manual/other
+      punctuation, and active-speech preparation Close. Prepared Pause/Resume,
+      fullscreen/window continuation and volume HUD have been exercised. Keep
+      controls separate from autonomous chapter metrics; diagnostic video's bounds
+      guard still intentionally ends a recording when fullscreen changes its size.
 
 Remaining defects, missing measurements and native acceptance:
 
@@ -385,17 +376,6 @@ Remaining defects, missing measurements and native acceptance:
       Keep dividerless startup distinct from a previously established divider.
       Preserve original lossless evidence if another background artifact passes;
       do not add minimum-length/dictionary filters or timeout skips.
-
-- [ ] **REC-29-01 - Native acceptance of the five-second recording buffer.**
-      In the combined game run, verify sustained game/speech dual-tap recording
-      under real generation: continuous source/file timelines, readable finalized
-      CAF, correct Stop and truthful failure metadata. Retained historical CAF
-      waits reach3.139s; the buffer contract tolerates5s of queued audio including
-      the block being written. It does not diagnose the underlying kernel wait.
-      Inspect existing queue/lag/phase diagnostics on any recurrence; preserve
-      partial evidence and the original lossless source, never hide dropped PCM.
-      No further profiling or repeated short native runs are required before the
-      combined acceptance gate.
 
 - [ ] **REC-02-01 - Native Windows recorder qualification.**
       Complete the MSVC link/portable packaging build on Windows and run the
@@ -411,33 +391,6 @@ Remaining defects, missing measurements and native acceptance:
       Keep this Windows qualification separate from the combined Mac chapter;
       it does not block the other remaining code fixes.
 
-- [ ] **REC-29-02 - Process-audio sample clock discontinuity aborts acquisition.**
-      Combined follow-up session62335e1525c94a1e8e2f79c735f69d31 failed game-audio
-      before Reading began, at406761.9098 after15.91s, with
-      `Sample-time discontinuity`. Window video continued. New diagnostics show
-      no overflow, queue high-water11 blocks/5632frames and max consumer lag0.123s.
-      The three older retained failures predate `clock_failure` snapshots; their
-      rejected blocks are absent. November2 sessionea228c now retains the first
-      rejected boundary at44.1kHz (REC-02-02); analyze it before another probe.
-      In the older session all1364 saved512-frame blocks are continuous;
-      that does not establish continuity across the missing boundary.
-      Resolve and qualify this failure on macOS first. Reuse its existing
-      audio-boundary snapshot; do not add Windows instrumentation to investigate
-      a macOS failure. After the cause and correction are verified, inspect
-      whether the actual repair applies to Windows and port it only if needed.
-      The November2 snapshot covers historical44.1kHz under real generation and
-      Reading load. Use it first; a healthy48kHz bounded probe does not qualify
-      that setup. Do not repeat short healthy probes or weaken the checks.
-      The November3 audit of the retained boundary and system logs confirms an
-      actual uncovered interval plus game-recorder HAL IO overload (REC-02-02).
-      Remaining work is locating time spent inside versus around the callback;
-      existing evidence does not separate CPU, preemption and VM faults. Preserve the
-      partial recording and truthful failed qualification; do not conceal a gap
-      by removing the check without evidence. New native acceptance is required.
-      If recurrence is needed, add correlated output/device/process lifecycle
-      events around it, rather than another duplicate timestamp stream. This
-      failure did not recur in native-trial-20261031.
-
 - [ ] **PREP-01-01 - Reading waits for an existing shared WAV in a new selection.**
       In the combined chapter run confirm prepared hits are available without
       queue waiting and new work keeps current-line priority. Reuse existing
@@ -451,23 +404,11 @@ Remaining defects, missing measurements and native acceptance:
       unreadable name. Preserve native crop, speaker/dialogue confidence and
       actual playback evidence for these unexercised paths.
 
-1. **Combined native acceptance after fixes (M0/M1 and the chapter audit).**
-   Repeat the combined game campaign after the November2 defects are repaired.
-   Its recovered end104, failed AV and unexercised controls are not acceptance.
-   Keep the recorder failure open until measurements
-   identify and qualify its correction; it does not postpone the other checks.
-   Start with Stories/voice UI and confirmation-resume checks, then record the
-   chapter under real background generation. Preserve baseline WAV hashes and
-   both process-tap summaries. Keep short targeted live/announcement, manual-mode,
-   display-transition and generation-failure episodes in this same campaign when
-   chapter314001 cannot exercise them. Record every intervention and failed gate
-   immediately; a recovered run is not an autonomous chapter pass.
-   Repeat autonomous chapter acceptance after the remaining startup/admission
-   repairs. The follow-up reaches104 but includes two operator Stop/Start
-   interventions; do not treat its automatic recovery from long waits as a pass.
-   Historical recovered follow-up taps were continuous. In the November2 run,
-   main game/Rust taps failed; recovery-tail taps finalized consistently but video
-   failed. Neither supplies continuous full-chapter AV acceptance.
+1. **Remaining targeted native acceptance (M0/M1 and the chapter audit).**
+   Use the November3 autonomous run and separate controls for exercised paths.
+   Resolve the current restart, analysis and source/output findings above first.
+   Retain unexercised live/announcement, manual-mode and generation-failure cases;
+   ordinary chapter completion does not qualify these distinct paths.
    Include native confirmation that authorized silent events do not wait for a
    WAV during generation/resume, and a newly accepted occurrence releases an
    older unstarted wait without interrupting already dispatched speech.
@@ -475,14 +416,11 @@ Remaining defects, missing measurements and native acceptance:
    cue must not confirm48 or authorize its key when49 OCR is stale/unresolved.
    Fresh49 must play once; accepted rapid A/B/C must all finish in order, and a
    genuinely completed same-occurrence prefix must still permit automatic advance.
-   Run all314001 through104 from Stories without manual transitions while real
-   heavy generation/publication remains active. Also qualify partly prepared
-   active-chapter catch-up across newly published boundaries, failed/not-ready
-   policy and cancel/retry/restart. Use existing R2/R3/R4/R5/R7/R8/R9/R11 and
-   U1/U2/U4/U6/U7/U8 gates, persistent OCR and portable observation. Preserve
-   approved WAV bytes and complete independent capture; cache hits alone are
-   not background-generation load. Include recording continuity (REC-27-01)
-   and the following deferred checks:
+   Qualify partly prepared active-chapter catch-up across newly published
+   boundaries, failed/not-ready policy and cancel/retry/restart. Reuse existing
+   R2/R3/R4/R5/R7/R8/R9/R11 and U1/U2/U4/U6/U7/U8 gates and retained observations;
+   do not schedule another full campaign solely to repeat completed checks.
+   Remaining deferred checks:
    - **Audio query startup (AUDIO-29-01), remaining native acceptance:** cold-start
      prepared 44.1 kHz mono playback under real generation and recording load.
      Verify `query_trace` on the actual worker and reuse existing parent/native
