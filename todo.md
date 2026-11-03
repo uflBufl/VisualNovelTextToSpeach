@@ -316,40 +316,47 @@ triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
 session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
 
-- [ ] **UX-03-01 - Read silently fails before completed preparation activation.**
-      After preparation reaches Step4 and Reading is stopped, Read/Start reading
-      shows Ready to start but does not start or explain a required action. Normal
-      Use prepared audio followed by Start succeeds. Trace preparation completion,
-      pack identity and readiness ownership; preserve explicit activation of the
-      saved pack. Gate: Read either starts the retained usable source or clearly
-      exposes the necessary activation; it must not silently return to Ready.
-      Do not attribute this to auto-advance settings without reproducing that cause.
+- [ ] **UX-03-01 - Repair reading-source ownership and restart intent (plan approval pending).**
+      Reproduced: ordinary auto-advance off/on invalidates retained progressive
+      source; recovery can combine old/new pack settings and lose Start in nested
+      initialization. Keep selected source through audio policy, force narrator,
+      sequence mode and auto-advance edits while applying those edits. Consume
+      completion's Start intent before invoking another start. For changed
+      restart-required voice settings, use existing restart-aware handoff rather
+      than reporting readiness with a hybrid loaded identity. Different saved-pack
+      activation stays explicit. Cover real loaded-settings preservation in app/
+      session tests, completed preparation Stop/Read and nested-start completion.
 
-- [ ] **REC-03-01 - First prepared route is excluded from source analysis.**
-      Existing source/admission evidence exists for line6; dispatch precedes worker
-      tap startup by2.285s, while first PCM follows arming. The analyzer rejects its
-      dispatch-derived expected start before attempting correlation. Inspect the
-      retained first source/output and playback clock contract; distinguish actual
-      missing samples from an incorrect eligibility/onset assumption. Gate: first
-      playback receives a truthful, evidence-based result without weakening source
-      identity, capture coverage or correlation requirements.
+- [ ] **REC-03-01 - Repair first-source analysis eligibility (plan approval pending).**
+      Full line6 is captured (6.96s, correlation0.99635); the analyzer wrongly
+      excludes it because command dispatch precedes recorder startup. Bound search
+      by the intersection of playback lifetime and actual capture; qualify from
+      complete source alignment, not dispatch-inside-capture. Keep dispatch latency,
+      source lead, SHA/worker identity and existing correlation/full-source gates.
+      Cover delayed arming, source lead, truncated head/tail and ambiguous identity
+      in shared analysis tests, including Windows fixture; no live rerun is needed.
 
-- [ ] **R12 - Localize the remaining captured-output shift.**
-      Reuse November3 line31 source and process CAF: full correlation0.728, local
-      offset changes from0 to21.8125ms around monotonic611158.622-611159.422. Native
-      taps report no overflow, clock failure or acquisition gap. Compare waveform
-      and existing callback/output evidence to separate playback from recording;
-      do not call it an audible dropout or fix an unproven component. The detailed
-      R12 gate below retains related historical evidence. No new full chapter or
-      profiler is needed before this retained-evidence investigation.
+- [ ] **R12 - Localize the remaining output gaps; separate residency improvement.**
+      Source/capture comparison proves three added timing gaps totaling960frames
+      (21.769ms), with exact-zero cores; largest576frames agrees with native DAC
+      jump13.061ms. Both process recordings have continuous frame/sample clocks.
+      Callback has no allocation/lock/I/O, but current PCM/Box remain pageable.
+      Agree bounded current-PCM/callback-state residency hardening separately;
+      this removes a concrete RT paging risk, not a proven cause of these gaps.
+      For component-level attribution, agree a diagnostic-only bounded entry/exit
+      context around DAC jumps, then use one targeted clip under load. Existing
+      max-only counters cannot distinguish late entry, long residence or host DAC
+      clock change. Do not increase latency/buffers or weaken quality thresholds.
 
-- [ ] **OCR-03-01 - Transient no-match starts unnecessary live synthesis.**
-      In generation70, `Remember Nowa Mied:z` routes live without a canonical ID;
-      the next OCR `Remember Nowa Miedz?` resolves canonical76 and supersedes it
-      before observed onset. Inspect current matching/admission against the saved
-      frames and expected candidate. Preserve uncertain text, protected tokens and
-      started speech; do not add dictionary autocorrection or claim an audible
-      duplicate without captured-output evidence.
+- [ ] **OCR-03-01 - Handle internal punctuation in complete prepared matching (plan approval pending).**
+      Reproduced: `Remember Nowa Mied:z` is within one edit, but normalization
+      splits the final word and completion guards reject it. Add a bounded full-
+      phrase equality path for punctuation within alphabetic words, retaining real
+      whitespace and Latin-diacritic folding. Preserve allowed-candidate scope,
+      uniqueness, protected numbers/negation and partial/final-word safeguards;
+      leave global OCR normalization and edit budgets unchanged. Cover raw retained
+      observations through canonical/prepared routing plus punctuation, real-space,
+      prefix and ambiguous-candidate counterexamples; no dictionary autocorrection.
 
 - [ ] **RUN-02-02 - Remaining native voice warmup-scope evidence.**
       Canonical43 used its ready generated recording after partial/name-loss OCR.
