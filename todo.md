@@ -337,15 +337,36 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **REC-02-02 - Retained44.1kHz sample-clock failure in the new campaign.**
-      Session ea228c reports game-audio `Sample-time discontinuity` and
-      rust-58042 `Target process unavailable` during the recovered chapter tail.
-      The retained clock_failure snapshot shows expected33777864 versus actual
-      33781724 (+3860frames /87.53ms), no overflow or host-clock discontinuity.
-      Analyze previous/current callbacks and existing lifecycle events before
-      selecting a repair. Video/Reading continue; sound continuity is failed. Distinguish source clock reset/gap
-      from separate speech-worker retirement; no silence insertion or guessed
-      clock offset, and do not attribute it to the earlier punctuation stall.
+- [ ] **REC-02-02 - Isolate the confirmed game-recorder IO deadline overrun.**
+      Retained November2 boundary is an uncovered87.528ms, not a demonstrated
+      clock reset: sample4372frames and host99.138333ms agree within0.012us;
+      ordinary512frame blocks cover11.610ms. Concurrent Rust tap retains8 normal
+      blocks through that interval. Queue overflow is null; rejected-block
+      consumer latency is1.017ms, so the five-second consumer queue is not full.
+      Existing system logs now identify recorder IO overload at that boundary:
+      HAL client start precedes previous callback receipt by93.83us, deadline
+      budget11.61ms, and recorder reports skipping cycles due to overload.
+      Private HAL_client_IO_duration raw86138583 is retained without assuming
+      undocumented units. Cleanup is later; output-change interruption follows
+      about18.8s later and cannot cause the earlier gap.
+      Remaining distinction: work/preemption/VM inside our callback versus HAL
+      work around it. No callback completion tick or scheduler trace was retained.
+      Proposed bounded diagnostic change (not a claimed capture repair), awaiting
+      agreement:
+      - Add IO-cycle inNow and callback completion-before-publication timestamps
+        to existing block/clock-failure evidence. Complete all fields before the
+        producer's release-store; keep callback free of JSON, locks and syscalls.
+        Persist only existing bounded failure context, not another event stream.
+      - Extend native selfcheck and collection tests using virtual timestamps;
+        check producer publication and immutable failure fields without live waits.
+      - Capture one agreed original44.1kHz/load recurrence, then choose a repair
+        from the measured location. Audio System Trace can separate scheduler/VM
+        from CPU, but xctrace/Instruments is currently unavailable; no install or
+        new recording was performed. Keep this investigation macOS-only.
+      Do not hide the gap, increase consumer buffers again, insert guessed silence,
+      change drift/master topology or wire memory without evidence. Continuing a
+      gapped CAF would need explicit time mapping and consumer migration; it does
+      not fix the deadline overrun and is outside this item.
 
 - [ ] **AUDIO-02-01 - Audio-output change interrupts line73 under recording/load.**
       Native run receives Qt `audioOutputsChanged` at575256.467, stops Rust
@@ -447,11 +468,10 @@ Remaining defects, missing measurements and native acceptance:
       The November2 snapshot covers historical44.1kHz under real generation and
       Reading load. Use it first; a healthy48kHz bounded probe does not qualify
       that setup. Do not repeat short healthy probes or weaken the checks.
-      Correlate source host/sample timestamps with output activation, focus and
-      process lifecycle using `clock_failure.previous/current`, receipt times
-      and file-frame offsets. Align phase-max and consumer-lag contexts to
-      distinguish an actual uncovered audio interval from a
-      valid clock restart before proposing a continuity policy. Preserve the
+      The November3 audit of the retained boundary and system logs confirms an
+      actual uncovered interval plus game-recorder HAL IO overload (REC-02-02).
+      Remaining work is locating time spent inside versus around the callback;
+      existing evidence does not separate CPU, preemption and VM faults. Preserve the
       partial recording and truthful failed qualification; do not conceal a gap
       by removing the check without evidence. New native acceptance is required.
       If recurrence is needed, add correlated output/device/process lifecycle
