@@ -315,8 +315,8 @@ evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: investigate CAPTURE-02-01's retained stream/system lifecycle and
-prepare a concrete repair from the evidence below.
+Next action: prepare the combined native acceptance with storage headroom and
+qualify capture/continuation below; no new capture retry policy is justified.
 RUN-02-01 and RUN-02-02 retain only their native acceptance gates. Refactoring,
 complexity and linter debt remain deferred. Repeat autonomous acceptance after
 agreed repairs; existing evidence must guide any additional instrumentation.
@@ -337,14 +337,12 @@ agreed repairs; existing evidence must guide any additional instrumentation.
       actual retained-input replay and prefix-to-generated-route checks pass;
       they do not substitute for native/full autonomous acceptance.
 
-- [ ] **CAPTURE-02-01 - System stops both diagnostic and Reading window streams.**
-      The same campaign reports ScreenCaptureKit SCStreamErrorDomain -3821,
-      diagnostic window failure at575308.034 and product capture error afterward.
-      Recovery-tail video fails again with -3821 at575577.122 while audio continues.
-      A later check finds game available and screen unlocked; lock state at the
-      exact failure is unproven. Correlate stream/system lifecycle and qualify
-      ordinary recovery before changing retry policy. Keep the control recording
-      fullscreen bounds-change guard failure separate from these system stops.
+- [ ] **CAPTURE-02-01 - Native capture acceptance after storage cleanup.**
+      Before the combined run, remove unneeded diagnostic recordings through the
+      existing history and verify storage headroom. Qualify continuous diagnostic
+      video throughout the run without macOS low-disk CacheDelete purges. Reading's
+      existing selected-window recovery needs no new retry implementation.
+      Keep the control recording fullscreen bounds-change guard separate.
       After paused fullscreen/restore, key6 times out, then7 appears about30s
       after dispatch without manual retry. Determine game versus OCR delay from
       better evidence; failed video cannot establish when the game changed.
