@@ -315,8 +315,8 @@ evidence before adding instrumentation. Older overflow causes remain unresolved.
 Each coherent change gets its own commit and focused checks; the full native
 chapter remains a final gate, not a per-fix test.
 
-Next action: investigate the retained REC-02-02 clock boundary and propose its
-concrete repair, then the recording/device failures below one at a time.
+Next action: investigate AUDIO-02-01's retained output-device notification and
+prepare its concrete repair, then the capture failure below.
 RUN-02-01 and RUN-02-02 retain only their native acceptance gates. Refactoring,
 complexity and linter debt remain deferred. Repeat autonomous acceptance after
 agreed repairs; existing evidence must guide any additional instrumentation.
