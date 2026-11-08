@@ -1,6 +1,5 @@
 import hashlib
 import itertools
-import unicodedata
 import unittest
 from dataclasses import replace
 
@@ -8,7 +7,6 @@ from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
-    _normalize_without_latin_diacritics,
 )
 from vntts.dialog import bounded_levenshtein
 
@@ -117,6 +115,61 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                     canonical, "b" * (budget + 1) + canonical[budget + 1 :]
                 )
 
+    def test_first_internal_and_final_substitutions_share_the_same_budget(self):
+        for length, budget in ((3, 1), (59, 1), (60, 2), (119, 2), (120, 3)):
+            canonical = "z" + "a" * (length - 2) + "q"
+            for edits in (budget, budget + 1):
+                for start in (0, (length - edits) // 2, length - edits):
+                    observed = (
+                        canonical[:start] + "b" * edits + canonical[start + edits :]
+                    )
+                    with self.subTest(length=length, edits=edits, start=start):
+                        if edits == budget:
+                            self.assert_resolves(canonical, observed)
+                        else:
+                            self.assert_rejects(canonical, observed)
+
+    def test_repeated_letter_deletion_cannot_prove_either_endpoint_is_complete(self):
+        for canonical, observed in (
+            (
+                "Tthe lantern glows beside our home.",
+                "The lantern glows beside our home.",
+            ),
+            (
+                "The lantern glows beside our homee.",
+                "The lantern glows beside our home.",
+            ),
+            ("abb.", "ab."),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                self.assert_rejects(canonical, observed)
+
+    def test_punctuation_and_spacing_do_not_create_or_destroy_actual_word_boundaries(
+        self,
+    ):
+        for canonical, observed in (
+            ("The stack-finally holds.", "The stack - finally holds."),
+            ("The stack-finally holds.", "The stack,   finally holds."),
+            ("The lantern glows.", "The lan:tern glows."),
+            ("Remember Nowa Miedź?", "Remember   Nowa   Mied:z"),
+        ):
+            with self.subTest(canonical=canonical, observed=observed):
+                self.assert_resolves(canonical, observed)
+        for observed in ("Thelantern glows.", "The lan tern glows."):
+            with self.subTest(observed=observed):
+                self.assert_rejects("The lantern glows.", observed)
+
+    def test_soft_punctuation_does_not_remove_a_nearby_fuzzy_competitor(self):
+        first = dialogue("The lantern glows.", "first")
+        second = dialogue("The lantern glown.", "second")
+        preloader = ChapterVoicePreloader([first, second])
+        selected, result = preloader.resolve_complete_among(
+            "Ada", "The lan:tern glowx.", [first.line_id, second.line_id]
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(result, "expected-ambiguous")
+        self.assertIsNone(preloader.current_match)
+
     def test_latin_diacritics_do_not_spend_the_edit_budget(self):
         for canonical, observed in (
             ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
@@ -155,6 +208,31 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             "Ada", second.text, [first.line_id, second.line_id]
         )
         self.assertIs(selected, second)
+        self.assertEqual(result, "expected-exact")
+
+    def test_strict_text_only_match_beats_normalized_match_with_the_ocr_speaker(self):
+        strict = dialogue("Yes!", "strict")
+        normalized = dialogue("Yes?", "normalized", speaker="Bea")
+        preloader = ChapterVoicePreloader([strict, normalized])
+        for resolver in (
+            preloader.resolve_exact_among,
+            preloader.resolve_complete_among,
+        ):
+            with self.subTest(resolver=resolver.__name__):
+                selected, result = resolver(
+                    "Bea", "Yes!", [strict.line_id, normalized.line_id]
+                )
+                self.assertIs(selected, strict)
+                self.assertEqual(result, "expected-text-only")
+
+    def test_exact_word_is_complete_despite_a_longer_word_with_the_same_opening(self):
+        short = dialogue("Cat.", "short")
+        long = dialogue("Caterpillar.", "long")
+        preloader = ChapterVoicePreloader([short, long])
+        selected, result = preloader.resolve_complete_among(
+            "Ada", short.text, [short.line_id, long.line_id]
+        )
+        self.assertIs(selected, short)
         self.assertEqual(result, "expected-exact")
 
     def test_diacritic_folding_cannot_hide_longer_completions(self):
@@ -273,16 +351,21 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             "of the route across the forgotten passage.",
         )
 
-    def test_partial_prefix_suffix_and_changed_final_token_are_rejected(self):
+    def test_partial_prefix_and_suffix_are_rejected(self):
         canonical = "The lantern illuminated the forgotten passage beside our home."
         for observed in (
             canonical[:-2],
             canonical.rsplit(" ", 1)[0],
             canonical.split(" ", 1)[1],
-            canonical.replace("home", "hope"),
         ):
             with self.subTest(observed=observed):
                 self.assert_rejects(canonical, observed)
+
+    def test_complete_final_word_substitution_uses_the_same_edit_budget(self):
+        self.assert_resolves(
+            "The lantern illuminated the forgotten passage beside our home.",
+            "The lantern illuminated the forgotten passage beside our homc.",
+        )
 
     def test_exact_shorter_line_is_ambiguous_with_longer_completion(self):
         short = dialogue("The lantern illuminated the forgotten passage.", "short")
@@ -412,28 +495,6 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 self.assertEqual(
                     preloader.current_match,
                     ChapterMatch(row.chapter, row.sequence, 1.0, row.story_order),
-                )
-
-
-class LatinDiacriticNormalizationTest(unittest.TestCase):
-    def test_latin_marks_are_removed_without_losing_word_boundaries(self):
-        for text in (
-            "Café déjà vu. Miedź!",
-            "Cafe\u0301 de\u0301ja\u0300 vu. Miedz\u0301!",
-        ):
-            self.assertEqual(
-                _normalize_without_latin_diacritics(text), "cafe deja vu miedz"
-            )
-
-    def test_non_latin_diacritics_and_compatibility_characters_are_preserved(self):
-        for text in ("й", "ά", "が", "²"):
-            with self.subTest(text=text):
-                self.assertEqual(_normalize_without_latin_diacritics(text), text)
-                self.assertEqual(
-                    _normalize_without_latin_diacritics(
-                        unicodedata.normalize("NFD", text)
-                    ),
-                    text,
                 )
 
 

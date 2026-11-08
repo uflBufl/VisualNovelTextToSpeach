@@ -679,7 +679,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         )
         noisy, noisy_result = preloader.resolve_bounded_among(
             "Narrator",
-            "7 r RPA The old woman raises a fin",
+            "r RPA The old woman raises a fin",
             ("line-1", "line-2"),
         )
 
@@ -716,7 +716,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         line, result = preloader.resolve_bounded_among(
             "Narrator",
-            "ae 2? Now now, what's all the fuss about? bb ]",
+            "ae ? Now now, what's all the fuss about? bb ]",
             ("reverse1999:314601:52", "reverse1999:314601:53"),
         )
 

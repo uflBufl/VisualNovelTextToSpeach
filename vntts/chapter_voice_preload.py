@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
-from os.path import commonprefix
 from pathlib import Path
 from typing import TypeAlias
 
@@ -20,13 +19,19 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.cleanup import temporary_directory
-from vntts.dialog import bounded_levenshtein, is_symbol_only_text, symbol_text_key
+from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import copy_regular_file, open_regular_text, read_regular_bytes
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
+)
+from vntts.story_text_matching import (
+    MatchingText,
+    TextEvidence,
+    compare_text,
+    prepare_text,
 )
 
 VERIFIED_SOURCE_AUDIO_COMPLETION = "verified-media-duration-seconds"
@@ -49,20 +54,6 @@ def _normalize_exact_text(value: object) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
-def _normalize_without_latin_diacritics(value: object) -> str:
-    characters = []
-    latin = False
-    for character in unicodedata.normalize("NFD", str(value)):
-        if unicodedata.category(character).startswith("M"):
-            if not latin:
-                characters.append(character)
-        else:
-            latin = "LATIN" in unicodedata.name(character, "")
-            characters.append(character)
-    # Recompose preserved non-Latin letters before tokenization splits marks.
-    return _normalize(unicodedata.normalize("NFC", "".join(characters)))
-
-
 @dataclass(frozen=True)
 class ChapterDialogue:
     line_id: str | None
@@ -78,6 +69,24 @@ class ChapterDialogue:
     story_title: str | None = None
     source_audio_authoritative: bool = False
     story_order: int | None = None
+
+
+@dataclass(frozen=True)
+class StoryObservationMatch:
+    line: ChapterDialogue | None
+    method: str
+    complete: bool = False
+    prefix: bool = False
+
+
+@dataclass(frozen=True)
+class _CandidateEvidence:
+    line: ChapterDialogue
+    observed: str
+    evidence: TextEvidence
+    noise: bool = False
+    speaker_in_crop: bool = False
+    suffix_trimmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -118,7 +127,7 @@ class ChapterVoicePreloader:
             tuple[str, str], list[ChapterDialogue]
         ] = defaultdict(list)
         self.normalized_text: dict[ChapterDialogue, str] = {}
-        self.diacritic_folded_text: dict[ChapterDialogue, str] = {}
+        self.matching_text: dict[ChapterDialogue, MatchingText] = {}
         self.speaker_names: dict[str, str] = {}
         for row in self.dialogue:
             if row.line_id:
@@ -129,11 +138,7 @@ class ChapterVoicePreloader:
             self.by_chapter[row.chapter].append(row)
             self.by_chapter_speaker[(row.chapter, speaker_key)].append(row)
             self.normalized_text[row] = _normalize(row.text)
-            self.diacritic_folded_text[row] = (
-                self.normalized_text[row]
-                if row.text.isascii()
-                else _normalize_without_latin_diacritics(row.text)
-            )
+            self.matching_text[row] = prepare_text(row.text)
             self.by_exact_dialogue[
                 (
                     speaker_key,
@@ -354,6 +359,13 @@ class ChapterVoicePreloader:
                 (),
             )
             match_result = "normalized-exact"
+        if match_result == "normalized-exact":
+            observed = prepare_text(text)
+            all_candidates = tuple(
+                row
+                for row in all_candidates
+                if compare_text(observed, self.matching_text[row], limit=0).complete
+            )
         if not all_candidates:
             return None, "no-match"
         candidates = [row for row in all_candidates if row.line_id and row.text_sha256]
@@ -408,11 +420,12 @@ class ChapterVoicePreloader:
             and is_symbol_only_text(row.text) == is_symbol_only_text(text)
         )
         candidates = []
+        shape = prepare_text(text)
         match_result = "expected-no-match"
         for exact, observed, require_speaker, result in (
             (True, exact_text, True, "expected-exact"),
-            (False, normalized_text, True, "expected-normalized-exact"),
             (True, exact_text, False, "expected-text-only"),
+            (False, normalized_text, True, "expected-normalized-exact"),
             (False, normalized_text, False, "expected-normalized-text-only"),
         ):
             if not observed:
@@ -427,6 +440,10 @@ class ChapterVoicePreloader:
                 )
                 == observed
                 and (not require_speaker or _normalize(row.speaker) == speaker_key)
+                and (
+                    exact
+                    or compare_text(shape, self.matching_text[row], limit=0).complete
+                )
             ]
             if candidates:
                 match_result = result
@@ -448,88 +465,10 @@ class ChapterVoicePreloader:
         *,
         update_context: bool = True,
     ) -> tuple[ChapterDialogue | None, str]:
-        """Confirm a whole source line without treating a prefix as completion."""
-        valid = tuple(
-            row
-            for line_id in dict.fromkeys(str(value) for value in line_ids if value)
-            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
+        match = self.resolve_observation_among(
+            character, text, line_ids, update_context=update_context
         )
-        if valid and is_symbol_only_text(text):
-            return self.resolve_exact_among(
-                character,
-                text,
-                (row.line_id for row in valid),
-                update_context=update_context,
-            )
-        valid = tuple(row for row in valid if not is_symbol_only_text(row.text))
-        observed = _normalize(text)
-        if not observed or not valid:
-            return None, "expected-no-match"
-        protected = _protected_text_content(text)
-        line, result = self.resolve_exact_among(
-            character,
-            text,
-            (
-                row.line_id
-                for row in valid
-                if _protected_text_content(row.text) == protected
-            ),
-            update_context=False,
-        )
-        if line is None:
-            observed = _normalize_without_latin_diacritics(text)
-            candidates = [
-                row for row in valid if self.diacritic_folded_text[row] == observed
-            ]
-            if len(candidates) > 1:
-                return None, "expected-ambiguous"
-            if candidates:
-                line = candidates[0]
-                if _protected_text_content(line.text) != protected:
-                    return None, "expected-no-match"
-                result = "expected-complete-diacritic-fold"
-        if line is None:
-            # Include every competitor, even one which fails its own acceptance
-            # guards. A missing alternative is not evidence of a unique match.
-            # Cutoff 4 distinguishes distance 5, the margin needed at budget 3.
-            ranked = sorted(
-                (
-                    (
-                        bounded_levenshtein(
-                            observed, self.diacritic_folded_text[row], 4
-                        ),
-                        row,
-                    )
-                    for row in valid
-                ),
-                key=lambda item: item[0],
-            )
-            distance, line = ranked[0]
-            canonical = self.diacritic_folded_text[line]
-            length = sum(character.isalnum() for character in canonical)
-            budget = sum(length >= boundary for boundary in (3, 60, 120))
-            if (
-                distance > budget
-                or _protected_text_content(line.text) != protected
-                or not _complete_ocr_words(observed, canonical)
-            ):
-                return None, "expected-no-match"
-            if len(ranked) > 1 and ranked[1][0] < distance + 2:
-                return None, "expected-ambiguous"
-            result = "expected-complete-edit-distance"
-        canonical = self.diacritic_folded_text[line]
-        if any(
-            row.line_id != line.line_id
-            and len(self.diacritic_folded_text[row]) > len(canonical)
-            and self.diacritic_folded_text[row].startswith(canonical)
-            for row in valid
-        ):
-            return None, "expected-incomplete"
-        if update_context:
-            self.current_match = ChapterMatch(
-                line.chapter, line.sequence, 1.0, line.story_order
-            )
-        return line, result
+        return match.line, match.method
 
     def resolve_bounded_among(
         self,
@@ -539,116 +478,304 @@ class ChapterVoicePreloader:
         *,
         allow_speaker_evidence: bool = True,
     ) -> tuple[ChapterDialogue | None, str]:
-        """Resolve OCR drift only among explicit cursor-authorized line IDs."""
-        allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
+        match = self.resolve_observation_among(
+            character,
+            text,
+            line_ids,
+            allow_prefix=True,
+            recover_crop_noise=True,
+            allow_speaker_evidence=allow_speaker_evidence,
+        )
+        return match.line, match.method
+
+    def resolve_observation_among(
+        self,
+        character: object,
+        text: object,
+        line_ids: Iterable[object],
+        *,
+        allow_prefix: bool = False,
+        recover_crop_noise: bool = False,
+        allow_speaker_evidence: bool = True,
+        update_context: bool = True,
+    ) -> StoryObservationMatch:
+        """Assess the same source coverage for canonical text and cursor ownership."""
+        allowed = tuple(dict.fromkeys(str(value) for value in line_ids if value))
         valid = tuple(
             row
             for line_id in allowed
             if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
         )
-        exact_text = _normalize_exact_text(text)
-        normalized_text = _normalize(text)
-        speaker_key = _normalize(character)
+        speaker = _normalize(character) if allow_speaker_evidence else ""
+        normalized = _normalize(text)
+        observed = prepare_text(text)
         self.last_resolution_diagnostics = {
             "indexed_line_count": len(self.dialogue),
             "indexed_chapter_count": len(self.by_chapter),
             "allowed_line_count": len(allowed),
             "eligible_line_count": len(valid),
-            "normalized_text_characters": len(normalized_text),
-            "normalized_text_tokens": len(normalized_text.split()),
-            "normalized_text_sha256": sha256(normalized_text.encode()).hexdigest(),
-            "normalized_speaker_sha256": sha256(speaker_key.encode()).hexdigest(),
+            "normalized_text_characters": len(normalized),
+            "normalized_text_tokens": len(normalized.split()),
+            "normalized_text_sha256": sha256(normalized.encode()).hexdigest(),
+            "normalized_speaker_sha256": sha256(speaker.encode()).hexdigest(),
             "speaker_candidate_count": sum(
-                _normalize(candidate.speaker) == speaker_key for candidate in valid
+                _normalize(row.speaker) == speaker for row in valid
             ),
             "missing_identity_candidate_count": len(allowed) - len(valid),
-            "exact_speaker_candidate_count": sum(
-                _normalize(candidate.speaker) == speaker_key
-                and is_symbol_only_text(candidate.text) == is_symbol_only_text(text)
-                and bool(exact_text)
-                and _normalize_exact_text(candidate.text) == exact_text
-                for candidate in valid
-            ),
-            "normalized_speaker_candidate_count": sum(
-                _normalize(candidate.speaker) == speaker_key
-                and bool(normalized_text)
-                and self.normalized_text[candidate] == normalized_text
-                for candidate in valid
-            ),
-            "text_only_candidate_count": sum(
-                is_symbol_only_text(candidate.text) == is_symbol_only_text(text)
-                and bool(exact_text)
-                and _normalize_exact_text(candidate.text) == exact_text
-                for candidate in valid
-            ),
         }
-        contenders = tuple(
-            line_id
-            for line_id in allowed
-            if not _bounded_match_competes(text, self.by_line_id.get(line_id), valid)
-        )
-        line, match_result = self.resolve_exact_among(character, text, contenders)
-        if line is not None or not allowed:
-            self.last_resolution_diagnostics["match_result"] = match_result
-            if line is None:
+
+        def finish(match: StoryObservationMatch) -> StoryObservationMatch:
+            self.last_resolution_diagnostics["match_result"] = match.method
+            if match.line is None:
                 self.last_resolution_diagnostics["candidate_rejection_reason"] = (
-                    "no-expected-candidates"
+                    "competing-candidates"
+                    if match.method == "expected-ambiguous"
+                    else "incomplete-typewriter-text"
+                    if match.method == "expected-incomplete"
+                    else "bounded-threshold-not-met"
+                    if allowed
+                    else "no-expected-candidates"
                 )
-            return line, match_result
-        ranked: list[tuple[float, str, ChapterDialogue, str]] = []
-        best_evidence: tuple[dict[str, float], str] | None = None
-        for line_id in contenders:
-            candidate = self.by_line_id.get(line_id)
-            if candidate is None or not candidate.text_sha256:
-                continue
-            evidence: dict[str, float] = {}
-            match = _bounded_text_match(text, candidate.text, evidence=evidence)
-            if evidence and (
-                best_evidence is None
-                or evidence["similarity"] > best_evidence[0]["similarity"]
-            ):
-                best_evidence = (evidence, line_id)
-            if match is None and allow_speaker_evidence:
-                match = _speaker_bounded_text_match(
-                    character,
-                    text,
-                    candidate.speaker,
-                    candidate.text,
+            elif update_context:
+                row = match.line
+                self.current_match = ChapterMatch(
+                    row.chapter, row.sequence, 1.0, row.story_order
                 )
-            if match is not None:
-                score, method = match
-                if method == "expected-bounded-ocr-suffix":
-                    if _bounded_match_competes(text, candidate, valid, suffix=True):
-                        continue
-                ranked.append((score, line_id, candidate, method))
-        self.last_resolution_diagnostics["bounded_candidate_count"] = len(ranked)
-        if best_evidence is not None:
-            evidence, line_id = best_evidence
-            self.last_resolution_diagnostics.update(
-                best_candidate_line_id=line_id,
-                best_bounded_similarity=round(evidence["similarity"], 4),
-                best_bounded_coverage=round(evidence["coverage"], 4),
+            return match
+
+        if is_symbol_only_text(text):
+            row, method = self.resolve_exact_among(
+                speaker, text, (row.line_id for row in valid), update_context=False
             )
-        if not ranked:
-            self.last_resolution_diagnostics.update(
-                match_result="expected-no-match",
-                candidate_rejection_reason="bounded-threshold-not-met",
+            return finish(StoryObservationMatch(row, method, complete=row is not None))
+        valid = tuple(row for row in valid if not is_symbol_only_text(row.text))
+        if not valid or not observed.alphanumeric_length:
+            return finish(StoryObservationMatch(None, "expected-no-match"))
+
+        def budget(row: ChapterDialogue) -> int:
+            return sum(
+                self.matching_text[row].alphanumeric_length >= boundary
+                for boundary in (3, 60, 120)
             )
-            return None, "expected-no-match"
-        ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
-        best = ranked[0]
-        if len(ranked) > 1 and best[0] - ranked[1][0] < 0.08:
-            self.last_resolution_diagnostics.update(
-                match_result="expected-ambiguous",
-                candidate_rejection_reason="competing-candidates",
+
+        prepared = {str(text): observed}
+        comparison_cache: dict[tuple[str, ChapterDialogue], TextEvidence] = {}
+        exact_shape = any(observed == self.matching_text[row] for row in valid)
+
+        def compare(span: str, row: ChapterDialogue) -> TextEvidence:
+            key = span, row
+            evidence = comparison_cache.get(key)
+            if evidence is None:
+                shape = prepared.get(span)
+                if shape is None:
+                    shape = prepared[span] = prepare_text(span)
+                evidence = comparison_cache[key] = compare_text(
+                    shape, self.matching_text[row], limit=0 if exact_shape else 4
+                )
+            return evidence
+
+        comparisons = [
+            _CandidateEvidence(row, str(text), compare(str(text), row)) for row in valid
+        ]
+        raw = tuple(comparisons)
+        # Trimming is crop recovery only. Every remaining span goes through the
+        # same alignment and protected-content checks as an ordinary full crop.
+        if recover_crop_noise and not any(
+            (item.evidence.complete and item.evidence.distance <= budget(item.line))
+            or (
+                item.evidence.prefix_distance is not None
+                and item.evidence.prefix_distance <= budget(item.line)
             )
-            return None, "expected-ambiguous"
-        selected = best[2]
-        self.current_match = ChapterMatch(
-            selected.chapter, selected.sequence, 1.0, selected.story_order
+            for item in raw
+        ):
+            crops: list[tuple[ChapterDialogue, str, bool, bool]] = []
+            for row in valid:
+                for crop, speaker_in_crop, suffix_trimmed in _observation_crops(
+                    str(text), row, allow_speaker_evidence
+                ):
+                    shape = prepared.get(crop)
+                    if shape is None:
+                        shape = prepared[crop] = prepare_text(crop)
+                    if shape.protected_content == observed.protected_content:
+                        crops.append((row, crop, speaker_in_crop, suffix_trimmed))
+            crop_keys = {crop: _normalize_exact_text(crop) for crop in prepared}
+            source_keys = {row: _normalize_exact_text(row.text) for row in valid}
+            exact_crops = [
+                item for item in crops if crop_keys[item[1]] == source_keys[item[0]]
+            ]
+            if exact_crops:
+                # Strict recovered text outranks every fuzzy crop; continuations
+                # still compare against all authorized source candidates below.
+                crops = exact_crops
+                exact_shape = True
+            comparisons.extend(
+                _CandidateEvidence(
+                    row, crop, compare(crop, row), True, named, suffix_trimmed
+                )
+                for row, crop, named, suffix_trimmed in crops
+            )
+
+        full = [
+            item
+            for item in comparisons
+            if item.evidence.complete and item.evidence.distance <= budget(item.line)
+        ]
+        self.last_resolution_diagnostics["bounded_candidate_count"] = len(
+            {item.line for item in full}
         )
-        self.last_resolution_diagnostics["match_result"] = best[3]
-        return selected, best[3]
+        nearest = min(raw, key=lambda item: item.evidence.distance)
+        self.last_resolution_diagnostics.update(
+            best_candidate_line_id=nearest.line.line_id or "",
+            best_candidate_edit_distance=nearest.evidence.distance,
+            best_candidate_covered_characters=nearest.evidence.covered_characters,
+        )
+
+        def priority(item: _CandidateEvidence) -> tuple[int, int, int]:
+            strict = _normalize_exact_text(item.observed) == _normalize_exact_text(
+                item.line.text
+            )
+            normalized_equal = (
+                _normalize(item.observed) == self.normalized_text[item.line]
+            )
+            level = (
+                0
+                if strict
+                else 1
+                if normalized_equal
+                else 2
+                if item.evidence.distance == 0
+                else 3
+            )
+            return int(item.noise), level, item.evidence.distance
+
+        if full:
+            full.sort(key=priority)
+            best = full[0]
+            peers = {item.line for item in full if priority(item) == priority(best)}
+            if priority(best)[1] < 2 and speaker:
+                named = {row for row in peers if _normalize(row.speaker) == speaker}
+                if named:
+                    peers = named
+            if len(peers) != 1:
+                return finish(StoryObservationMatch(None, "expected-ambiguous"))
+            row = next(iter(peers))
+            best = next(
+                item
+                for item in full
+                if item.line == row and priority(item) == priority(best)
+            )
+            # Every competitor counts, including one whose own guards fail.
+            if best.evidence.distance and any(
+                other != row
+                and compare(best.observed, other).distance < best.evidence.distance + 2
+                for other in valid
+            ):
+                return finish(StoryObservationMatch(None, "expected-ambiguous"))
+            continuation = False
+            for other in valid:
+                if (
+                    other == row
+                    or self.matching_text[other].alphanumeric_length
+                    <= self.matching_text[row].alphanumeric_length
+                ):
+                    continue
+                evidence = compare(best.observed, other)
+                if (
+                    evidence.prefix_distance is not None
+                    and evidence.prefix_distance <= best.evidence.distance
+                    and evidence.prefix_ends_at_boundary
+                ):
+                    continuation = True
+                    break
+            if not continuation:
+                if best.noise:
+                    method = (
+                        "expected-bounded-speaker-text"
+                        if best.speaker_in_crop
+                        else "expected-bounded-ocr-suffix"
+                    )
+                elif _normalize_exact_text(text) == _normalize_exact_text(row.text):
+                    method = (
+                        "expected-exact"
+                        if _normalize(row.speaker) == speaker
+                        else "expected-text-only"
+                    )
+                elif normalized == self.normalized_text[row]:
+                    method = (
+                        "expected-normalized-exact"
+                        if _normalize(row.speaker) == speaker
+                        else "expected-normalized-text-only"
+                    )
+                elif best.evidence.distance == 0:
+                    method = "expected-complete-diacritic-fold"
+                else:
+                    method = (
+                        "expected-bounded-similarity"
+                        if recover_crop_noise
+                        else "expected-complete-edit-distance"
+                    )
+                return finish(StoryObservationMatch(row, method, complete=True))
+            if not allow_prefix:
+                return finish(StoryObservationMatch(None, "expected-incomplete"))
+        if allow_prefix:
+            prefixes = []
+            for item in comparisons:
+                # A trimmed observed tail cannot establish a growing source tail.
+                if item.suffix_trimmed:
+                    continue
+                distance = item.evidence.prefix_distance
+                length = prepared[item.observed].alphanumeric_length
+                named = allow_speaker_evidence and (
+                    item.speaker_in_crop or speaker == _normalize(item.line.speaker)
+                )
+                canonical_length = self.matching_text[item.line].alphanumeric_length
+                enough = (
+                    length >= 20
+                    or (named and length >= 12)
+                    or (
+                        named
+                        and canonical_length <= 12
+                        and length >= 3
+                        and length / canonical_length >= 0.6
+                    )
+                )
+                if distance is not None and distance <= budget(item.line) and enough:
+                    prefixes.append(item)
+            if prefixes:
+                prefixes.sort(
+                    key=lambda item: (item.evidence.prefix_distance, item.noise)
+                )
+                best = prefixes[0]
+                best_distance = best.evidence.prefix_distance
+                peers = {
+                    item.line
+                    for item in prefixes
+                    if item.evidence.prefix_distance is not None
+                    and best_distance is not None
+                    and item.evidence.prefix_distance <= best_distance + 1
+                }
+                if len(peers) != 1:
+                    return finish(StoryObservationMatch(None, "expected-ambiguous"))
+                method = (
+                    "expected-bounded-speaker-prefix"
+                    if best.evidence.prefix_distance
+                    else "expected-bounded-prefix"
+                )
+                return finish(StoryObservationMatch(best.line, method, prefix=True))
+        incomplete = any(
+            item.evidence.prefix_distance is not None
+            and not item.suffix_trimmed
+            and item.evidence.prefix_distance <= budget(item.line)
+            for item in comparisons
+        )
+        return finish(
+            StoryObservationMatch(
+                None,
+                "expected-incomplete"
+                if incomplete and not allow_prefix
+                else "expected-no-match",
+            )
+        )
 
     def resolve_unique_prefix(
         self,
@@ -665,7 +792,7 @@ class ChapterVoicePreloader:
             return None
         candidates = self._prefix_candidates(
             speaker_key,
-            prefix,
+            prepare_text(text),
             candidate_filter=candidate_filter,
         )
         if len(candidates) != 1:
@@ -684,14 +811,10 @@ class ChapterVoicePreloader:
         if not prefix or len(prefix) < minimum_characters:
             return None
 
+        observed = prepare_text(text)
+
         def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
-            return [
-                row
-                for row in rows
-                if row.line_id
-                and row.text_sha256
-                and self.normalized_text[row].startswith(prefix)
-            ]
+            return [row for row in rows if self._matches_prefix(row, observed)]
 
         if self.current_match is not None:
             nearby = matches(self.by_chapter.get(self.current_match.chapter, ()))
@@ -727,13 +850,19 @@ class ChapterVoicePreloader:
         prefix = _normalize(text)
         if not prefix or len(prefix) < minimum_characters:
             return False
-        candidates = self._prefix_candidates(speaker_key, prefix)
-        return len(candidates) == 1 and self.normalized_text[candidates[0]] != prefix
+        observed = prepare_text(text)
+        candidates = self._prefix_candidates(speaker_key, observed)
+        return (
+            len(candidates) == 1
+            and not compare_text(
+                observed, self.matching_text[candidates[0]], limit=0
+            ).complete
+        )
 
     def _prefix_candidates(
         self,
         speaker_key: str,
-        prefix: str,
+        observed: MatchingText,
         *,
         candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
     ) -> list[ChapterDialogue]:
@@ -741,9 +870,7 @@ class ChapterVoicePreloader:
             return [
                 row
                 for row in rows
-                if row.line_id
-                and row.text_sha256
-                and self.normalized_text[row].startswith(prefix)
+                if self._matches_prefix(row, observed)
                 and (candidate_filter is None or candidate_filter(row))
             ]
 
@@ -757,6 +884,12 @@ class ChapterVoicePreloader:
             if nearby:
                 return nearby
         return matches(self.by_speaker.get(speaker_key, ()))
+
+    def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:
+        if not row.line_id or not row.text_sha256 or not observed.alphanumeric_length:
+            return False
+        evidence = compare_text(observed, self.matching_text[row], limit=0)
+        return evidence.complete or evidence.prefix_distance == 0
 
     def canonical_speaker(
         self,
@@ -879,182 +1012,35 @@ class ChapterVoicePreloader:
         )
 
 
-_PROTECTED_WORDS = frozenset(
-    "no not never neither nor cannot zero one two three four five six seven eight "
-    "nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen "
-    "nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred "
-    "thousand million billion".split()
-)
-
-
-def _protected_text_content(text: object) -> tuple[tuple[int, str], ...]:
-    # Inspect numbers and English negation before punctuation normalization can
-    # erase a sign, decimal separator or contracted negative.
-    original = unicodedata.normalize("NFKC", str(text)).casefold()
-    original = original.translate(str.maketrans("’‘ʼ−", "'''-"))
-    protected = list(
-        re.finditer(r"[+-]?(?:\d+(?:[.,]\d+)*|[.,]\d+)(?:[%‰])?", original)
-    )
-    protected.extend(
-        match
-        for match in re.finditer(r"\w+(?:'\w+)?", original)
-        if match[0] in _PROTECTED_WORDS or match[0].endswith("n't")
-    )
-    return tuple(
-        (
-            len(_normalize_without_latin_diacritics(original[: match.start()]).split()),
-            match[0],
+def _observation_crops(
+    text: str, row: ChapterDialogue, allow_speaker_evidence: bool
+) -> Iterable[tuple[str, bool, bool]]:
+    tokens = tuple(re.finditer(r"\S+", text))
+    length = sum(character.isalnum() for character in row.text)
+    name = _normalize(row.speaker)
+    for start in range(min(8, len(tokens))):
+        leading = text[: tokens[start].start()]
+        name_in_crop = bool(
+            allow_speaker_evidence
+            and name
+            and name != "narrator"
+            and f" {name} " in f" {_normalize(leading)} "
         )
-        for match in protected
-    )
-
-
-def _complete_ocr_words(observed: str, canonical: str) -> bool:
-    actual, expected = observed.split(), canonical.split()
-    return bool(
-        actual
-        and expected
-        and len(actual) == len(expected)
-        and (len(actual) == 1 or actual[-1] == expected[-1])
-        and not canonical.startswith(observed)
-        and not canonical.endswith(observed)
-    )
-
-
-def _bounded_text_match(
-    observed: object,
-    canonical: object,
-    *,
-    evidence: dict[str, float] | None = None,
-) -> tuple[float, str] | None:
-    canonical_text = _normalize(str(canonical).replace("_", " "))
-    tokens = _normalize(str(observed).replace("_", " ")).split()
-    if not canonical_text or not tokens:
-        return None
-    best = None
-    # A dialogue crop occasionally includes the nameplate plus a few decorative
-    # OCR fragments before the actual line. Long canonical prefixes remain
-    # strong evidence after discarding that bounded leading noise.
-    for dropped in range(min(8, len(tokens))):
-        candidate = " ".join(tokens[dropped:])
-        if canonical_text.startswith(candidate) and len(candidate) >= 20:
-            coverage = min(1.0, len(candidate) / len(canonical_text))
-            match = (1.0 + coverage / 10, "expected-bounded-prefix")
-        elif (
-            candidate.startswith(canonical_text)
-            and len(canonical_text) >= 7
-            and len(candidate) - len(canonical_text)
-            <= max(16, round(len(canonical_text) * 0.5))
-        ):
-            match = (1.05, "expected-bounded-ocr-suffix")
-        else:
-            coverage = min(len(candidate), len(canonical_text)) / max(
-                len(candidate), len(canonical_text)
-            )
-            similarity = SequenceMatcher(None, candidate, canonical_text).ratio()
-            if evidence is not None and similarity > evidence.get("similarity", 0.0):
-                evidence.update(similarity=similarity, coverage=coverage)
-            if len(candidate) < 20 or coverage < 0.65 or similarity < 0.88:
+        if length < 7 and not name_in_crop:
+            continue
+        for dropped in range(min(4, len(tokens) - start)):
+            end = len(tokens) - dropped
+            if not start and not dropped:
                 continue
-            match = (similarity, "expected-bounded-similarity")
-        if best is None or match[0] > best[0]:
-            best = match
-    return best
-
-
-def _bounded_match_competes(
-    observed_text: object,
-    candidate: ChapterDialogue | None,
-    candidates: Sequence[ChapterDialogue],
-    *,
-    suffix: bool = False,
-) -> bool:
-    if candidate is None:
-        return False
-    canonical = _normalize(candidate.text)
-    if not suffix and len(canonical) > 12:
-        return False
-    speaker = _normalize(candidate.speaker)
-    observed = f" {_normalize(observed_text)} ".replace(f" {speaker} ", " ", 1).strip()
-    if not suffix and not (
-        f" {canonical} " in f" {observed} " or canonical.startswith(observed)
-    ):
-        return False
-    for other in candidates:
-        other_text = _normalize(other.text)
-        if other.line_id == candidate.line_id or len(other_text) <= len(canonical):
-            continue
-        if suffix:
-            if other_text.startswith(f"{canonical} "):
-                return True
-        elif observed and (
-            other_text.startswith(observed)
-            or _bounded_text_match(observed, other.text) is not None
-        ):
-            # A matching old line or growing longer line owns this observation;
-            # a short reply inside it cannot authorize a lookahead occurrence.
-            return True
-    return False
-
-
-def _speaker_bounded_text_match(
-    observed_character: object,
-    observed_text: object,
-    canonical_speaker: object,
-    canonical_text: object,
-) -> tuple[float, str] | None:
-    """Match nameplate-contaminated or truncated OCR in a bounded frontier."""
-    observed = _normalize(observed_text)
-    canonical = _normalize(canonical_text)
-    speaker = _normalize(canonical_speaker)
-    observed_speaker = _normalize(observed_character)
-    if not observed or not canonical or not speaker:
-        return None
-    speaker_in_text = f" {speaker} " in f" {observed} "
-    speaker_matches = observed_speaker == speaker
-    if not (speaker_in_text or speaker_matches):
-        return None
-    specific_speaker = speaker != "narrator" and (speaker_in_text or speaker_matches)
-    if speaker_in_text:
-        observed = " ".join(observed.replace(speaker, " ", 1).split())
-    best = None
-    tokens = observed.split()
-    for dropped in range(min(8, len(tokens))):
-        candidate = " ".join(tokens[dropped:])
-        if not candidate:
-            continue
-        if f" {canonical} " in f" {candidate} " and (
-            len(canonical) >= 7 or specific_speaker
-        ):
-            match = (1.2, "expected-bounded-speaker-text")
-        else:
-            prefix_length = len(commonprefix((candidate, canonical)))
-            if (
-                specific_speaker
-                and len(canonical) <= 12
-                and prefix_length >= 3
-                and prefix_length / len(canonical) >= 0.6
+            trailing = text[tokens[end - 1].end() :]
+            if len(trailing.strip()) > max(16, round(len(row.text) * 0.5)):
+                continue
+            if not name_in_crop and len(leading.strip()) > max(
+                16, round(len(row.text) * 0.5)
             ):
-                match = (
-                    1.1 + prefix_length / len(canonical) / 100,
-                    "expected-bounded-speaker-prefix",
-                )
-            elif len(canonical) > 12 and prefix_length >= 12:
-                match = (
-                    1.05 + min(1.0, prefix_length / len(canonical)) / 100,
-                    "expected-bounded-speaker-prefix",
-                )
-            else:
-                coverage = min(len(candidate), len(canonical)) / max(
-                    len(candidate), len(canonical)
-                )
-                similarity = SequenceMatcher(None, candidate, canonical).ratio()
-                if len(candidate) < 20 or coverage < 0.65 or similarity < 0.8:
-                    continue
-                match = (similarity, "expected-bounded-speaker-similarity")
-        if best is None or match[0] > best[0]:
-            best = match
-    return best
+                continue
+            crop = text[tokens[start].start() : tokens[end - 1].end()]
+            yield crop, name_in_crop, bool(dropped)
 
 
 def _source_audio_status(entry: Mapping[str, object]) -> str:

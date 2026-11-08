@@ -761,7 +761,7 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
                     (
                         (0, 0, 255),
                         "Narrator",
-                        "7 r RPA The old woman raises a fin",
+                        "r RPA The old woman raises a fin",
                     ),
                 ),
             )

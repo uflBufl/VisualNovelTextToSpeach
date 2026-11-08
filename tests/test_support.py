@@ -1181,14 +1181,16 @@ class RuntimeSupportLogTest(unittest.TestCase):
             runtime = RuntimeSupportLog(path=runtime_path)
             performance = PerformanceLog(path=performance_path)
 
-            runtime.add("live-scope", "match", best_bounded_similarity=float("nan"))
+            runtime.add(
+                "live-scope", "match", best_candidate_edit_distance=float("nan")
+            )
             performance.record("scan", float("inf"), "complete")
             performance.record("scan", 125.0, "complete", bytes_examined=float("nan"))
 
             persisted = runtime_path.read_text(encoding="utf-8")
             report = performance.report()
 
-        self.assertIsNone(json.loads(persisted)["best_bounded_similarity"])
+        self.assertIsNone(json.loads(persisted)["best_candidate_edit_distance"])
         self.assertEqual(report["summary"]["scan"]["count"], 1)
         self.assertNotIn("max_bytes_examined", report["summary"]["scan"])
         json.dumps(report, allow_nan=False)
@@ -1492,7 +1494,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
             speaker_candidate_count=3,
             candidate_rejection_reason="bounded-threshold-not-met",
             best_candidate_line_id="reverse1999:314605:87",
-            best_bounded_similarity=0.73,
+            best_candidate_edit_distance=2,
             raw_text="private dialogue",
             raw_speaker="private speaker",
         )
@@ -1500,7 +1502,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
         entry = sanitize_event(log.snapshot()[0])
 
         self.assertEqual(entry["eligible_line_count"], 42)
-        self.assertEqual(entry["best_bounded_similarity"], 0.73)
+        self.assertEqual(entry["best_candidate_edit_distance"], 2)
         self.assertEqual(entry["normalized_text_sha256"], "a" * 64)
         self.assertEqual(entry["speaker_candidate_count"], 3)
         self.assertEqual(

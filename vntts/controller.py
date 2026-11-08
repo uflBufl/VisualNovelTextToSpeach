@@ -21,6 +21,7 @@ from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterVoicePreloader,
+    StoryObservationMatch,
 )
 from vntts.chapter_voice_preload import _normalize as _normalize_story_text
 from vntts.controller_components import (
@@ -137,6 +138,7 @@ from vntts.speech_worker import (
     create_pocket_worker_backend,
     create_qwen_worker_backend,
 )
+from vntts.story_text_matching import compare_text, prepare_text
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
@@ -933,36 +935,10 @@ class AppController:
                 if event.is_speech and event.line_id is not None
             )
         )
-        previous_match = self.chapter_voice_preloader.current_match
-        line, match_result = self.chapter_voice_preloader.resolve_bounded_among(
-            character,
-            text,
-            line_ids,
+        match = self.chapter_voice_preloader.resolve_observation_among(
+            character, text, line_ids, recover_crop_noise=True
         )
-        if line is None:
-            return None, match_result
-
-        # Startup must not lock onto typewriter text that is still growing. A
-        # full line with a small OCR substitution is safe when it remains the
-        # only bounded candidate; a prefix is not proof that the line is done.
-        normalized_result = str(match_result)
-        observed = " ".join(str(text).casefold().split())
-        canonical = " ".join(str(line.text).casefold().split())
-        coverage = min(len(observed), len(canonical)) / max(
-            1,
-            len(observed),
-            len(canonical),
-        )
-        if "prefix" in normalized_result or (
-            "similarity" in normalized_result and coverage < 0.9
-        ):
-            self.chapter_voice_preloader.current_match = previous_match
-            self.chapter_voice_preloader.last_resolution_diagnostics.update(
-                match_result="expected-incomplete",
-                candidate_rejection_reason="incomplete-typewriter-text",
-            )
-            return None, "expected-incomplete"
-        return line, match_result
+        return match.line, match.method
 
     def _load_live_speaker_corpus(self) -> None:
         self.live_speaker_corpus = None
@@ -1294,7 +1270,10 @@ class AppController:
             raw_result_observer=observe_raw_result,
         )
         character = self._canonical_observed_character(character, text)
-        if isinstance(comparison, DialogFrameEquivalence) and evidence_context is not None:
+        if (
+            isinstance(comparison, DialogFrameEquivalence)
+            and evidence_context is not None
+        ):
             comparison.record_admitted(frame, character, text, evidence_context)
         if (
             canonical_line is not None
@@ -1352,13 +1331,12 @@ class AppController:
         with self.story_cursor_lock:
             expected_prefix = self._expected_sequence_prefix_line_locked()
             if expected_prefix is not None:
-                expected_text = _normalize_story_text(expected_prefix.text)
-                observed_text = _normalize_story_text(result.text)
-                if (
-                    observed_text
-                    and len(observed_text) < len(expected_text)
-                    and expected_text.startswith(observed_text)
-                ):
+                evidence = compare_text(
+                    prepare_text(result.text),
+                    self.chapter_voice_preloader.matching_text[expected_prefix],
+                    limit=0,
+                )
+                if not evidence.complete and evidence.prefix_distance == 0:
                     if resolution is not None:
                         resolution["match_result"] = "owned-prefix"
                     return result
@@ -2054,19 +2032,26 @@ class AppController:
                     for event_id in candidate_event_ids
                     if plan.events[event_id].line_id is not None
                 )
-                resolve_bounded = getattr(
-                    self.chapter_voice_preloader,
-                    "resolve_bounded_among",
-                    self.chapter_voice_preloader.resolve_exact_among,
-                )
+
+                def resolve_observation() -> StoryObservationMatch:
+                    return self.chapter_voice_preloader.resolve_observation_among(
+                        character,
+                        text,
+                        candidate_line_ids,
+                        allow_prefix=True,
+                        recover_crop_noise=True,
+                    )
+
                 expected = self._expected_sequence_prefix_line_locked()
                 if expected is not None:
                     observed = _normalize_story_text(text)
                     speaker = _normalize_story_text(character)
-                    prefix_matches = bool(
-                        any(character.isalnum() for character in observed)
-                        and _normalize_story_text(expected.text).startswith(observed)
+                    evidence = compare_text(
+                        prepare_text(text),
+                        self.chapter_voice_preloader.matching_text[expected],
+                        limit=0,
                     )
+                    prefix_matches = evidence.complete or evidence.prefix_distance == 0
                     speaker_matches = bool(
                         speaker in {"", "narrator"}
                         or speaker == _normalize_story_text(expected.speaker)
@@ -2092,21 +2077,22 @@ class AppController:
                     )
                     if reserved:
                         line = expected
-                        match_result = (
+                        complete = evidence.complete
+                        observation_match = StoryObservationMatch(
+                            expected,
                             "expected-owned-exact"
-                            if observed == _normalize_story_text(expected.text)
-                            else "expected-owned-prefix"
+                            if complete
+                            else "expected-owned-prefix",
+                            complete=complete,
+                            prefix=not complete,
                         )
                     else:
-                        line, match_result = resolve_bounded(
-                            character, text, candidate_line_ids
-                        )
+                        observation_match = resolve_observation()
                 else:
-                    line, match_result = resolve_bounded(
-                        character, text, candidate_line_ids
-                    )
+                    observation_match = resolve_observation()
+                line, match_result = observation_match.line, observation_match.method
                 snapshot, line, match_result = self._apply_sequence_observation_locked(
-                    cursor, line, match_result, candidate_event_ids, character, text
+                    cursor, observation_match, candidate_event_ids, character, text
                 )
         self._remember_indexed_current_recovery_locked(
             character, text, line, previous_event_id, candidate_events
@@ -2154,12 +2140,12 @@ class AppController:
     def _apply_sequence_observation_locked(
         self,
         cursor: _StoryCursor,
-        line: ChapterDialogue | None,
-        match_result: object,
+        observation_match: StoryObservationMatch,
         candidate_event_ids: tuple[str, ...],
         character: str,
         text: str,
     ) -> tuple[StoryCursorSnapshot | None, ChapterDialogue | None, object]:
+        line, match_result = observation_match.line, observation_match.method
         chapter_line, chapter_match = (
             self._resolve_chapter_exact_sequence_line_locked(character, text)
             if line is None
@@ -2197,7 +2183,7 @@ class AppController:
                 chapter_match,
             )
         line = self._apply_sequence_prefix_barrier_locked(
-            cursor, line, match_result, resolved_event
+            cursor, observation_match, resolved_event
         )
         snapshot = (
             None
@@ -2209,11 +2195,11 @@ class AppController:
     def _apply_sequence_prefix_barrier_locked(
         self,
         cursor: _StoryCursor,
-        line: ChapterDialogue | None,
-        match_result: object,
+        observation_match: StoryObservationMatch,
         resolved_event: LiveSequenceEvent | None,
     ) -> ChapterDialogue | None:
-        prefix_match = "prefix" in str(match_result)
+        line, match_result = observation_match.line, observation_match.method
+        prefix_match = observation_match.prefix
         pending_prefix_continuation = bool(
             prefix_match
             and resolved_event is not None
@@ -2240,15 +2226,7 @@ class AppController:
                     None if resolved_event is None else resolved_event.event_id
                 )
             elif (
-                match_result
-                in {
-                    "expected-exact",
-                    "expected-normalized-exact",
-                    "expected-text-only",
-                    "expected-bounded-ocr-suffix",
-                    "expected-bounded-speaker-text",
-                    "expected-owned-exact",
-                }
+                observation_match.complete
                 and resolved_event is not None
                 and self.sequence_prefix_confirmation_event_id
                 == resolved_event.event_id

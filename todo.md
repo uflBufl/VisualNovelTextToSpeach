@@ -309,7 +309,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review the OCR-03-01 repair plan below. The autonomous chapter and separate
+Next action: investigate the remaining RUN-02-02 warmup-scope evidence below. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
@@ -325,27 +325,14 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       `.codex/investigations/callback-attribution-20261108/` and
       `.codex/investigations/pcm-residency-20261108/`.
 
-- [ ] **OCR-03-01 - Unify OCR candidate evidence and completion rules (revised plan approval pending).**
-      Current complete matching rejects punctuation-split words and final-word
-      substitutions, while bounded/startup matching accepts changed numbers/signs
-      and fuzzy truncated endings. Replace the proposed punctuation-only fallback
-      with one candidate comparison that retains alignment and coverage evidence.
-      Treat actual whitespace and punctuation separately; keep Latin folding,
-      existing letter-edit budgets and strict symbol-only matching. Relate protected
-      number/negation spans through alignment rather than normalized word indices.
-      Distinguish complete, prefix, ambiguous and no-match outcomes; do not use
-      word-count equality, exact last-word equality or similarity/coverage alone
-      as proof of completion. Keep the deliberate owner-authorized early-prefix
-      route and bounded nameplate/noise recovery, without allowing either to bypass
-      full-text or protected-content checks. Migrate canonical OCR, startup and
-      cursor consumers together, including replay recovery; preserve exact artifact
-      identity lookup and explicit candidate scope. Remove superseded guards and
-      controller string/coverage heuristics in the same change. Gate completion on
-      retained raw-observation routing plus counterexamples for final substitutions,
-      truncation, punctuation/real boundaries, protected spans and competing lines;
-      compare scoped runtime before/after. No dictionary autocorrection, new global
-      fuzzy story search or game rerun before the combined acceptance run. Research:
-      `.codex/investigations/ocr-matching-architecture-20261108/`.
+- [ ] **OCR-03-01 - Remaining native matching acceptance.** In the next combined
+      run, verify punctuation-split names and final-letter OCR errors choose ready
+      generated audio without transient live synthesis or repeated playback. Verify
+      typewriter prefixes still wait for full text except the deliberately owned
+      early-prefix route; full recognition must confirm that route once. A crop
+      containing an extra number/negation must remain unresolved rather than discard
+      that content as decoration. Keep raw observations and prepared route identity
+      when diagnosing a miss. Do not rerun the chapter separately for this gate.
 
 - [ ] **RUN-02-02 - Remaining native voice warmup-scope evidence.**
       Canonical43 used its ready generated recording after partial/name-loss OCR.

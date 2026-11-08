@@ -185,7 +185,8 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     observed(prefix, "Narrator", dialogue_confidence=96), confidence=96
                 )
                 with patch(
-                    "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
                 ):
                     actual = controller._recognize_live_frame(
                         CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
@@ -312,6 +313,8 @@ class StoryOCRAuthorityTest(unittest.TestCase):
     def test_diacritics_and_short_ocr_typos_reach_the_canonical_recording(self):
         for text, ocr_text in (
             ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Remember Nowa Miedź?", "Remember Nowa Mied:z"),
+            ("Remember Nowa Miedź?", "Remember Nowa Mied:z?"),
             ("Remember Nowa Miedź?", "Rememher Nowa Miedz?"),
             ("Ouch!", "Oucb!"),
         ):
@@ -328,6 +331,130 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 self.assert_generated_route(
                     controller, line, (resolved.character, resolved.text)
                 )
+
+    def test_recorded_split_diacritic_reaches_ready_audio_without_live_synthesis(self):
+        line = story_line("Remember Nowa Miedź?", "Cornerstone")
+        controller = self.controller((line,))
+        raw = observed("Remember Nowa Mied:z")
+        with patch(
+            "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
+        ):
+            actual = controller._recognize_live_frame(
+                CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+            )
+        self.assertIsInstance(actual, RecognizedDialog)
+        self.assertEqual(
+            (actual.character, actual.text, actual.line_id),
+            (line.speaker, line.text, line.line_id),
+        )
+        self.assert_generated_route(controller, line, actual)
+
+    def test_full_substitutions_at_either_end_reach_the_same_generated_recording(self):
+        line = story_line("The lantern glows beside the old bridge.", "Cornerstone")
+        for text in (
+            "Tbe lantern glows beside the old bridge.",
+            "The lantern glows beside the old bridgc.",
+        ):
+            with self.subTest(text=text):
+                controller = self.controller((line,))
+                raw = observed(text)
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual(
+                    (resolved.character, resolved.text), (line.speaker, line.text)
+                )
+                self.assert_generated_route(
+                    controller, line, (resolved.character, resolved.text)
+                )
+                initial, _ = controller._resolve_initial_live_sequence_line(
+                    raw.character, raw.text
+                )
+                self.assertIs(initial, line)
+                bounded, _ = controller.chapter_voice_preloader.resolve_bounded_among(
+                    raw.character, raw.text, (line.line_id,)
+                )
+                self.assertIs(bounded, line)
+
+    def test_terminal_truncation_cannot_canonicalize_or_lock_startup_scope(self):
+        line = story_line("The lantern glows beside the old bridge.", "Cornerstone")
+        for text in (
+            "The lantern glows beside the old bridg",
+            "The lantern glows beside the old",
+        ):
+            with self.subTest(text=text):
+                controller = self.controller((line,))
+                raw = observed(text, line.speaker)
+                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                initial, _ = controller._resolve_initial_live_sequence_line(
+                    raw.character, raw.text
+                )
+                self.assertIsNone(initial)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+
+    def test_ocr_token_split_before_unchanged_number_keeps_generated_identity(self):
+        for text, ocr_text in (
+            ("The lantern needs 12 coins.", "The lan:tern needs 12 coins."),
+            ("The lantern needs +12.5% fuel.", "The lan:tern needs +12.5% fuel."),
+        ):
+            with self.subTest(text=text):
+                line = story_line(text, "Cornerstone")
+                controller = self.controller((line,))
+                raw = observed(ocr_text)
+                resolved = controller._resolve_story_ocr_result(raw)
+                self.assertEqual(
+                    (resolved.character, resolved.text), (line.speaker, line.text)
+                )
+                self.assert_generated_route(
+                    controller, line, (resolved.character, resolved.text)
+                )
+                initial, _ = controller._resolve_initial_live_sequence_line(
+                    raw.character, raw.text
+                )
+                self.assertIs(initial, line)
+
+    def test_changed_numbers_signs_or_negation_never_acquire_story_authority(self):
+        for canonical, text in (
+            ("The lantern needs 12 coins.", "The lantern needs 13 coins."),
+            ("The lantern needs -12 coins.", "The lantern needs 12 coins."),
+            ("The lantern needs -12 coins.", "The lantern needs +12 coins."),
+            ("The lantern needs 1.2 coins.", "The lantern needs 12 coins."),
+            ("The lantern needs 12% fuel.", "The lantern needs 12 fuel."),
+            ("The lantern needs one coin.", "The lantern needs two coin."),
+            ("The lantern is not ready.", "The lantern is now ready."),
+            ("The lantern cannot glow.", "The lantern can glow."),
+            ("The lantern isn't ready.", "The lantern is ready."),
+        ):
+            with self.subTest(canonical=canonical, text=text):
+                line = story_line(canonical, "Cornerstone")
+                controller = self.controller((line,))
+                raw = observed(text, line.speaker)
+                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                initial, _ = controller._resolve_initial_live_sequence_line(
+                    raw.character, raw.text
+                )
+                self.assertIsNone(initial)
+                bounded, _ = controller.chapter_voice_preloader.resolve_bounded_among(
+                    raw.character, raw.text, (line.line_id,)
+                )
+                self.assertIsNone(bounded)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+
+    def test_startup_cannot_select_an_exact_line_outside_the_sequence_plan(self):
+        allowed = story_line("The lantern needs 12 coins.", "Cornerstone")
+        forbidden = story_line(
+            "The lantern needs 13 coins.", "Cornerstone", "forbidden", "chapter-2"
+        )
+        controller = self.controller((allowed, forbidden))
+        controller.settings = controller.settings.updated(
+            live_sequence_mode="audio-manual"
+        )
+        controller.live_sequence_plan = SimpleNamespace(
+            events={"allowed": SimpleNamespace(line_id=allowed.line_id, is_speech=True)}
+        )
+        line, _ = controller._resolve_initial_live_sequence_line(
+            forbidden.speaker, forbidden.text
+        )
+        self.assertIsNone(line)
+        self.assertIsNone(controller.chapter_voice_preloader.current_match)
 
     def test_ambiguous_unmatched_partial_or_uncertain_text_keeps_original_gate(self):
         text = "The clerk's suspicious gaze slides past Cornerstone."
@@ -508,6 +635,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         for text, ocr_text in (
             ("A repeated complete phrase.", "A repeated complete phrase."),
             ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
+            ("Remember Nowa Miedź?", "Remember Nowa Mied:z"),
             ("Ouch!", "Oucb!"),
         ):
             with self.subTest(text=text):

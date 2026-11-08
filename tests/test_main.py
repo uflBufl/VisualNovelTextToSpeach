@@ -6318,7 +6318,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(diagnostics["eligible_line_count"], 1)
         self.assertEqual(diagnostics["bounded_candidate_count"], 0)
         self.assertEqual(diagnostics["best_candidate_line_id"], "reverse1999:1:1")
-        self.assertLess(diagnostics["best_bounded_similarity"], 0.88)
+        self.assertGreater(diagnostics["best_candidate_edit_distance"], 1)
         self.assertNotIn("An unrelated line.", repr(diagnostics))
         self.assertNotIn("Someone", repr(diagnostics))
 

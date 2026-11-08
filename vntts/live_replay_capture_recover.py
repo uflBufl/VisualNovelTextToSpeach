@@ -8,8 +8,6 @@ import io
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from difflib import SequenceMatcher
-from os.path import commonprefix
 from pathlib import Path
 from typing import TypeAlias
 
@@ -628,7 +626,7 @@ def _bounded_plan_match(
 ) -> tuple[LiveSequenceEvent, str] | None:
     if not observation.text or observation.status == "uncertain":
         return None
-    line, method = resolver.resolve_bounded_among(
+    match = resolver.resolve_observation_among(
         observation.character,
         observation.text,
         (
@@ -637,13 +635,16 @@ def _bounded_plan_match(
             if event.kind == "speech" and event.line_id
         ),
         allow_speaker_evidence=False,
+        allow_prefix=True,
+        recover_crop_noise=True,
     )
+    line = match.line
     if line is None:
         return None
     event: LiveSequenceEvent | None = plan.event_for_line(line.line_id)
     if event is None:
         return None
-    return event, method
+    return event, match.method
 
 
 def _longest_explicit_run(
@@ -754,36 +755,30 @@ def _frontier_bounded_match(
     if line is None:
         return None
     observed = _normalized_text(observation.text)
-    canonical = _normalized_text(line.text)
     speaker = _normalized_text(line.speaker)
-    observed_character = _normalized_text(observation.character)
-    if not observed or not canonical or not speaker:
+    if not speaker or not (
+        _normalized_text(observation.character) == speaker
+        or f" {speaker} " in f" {observed} "
+    ):
         return None
-    padded_observed = f" {observed} "
-    speaker_in_text = f" {speaker} " in padded_observed
-    speaker_matches = observed_character == speaker
-    if not (speaker_matches or speaker_in_text):
+    match = resolver.resolve_observation_among(
+        observation.character,
+        observation.text,
+        (line.line_id,),
+        allow_prefix=True,
+        recover_crop_noise=True,
+        update_context=False,
+    )
+    if match.line is None:
         return None
-    if speaker_in_text:
-        observed = " ".join(observed.replace(speaker, " ", 1).split())
-    tokens = observed.split()
-    for dropped in range(min(8, len(tokens))):
-        candidate = " ".join(tokens[dropped:])
-        if canonical in candidate:
-            return "expected-frontier-speaker-text"
-        prefix_length = len(commonprefix((candidate, canonical)))
-        if len(canonical) <= 12:
-            if prefix_length >= 3 and prefix_length / len(canonical) >= 0.6:
-                return "expected-frontier-short-prefix"
-            continue
-        if prefix_length >= 12:
-            return "expected-frontier-prefix"
-        coverage = min(len(candidate), len(canonical)) / max(
-            len(candidate), len(canonical)
+    if match.complete:
+        return "expected-frontier-speaker-text"
+    if match.prefix:
+        return (
+            "expected-frontier-short-prefix"
+            if len(_normalized_text(line.text)) <= 12
+            else "expected-frontier-prefix"
         )
-        similarity = SequenceMatcher(None, candidate, canonical).ratio()
-        if len(candidate) >= 20 and coverage >= 0.65 and similarity >= 0.8:
-            return "expected-frontier-similarity"
     return None
 
 
@@ -834,6 +829,9 @@ def _mapping_rank(method: str) -> int:
         "expected-exact": 4,
         "expected-normalized-exact": 4,
         "expected-text-only": 4,
+        "expected-normalized-text-only": 4,
+        "expected-complete-diacritic-fold": 3,
+        "expected-complete-edit-distance": 3,
         "expected-bounded-similarity": 3,
         "expected-bounded-ocr-suffix": 3,
         "expected-bounded-prefix": 2,
