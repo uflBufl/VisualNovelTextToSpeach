@@ -3403,7 +3403,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.live_scope_identification_match_result = "expected-no-match"
         controller.live_scope_identification_diagnostics = {
             "eligible_line_count": 42,
-            "best_bounded_similarity": 0.73,
+            "best_candidate_edit_distance": 3,
         }
         tray_application = TrayApplication(
             self.application,
@@ -3446,7 +3446,7 @@ class TrayApplicationTest(unittest.TestCase):
             if entry["level"] == "live-scope"
         )
         self.assertEqual(event["eligible_line_count"], 42)
-        self.assertEqual(event["best_bounded_similarity"], 0.73)
+        self.assertEqual(event["best_candidate_edit_distance"], 3)
         tray_application.shutdown()
 
     def test_live_scope_failure_can_continue_from_ocr_without_changing_pack(self):
