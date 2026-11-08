@@ -1,5 +1,11 @@
 # TODO
 
+## Active - Windows story preparation ASR compatibility
+
+- [ ] On Windows, resume the affected new-story preparation and verify source
+      audio analysis, voice planning and synthesis complete. Local Whisper
+      inference and cache regressions do not replace this platform gate.
+
 ## Active - SQLite runtime generation playback
 
 - [ ] Qualify native Windows background generation and simultaneous playback
