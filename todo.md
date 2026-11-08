@@ -309,7 +309,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate the remaining RUN-02-02 warmup-scope evidence below. The autonomous chapter and separate
+Next action: review the unexercised UI cases below before the combined native run.
+The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
@@ -333,13 +334,6 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       containing an extra number/negation must remain unresolved rather than discard
       that content as decoration. Keep raw observations and prepared route identity
       when diagnosing a miss. Do not rerun the chapter separately for this gate.
-
-- [ ] **RUN-02-02 - Remaining native voice warmup-scope evidence.**
-      Canonical43 used its ready generated recording after partial/name-loss OCR.
-      Verify that retained chapter context warms only that chapter's voices; the
-      current events do not expose warmup scope. First inspect existing ownership
-      and prefix evidence before proposing any additional measurement. Do not
-      repeat canonical43 routing merely to reprove the completed part of this gate.
 
 - [ ] **UX-03-01 - Remaining native acceptance of repeat Read.**
       In the next combined run, toggle auto advance during pending/completed
