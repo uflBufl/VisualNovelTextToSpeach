@@ -309,20 +309,11 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review and implement REC-03-01 below, one agreed repair at a time. The autonomous chapter and separate
+Next action: agree the R12 step below, one repair at a time. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
 session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
-
-- [ ] **REC-03-01 - Repair first-source analysis eligibility (plan approval pending).**
-      Full line6 is captured (6.96s, correlation0.99635); the analyzer wrongly
-      excludes it because command dispatch precedes recorder startup. Bound search
-      by the intersection of playback lifetime and actual capture; qualify from
-      complete source alignment, not dispatch-inside-capture. Keep dispatch latency,
-      source lead, SHA/worker identity and existing correlation/full-source gates.
-      Cover delayed arming, source lead, truncated head/tail and ambiguous identity
-      in shared analysis tests, including Windows fixture; no live rerun is needed.
 
 - [ ] **R12 - Localize the remaining output gaps; separate residency improvement.**
       Source/capture comparison proves three added timing gaps totaling960frames

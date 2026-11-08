@@ -39,6 +39,9 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         source_lead_ms=0,
         admission_at=10.21,
         onset_seconds=0.25,
+        capture_start_seconds=0,
+        capture_end_seconds=None,
+        windows=False,
     ):
         source = (
             np.random.default_rng(42).normal(0, 0.1, RATE * 3 // 5).astype(np.float32)
@@ -105,6 +108,11 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             ]
         begin = round(48000 * (onset_seconds + source_lead_ms / 1000))
         output[begin : begin + len(original)] = original
+        output = output[
+            round(capture_start_seconds * 48000) : round(capture_end_seconds * 48000)
+            if capture_end_seconds is not None
+            else None
+        ]
         capture = self.root / "rust-123"
         capture.mkdir()
         sf.write(
@@ -125,6 +133,17 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             frames=len(output),
             peak=float(np.max(np.abs(output))),
         )
+        if windows:
+            metadata.update(
+                mechanism="WASAPI ActivateAudioInterfaceAsync process loopback",
+                scope="selected_process_tree",
+                sample_format="float32_le",
+                target={
+                    "pid": 123,
+                    "executable": r"C:\App\speech.exe",
+                    "creation_time": 12345,
+                },
+            )
         self.write_json(capture / "session.json", metadata)
         self.journal(
             capture / "audio.jsonl",
@@ -134,7 +153,18 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                     file_frame_start=frame,
                     frame_count=480,
                     sample_time=1000 + frame,
-                    monotonic_s=10 + frame / 48000,
+                    monotonic_s=10 + capture_start_seconds + frame / 48000,
+                    **(
+                        dict(
+                            flags=0,
+                            qpc_100ns=round(
+                                (10 + capture_start_seconds + frame / 48000)
+                                * 10_000_000
+                            ),
+                        )
+                        if windows
+                        else {}
+                    ),
                 )
                 for frame in range(0, len(output), 480)
             ],
@@ -142,25 +172,12 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         return capture, digest
 
     def test_windows_capture_clock_accepts_explicit_process_tree_evidence(self):
-        capture, _ = self.fixture()
+        capture, _ = self.fixture(windows=True)
         metadata_path = capture / "session.json"
         metadata = json.loads(metadata_path.read_text())
-        metadata.update(
-            mechanism="WASAPI ActivateAudioInterfaceAsync process loopback",
-            scope="selected_process_tree",
-            sample_format="float32_le",
-            target={
-                "pid": 123,
-                "executable": r"C:\App\speech.exe",
-                "creation_time": 12345,
-            },
-        )
-        self.write_json(metadata_path, metadata)
         journal = capture / "audio.jsonl"
         packets = [json.loads(line) for line in journal.read_text().splitlines()]
-        for index, packet in enumerate(packets):
-            packet["flags"] = 1 if index == 0 else 0
-            packet["qpc_100ns"] = round(packet["monotonic_s"] * 10_000_000)
+        packets[0]["flags"] = 1
         self.journal(journal, packets)
         offset, drift = _capture_clock(capture)
         self.assertAlmostEqual(offset, 10)
@@ -207,6 +224,63 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         self.assertAlmostEqual(clip["candidate_dispatch_to_onset_ms"], 50, places=2)
         self.assertEqual(report["unmatched_routes"], [])
         self.assertTrue((self.root / "analysis.json").is_file())
+
+    def test_full_source_after_capture_start_keeps_earlier_dispatch_and_admission(self):
+        root = self.root
+        for windows in (False, True):
+            for lead in (0, 150):
+                with self.subTest(windows=windows, source_lead_ms=lead):
+                    self.root = root / f"{windows}-{lead}"
+                    self.root.mkdir()
+                    self.fixture(
+                        onset_seconds=1,
+                        capture_start_seconds=0.8,
+                        source_lead_ms=lead,
+                        windows=windows,
+                    )
+                    report = analyze_session(self.root)
+                    self.assertEqual(report["qualification"], "digital-source-correlated")
+                    self.assertEqual(report["unmatched_routes"], [])
+                    clip = report["clips"][0]
+                    self.assertEqual(clip["status"], "correlated")
+                    self.assertEqual(clip["matched_source_seconds"], 0.6)
+                    self.assertAlmostEqual(
+                        clip["candidate_onset_monotonic"], 11 + lead / 1000, places=4
+                    )
+                    self.assertAlmostEqual(
+                        clip["candidate_dispatch_to_onset_ms"], 800 + lead, places=2
+                    )
+                    self.assertAlmostEqual(
+                        clip["candidate_latency_after_source_wait_ms"], 800, places=2
+                    )
+                    self.assertAlmostEqual(
+                        clip["candidate_dispatch_to_prepared_source_admission_ms"],
+                        10,
+                        places=2,
+                    )
+                    self.assertAlmostEqual(
+                        clip["candidate_prepared_source_admission_to_captured_onset_ms"],
+                        790 + lead,
+                        places=2,
+                    )
+
+    def test_capture_clipped_source_head_or_tail_never_qualifies(self):
+        root = self.root
+        for edge, start, end in (("head", 1.1, None), ("tail", 0.8, 1.5)):
+            with self.subTest(edge=edge):
+                self.root = root / edge
+                self.root.mkdir()
+                self.fixture(
+                    onset_seconds=1,
+                    capture_start_seconds=start,
+                    capture_end_seconds=end,
+                )
+                report = analyze_session(self.root)
+                self.assertEqual(report["qualification"], "unqualified")
+                self.assertEqual(len(report["unmatched_routes"]), 1)
+                self.assertFalse(
+                    any(clip["status"] == "correlated" for clip in report["clips"])
+                )
 
     def test_dispatch_and_prepared_source_phases_separate_announcement_delay(self):
         for announced in (False, True):
@@ -458,8 +532,12 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         self.assertEqual(report["clips"][0]["status"], "correlated")
         self.assertEqual(report["qualification"], "digital-source-correlated")
 
-    def replay_fixture(self, *, original_end=10.4, pause=False, run_id="run-1"):
-        capture, digest = self.fixture(onset_seconds=1.25)
+    def replay_fixture(
+        self, *, original_end=10.4, pause=False, run_id="run-1", capture_start_seconds=0
+    ):
+        capture, digest = self.fixture(
+            onset_seconds=1.25, capture_start_seconds=capture_start_seconds
+        )
         timeline = [
             json.loads(line)
             for line in (self.root / "timeline.jsonl").read_text().splitlines()
@@ -557,6 +635,14 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         self.assertAlmostEqual(
             report["clips"][0]["candidate_dispatch_to_onset_ms"], 50, places=2
         )
+        self.assertEqual(report["clips"][0]["status"], "correlated")
+        self.assertEqual(report["qualification"], "unqualified")
+        self.assertEqual(report["unmatched_routes"][0]["playback_id"], "play-1")
+
+    def test_attempt_ending_before_capture_cannot_match_later_identical_playback(self):
+        self.replay_fixture(capture_start_seconds=1)
+        report = analyze_session(self.root)
+        self.assertEqual([clip["playback_id"] for clip in report["clips"]], ["play-2"])
         self.assertEqual(report["clips"][0]["status"], "correlated")
         self.assertEqual(report["qualification"], "unqualified")
         self.assertEqual(report["unmatched_routes"][0]["playback_id"], "play-1")

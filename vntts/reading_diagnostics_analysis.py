@@ -628,17 +628,20 @@ def analyze_session(
                     continue
                 leads = source_leads.get((playback_key, entry["audio_sha256"]), set())
                 source_lead = next(iter(leads)) if len(leads) == 1 else None
-                expected_start = dispatch + (
-                    source_lead / 1000 if source_lead is not None else 0
-                )
-                if not offset - 0.25 <= expected_start < offset + audio_frames / RATE:
-                    continue
                 attempted.add(index)
                 end, lifetime_complete, lifetime_reason = _playback_lifetime(
                     route, dispatch, events, runtime
                 )
                 unmatched_reasons[index] = lifetime_reason
                 if end is None:
+                    continue
+                # Recorder arming can finish after dispatch but before any audio.
+                left = max(0, math.ceil((dispatch - offset) * RATE))
+                right = min(
+                    audio_frames,
+                    math.floor((end - offset) * RATE),
+                )
+                if right <= left:
                     continue
                 source = _audio(
                     _source_path(
@@ -648,13 +651,6 @@ def analyze_session(
                     cancelled=cancelled,
                     started=started,
                 )
-                left = max(0, math.ceil((dispatch - offset) * RATE))
-                right = min(
-                    audio_frames,
-                    math.floor((end - offset) * RATE),
-                )
-                if right <= left:
-                    continue
                 full_source = lifetime_complete and right - left >= len(source)
                 template_source = (
                     source
