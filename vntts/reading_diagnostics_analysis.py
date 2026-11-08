@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import soundfile as sf
+from scipy.signal import resample_poly
 
 from vntts.diagnostic_caf import MAX_CAPTURE_SECONDS, diagnostic_audio_path
 from vntts.path_safety import open_regular_binary
@@ -89,7 +90,6 @@ def _audio(
     cancelled: Event | None = None,
     started: float | None = None,
 ) -> np.ndarray:
-    # Absolute resampling positions preserve the capture clock across window boundaries.
     with open_regular_binary(path) as source, sf.SoundFile(source) as audio:
         if (
             not 8000 <= audio.samplerate <= 192000
@@ -102,6 +102,10 @@ def _audio(
         last = total if last is None else min(total, last)
         if first < 0 or last < first or last - first > RATE * (30 + MAX_SOURCE_SECONDS):
             raise ValueError("Diagnostic audio window exceeds its memory budget")
+        divisor = math.gcd(rate, RATE)
+        up, down = RATE // divisor, rate // divisor
+        # Match scipy's default FIR support, keeping context outside each window.
+        context = math.ceil(10 * max(up, down) / up)
         result = np.empty(last - first, dtype=np.float32)
         for begin in range(first, last, RATE):
             if started is not None:
@@ -109,18 +113,20 @@ def _audio(
             elif cancelled is not None and cancelled.is_set():
                 raise InterruptedError("Source analysis cancelled")
             end = min(begin + RATE, last)
-            positions = np.arange(begin, end, dtype=np.float64) * rate / RATE
-            start = int(positions[0])
-            stop = min(frames, math.ceil(positions[-1]) + 1)
+            # An input multiple of down starts on the file's global output phase.
+            start = max(0, begin * down // up - context) // down * down
+            stop = min(frames, math.ceil((end - 1) * down / up) + context + 1)
             audio.seek(start)
             chunk = audio.read(stop - start, dtype="float32", always_2d=True).mean(
                 axis=1
             )
             if not len(chunk) or not np.isfinite(chunk).all():
                 raise ValueError("Nonfinite or incomplete diagnostic audio")
-            result[begin - first : end - first] = np.interp(
-                positions - start, np.arange(len(chunk)), chunk
-            )
+            converted = resample_poly(chunk, up, down)
+            offset = begin - start * up // down
+            result[begin - first : end - first] = converted[
+                offset : offset + end - begin
+            ]
     return result
 
 
@@ -823,7 +829,7 @@ def analyze_session(
         },
         "limitations": [
             "Digital process output only; no acoustic or DAC measurement.",
-            "Linear-resampled correlation is diagnostic evidence, not an automatic audio-quality verdict.",
+            "Polyphase-resampled correlation is diagnostic evidence, not an automatic audio-quality verdict.",
             "Source silence, announcements, original-source waits and unmatched/partial recordings cannot qualify continuity.",
             "Correlated windows can reveal timing shifts; inspect the actual recording and window coverage.",
         ],

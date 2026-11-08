@@ -306,15 +306,9 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review the DIAG-08-01 offline resampling repair before
-implementation.
+Next action: investigate validated continue-indicator exclusion in OCR-08-02
+and present the concrete repair plan before implementation.
 
-- [ ] **DIAG-08-01 - Correct the offline correlation false warning.**
-      Main-session line50 has diagnostic16k linear-resampled correlation0.89536,
-      but production-equivalent48k->44.1k polyphase/source-CAF comparison gives
-      0.999793 over the full9.28s with zero local shift. Plan/check a consistent
-      analysis resampling method against retained positive and real-gap cases.
-      Keep existing quality thresholds; add no per-playback filesystem audits.
 - [ ] **OCR-08-02 - Separate a verified continue indicator from dialogue pixels.**
       Legacy `samples/02.png` includes the bottom-right continue triangle in its
       dialogue crop. Native OCR reads it as `Ww` (confidence44) after the complete

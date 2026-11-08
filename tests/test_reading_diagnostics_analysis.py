@@ -4,11 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import soundfile as sf
+from scipy.signal import resample_poly
 
+from vntts.audio_output import match_output_sample_rate
 from vntts.reading_diagnostics_analysis import (
     RATE,
     _audio,
@@ -30,6 +32,11 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
     def journal(self, path, values):
         path.write_text("".join(json.dumps(value) + "\n" for value in values))
 
+    def playback_audio(self, source, source_rate=RATE, capture_rate=48000):
+        device = Mock()
+        device.query_devices.return_value = {"default_samplerate": capture_rate}
+        return match_output_sample_rate(device, source, source_rate)[0]
+
     def fixture(
         self,
         *,
@@ -42,12 +49,16 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         capture_start_seconds=0,
         capture_end_seconds=None,
         windows=False,
+        source_rate=RATE,
+        capture_rate=48000,
     ):
         source = (
-            np.random.default_rng(42).normal(0, 0.1, RATE * 3 // 5).astype(np.float32)
+            np.random.default_rng(42)
+            .normal(0, 0.1, source_rate * 3 // 5)
+            .astype(np.float32)
         )
         source_path = self.root / "source.wav"
-        sf.write(source_path, source, RATE, subtype="FLOAT")
+        sf.write(source_path, source, source_rate, subtype="FLOAT")
         digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         self.write_json(
             self.root / "sources.json",
@@ -98,18 +109,22 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                 )
             )
         self.journal(self.root / "runtime.jsonl", runtime)
-        output = np.zeros(48000 * max(2, int(onset_seconds) + 2), dtype=np.float32)
-        original = np.repeat(source, 3)
+        output = np.zeros(
+            capture_rate * max(2, int(onset_seconds) + 2), dtype=np.float32
+        )
+        original = self.playback_audio(source, source_rate, capture_rate)
         if gap:
             original = np.r_[
                 original[: len(original) // 2],
                 np.zeros(gap, dtype=np.float32),
                 original[len(original) // 2 :],
             ]
-        begin = round(48000 * (onset_seconds + source_lead_ms / 1000))
+        begin = round(capture_rate * (onset_seconds + source_lead_ms / 1000))
         output[begin : begin + len(original)] = original
         output = output[
-            round(capture_start_seconds * 48000) : round(capture_end_seconds * 48000)
+            round(capture_start_seconds * capture_rate) : round(
+                capture_end_seconds * capture_rate
+            )
             if capture_end_seconds is not None
             else None
         ]
@@ -118,7 +133,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         sf.write(
             capture / "process.caf",
             np.column_stack((output, output)),
-            48000,
+            capture_rate,
             subtype="FLOAT",
         )
         metadata = dict(
@@ -128,7 +143,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             microphone=False,
             global_fallback=False,
             errors=[],
-            sample_rate=48000,
+            sample_rate=capture_rate,
             channels=2,
             frames=len(output),
             peak=float(np.max(np.abs(output))),
@@ -151,14 +166,14 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                 dict(
                     kind="audio",
                     file_frame_start=frame,
-                    frame_count=480,
+                    frame_count=capture_rate // 100,
                     sample_time=1000 + frame,
-                    monotonic_s=10 + capture_start_seconds + frame / 48000,
+                    monotonic_s=10 + capture_start_seconds + frame / capture_rate,
                     **(
                         dict(
                             flags=0,
                             qpc_100ns=round(
-                                (10 + capture_start_seconds + frame / 48000)
+                                (10 + capture_start_seconds + frame / capture_rate)
                                 * 10_000_000
                             ),
                         )
@@ -166,7 +181,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                         else {}
                     ),
                 )
-                for frame in range(0, len(output), 480)
+                for frame in range(0, len(output), capture_rate // 100)
             ],
         )
         return capture, digest
@@ -239,7 +254,9 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                         windows=windows,
                     )
                     report = analyze_session(self.root)
-                    self.assertEqual(report["qualification"], "digital-source-correlated")
+                    self.assertEqual(
+                        report["qualification"], "digital-source-correlated"
+                    )
                     self.assertEqual(report["unmatched_routes"], [])
                     clip = report["clips"][0]
                     self.assertEqual(clip["status"], "correlated")
@@ -259,7 +276,9 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                         places=2,
                     )
                     self.assertAlmostEqual(
-                        clip["candidate_prepared_source_admission_to_captured_onset_ms"],
+                        clip[
+                            "candidate_prepared_source_admission_to_captured_onset_ms"
+                        ],
                         790 + lead,
                         places=2,
                     )
@@ -446,6 +465,31 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         self.assertEqual(clip["status"], "review-required")
         self.assertAlmostEqual(clip["window_shift_range_ms"], 4, places=2)
         self.assertEqual(len(report["unmatched_routes"]), 1)
+
+    def test_native_48k_source_matches_44k1_playback_but_inserted_gap_does_not(self):
+        root = self.root
+        for gap in (0, 176):
+            with self.subTest(gap=gap):
+                self.root = root / str(gap)
+                self.root.mkdir()
+                self.fixture(source_rate=48000, capture_rate=44100, gap=gap)
+                report = analyze_session(self.root)
+                clip = report["clips"][0]
+                if gap:
+                    self.assertEqual(report["qualification"], "unqualified")
+                    self.assertEqual(clip["status"], "review-required")
+                    self.assertAlmostEqual(clip["window_shift_range_ms"], 4, delta=0.1)
+                    self.assertEqual(len(report["unmatched_routes"]), 1)
+                else:
+                    self.assertEqual(
+                        report["qualification"], "digital-source-correlated"
+                    )
+                    self.assertEqual(clip["status"], "correlated")
+                    self.assertGreater(clip["correlation"], 0.98)
+                    self.assertAlmostEqual(
+                        clip["candidate_dispatch_to_onset_ms"], 50, places=2
+                    )
+                    self.assertEqual(clip["window_shift_range_ms"], 0)
 
     def test_failed_capture_missing_admission_and_missing_owner_remain_explicit(self):
         for case in ("failed", "missing-source", "missing-owner"):
@@ -651,7 +695,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         capture = self.replay_fixture()
         output, rate = sf.read(capture / "process.caf", dtype="float32", always_2d=True)
         source, _ = sf.read(self.root / "source.wav", dtype="float32")
-        output[12000:18720] = np.repeat(source[:2240], 3)[:, None]
+        output[12000:18720] = self.playback_audio(source[:2240])[:, None]
         sf.write(capture / "process.caf", output, rate, subtype="FLOAT")
         clips = analyze_session(self.root)["clips"]
         partial = next(clip for clip in clips if clip["playback_id"] == "play-1")
@@ -881,6 +925,48 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             _audio(self.root / "source.wav", cancelled=cancelled)
 
+    def test_resampled_windows_match_full_file_and_keep_native_reads_bounded(self):
+        path = self.root / "resampling.wav"
+        read = sf.SoundFile.read
+        for rate in (8000, 16000, 44100, 47999, 48000, 192000):
+            for tail in (1, max(2, rate // RATE - 1)):
+                with self.subTest(rate=rate, tail=tail):
+                    samples = (
+                        np.random.default_rng(36)
+                        .normal(0, 0.1, (3 * rate + tail, 2))
+                        .astype(np.float32)
+                    )
+                    sf.write(path, samples, rate, subtype="FLOAT")
+                    total = round(len(samples) * RATE / rate)
+                    expected = resample_poly(samples.mean(axis=1), RATE, rate)[:total]
+                    reads = []
+
+                    def bounded_read(audio, count, **kwargs):
+                        reads.append(count)
+                        return read(audio, count, **kwargs)
+
+                    for first, last in (
+                        (0, None),
+                        (17, RATE + 31),
+                        (RATE - 7, RATE + 11),
+                        (2 * RATE - 3, 2 * RATE + 13),
+                        (total - 17, total + 19),
+                        (total, None),
+                        (17, 17),
+                    ):
+                        with self.subTest(first=first, last=last):
+                            with patch.object(sf.SoundFile, "read", bounded_read):
+                                decoded = _audio(path, first=first, last=last)
+                            np.testing.assert_allclose(
+                                decoded, expected[first:last], rtol=1e-6, atol=1e-7
+                            )
+                            self.assertEqual(decoded.dtype, np.float32)
+                    self.assertLessEqual(max(reads), 2 * rate + 512)
+                    if rate != 47999:
+                        self.assertLessEqual(max(reads), rate + 2048)
+            sf.write(path, np.empty((0, 2), np.float32), rate, subtype="FLOAT")
+            self.assertEqual(len(_audio(path)), 0)
+
     def test_late_clip_in_continuous_long_capture_uses_bounded_windows(self):
         capture, _ = self.fixture()
         source, _rate = sf.read(self.root / "source.wav", dtype="float32")
@@ -889,7 +975,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             capture / "process.caf", "w", samplerate=48000, channels=2, subtype="FLOAT"
         ) as audio:
             audio.seek(round(650.25 * 48000))
-            clip = np.repeat(source, 3)
+            clip = self.playback_audio(source)
             audio.write(np.column_stack((clip, clip)))
             audio.seek(frames - 1)
             audio.write([[0.0, 0.0]])
@@ -1050,7 +1136,7 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
             first = 3600 * RATE
             decoded = _audio(path, first=first, last=first + 16)
             self.assertEqual(len(decoded), 16)
-            self.assertLessEqual(audio.read.call_args.args[0], 48)
+            self.assertLessEqual(audio.read.call_args.args[0], 256)
             audio.frames += 1
             with self.assertRaisesRegex(ValueError, "oversized"):
                 _audio(path, first=first, last=first + 16)
