@@ -42,6 +42,7 @@ from vntts.authoring.review_context_ui import (
     review_model_label,
     review_scroll_area,
 )
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
@@ -528,7 +529,7 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         for column, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
             button = QPushButton(label)
-            set_action_icon(button, "play")
+            set_playback_button_state(button, "idle", label=f"candidate {label}")
             button.setMinimumWidth(180)
             button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             button.setAccessibleName(f"Play opaque candidate {label}")
@@ -893,6 +894,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
                     shortcut_tooltip(button.accessibleName(), button.shortcut())
                 )
                 button.setEnabled(True)
+                set_playback_button_state(
+                    button, button.property("playbackState"), label=f"candidate {label}"
+                )
                 quality = arm["quality"] or {}
                 duration = quality.get("duration_seconds")
                 duration_text = (
@@ -924,6 +928,9 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
     def _play(self, label: str) -> None:
         if self._cohort is None:
             return
+        if self._playing_key is not None and self._playing_key[2] == label:
+            self._stop()
+            return
         sample = self._cohort["samples"][self._sample_index]
         arm = next(
             value
@@ -934,7 +941,12 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
         )
         if arm["status"] != "generated":
             return
+        self._stop()
         self._playing_key = (self._cohort["cohort_id"], sample["queue_id"], label)
+        set_playback_button_state(
+            self.play_buttons[label], "preparing", label=f"candidate {label}"
+        )
+        self.stop.setEnabled(True)
         self.now_playing.setText(f"LOADING {label}")
         self.player.setSource(
             QUrl.fromLocalFile(str(self.session_path.parent / arm["audio"]))
@@ -946,17 +958,28 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             self.player.stop()
             self.player.setSource(QUrl())
         self._playing_key = None
+        for label, button in self.play_buttons.items():
+            set_playback_button_state(button, "idle", label=f"candidate {label}")
         if hasattr(self, "now_playing"):
             self.now_playing.setText("READY")
         if hasattr(self, "stop"):
             self.stop.setEnabled(False)
 
     def _playback_state_changed(self, state: object) -> None:
-        if (
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playing_key = None
+            for label, button in self.play_buttons.items():
+                set_playback_button_state(button, "idle", label=f"candidate {label}")
+            self.stop.setEnabled(False)
+        elif (
             state == QMediaPlayer.PlaybackState.PlayingState
             and self._playing_key is not None
         ):
-            self.now_playing.setText(f"PLAYING {self._playing_key[2]}")
+            label = self._playing_key[2]
+            set_playback_button_state(
+                self.play_buttons[label], "playing", label=f"candidate {label}"
+            )
+            self.now_playing.setText(f"PLAYING {label}")
             self.stop.setEnabled(True)
 
     def _media_status_changed(self, status: object) -> None:
@@ -964,6 +987,8 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
             return
         key = self._playing_key
         self._playing_key = None
+        for label, button in self.play_buttons.items():
+            set_playback_button_state(button, "idle", label=f"candidate {label}")
         self.now_playing.setText(f"FINISHED {key[2]}")
         self.stop.setEnabled(False)
         if key not in self._all_heard_records() and key not in self._pending_heard:
@@ -1139,6 +1164,8 @@ class MissingVoiceReuseReviewDialog(CloseGuardedDialog):
 
     def _playback_error(self, _error: object, error_string: str) -> None:
         self._playing_key = None
+        for label, button in self.play_buttons.items():
+            set_playback_button_state(button, "idle", label=f"candidate {label}")
         self.now_playing.setText("PLAYBACK FAILED")
         self.stop.setEnabled(False)
         self.status.setText(f"PLAYBACK FAILED: {error_string}. Replay is available.")

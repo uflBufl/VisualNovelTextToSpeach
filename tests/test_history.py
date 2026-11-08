@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import (  # noqa: E402
@@ -22,8 +24,10 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
+from vntts.audio_output import resolve_audio_output  # noqa: E402
 from vntts.history import DialogueHistory  # noqa: E402
 from vntts.history_ui import DialogueHistoryDialog  # noqa: E402
+from vntts.playback_observer import playback_started_context  # noqa: E402
 
 
 class DialogueHistoryTest(unittest.TestCase):
@@ -161,7 +165,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.replay_button.text(), "Current voice")
         self.assertEqual(
             dialog.replay_button.accessibleName(),
-            "Speak selected line with current voice",
+            "Play current voice",
         )
         self.assertEqual(dialog.stop_button.text(), "Stop")
         self.assertEqual(dialog.stop_button.accessibleName(), "Stop current speech")
@@ -235,7 +239,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
         self.assertLess(elapsed, 0.1)
         self.assertTrue(dialog.replay_runner.active)
-        self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertTrue(dialog.replay_button.isEnabled())
         self.assertTrue(dialog.stop_button.isEnabled())
         self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
         close_event = QCloseEvent()
@@ -248,6 +252,96 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertTrue(dialog.replay_button.isEnabled())
         self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
         release.set()
+
+    def test_primary_button_prepares_until_playback_and_stops_active_speech(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        release = Event()
+        self.addCleanup(release.set)
+        dialog = self.create_dialog(
+            history,
+            lambda *_args: release.wait(3),
+            stop_handler=Mock(return_value=True),
+        )
+        caption = dialog.replay_button.text()
+        size = dialog.replay_button.sizeHint()
+        dialog.replay_button.click()
+        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        dialog.set_playing(True)
+        self.assertEqual(dialog.replay_button.property("playbackState"), "playing")
+        self.assertEqual(dialog.replay_button.text(), caption)
+        self.assertEqual(dialog.replay_button.sizeHint(), size)
+        dialog.replay_button.click()
+        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        self.wait_for(lambda: not dialog.stop_runner.active)
+        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        dialog.set_playing(True)
+        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        self.assertIn("Speech stopped", dialog.status.toPlainText())
+
+    def test_late_onset_from_stopped_replay_cannot_mark_retry_playing(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        release = Event()
+        self.addCleanup(release.set)
+        onsets = []
+
+        def replay(*_args):
+            onsets.append(playback_started_context.get())
+            release.wait(3)
+
+        dialog = self.create_dialog(
+            history, replay, stop_handler=Mock(return_value=True)
+        )
+        dialog.replay_button.click()
+        self.wait_for(lambda: len(onsets) == 1)
+        dialog.replay_button.click()
+        self.wait_for(lambda: not dialog.stop_runner.active)
+        dialog.replay_button.click()
+        self.wait_for(lambda: len(onsets) == 2)
+        onsets[0]()
+        self.application.processEvents()
+        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        onsets[1]()
+        self.wait_for(
+            lambda: dialog.replay_button.property("playbackState") == "playing"
+        )
+        release.set()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+
+    def test_stopping_during_synthesis_prevents_late_first_pcm(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        started, release, finished = Event(), Event(), Event()
+        self.addCleanup(release.set)
+        output, native = Mock(), Mock()
+        native.__enter__ = Mock(return_value=native)
+        native.__exit__ = Mock(return_value=False)
+        output.OutputStream.return_value = native
+
+        def replay(*_args):
+            started.set()
+            release.wait(3)
+            try:
+                with resolve_audio_output(output).OutputStream(
+                    samplerate=24000, channels=1, dtype="float32", latency="low"
+                ) as stream:
+                    stream.write(np.ones((4, 1)))
+            finally:
+                finished.set()
+
+        dialog = self.create_dialog(
+            history, replay, stop_handler=Mock(return_value=True)
+        )
+        dialog.replay_button.click()
+        self.wait_for(started.is_set)
+        dialog.replay_button.click()
+        self.wait_for(lambda: not dialog.stop_runner.active)
+        release.set()
+        self.wait_for(finished.is_set)
+        native.write.assert_not_called()
+        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
 
     def test_speech_keeps_its_subject_when_selection_and_search_change(self):
         for fails in (False, True):

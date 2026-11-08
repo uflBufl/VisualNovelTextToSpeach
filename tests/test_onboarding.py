@@ -910,6 +910,35 @@ class OnboardingWizardTest(unittest.TestCase):
         page.set_result(False, "Done")
         wizard.deleteLater()
 
+    def test_primary_test_button_prepares_then_plays_and_cancels_without_resizing(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.show_page(len(wizard.pages) - 1)
+        page = wizard.test_page
+        caption = page.button.text()
+        size = page.button.sizeHint()
+        cancellations = []
+        wizard.cancel_requested.connect(lambda: cancellations.append(True))
+        page.button.click()
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_progress(55, "Speech synthesis")
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "playing")
+        self.assertEqual(page.button.text(), caption)
+        self.assertEqual(page.button.sizeHint(), size)
+        page.button.click()
+        self.assertEqual(cancellations, [True])
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_result(False, "Cancelled")
+        self.assertEqual(page.button.property("playbackState"), "idle")
+        self.assertEqual(page.button.text(), caption)
+        self.assertEqual(page.button.sizeHint(), size)
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "idle")
+        wizard.deleteLater()
+
     def test_cancelled_test_ignores_a_late_success(self):
         wizard = OnboardingWizard(AppSettings(), reading_setup=True)
         wizard.show_page(len(wizard.pages) - 1)
@@ -1599,7 +1628,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.finish_button.isEnabled())
         self.assertIn("Prepare offline audio", wizard.test_page.status.text())
         self.assertIn("Start reading", wizard.test_page.status.text())
-        self.assertEqual(wizard.test_page.button.text(), "Run test again")
+        self.assertEqual(wizard.test_page.button.text(), "Run OCR-to-speech test")
         wizard.deleteLater()
 
     def test_first_run_journey_needs_only_game_window_before_guided_test(self):

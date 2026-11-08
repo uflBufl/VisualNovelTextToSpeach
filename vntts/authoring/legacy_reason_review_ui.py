@@ -33,6 +33,7 @@ from vntts.authoring.legacy_reason_review import (
     write_reason_review_progress,
 )
 from vntts.authoring.review_context_ui import review_scroll_area
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer
 
 _REASON_LABELS = {
@@ -51,6 +52,7 @@ ReasonSelections = dict[str, tuple[str, ...]]
 class _AudioPlayer(Protocol):
     errorOccurred: SignalInstance
     mediaStatusChanged: SignalInstance
+    playbackStateChanged: SignalInstance
 
     def setSource(self, source: QUrl) -> None: ...
 
@@ -166,7 +168,7 @@ class LegacyReasonReviewDialog(QDialog):
         self.text.setFrameShape(QLabel.Shape.StyledPanel)
         self.text.setMargin(8)
         self.play = QPushButton("Recording")
-        set_action_icon(self.play, "play")
+        set_playback_button_state(self.play, "idle", label="recording")
         self.play.setAccessibleName("Play recording")
         self.play.setToolTip(self.play.accessibleName())
         self.play.clicked.connect(self.play_current)
@@ -178,8 +180,7 @@ class LegacyReasonReviewDialog(QDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Recording and save status")
-        self.player.errorOccurred.connect(self._playback_failed)
-        self.player.mediaStatusChanged.connect(self._media_status_changed)
+        self._connect_player()
 
         reasons = self._create_assessment_controls()
         actions = self._create_review_navigation()
@@ -224,19 +225,44 @@ class LegacyReasonReviewDialog(QDialog):
             for control in (self.acceptable, *self.reason_controls.values()):
                 control.setFont(self.font())
 
+    def _connect_player(self) -> None:
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
+        self.player.errorOccurred.connect(self._playback_failed)
+        self.player.mediaStatusChanged.connect(self._media_status_changed)
+
     def current_item(self) -> LegacyReasonReviewItem:
         return self.review.items[self.index]
 
     def play_current(self) -> None:
+        if self._playing_item_id is not None:
+            self.stop_current()
+            return
         item = self.current_item()
+        set_playback_button_state(self.play, "preparing", label="recording")
         self._playing_item_id = item.item_id
-        self.status.setText("Playing recording. Listen to the end before assessing.")
+        self._update_actions()
+        self.status.setText("Preparing recording. Listen to the end before assessing.")
         self.player.setSource(QUrl.fromLocalFile(str(item.audio)))
         self.player.play()
+
+    def _playback_state_changed(self, state: object) -> None:
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playing_item_id = None
+            set_playback_button_state(self.play, "idle", label="recording")
+            self._update_actions()
+        elif (
+            state == QMediaPlayer.PlaybackState.PlayingState
+            and self._playing_item_id is not None
+        ):
+            set_playback_button_state(self.play, "playing", label="recording")
+            self.status.setText(
+                "Playing recording. Listen to the end before assessing."
+            )
 
     def stop_current(self) -> None:
         self.player.stop()
         self._playing_item_id = None
+        set_playback_button_state(self.play, "idle", label="recording")
         self.status.setText("Playback stopped. Play the recording to the end.")
         self._update_actions()
 
@@ -251,10 +277,12 @@ class LegacyReasonReviewDialog(QDialog):
             self._heard_items.add(playing_item_id)
             self.status.setText("Recording heard. Choose an assessment.")
         self._playing_item_id = None
+        set_playback_button_state(self.play, "idle", label="recording")
         self._update_actions()
 
     def _playback_failed(self, _error: object, message: str) -> None:
         self._playing_item_id = None
+        set_playback_button_state(self.play, "idle", label="recording")
         self.status.setText(f"Playback failed: {message}")
         self._update_actions()
 
@@ -317,6 +345,7 @@ class LegacyReasonReviewDialog(QDialog):
     def _move(self, offset: int) -> None:
         self.player.stop()
         self._playing_item_id = None
+        set_playback_button_state(self.play, "idle", label="recording")
         self.index = max(0, min(len(self.review.items) - 1, self.index + offset))
         self._show_current()
 
@@ -375,6 +404,7 @@ class LegacyReasonReviewDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.player.stop()
         self._playing_item_id = None
+        set_playback_button_state(self.play, "idle", label="recording")
         super().closeEvent(event)
 
 

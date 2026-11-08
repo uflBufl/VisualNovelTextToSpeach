@@ -65,6 +65,7 @@ from vntts.onboarding import (
     OnboardingDiagnostics,
     is_diagnostic_results,
 )
+from vntts.playback_button import set_playback_button_state
 from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
@@ -1519,7 +1520,7 @@ class EndToEndTestPage(QWizardPage):
         )
         instructions.setWordWrap(True)
         self.button = QPushButton("Run OCR-to-speech test")
-        set_action_icon(self.button, "play")
+        set_playback_button_state(self.button, "idle", label="OCR-to-speech test")
         self.button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.button.clicked.connect(self.run_test)
         self.cancel_button = QPushButton("Cancel test")
@@ -1551,6 +1552,7 @@ class EndToEndTestPage(QWizardPage):
         self.running = False
         self.cancelling = False
         self.button.setEnabled(True)
+        set_playback_button_state(self.button, "idle", label="OCR-to-speech test")
         self.button.setText(
             "Read the visible line"
             if self.flow.reading_setup
@@ -1566,10 +1568,14 @@ class EndToEndTestPage(QWizardPage):
         self.completeChanged.emit()
 
     def run_test(self) -> None:
+        if self.running:
+            self.request_cancel()
+            return
         self.successful = False
         self.running = True
         self.cancelling = False
-        self.button.setEnabled(False)
+        self.button.setEnabled(True)
+        set_playback_button_state(self.button, "preparing", label="OCR-to-speech test")
         self.cancel_button.setEnabled(True)
         self.cancel_button.show()
         self.progress.setRange(0, 0)
@@ -1584,6 +1590,8 @@ class EndToEndTestPage(QWizardPage):
         if not self.running or self.cancelling:
             return
         self.cancelling = True
+        self.button.setEnabled(False)
+        set_playback_button_state(self.button, "preparing", label="OCR-to-speech test")
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.cancel_button.setText("Cancelling...")
@@ -1601,6 +1609,15 @@ class EndToEndTestPage(QWizardPage):
             self.progress.setValue(percent)
         self.status.setText(message)
 
+    def set_playing(self, playing: bool) -> None:
+        if not self.running or self.cancelling:
+            return
+        set_playback_button_state(
+            self.button,
+            "playing" if playing else "preparing",
+            label="OCR-to-speech test",
+        )
+
     def set_result(self, successful: bool, message: str) -> None:
         if self.cancelling:
             successful = False
@@ -1609,6 +1626,7 @@ class EndToEndTestPage(QWizardPage):
         self.running = False
         self.cancelling = False
         self.button.setEnabled(True)
+        set_playback_button_state(self.button, "idle", label="OCR-to-speech test")
         self.cancel_button.setEnabled(False)
         self.cancel_button.setText("Cancel test")
         self.cancel_button.hide()
@@ -1624,15 +1642,6 @@ class EndToEndTestPage(QWizardPage):
             "audio to select stories and voices, or use Start reading immediately."
             if successful
             else message
-        )
-        self.button.setText(
-            "Read the visible line again"
-            if successful and self.flow.reading_setup
-            else "Run test again"
-            if successful
-            else "Read the visible line"
-            if self.flow.reading_setup
-            else "Run OCR-to-speech test"
         )
         self.completeChanged.emit()
         if successful:
@@ -1887,6 +1896,8 @@ class OnboardingWizard(QDialog):
             else actions.get(page)
         )
         if primary is not None and (not primary.isEnabled() or primary.isHidden()):
+            primary = None
+        if test_running:
             primary = None
         if page is self.configuration_page and not complete:
             if self.configuration_page.game_window.currentText().strip():

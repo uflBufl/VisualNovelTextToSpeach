@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
+from vntts.playback_observer import observe_playback_start
 from vntts.rust_audio import RustAudioWorker
 from vntts.rust_output import RustAudioFormatError, RustAudioModule
 
@@ -288,10 +289,13 @@ class RustOutputProtocolTest(unittest.TestCase):
         pcm = np.linspace(-0.5, 0.5, 80, dtype=np.float32).reshape(40, 2)
         module = self.module(pcm)
         first = Mock()
-        with self.stream(module) as stream:
+        observed = Mock()
+        with observe_playback_start(observed), self.stream(module) as stream:
+            observed.assert_not_called()
             result = stream.play_buffer(pcm, lambda: False, first, None)
         self.assertEqual(result, (True, True))
         first.assert_called_once_with()
+        observed.assert_called_once_with()
         self.assertEqual([c["op"] for c in self.commands()], ["load", "start"])
         self.assertFalse(self.workers[0].closed.is_set())
 
@@ -377,6 +381,7 @@ class RustOutputProtocolTest(unittest.TestCase):
         converting = threading.Event()
         release = threading.Event()
         asarray = np.asarray
+        observed = Mock()
 
         def delayed_conversion(*args, **kwargs):
             converting.set()
@@ -384,7 +389,10 @@ class RustOutputProtocolTest(unittest.TestCase):
                 raise RuntimeError("Test conversion was not released")
             return asarray(*args, **kwargs)
 
-        with patch("vntts.rust_output.np.asarray", side_effect=delayed_conversion):
+        with (
+            observe_playback_start(observed),
+            patch("vntts.rust_output.np.asarray", side_effect=delayed_conversion),
+        ):
             module.play(pcm, 24000, latency="low")
             try:
                 self.assertTrue(converting.wait(2))
@@ -393,6 +401,16 @@ class RustOutputProtocolTest(unittest.TestCase):
                 release.set()
                 module.wait()
         self.assertEqual(self.commands(), [], "Pending playback restarted after Stop")
+        observed.assert_not_called()
+
+    def test_convenience_play_carries_observer_to_native_worker_thread(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        module = self.module(pcm)
+        observed = Mock()
+        with observe_playback_start(observed):
+            module.play(pcm, 24000, latency="low")
+        module.wait()
+        observed.assert_called_once_with()
 
     def test_failed_open_ack_closes_unacknowledged_worker_instead_of_reusing_it(self):
         pcm = np.ones((10, 2), dtype=np.float32)

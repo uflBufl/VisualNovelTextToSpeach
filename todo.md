@@ -23,6 +23,8 @@
 
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on
       hosted Windows/Linux and packaged GPU runtimes after local gates pass.
+      Verify playback buttons distinguish preparation from actual device onset,
+      including cancellation during synthesis and rejected playback ownership.
 
 ## Native capture - remaining macOS qualification
 

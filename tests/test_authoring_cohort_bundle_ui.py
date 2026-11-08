@@ -119,6 +119,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
+        media_player.PlaybackState = QMediaPlayer.PlaybackState
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -341,8 +342,11 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
             dialog.play_selected()
             self.assertTrue(dialog._playback_prepare_active)
+            self.assertEqual(dialog.replay.property("playbackState"), "preparing")
+            self.assertTrue(dialog.replay.isEnabled())
             self.assertTrue(dialog.stop.isEnabled())
-            dialog.stop.click()
+            dialog.replay.click()
+            self.assertEqual(dialog.replay.property("playbackState"), "idle")
             pool.run_next()
             self.application.processEvents()
 
@@ -351,13 +355,16 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIsNone(dialog._playback_target)
             self.assertFalse(dialog.heard[dialog._current_key()])
 
-    def test_replay_stops_existing_audio_before_preparing_replacement(self):
+    def test_primary_replay_stops_existing_audio_before_starting_a_new_attempt(self):
         with TemporaryDirectory() as directory:
             dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
             self.wait_for(lambda: dialog.table.rowCount() == 1)
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
             target = dialog._playback_target
+            self.assertEqual(dialog.replay.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(dialog.replay.property("playbackState"), "playing")
             pool = ManualThreadPool()
             dialog._playback_runner.thread_pool = pool
             dialog.player.stop.reset_mock()
@@ -367,6 +374,9 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
             dialog.player.stop.assert_called_once()
             self.assertIsNone(dialog._playback_target)
+            self.assertFalse(dialog._playback_prepare_active)
+            self.assertEqual(dialog.replay.property("playbackState"), "idle")
+            dialog.play_selected()
             self.assertTrue(dialog._playback_prepare_active)
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
             self.assertFalse(dialog.heard[dialog._current_key()])

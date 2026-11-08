@@ -123,7 +123,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                         self.service.reference_audio.assert_called_once()
                     else:
                         self.service.generate.assert_called_once()
-                    self.panel._stop_playback()
+                    self.panel.stop_playback()
 
     def test_cached_previews_also_wait_for_host(self):
         self.configure_current()
@@ -132,7 +132,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 play = self.panel.play_current if current_voice else self.panel.play_a
                 play()
                 self.run_tasks()
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 continuations = []
                 self.panel.before_playback = continuations.append
                 self.service.reset_mock()
@@ -143,7 +143,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 continuations[0]()
                 self.panel.player.play_bytes.assert_called_once()
                 self.service.generate.assert_not_called()
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 self.panel.before_playback = None
 
     def test_pending_playback_is_invalidated_by_selection_change_or_cancel(self):
@@ -251,7 +251,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                     self.panel._playing_source,
                     "preview" if first_current else "current-preview",
                 )
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 self.panel._previews.clear()
                 self.panel.player.reset_mock()
 

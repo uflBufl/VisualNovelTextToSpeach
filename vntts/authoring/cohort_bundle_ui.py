@@ -78,6 +78,7 @@ from vntts.authoring.voice_quality_gate import (
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
 from vntts.cli import print_json
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
@@ -739,7 +740,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self.previous = QPushButton("Previous")
         set_action_icon(self.previous, "chevron-left")
         self.replay = QPushButton("Recording")
-        set_action_icon(self.replay, "play")
+        set_playback_button_state(self.replay, "idle", label="recording")
         self.stop = QPushButton("Stop")
         set_action_icon(self.stop, "square")
         self.next = QPushButton("Next")
@@ -1030,6 +1031,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
 
     def _initialize_workers(self) -> None:
         self.player = QMediaPlayer(self)
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
 
@@ -1511,7 +1513,10 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         self.table.selectRow((max(row, 0) + offset) % count)
 
     def play_selected(self) -> None:
-        if self._playback_prepare_active or self._load_active or self._close_requested:
+        if self._playback_prepare_active or self._playback_target is not None:
+            self.stop_playback()
+            return
+        if self._load_active or self._close_requested:
             return
         sample = self._selected_sample()
         if sample is None:
@@ -1519,6 +1524,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             return
         self.stop_playback()
         self._playback_prepare_active = True
+        set_playback_button_state(self.replay, "preparing", label="recording")
         self._playback_serial += 1
         self._set_status("Preparing selected recording...")
         self._update_actions()
@@ -1551,6 +1557,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             self._update_actions()
             return
         self._discard_playback_buffer()
+        set_playback_button_state(self.replay, "preparing", label="recording")
         playback = self.player.play_bytes(audio_bytes, "vntts-bundle-review.wav")
         if playback is None:
             self._set_status("REPLAY BLOCKED: immutable audio buffer failed")
@@ -1565,6 +1572,17 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         )
         self._set_status("PLAYING: selected recording")
         self._update_actions()
+
+    def _playback_state_changed(self, state: object) -> None:
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playback_target = None
+            set_playback_button_state(self.replay, "idle", label="recording")
+            self._update_actions()
+        elif (
+            state == QMediaPlayer.PlaybackState.PlayingState
+            and self.replay.property("playbackState") == "preparing"
+        ):
+            set_playback_button_state(self.replay, "playing", label="recording")
 
     def _media_status_changed(self, status: object) -> None:
         if (
@@ -1588,6 +1606,7 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
             self.heard[(workspace_id, cohort_id)].add(queue_id)
             self._set_status("HEARD: selected recording")
         self._playback_target = None
+        set_playback_button_state(self.replay, "idle", label="recording")
         # Closing must wait for the checkpoint before deferred multimedia cleanup.
         self._checkpoint_observations()
         selected_queue_id = selected.item.queue_id if selected is not None else None
@@ -2189,14 +2208,12 @@ class CohortReviewBundleDialog(CloseGuardedDialog):
         split_acceptable_count = state.split_acceptable_count
         item_count = state.item_count
         self.previous.setEnabled(ready and len(samples) > 1)
-        self.replay.setEnabled(ready and not self._playback_prepare_active)
-        self.replay.setText("Recording")
-        self.replay.setAccessibleName(
-            "Replay selected cohort sample"
-            if sample is not None and sample.item.queue_id in heard
-            else "Play selected cohort sample"
+        self.replay.setEnabled(
+            ready or self._playback_prepare_active or self._playback_target is not None
         )
-        self.replay.setToolTip(self.replay.accessibleName())
+        self.replay.setText("Recording")
+        if not self._playback_prepare_active and self._playback_target is None:
+            set_playback_button_state(self.replay, "idle", label="recording")
         self.stop.setEnabled(
             self._playback_target is not None or self._playback_prepare_active
         )

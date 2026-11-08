@@ -240,8 +240,10 @@ def _choose_fresh_pack_narrator(dialog, pool, application, player):
     player.play_bytes.assert_called_once()
     if not player.play_bytes.call_args.args[0]:
         raise AssertionError("Narrator playback did not receive reference bytes")
-    if "Centurion" not in dialog.voice_confirmation_status.text():
-        raise AssertionError("Narrator playback status hid the selected voice")
+    if "Centurion" not in dialog.confirmed_narrator.text():
+        raise AssertionError("Narrator confirmation hid the selected voice")
+    if dialog.play_narrator_reference.property("playbackState") != "preparing":
+        raise AssertionError("Narrator startup did not show preparation")
     if dialog.engine_choice.currentData() != "pocket-tts":
         raise AssertionError("The selected generation engine was not retained")
     if "Pocket TTS" not in dialog._full_narrator_configuration():

@@ -48,6 +48,8 @@ from vntts.authoring.pcm_playback import (
     PlaybackSnapshot,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scroll_area
+from vntts.playback_button import PlaybackState as PlaybackButtonState
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
 
@@ -634,8 +636,17 @@ class ModelListeningDialog(CloseGuardedDialog):
     ) -> None:
         self.playback_control_state = state
         label = side.upper() if side else None
-        self.play_a.setText("A")
-        self.play_b.setText("B")
+        for candidate, button in (("a", self.play_a), ("b", self.play_b)):
+            button_state: PlaybackButtonState = (
+                "preparing"
+                if state == "loading" and candidate == side
+                else "playing"
+                if state == "playing" and candidate == side
+                else "idle"
+            )
+            set_playback_button_state(
+                button, button_state, label=f"anonymous sample {candidate.upper()}"
+            )
         self.apply_side_button_style(self.play_a, "a")
         self.apply_side_button_style(self.play_b, "b")
         labels = {
@@ -766,13 +777,30 @@ class ModelListeningDialog(CloseGuardedDialog):
     def play(self, side: Side) -> None:
         if self.current_trial is None or not self.playback_timer.isActive():
             return
+        if side == self.active_side and self.playback_control_state in {
+            "loading",
+            "playing",
+        }:
+            self.stop_audio()
+            return
         if side == "b":
             self.auto_play_pending_b = False
         self.active_side = side
         self.active_started = False
         self.active_initial_natural = True
         clip = self.audio_clips[side]
-        self.active_token = self.playback.play(clip)
+        self.set_playback_indicator("loading", side)
+        try:
+            self.active_token = self.playback.play(clip)
+        except Exception as error:
+            self.active_token = None
+            self.auto_play_pending_b = False
+            self.set_playback_indicator("finished", side)
+            self.set_status(
+                f"Could not play {side.upper()}: {error}. Replay to retry.",
+                playback_error=True,
+            )
+            return
         self.seek.setRange(0, clip.duration_ms)
         self.seek.setValue(0)
         self.update_time_label(0, clip.duration_ms)

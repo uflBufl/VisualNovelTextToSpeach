@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -48,6 +49,7 @@ from vntts.ocr import OCRResult
 from vntts.ocr_worker import cancel_pending_ocr, close_ocr_worker, open_ocr_worker
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
+from vntts.playback_observer import playback_started_context
 from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.runtime_config import (
     get_auto_advance_delay_seconds,
@@ -1618,6 +1620,13 @@ class VoiceAssignmentComponent:
         executor = controller.speech_executor
         if executor is None:
             raise RuntimeError("The speech engine is not ready")
+        if playback_started_context.get() is not None:
+            return executor.submit(
+                copy_context().run,
+                controller._preview_voice,
+                character or "Narrator",
+                text.strip(),
+            )
         return executor.submit(
             controller._preview_voice,
             character or "Narrator",

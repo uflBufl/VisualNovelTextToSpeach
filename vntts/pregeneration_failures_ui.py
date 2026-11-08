@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
+from vntts.playback_button import set_playback_button_state
 from vntts.pregeneration_failures import (
     PreparationFailure,
     inspect_preparation_failures,
@@ -51,10 +52,7 @@ class PreparationFailuresPanel(QWidget):
         self.character.setTextFormat(Qt.TextFormat.PlainText)
         controls.addWidget(self.character, 1)
         self.play = QPushButton("Listen")
-        self.play.setToolTip(
-            "Listen to this diagnostic recording. Active reading will stop first."
-        )
-        set_action_icon(self.play, "play")
+        set_playback_button_state(self.play, "idle", label="diagnostic audio")
         self.play.clicked.connect(self._play)
         controls.addWidget(self.play)
         self.stop_button = QPushButton("Stop")
@@ -88,6 +86,7 @@ class PreparationFailuresPanel(QWidget):
         self.player = player
         self._play_request = 0
         self._playing = False
+        self._preparing = False
         self._refresh_pending = False
         self._refresh_on_show = False
         self.inspector = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -235,12 +234,18 @@ class PreparationFailuresPanel(QWidget):
             self.stop()
 
     def _play(self) -> None:
+        if self._preparing or self._playing:
+            self.stop()
+            return
         item = self._current()
         generation_input = self.generation_input
         if item is None or generation_input is None or item.audio_status != "available":
             return
         self.stop()
         request = self._play_request
+        self._preparing = True
+        self.audio_status.setText("Preparing diagnostic audio...")
+        self._update_buttons()
 
         def start() -> None:
             if (
@@ -250,13 +255,15 @@ class PreparationFailuresPanel(QWidget):
             ):
                 return
             self.loader.start(load_preparation_failure_audio, generation_input, item)
-            self.audio_status.setText("Preparing diagnostic audio...")
             self._update_buttons()
 
         if self.before_playback is None:
             start()
         else:
-            self.before_playback(start)
+            try:
+                self.before_playback(start)
+            except Exception as error:
+                self._playback_error(str(error))
 
     def _connect_player(self) -> None:
         assert self.player is not None
@@ -272,9 +279,12 @@ class PreparationFailuresPanel(QWidget):
         if self.player is None:
             self.player = QtPcmPlayer(self)
             self._connect_player()
-        self._playing = True
-        self.audio_status.setText("Playing diagnostic audio.")
-        self.player.play_bytes(payload, source="Failed preparation")
+        try:
+            clip = self.player.play_bytes(payload, source="Failed preparation")
+            if clip is None and (self._preparing or self._playing):
+                self._playback_error("Unable to start diagnostic audio playback")
+        except Exception as error:
+            self._playback_error(str(error))
         self._update_buttons()
 
     def _playback_error(self, message: str) -> None:
@@ -282,23 +292,34 @@ class PreparationFailuresPanel(QWidget):
         self.audio_status.setText(f"Unable to play this recording: {message}")
 
     def _playback_changed(self, state: object) -> None:
-        if state == QMediaPlayer.PlaybackState.StoppedState:
+        if state == QMediaPlayer.PlaybackState.PlayingState and self._preparing:
+            self._preparing = False
+            self._playing = True
+            self.audio_status.setText("Playing diagnostic audio.")
+            self._update_buttons()
+        elif state == QMediaPlayer.PlaybackState.StoppedState and self._playing:
             self._playing = False
             self._update_buttons()
             self.audio_status.setText("Diagnostic playback stopped.")
 
     def _update_buttons(self) -> None:
         item = self._current()
-        busy = self.loader.active or self._playing
-        self.play.setEnabled(
-            bool(item and item.audio_status == "available" and not busy)
+        busy = self._preparing or self._playing
+        set_playback_button_state(
+            self.play,
+            "playing" if self._playing else "preparing" if self._preparing else "idle",
+            label="diagnostic audio",
         )
+        self.play.setEnabled(bool(item and item.audio_status == "available"))
         self.stop_button.setEnabled(busy)
 
     def stop(self) -> None:
+        if self._preparing or self._playing:
+            self.audio_status.setText("Diagnostic playback stopped.")
         self._play_request += 1
         self.loader.cancel()
         self._playing = False
+        self._preparing = False
         if self.player is not None:
             self.player.stop()
         self._update_buttons()

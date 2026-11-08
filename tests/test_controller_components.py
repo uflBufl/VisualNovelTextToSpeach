@@ -1,6 +1,6 @@
 import ast
 import unittest
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock
@@ -16,12 +16,25 @@ from vntts.controller_components import (
 from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.playback_observer import observe_playback_start, playback_started_context
 from vntts.settings import AppSettings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceRouter
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_history_replay_carries_actual_start_observer_into_speech_executor(self):
+        controller = AppController(AppSettings())
+        controller.voice_router = Mock()
+        controller.live_reader = Mock(is_running=False)
+        observed = Mock()
+        controller._preview_voice = lambda *_args: playback_started_context.get()()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            controller.speech_executor = executor
+            with observe_playback_start(observed):
+                controller.replay_dialog("Marcus", "Hello.").result()
+        observed.assert_called_once_with()
+
     def test_live_dispatch_requires_typed_outcome_from_dynamic_backend(self):
         class Backend:
             def __init__(self, outcome):

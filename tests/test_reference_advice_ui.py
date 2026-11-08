@@ -487,7 +487,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                     f.panel.a_original.accessibleName()
                     if original
                     else f.panel.a_play.accessibleName(),
-                    "Stop original reference" if original else "Stop voice preview",
+                    "Preparing original reference"
+                    if original
+                    else "Preparing voice preview",
                 )
                 action()
                 self.assertGreater(f.player.stop.call_count, stops)

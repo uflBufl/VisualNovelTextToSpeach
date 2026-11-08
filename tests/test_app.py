@@ -4,6 +4,7 @@ import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, get_ident
@@ -49,6 +50,7 @@ from vntts.app import (  # noqa: E402
     main,
 )
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
+from vntts.audio_output import PcmAdmissionRejected, pcm_admission_context  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.dashboard_ui import RuntimeControlState
@@ -66,8 +68,13 @@ from vntts.ocr import (  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
 from vntts.onboarding import DiagnosticResult  # noqa: E402
+from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
+from vntts.playback_observer import playback_started_context  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
+from vntts.pregeneration_audition_ui import VoiceAuditionPanel  # noqa: E402
+from vntts.pregeneration_failures import PreparationFailure  # noqa: E402
+from vntts.pregeneration_failures_ui import PreparationFailuresPanel  # noqa: E402
 from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePackPublisher,
     OfflinePackResult,
@@ -3874,6 +3881,155 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("speech busy", tray.status_action.text())
         dialog.reject()
         controller.toggle_live.assert_not_called()
+
+    def test_rejected_voice_owner_resets_real_panel_preparing_state(self):
+        for refusal in ("controller-busy", "stop-busy", "stop-rejected", "stop-failed"):
+            with self.subTest(refusal=refusal):
+                tray, controller, dialog, pool = self.open_voice_editor_for_playback()
+                gate = dialog.voice_panel.before_playback
+                panel = VoiceAuditionPanel(
+                    Mock(), preview_service=Mock(), player=Mock()
+                )
+                self.addCleanup(panel.deleteLater)
+                self.addCleanup(panel.shutdown)
+                panel.before_playback = gate
+                dialog.voice_panel = panel
+                if refusal == "controller-busy":
+                    tray._controller_busy = True
+                elif refusal == "stop-busy":
+                    tray.live_stop_runner.start(lambda: True)
+                elif refusal == "stop-failed":
+                    controller.live_reader.wait.side_effect = TimeoutError(
+                        "speech busy"
+                    )
+                action = Mock()
+                with patch.object(
+                    tray,
+                    "_stop_live_then",
+                    Mock(return_value=False)
+                    if refusal == "stop-rejected"
+                    else tray._stop_live_then,
+                ):
+                    panel._request_playback(action, source="preview")
+                    while pool.tasks:
+                        pool.run_next()
+                        self.application.processEvents()
+                self.assertEqual(panel.a_play.property("playbackState"), "idle")
+                action.assert_not_called()
+                panel.player.play_bytes.assert_not_called()
+                if refusal == "stop-failed":
+                    self.assertIn("speech busy", tray.status_action.text())
+                tray.shutdown()
+
+    def create_failure_playback_panel(self, tray):
+        player = Mock()
+        panel = PreparationFailuresPanel(thread_pool=ManualThreadPool(), player=player)
+        self.addCleanup(lambda: panel.deleteLater() if isValid(panel) else None)
+        self.addCleanup(lambda: panel.stop() if isValid(panel) else None)
+        panel.generation_input = object()
+        panel.failures = (
+            PreparationFailure(
+                "queue", "line", "Marcus", "Hello.", "reason", "", "available", {}
+            ),
+        )
+        panel.table.setRowCount(1)
+        panel.table.setCurrentCell(0, 0)
+        dialog = Mock(failures_panel=panel)
+        dialog.has_pending_work.return_value = False
+        tray.pregeneration_dialog = dialog
+        panel.before_playback = partial(tray._prepare_failure_playback, dialog)
+        return panel, player
+
+    def test_failure_audio_owner_rejection_clears_real_panel_preparing(self):
+        for refusal in ("controller-busy", "stop-busy", "stop-failed"):
+            with self.subTest(refusal=refusal):
+                tray, controller, _dialog, pool = self.open_voice_editor_for_playback()
+                panel, player = self.create_failure_playback_panel(tray)
+                if refusal == "controller-busy":
+                    tray._controller_busy = True
+                elif refusal == "stop-busy":
+                    tray.live_stop_runner.start(lambda: True)
+                else:
+                    controller.live_reader.wait.side_effect = TimeoutError(
+                        "speech busy"
+                    )
+                panel.play.click()
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertEqual(panel.play.property("playbackState"), "idle")
+                self.assertFalse(panel.loader.active)
+                player.play_bytes.assert_not_called()
+                if refusal == "stop-failed":
+                    self.assertIn("speech busy", tray.status_action.text())
+                tray.shutdown()
+
+    def test_failure_audio_pending_owner_is_cleared_on_lifecycle_invalidation(self):
+        for interruption in (
+            "emergency_stop",
+            "_request_stop_reading",
+            "_begin_controller_lifecycle",
+            "shutdown",
+        ):
+            with self.subTest(interruption=interruption):
+                tray, _controller, _dialog, pool = self.open_voice_editor_for_playback()
+                panel, player = self.create_failure_playback_panel(tray)
+                panel.play.click()
+                self.assertEqual(panel.play.property("playbackState"), "preparing")
+                getattr(tray, interruption)()
+                self.assertEqual(panel.play.property("playbackState"), "idle")
+                self.assertIsNone(tray._live_stop_on_failure)
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertFalse(panel.loader.active)
+                player.play_bytes.assert_not_called()
+                tray.shutdown()
+
+    def test_failure_audio_deferred_owner_rejection_clears_preparing(self):
+        for interruption in (
+            "_begin_controller_lifecycle",
+            "emergency_stop",
+            "_request_stop_reading",
+            "shutdown",
+        ):
+            with self.subTest(interruption=interruption):
+                tray, _controller, _dialog, pool = self.open_voice_editor_for_playback()
+                panel, player = self.create_failure_playback_panel(tray)
+                panel.play.click()
+                tray.live_stop_runner.cancel()
+                tray._live_stop_finished(True, None)
+                getattr(tray, interruption)()
+                self.application.processEvents()
+                self.assertEqual(panel.play.property("playbackState"), "idle")
+                self.assertFalse(panel.loader.active)
+                player.play_bytes.assert_not_called()
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                tray.shutdown()
+
+    def test_failure_audio_owner_cleanup_ignores_deleted_panel(self):
+        for completion in ("stop-failed", "shutdown"):
+            with self.subTest(completion=completion):
+                tray, _controller, _dialog, pool = self.open_voice_editor_for_playback()
+                panel, player = self.create_failure_playback_panel(tray)
+                panel.play.click()
+                panel.stop()
+                panel.deleteLater()
+                QCoreApplication.sendPostedEvents(panel, QEvent.Type.DeferredDelete)
+                self.assertFalse(isValid(panel))
+                if completion == "stop-failed":
+                    tray.live_stop_runner.cancel()
+                    tray._live_stop_finished(False, TimeoutError("speech busy"))
+                else:
+                    tray.shutdown()
+                self.assertIsNone(tray._live_stop_on_failure)
+                player.play_bytes.assert_not_called()
+                while pool.tasks:
+                    pool.run_next()
+                    self.application.processEvents()
+                tray.shutdown()
 
     def test_voice_playback_interruption_never_plays_or_resumes(self):
         for interruption in (
@@ -10432,6 +10588,46 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(results[0][0])
         self.assertIn("Marcus", results[0][1])
         tray_application.shutdown()
+
+    def test_onboarding_actual_onset_is_scoped_to_current_running_test(self):
+        controller = Mock()
+        controller.start.return_value = True
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        wizard = OnboardingWizard(AppSettings())
+        self.addCleanup(wizard.deleteLater)
+        tray.onboarding_wizard = wizard
+        page = wizard.test_page
+        page.run_test()
+        states = []
+        generations = []
+        admissions = []
+
+        def test_current_dialog(**_kwargs):
+            generations.append(tray._onboarding_test_generation)
+            admissions.append(pcm_admission_context.get())
+            states.append(page.button.property("playbackState"))
+            playback_started_context.get()()
+            states.append(page.button.property("playbackState"))
+            return "Marcus", "Hello."
+
+        controller.test_current_dialog.side_effect = test_current_dialog
+        tray.onboarding_test_runner.thread_pool = ImmediateTaskPool()
+        tray.run_onboarding_test(AppSettings(speech_backend="pocket-tts"))
+        self.assertEqual(states, ["preparing", "playing"])
+        tray.onboarding_cancel_event.set()
+        with self.assertRaises(PcmAdmissionRejected):
+            admissions[0].admit()
+        page.set_result(False, "A later test")
+        page.run_test()
+        tray.signals.onboarding_playback_started.emit(generations[0])
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.request_cancel()
+        page.set_result(False, "Cancelled")
+        tray.shutdown()
 
     def test_prepared_setup_does_not_start_or_download_an_unrelated_live_model(self):
         for engine in ("coqui-xtts", "pocket-tts"):

@@ -1373,6 +1373,8 @@ def _voice_audition_story(
 
 
 def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
+    from vntts.qt_audio import QtPcmPlayer
+
     panel.a_original.click()
     panel.original_runner._task_finished(
         panel.original_runner._serial,
@@ -1384,6 +1386,7 @@ def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
         None,
     )
     assert panel._playing_source == "original"
+    panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
 
 
 def _voice_preview_playback_story(
@@ -1393,6 +1396,7 @@ def _voice_preview_playback_story(
     write_sample: Callable[[Path], None],
 ) -> None:
     from vntts.document_identity import sha256_file
+    from vntts.qt_audio import QtPcmPlayer
 
     preview = (
         Path(resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-")))
@@ -1406,6 +1410,7 @@ def _voice_preview_playback_story(
         None,
     )
     assert panel.a_play.isEnabled()
+    panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
     assert panel.a_play.accessibleName() == "Stop voice preview"
     if state == "preview-ready":
         panel.a_play.click()

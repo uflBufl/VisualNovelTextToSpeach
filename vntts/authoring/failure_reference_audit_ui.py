@@ -52,6 +52,7 @@ from vntts.authoring.review_context_ui import (
 from vntts.cli import print_json
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_text
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
@@ -189,6 +190,12 @@ def _load_public_document(
 
 class FailureReferenceAuditDialog(CloseGuardedDialog):
     """Review four exact control groups without revealing private source names."""
+
+    def _initialize_player(self) -> None:
+        self.player = QMediaPlayer(self)
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
+        self.player.mediaStatusChanged.connect(self._media_status_changed)
+        self.player.errorOccurred.connect(self._media_error)
 
     def _create_preview_controls(self) -> None:
         self.generate_preview = QPushButton("Generate sample")
@@ -356,7 +363,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
 
         self._create_failure_table()
         self.play = QPushButton("Reference")
-        set_action_icon(self.play, "play")
+        set_playback_button_state(self.play, "idle", label="source reference")
         self.stop = QPushButton("Stop")
         set_action_icon(self.stop, "square")
         self.play.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -488,9 +495,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         layout.addWidget(decision_footer)
         layout.addWidget(buttons)
 
-        self.player = QMediaPlayer(self)
-        self.player.mediaStatusChanged.connect(self._media_status_changed)
-        self.player.errorOccurred.connect(self._media_error)
+        self._initialize_player()
 
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(2)
@@ -510,6 +515,7 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             (self.next, "Ctrl+Alt+Right", lambda: self._move_group(1)),
         ):
             shortcut = QShortcut(QKeySequence(key), self, callback)
+            button.setProperty("playbackShortcut", shortcut.key())
             button.setToolTip(shortcut_tooltip(button.toolTip(), shortcut.key()))
 
         self.setTabOrder(self.group_choice, self.previous)
@@ -691,12 +697,16 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             self.neither.setText("No suitable reference")
 
     def play_selected(self) -> None:
+        if self._playback_active or self._playback_kind == "reference":
+            self.stop_playback()
+            return
         group = self._current_group()
         candidate_id = self.candidate_choice.currentData()
         if group is None or not isinstance(candidate_id, str):
             return
         self.stop_playback()
         self._playback_active = True
+        set_playback_button_state(self.play, "preparing", label="source reference")
         self.status.setText("Loading and verifying copied reference audio...")
         self._playback_runner.start(
             self.audio_preparer,
@@ -727,8 +737,11 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             )
             self._update_actions()
             return
+        set_playback_button_state(self.play, "preparing", label="source reference")
+        self._playback_kind = "reference"
         playback = self.player.play_bytes(audio.payload, f"memory:{audio.path.name}")
         if playback is None:
+            self._playback_kind = None
             self.status.setText("BLOCKED: unable to open immutable audio buffer")
             self._update_actions()
             return
@@ -752,6 +765,9 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self._update_actions()
 
     def stop_playback(self) -> None:
+        if hasattr(self, "_playback_runner"):
+            self._playback_runner.cancel()
+        self._playback_active = False
         self.player.stop() if hasattr(self, "player") else None
         if hasattr(self, "player"):
             self.player.setSource(QUrl())
@@ -762,6 +778,12 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             self._update_actions()
 
     def generate_selected_preview(self) -> None:
+        if self._preview_active:
+            self.cancel_preview_generation()
+            return
+        if self._playback_kind == "generated":
+            self.stop_playback()
+            return
         group = self._current_group()
         candidate_id = self.candidate_choice.currentData()
         text = self.preview_text_choice.currentData()
@@ -774,6 +796,10 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
             return
         self.stop_playback()
         self._preview_active = True
+        self._preview_play_button = self.generate_preview
+        set_playback_button_state(
+            self.generate_preview, "preparing", label="generated sample"
+        )
         self.status.setText(
             "GENERATING: loading the workspace model if needed and rendering one "
             "deterministic sample in the background. No authoring state is written."
@@ -827,16 +853,25 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         self._play_generated_preview(preview)
 
     def replay_generated_preview(self) -> None:
+        if self._playback_kind == "generated":
+            self.stop_playback()
+            return
+        self._preview_play_button = self.replay_preview
         preview = self._preview_result
         if preview is not None and self._preview_matches_selection():
             self._play_generated_preview(preview)
 
     def _play_generated_preview(self, preview: FailureReferencePreview) -> None:
         self.stop_playback()
+        set_playback_button_state(
+            self._preview_play_button, "preparing", label="generated sample"
+        )
+        self._playback_kind = "generated"
         playback = self.player.play_bytes(
             preview.payload, "memory:generated-preview.wav"
         )
         if playback is None:
+            self._playback_kind = None
             self.status.setText("BLOCKED: unable to open immutable generated preview")
             self._update_actions()
             return
@@ -925,6 +960,22 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
                 (self.group_choice.currentIndex() + offset) % count
             )
 
+    def _playback_state_changed(self, state: object) -> None:
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playback_target = None
+            self._playback_buffer = None
+            self._playback_kind = None
+            self._update_actions()
+            return
+        if state != QMediaPlayer.PlaybackState.PlayingState:
+            return
+        if self._playback_kind == "reference":
+            set_playback_button_state(self.play, "playing", label="source reference")
+        elif self._playback_kind == "generated":
+            set_playback_button_state(
+                self._preview_play_button, "playing", label="generated sample"
+            )
+
     def _media_status_changed(self, status: object) -> None:
         if (
             status == QMediaPlayer.MediaStatus.EndOfMedia
@@ -965,9 +1016,18 @@ class FailureReferenceAuditDialog(CloseGuardedDialog):
         has_group = self._current_group() is not None
         has_candidate = has_group and self.candidate_choice.currentIndex() >= 0
         all_heard = has_group and self._all_current_candidates_heard()
-        self.play.setEnabled(has_candidate and not self._playback_active)
-        self.stop.setEnabled(self._playback_buffer is not None)
-        self.generate_preview.setEnabled(has_candidate and not self._preview_active)
+        if not self._playback_active and self._playback_kind != "reference":
+            set_playback_button_state(self.play, "idle", label="source reference")
+        if not self._preview_active and self._playback_kind != "generated":
+            set_playback_button_state(
+                self.generate_preview, "idle", label="generated sample"
+            )
+            set_playback_button_state(
+                self.replay_preview, "idle", label="generated sample"
+            )
+        self.play.setEnabled(has_candidate)
+        self.stop.setEnabled(self._playback_buffer is not None or self._playback_active)
+        self.generate_preview.setEnabled(has_candidate)
         self.replay_preview.setEnabled(
             self._preview_matches_selection() and not self._preview_active
         )

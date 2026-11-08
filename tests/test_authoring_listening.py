@@ -1802,6 +1802,28 @@ class AuthoringListeningDialogTest(unittest.TestCase):
                 self.assertTrue(dialog.decision_notice.isHidden())
                 dialog.deleteLater()
 
+    def test_primary_buttons_track_audio_start_stop_and_retry(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory))
+            dialog.play_a.click()
+            self.assertEqual(dialog.play_a.property("playbackState"), "preparing")
+            dialog.playback.started = True
+            dialog.poll_playback()
+            self.assertEqual(dialog.play_a.property("playbackState"), "playing")
+            self.assertEqual(dialog.play_a.text(), "A")
+            dialog.play_a.click()
+            self.assertEqual(dialog.play_a.property("playbackState"), "idle")
+            self.assertFalse(dialog.completed_sides)
+            with patch.object(
+                dialog.playback, "play", side_effect=RuntimeError("device unavailable")
+            ):
+                dialog.play_b.click()
+            self.assertEqual(dialog.play_b.property("playbackState"), "idle")
+            self.assertIn("device unavailable", dialog.status.text())
+            dialog.play_b.click()
+            self.assertEqual(dialog.play_b.property("playbackState"), "preparing")
+            dialog.close()
+
     def test_normal_playback_has_one_state_and_one_action_hint(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))

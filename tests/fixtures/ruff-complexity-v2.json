@@ -1070,7 +1070,7 @@
       "path": "vntts/authoring/failure_reference_audit_ui.py",
       "scope": "FailureReferenceAuditDialog.__init__",
       "count": 1,
-      "maximum": 210
+      "maximum": 209
     },
     {
       "code": "PLR0915",
@@ -1084,7 +1084,7 @@
       "path": "vntts/authoring/legacy_reason_review_ui.py",
       "scope": "LegacyReasonReviewDialog.__init__",
       "count": 1,
-      "maximum": 72
+      "maximum": 71
     },
     {
       "code": "PLR0915",
@@ -1126,7 +1126,7 @@
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
       "count": 1,
-      "maximum": 106
+      "maximum": 104
     },
     {
       "code": "PLR0915",

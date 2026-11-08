@@ -61,6 +61,7 @@ from vntts.game_content_importer import (
 from vntts.game_narrator import load_original_reference, narrator_preview_plan
 from vntts.generation_database import state_path as generation_state_path
 from vntts.person_link_suggestions import PersonLinkSuggestion
+from vntts.playback_button import set_playback_button_state
 from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
     _preview_service_factory,
@@ -417,6 +418,7 @@ class OfflineAudioPreparationDialog(QDialog):
             preview_root if isinstance(preview_root, (str, Path)) else None
         )
         self._narrator_player = preview_player
+        self._narrator_player_connected = False
         self._summary_preview_target: str | None = None
         self.summary_voice_preview = StoryVoicePreview(
             self.audition_service,
@@ -985,6 +987,11 @@ class OfflineAudioPreparationDialog(QDialog):
             self.voice_confirmation_status.setText
         )
         self.summary_voice_preview.activeChanged.connect(self._summary_preview_changed)
+        self.summary_voice_preview.stateChanged.connect(
+            lambda _state: self._summary_preview_changed(
+                self.summary_voice_preview.active
+            )
+        )
         self._layout_voice_confirmation()
 
     def _build_preparation_details(self) -> None:
@@ -1014,12 +1021,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
         self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
         self.play_narrator_reference = QPushButton("Reference")
-        set_action_icon(self.play_narrator_reference, "play")
-        self.play_narrator_reference.setAccessibleName(
-            "Listen to original game reference"
-        )
-        self.play_narrator_reference.setToolTip(
-            "Play the original game recording, not a generated preview."
+        set_playback_button_state(
+            self.play_narrator_reference, "idle", label="original game reference"
         )
         self.play_narrator_reference.clicked.connect(self._play_narrator_reference)
         narrator_choice_row = QHBoxLayout()
@@ -1444,8 +1447,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if not isinstance(character, str) or not character:
             return
         self._stop_summary_preview()
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         if self.game_narrator_chooser is not None:
             settings = self.game_narrator_chooser(
                 self.settings, self, character=character
@@ -1472,30 +1474,26 @@ class OfflineAudioPreparationDialog(QDialog):
             )
 
     def _summary_preview_changed(self, active: bool) -> None:
-        narrator_active = active and self._summary_preview_target == "narrator"
-        self.play_summary_narrator.setText("Stop" if narrator_active else "Play")
-        self.play_summary_narrator.setAccessibleName(
-            "Stop narrator preview" if narrator_active else "Play narrator preview"
+        state = self.summary_voice_preview.state if active else "idle"
+        unavailable = (
+            self.play_summary_narrator.toolTip()
+            if not self.play_summary_narrator.isEnabled()
+            else None
+        )
+        set_playback_button_state(
+            self.play_summary_narrator,
+            state if self._summary_preview_target == "narrator" else "idle",
+            label="narrator preview",
         )
         self.play_summary_narrator.setAccessibleDescription("")
-        if self.play_summary_narrator.isEnabled():
-            self.play_summary_narrator.setToolTip(
-                "Stop the narrator preview."
-                if narrator_active
-                else "Play the narrator preview."
-            )
-        set_action_icon(
-            self.play_summary_narrator, "square" if narrator_active else "play"
-        )
+        if unavailable is not None:
+            self.play_summary_narrator.setToolTip(unavailable)
         for group_id, button in self._summary_preview_rows.items():
-            playing = active and group_id == self._summary_preview_target
-            action = "Stop" if playing else "Play"
-            button.setText(action)
-            button.setAccessibleName(
-                f"{action} voice for {button.property('voice_role')}"
+            set_playback_button_state(
+                button,
+                state if group_id == self._summary_preview_target else "idle",
+                label=f"voice for {button.property('voice_role')}",
             )
-            button.setToolTip(f"{action} this role's assigned voice preview.")
-            set_action_icon(button, "square" if playing else "play")
             button.setAccessibleDescription("")
 
     def _summary_preview_status_changed(self, message: str) -> None:
@@ -1556,8 +1554,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._stop_summary_preview()
         self.voice_confirmation_status.clear()
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         self._summary_preview_target = target
         try:
             if target == "narrator":
@@ -1829,8 +1826,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _return_to_story_selection(self) -> None:
         if self.has_pending_work():
             return
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         self._awaiting_voice_confirmation = False
         self._voice_plan = None
         self._generation_configuration = None
@@ -2500,9 +2496,7 @@ class OfflineAudioPreparationDialog(QDialog):
         button.setObjectName("voice_preview_button")
         button.setProperty("voice_group_id", group_id)
         button.setProperty("voice_role", role)
-        button.setAccessibleName(f"Play voice for {role}")
-        button.setToolTip("Play this role's assigned voice preview.")
-        set_action_icon(button, "play")
+        set_playback_button_state(button, "idle", label=f"voice for {role}")
         button.clicked.connect(lambda: self._play_voice_route(item, group_id))
         layout.addWidget(button)
         self._summary_preview_rows[group_id] = button
@@ -2532,8 +2526,7 @@ class OfflineAudioPreparationDialog(QDialog):
             if can_preview
             else "Choose a supported narrator reference or Pocket built-in voice in Voices."
         )
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         self.play_narrator_reference.setEnabled(
             isinstance(source_id, str) and source_id.startswith("character:")
         )
@@ -2611,6 +2604,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _play_narrator_reference(self) -> None:
+        if self.play_narrator_reference.property("playbackState") != "idle":
+            self._stop_narrator_reference()
+            return
         self._stop_summary_preview()
         source_id = self.narrator_choice.currentData()
         if not (
@@ -2623,36 +2619,59 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Choose an imported narrator voice before listening."
             )
             return
+        set_playback_button_state(
+            self.play_narrator_reference, "preparing", label="original game reference"
+        )
         try:
             reference = load_original_reference(
                 self._voice_plan.voice_manifest, source_id
             )
             if self._narrator_player is None:
                 self._narrator_player = QtPcmPlayer(self)
+            if not self._narrator_player_connected:
+                self._narrator_player_connected = True
                 self._narrator_player.errorOccurred.connect(
-                    lambda _code, message: self.voice_confirmation_status.setText(
-                        f"Unable to play the original game voice: {message}"
-                    )
+                    lambda _code, message: self._narrator_reference_failed(message)
+                )
+                self._narrator_player.playbackStateChanged.connect(
+                    self._narrator_reference_changed
                 )
             self._narrator_player.stop()
             clip = self._narrator_player.play_bytes(
                 reference.payload, source=str(reference.path)
             )
             if clip is None:
+                self._stop_narrator_reference()
                 return
-            self.voice_confirmation_status.setText(
-                f"Playing {reference.character}'s {reference.duration_seconds:.1f} s "
-                "original reference."
-            )
         except Exception as error:
             logging.getLogger(__name__).exception("Unable to play original game voice")
+            self._narrator_reference_failed(str(error))
+
+    def _narrator_reference_changed(self, state: object) -> None:
+        current = self.play_narrator_reference.property("playbackState")
+        if current == "preparing" and getattr(state, "name", "") == "PlayingState":
+            set_playback_button_state(
+                self.play_narrator_reference, "playing", label="original game reference"
+            )
+        elif current == "playing" and getattr(state, "name", "") == "StoppedState":
+            self._stop_narrator_reference()
+
+    def _stop_narrator_reference(self) -> None:
+        set_playback_button_state(
+            self.play_narrator_reference, "idle", label="original game reference"
+        )
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+
+    def _narrator_reference_failed(self, message: str) -> None:
+        if self.play_narrator_reference.property("playbackState") != "idle":
+            self._stop_narrator_reference()
             self.voice_confirmation_status.setText(
-                f"Unable to play the original game voice: {error}"
+                f"Unable to play the original game voice: {message}"
             )
 
     def _confirm_voice_plan(self) -> None:
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         source_id = self.narrator_choice.currentData()
         current = pregeneration_narrator_source_id(
             resolve_pregeneration_settings(self.settings),
@@ -5519,8 +5538,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _start_generation(self) -> None:
         self.step.setText("Step 3 of 4 - Generate and check audio")
         self.summary_voice_preview.close()
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         self.generating = True
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel generation")
@@ -5893,16 +5911,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovery_runner.cancel()
         self.publication_runner.cancel()
         self.progress_timer.stop()
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         self.audition_service.close()
         super().closeEvent(event)
 
     def done(self, result: int) -> None:
         self.failures_panel.stop()
         self.summary_voice_preview.close()
-        if self._narrator_player is not None:
-            self._narrator_player.stop()
+        self._stop_narrator_reference()
         if self.has_pending_work():
             self._cancel_or_reject()
             return

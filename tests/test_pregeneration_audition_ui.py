@@ -395,6 +395,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             None,
         ):
             panel._set_playing_source(source)
+            if source is not None:
+                active = dict(controls)[source]
+                self.assertEqual(active.property("playbackState"), "preparing")
+                panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
             for target, button in controls:
                 with self.subTest(source=source, target=target):
                     expected = action_icon("square" if source == target else "play")
@@ -402,7 +406,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                         button.icon().pixmap(24).toImage(),
                         expected.pixmap(24).toImage(),
                     )
-            with patch("vntts.pregeneration_audition_ui.set_action_icon") as render:
+            with patch("vntts.playback_button.set_action_icon") as render:
                 panel._set_playing_source(source)
                 render.assert_not_called()
 
@@ -427,7 +431,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel.a_play.click()
                 if not cached:
                     player.play_bytes.assert_not_called()
-                    self.assertEqual(panel.a_play.text(), "Preparing...")
+                    self.assertEqual(
+                        panel.a_play.property("playbackState"), "preparing"
+                    )
                     self.assertTrue(panel.status.isHidden())
                     pool.run_next()
                     self.application.processEvents()
@@ -473,13 +479,17 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 with self.subTest(current_voice=current_voice):
                     button.click()
                     self.application.processEvents()
-                    self.assertEqual(button.text(), "Preparing...")
+                    self.assertEqual(button.text(), "Preview")
+                    self.assertEqual(button.property("playbackState"), "preparing")
                     self.assertEqual(
                         button.icon().pixmap(24).toImage(),
                         action_icon("refresh-cw").pixmap(24).toImage(),
                     )
                     self.assertEqual(
-                        button.accessibleDescription(), "Preparing preview audio"
+                        button.accessibleName(),
+                        "Preparing current voice preview"
+                        if current_voice
+                        else "Preparing voice preview",
                     )
                     self.assertTrue(panel.status.isHidden())
                     self.assertTrue(panel.current_status.isHidden())
@@ -487,12 +497,41 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.assertEqual([c.geometry() for c in controls], geometry)
                     self.finish_task(pool.tasks.pop())
                     self.assertEqual(button.text(), "Preview")
-                    panel._stop_playback()
+                    self.assertEqual(button.property("playbackState"), "preparing")
+                    panel._playback_state_changed(
+                        QtPcmPlayer.PlaybackState.PlayingState
+                    )
+                    self.assertEqual(button.property("playbackState"), "playing")
+                    self.assertEqual(button.property("vnttsActionIcon"), "square")
+                    panel.stop_playback()
                     self.application.processEvents()
                     self.assertTrue(panel.status.isHidden())
                     self.assertTrue(panel.current_status.isHidden())
                     self.assertEqual(panel.size(), size)
                     self.assertEqual([c.geometry() for c in controls], geometry)
+
+    def test_cancel_while_waiting_for_playback_owner_ignores_late_callback(self):
+        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(panel.shutdown)
+        callbacks = []
+        panel.before_playback = callbacks.append
+        action = Mock()
+        panel._request_playback(action, source="preview")
+        self.assertEqual(panel.a_play.property("playbackState"), "preparing")
+        panel.stop_playback()
+        callbacks.pop()()
+        action.assert_not_called()
+        self.assertEqual(panel.a_play.property("playbackState"), "idle")
+
+    def test_owner_exception_restores_play_and_keeps_visible_error(self):
+        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
+        self.addCleanup(panel.deleteLater)
+        self.addCleanup(panel.shutdown)
+        panel.before_playback = Mock(side_effect=RuntimeError("owner unavailable"))
+        panel._request_playback(Mock(), source="preview")
+        self.assertEqual(panel.a_play.property("playbackState"), "idle")
+        self.assertIn("owner unavailable", panel.status.toPlainText())
 
     def test_reference_selection_then_play_uses_ready_audio_without_saving(self):
         with TemporaryDirectory() as directory:
@@ -516,7 +555,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(player.play_bytes.call_count, 1)
             panel.a_play.click()
             self.assertEqual(player.play_bytes.call_count, 2)
-            panel._stop_playback()
+            panel.stop_playback()
             self.assertEqual(panel.a_play.text(), "Preview")
             service.generate.assert_not_called()
             decisions.remember_many.assert_not_called()
@@ -662,7 +701,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.play_a()
             superseded = panel._queued_preview_request
             panel._refresh_runtime()
-            self.assertEqual(panel.a_play.text(), "Preparing...")
+            self.assertEqual(panel.a_play.property("playbackState"), "preparing")
             self.assertTrue(panel.status.isHidden())
             select_reference(panel, 0)
             panel.play_a()

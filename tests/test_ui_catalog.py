@@ -115,7 +115,8 @@ class UiCatalogTest(unittest.TestCase):
                         assert "deferred" in dialog.status.text().lower()
                     if state == "preparing":
                         assert dialog._playback_prepare_active
-                        assert not dialog.replay.isEnabled()
+                        assert dialog.replay.isEnabled()
+                        assert dialog.replay.property("playbackState") == "preparing"
                     if state == "playback":
                         assert dialog.stop.isEnabled() and dialog._playback_target is not None
                     if state in {"stopped", "audio-failure"}:

@@ -46,6 +46,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
         )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
+        media_player.PlaybackState = QMediaPlayer.PlaybackState
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -70,6 +71,26 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
         self.finish_audio(dialog, "reference")
         for sample in dialog.current["generated_samples"]:
             self.finish_audio(dialog, sample["queue_id"])
+
+    def test_primary_button_waits_for_audio_start_and_stops_without_credit(self):
+        with TemporaryDirectory() as directory:
+            dialog = SourceReferenceQualityDialog(
+                write_quality_session(Path(directory))
+            )
+            button = dialog.play_reference
+            caption = button.text()
+            button.click()
+            self.assertEqual(button.property("playbackState"), "preparing")
+            self.wait_for(lambda: not dialog.playback_runner.active)
+            self.assertEqual(button.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(button.property("playbackState"), "playing")
+            self.assertEqual(button.text(), caption)
+            button.click()
+            self.assertEqual(button.property("playbackState"), "idle")
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertFalse(dialog.completed_audio)
+            dialog.close()
 
     def test_decisions_require_exact_completed_audio_evidence(self):
         with TemporaryDirectory() as directory:

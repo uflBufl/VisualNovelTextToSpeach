@@ -37,6 +37,7 @@ from vntts.authoring.terminal_conflict_review import (
     load_terminal_conflict_review_session,
     record_terminal_conflict_decision,
 )
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
@@ -167,7 +168,9 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         play_pair = QHBoxLayout()
         for index in range(2):
             button = QPushButton(chr(65 + index))
-            set_action_icon(button, "play")
+            set_playback_button_state(
+                button, "idle", label=f"candidate {chr(65 + index)}"
+            )
             button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
             button.setAccessibleDescription(
                 "Play this checksum-distinct blind candidate through to the end"
@@ -341,10 +344,14 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         self.setTabOrder(self.choose_buttons[1], self.neither)
         self.setTabOrder(self.neither, self.close_button)
 
+        self._initialize_player()
+        self._load_next()
+
+    def _initialize_player(self) -> None:
         self.player = _create_audio_player(self)
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.errorOccurred.connect(self._playback_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
-        self._load_next()
 
     def _configure_runners(self, thread_pool: QThreadPool | None) -> None:
         self.load_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -511,7 +518,14 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         if self._active or self._current is None:
             return
         candidate = self._display_candidates[index]
+        if self.play_buttons[index].property("playbackState") != "idle":
+            self._stop()
+            self._set_actions(True)
+            return
         self._stop()
+        set_playback_button_state(
+            self.play_buttons[index], "preparing", label=f"candidate {chr(65 + index)}"
+        )
         self.status.setText(
             f"Preparing checksum-verified candidate {chr(65 + index)} in background..."
         )
@@ -541,15 +555,18 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
 
     def _playback_prepared(self, result: object, error: Exception | None) -> None:
         if error is not None:
+            self._reset_playback_buttons()
             self.status.setText(f"PLAYBACK BLOCKED: {error}")
             self._set_actions(True)
             return
         if not _is_candidate_payload(result):
+            self._reset_playback_buttons()
             self.status.setText("PLAYBACK BLOCKED: candidate payload is malformed")
             self._set_actions(True)
             return
         case_id, candidate_id, expected_sha256, index, payload = result
         if self._current is None or self._current["case_id"] != case_id:
+            self._reset_playback_buttons()
             self.status.setText("PLAYBACK CANCELLED: conflict selection changed")
             self._set_actions(True)
             return
@@ -558,6 +575,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             candidate["candidate_id"] != candidate_id
             or candidate["audio_sha256"] != expected_sha256
         ):
+            self._reset_playback_buttons()
             self.status.setText("PLAYBACK CANCELLED: candidate selection changed")
             self._set_actions(True)
             return
@@ -565,6 +583,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             payload, f"memory:terminal-candidate-{index + 1}.wav"
         )
         if playback is None:
+            self._reset_playback_buttons()
             self.status.setText("PLAYBACK BLOCKED: immutable audio buffer failed")
             self._set_actions(True)
             return
@@ -574,7 +593,26 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             f"Playing candidate {chr(65 + index)}. It counts only after audio ends."
         )
 
+    def _reset_playback_buttons(self) -> None:
+        for index, button in enumerate(self.play_buttons):
+            set_playback_button_state(
+                button, "idle", label=f"candidate {chr(65 + index)}"
+            )
+
+    def _playback_state_changed(self, state: object) -> None:
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playing_candidate = None
+            self._reset_playback_buttons()
+            self.stop.setEnabled(False)
+        elif state == QMediaPlayer.PlaybackState.PlayingState:
+            for index, button in enumerate(self.play_buttons):
+                if button.property("playbackState") == "preparing":
+                    set_playback_button_state(
+                        button, "playing", label=f"candidate {chr(65 + index)}"
+                    )
+
     def _stop(self) -> None:
+        self._reset_playback_buttons()
         if hasattr(self, "playback_runner"):
             self.playback_runner.cancel()
         self.player.stop()
@@ -634,12 +672,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             self.close()
 
     def _set_actions(self, enabled: bool) -> None:
-        enabled = bool(
-            enabled
-            and self._current is not None
-            and not self._active
-            and not self.playback_runner.active
-        )
+        enabled = bool(enabled and self._current is not None and not self._active)
         for button in self.play_buttons:
             button.setEnabled(enabled)
         self.stop.setEnabled(
@@ -692,6 +725,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
             return
         self._heard.add(self._playing_candidate)
         self._playing_candidate = None
+        self._reset_playback_buttons()
         self.stop.setEnabled(False)
         self.evidence.setText(
             f"Heard {len(self._heard)}/2 candidates. Replay remains available."
@@ -699,6 +733,7 @@ class TerminalConflictReviewDialog(CloseGuardedDialog):
         self._update_decision_buttons()
 
     def _playback_error(self, _error: object, error_string: str) -> None:
+        self._reset_playback_buttons()
         self._playing_candidate = None
         self.stop.setEnabled(False)
         self.status.setText(f"PLAYBACK FAILED: {error_string}")

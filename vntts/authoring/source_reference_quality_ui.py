@@ -41,6 +41,7 @@ from vntts.authoring.source_reference_quality_records import (
     record_source_reference_quality_decision,
 )
 from vntts.path_safety import read_regular_bytes
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
@@ -209,6 +210,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.completed_audio: set[str] = set()
         self._audio_buffer: object | None = None
         self._playing_token: str | None = None
+        self._preparing_token: str | None = None
 
     def _build_identity_widgets(self) -> None:
         self.setWindowTitle("Source-reference quality review")
@@ -228,7 +230,9 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.reference_details.setWordWrap(True)
         self.reference_details.setAccessibleName("Original source reference details")
         self.play_reference = QPushButton("Original")
-        set_action_icon(self.play_reference, "play")
+        set_playback_button_state(
+            self.play_reference, "idle", label="original reference"
+        )
         self.play_reference.setAccessibleName("Play original source reference")
         self.play_reference.setAccessibleDescription(
             "Play the checksum-verified original until its end"
@@ -259,7 +263,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         )
         self.generated_details.setAccessibleName("Selected generated sample details")
         self.play_generated = QPushButton("Generated")
-        set_action_icon(self.play_generated, "play")
+        set_playback_button_state(self.play_generated, "idle", label="generated sample")
         self.play_generated.setAccessibleName("Play selected generated sample")
         self.play_generated.setAccessibleDescription(
             "Play the selected checksum-verified generated sample until its end"
@@ -733,7 +737,17 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         current = self.current
         if current is None:
             return
+        if self._playing_token == token or self._preparing_token == token:
+            self._stop()
+            return
         self._stop()
+        self._preparing_token = token
+        button = self.play_reference if token == "reference" else self.play_generated
+        set_playback_button_state(
+            button,
+            "preparing",
+            label="original reference" if token == "reference" else "generated sample",
+        )
         self.status.setText("Preparing checksum-verified audio in background...")
         self.playback_runner.start(
             self._load_audio_payload,
@@ -762,12 +776,16 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self, result: PlaybackPayload | None, error: Exception | None
     ) -> None:
         if error is not None:
+            self._reset_playback_buttons()
+            self._playing_token = None
             self.status.setText(f"Playback blocked: {error}")
             self.stop.setEnabled(False)
             return
         assert result is not None
         variant_id, token, digest, payload = result
         if self.current is None or self.current["variant_id"] != variant_id:
+            self._reset_playback_buttons()
+            self._playing_token = None
             self.status.setText("Playback cancelled: review card changed")
             return
         selected: _AudioRecord | None
@@ -789,10 +807,16 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             or selected.get("audio_sha256") != digest
             or (token != "reference" and selected_queue_id != token)
         ):
+            self._reset_playback_buttons()
+            self._playing_token = None
             self.status.setText("Playback cancelled: audio selection changed")
             return
+        self._preparing_token = None
+        self._playing_token = token
         self._audio_buffer = self.player.play_bytes(payload, "buffer:review.wav")
         if self._audio_buffer is None:
+            self._reset_playback_buttons()
+            self._playing_token = None
             self.status.setText("Playback blocked: audio buffer could not be opened")
             return
         self._playing_token = token
@@ -800,10 +824,26 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
         self.status.setText("Starting checksum-verified audio.")
 
     def _playback_state_changed(self, state: object) -> None:
-        if (
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._playing_token = None
+            self._reset_playback_buttons()
+            self.stop.setEnabled(False)
+        elif (
             state == QMediaPlayer.PlaybackState.PlayingState
             and self._playing_token is not None
         ):
+            button = (
+                self.play_reference
+                if self._playing_token == "reference"
+                else self.play_generated
+            )
+            set_playback_button_state(
+                button,
+                "playing",
+                label="original reference"
+                if self._playing_token == "reference"
+                else "generated sample",
+            )
             self.status.setText("Playing checksum-verified audio.")
 
     def _media_status_changed(self, status: object) -> None:
@@ -823,10 +863,20 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
                 f"Listened: original {original}; generated "
                 f"{generated_finished}/{len(generated_tokens)}."
             )
+            self._playing_token = None
+            self._reset_playback_buttons()
             self.stop.setEnabled(False)
             self._update_decision_enabled()
 
+    def _reset_playback_buttons(self) -> None:
+        self._preparing_token = None
+        set_playback_button_state(
+            self.play_reference, "idle", label="original reference"
+        )
+        set_playback_button_state(self.play_generated, "idle", label="generated sample")
+
     def _playback_error(self, _error: object, message: str) -> None:
+        self._reset_playback_buttons()
         self._playing_token = None
         self.stop.setEnabled(False)
         self.status.setText(f"Playback failed: {message or self.player.errorString()}")
@@ -838,6 +888,7 @@ class SourceReferenceQualityDialog(CloseGuardedDialog):
             self.player.stop()
             self.player.setSource(QUrl())
         self._playing_token = None
+        self._reset_playback_buttons()
         self.stop.setEnabled(False)
         self._audio_buffer = None
 

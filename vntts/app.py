@@ -77,6 +77,7 @@ from shiboken6 import isValid
 from vntts.action_icons import set_action_icon
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
+from vntts.audio_output import PcmAdmission, pcm_admission_context
 from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
@@ -132,6 +133,7 @@ from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.playback_observer import observe_playback_start
 from vntts.player_session import PlayerSessionOwner
 from vntts.pregeneration_activation import (
     OfflinePackActivationResult,
@@ -306,6 +308,7 @@ class AppSignals(QObject):
     error_reported = Signal(str)
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
+    onboarding_playback_started = Signal(int)
     onboarding_capture_requested = Signal(object)
     onboarding_capture_released = Signal(object)
     diagnostics_changed = Signal(object)
@@ -2051,6 +2054,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation: Callable[[], object] | None = None
+        self._live_stop_on_failure: Callable[[], None] | None = None
         self._live_stop_generation: int | None = None
         self._modal_stop_pending = False
         self._live_stop_wait_for_speech = True
@@ -2318,6 +2322,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._update_auto_advance_action()
 
     def _connect_application_signals(self) -> None:
+        self.signals.onboarding_playback_started.connect(
+            self._onboarding_playback_started
+        )
         self.signals.onboarding_capture_requested.connect(
             self._hide_onboarding_capture_windows
         )
@@ -3336,6 +3343,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return False
 
     def emergency_stop(self) -> None:
+        self._cancel_live_stop_continuation()
         self._start_live_after_initial_start = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
@@ -3350,6 +3358,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.speech_paused_changed.emit(False)
 
     def _request_stop_reading(self) -> None:
+        self._cancel_live_stop_continuation()
         self._start_live_after_initial_start = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
@@ -3913,13 +3922,31 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         model_name: str | None,
         cancel_event: Event,
     ) -> tuple[bool, str]:
-        return self.session_owner.run(
-            generation,
-            lambda _cancellation: self._run_onboarding_check(
-                settings, model_name, cancel_event, generation
-            ),
-            (False, "OCR-to-speech test cancelled."),
+        token = pcm_admission_context.set(
+            PcmAdmission(lambda: not cancel_event.is_set())
         )
+        try:
+            with observe_playback_start(
+                lambda: self.signals.onboarding_playback_started.emit(generation)
+            ):
+                return self.session_owner.run(
+                    generation,
+                    lambda _cancellation: self._run_onboarding_check(
+                        settings, model_name, cancel_event, generation
+                    ),
+                    (False, "OCR-to-speech test cancelled."),
+                )
+        finally:
+            pcm_admission_context.reset(token)
+
+    def _onboarding_playback_started(self, generation: int) -> None:
+        if (
+            generation == self._onboarding_test_generation
+            and self._lifecycle_is_current(generation)
+            and not self.onboarding_cancel_event.is_set()
+            and self.onboarding_wizard is not None
+        ):
+            self.onboarding_wizard.test_page.set_playing(True)
 
     @contextmanager
     def _onboarding_capture(self, generation: int, cancelled: Event) -> Iterator[None]:
@@ -4118,11 +4145,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or self._quit_requested
             or self._controller_busy
         ):
+            dialog.failures_panel.stop()
             return
         if self._live_scope_generation is not None:
             self._cancel_live_scope()
         if self._needs_modal_stop():
-            self._stop_live_then(play, "Stopping reading before diagnostic audio...")
+            self._stop_live_then(
+                play,
+                "Stopping reading before diagnostic audio...",
+                on_failure=lambda: (
+                    dialog.failures_panel.stop()
+                    if isValid(dialog.failures_panel)
+                    else None
+                ),
+            )
         else:
             play()
 
@@ -4459,16 +4495,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         status: str,
         *,
         wait_for_speech: bool = True,
+        on_failure: Callable[[], None] | None = None,
     ) -> bool:
         if self._shutting_down:
+            if on_failure is not None:
+                on_failure()
             return False
         if self.live_stop_runner.active:
             self.set_status("Live capture is already stopping; please wait")
+            if on_failure is not None:
+                on_failure()
             return False
+        self._cancel_live_stop_continuation()
         reader = self.controller.live_reader
         self._lifecycle_generation = self.session_owner.begin()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = continuation
+        self._live_stop_on_failure = on_failure
         self._live_stop_wait_for_speech = wait_for_speech
         self._modal_stop_pending = self._modal_stop_pending or wait_for_speech
         self._set_modal_launchers_enabled(False)
@@ -4503,23 +4546,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_generation = None
         continuation = self._live_stop_continuation
         self._live_stop_continuation = None
+        on_failure = self._live_stop_on_failure
+        self._live_stop_on_failure = None
         if not self._shutting_down:
             self._apply_controller_action_state()
         if not self._lifecycle_is_current(generation):
-            self._finish_narrator_playback_stop(False)
+            self._live_stop_failed(continuation, None, on_failure)
             return
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_calibration_pending(False)
         self._set_modal_launchers_enabled(self._controller_ready)
         if error is not None:
-            message = f"Unable to stop live capture: {error}"
-            self.set_status(message)
-            if continuation == self.calibrate and self.diagnostics_dialog is not None:
-                self.diagnostics_dialog.set_warning(message)
-            self._finish_narrator_playback_stop(False)
+            self._live_stop_failed(continuation, error, on_failure)
             return
         if result is not True:
-            self._finish_narrator_playback_stop(False)
+            self._live_stop_failed(continuation, None, on_failure)
             return
         if self._live_stop_wait_for_speech:
             self._modal_stop_pending = False
@@ -4528,15 +4569,50 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._finish_narrator_playback_stop(True)
             return
         if continuation is not None:
+            self._live_stop_continuation = continuation
+            self._live_stop_on_failure = on_failure
             QTimer.singleShot(
                 0,
                 self,
-                lambda: (
-                    continuation() if self._lifecycle_is_current(generation) else None
-                ),
+                lambda: self._run_live_stop_continuation(generation, continuation),
             )
         else:
             self.set_status("Reading and speech stopped")
+
+    def _run_live_stop_continuation(
+        self, generation: int | None, continuation: Callable[[], object]
+    ) -> None:
+        if self._live_stop_continuation is not continuation:
+            return
+        on_failure = self._live_stop_on_failure
+        self._live_stop_on_failure = None
+        self._live_stop_continuation = None
+        if self._lifecycle_is_current(generation):
+            continuation()
+        elif on_failure is not None:
+            on_failure()
+
+    def _live_stop_failed(
+        self,
+        continuation: Callable[[], object] | None,
+        error: Exception | None,
+        on_failure: Callable[[], None] | None,
+    ) -> None:
+        if error is not None:
+            message = f"Unable to stop live capture: {error}"
+            self.set_status(message)
+            if continuation == self.calibrate and self.diagnostics_dialog is not None:
+                self.diagnostics_dialog.set_warning(message)
+        if on_failure is not None:
+            on_failure()
+        self._finish_narrator_playback_stop(False)
+
+    def _cancel_live_stop_continuation(self) -> None:
+        on_failure = self._live_stop_on_failure
+        self._live_stop_on_failure = None
+        self._live_stop_continuation = None
+        if on_failure is not None:
+            on_failure()
 
     def open_corrections(self) -> None:
         profile_id = self.settings.active_profile_id
@@ -4695,6 +4771,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or self._quit_requested
             or self._controller_busy
         ):
+            dialog.voice_panel.stop_playback()
             return
         if self._narrator_playback_pending is not None:
             self._narrator_playback_pending = dialog, play
@@ -4710,6 +4787,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status(
                 "Reading is already stopping; retry the preview when ready."
             )
+            dialog.voice_panel.stop_playback()
             return
         self._resume_live_after_narrator |= self.controller.is_live_running is True
         self._narrator_playback_pending = dialog, play
@@ -4717,6 +4795,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             lambda: None, "Pausing reading before voice playback..."
         ):
             self._narrator_playback_pending = None
+            dialog.voice_panel.stop_playback()
 
     def _finish_narrator_playback_stop(self, stopped: bool) -> None:
         pending = self._narrator_playback_pending
@@ -4727,13 +4806,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._narrator_result_after_stop = None
         dialog, play = pending
         if dialog is not self.narrator_dialog:
+            dialog.voice_panel.stop_playback()
             return
         if not stopped:
             self._resume_live_after_narrator = False
         if result is not None:
+            dialog.voice_panel.stop_playback()
             self._narrator_finished(result)
         elif stopped and dialog._closing is not True:
             play()
+        else:
+            dialog.voice_panel.stop_playback()
 
     def _open_preparation_narrator(
         self,
@@ -5799,6 +5882,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.settings_button.setEnabled(available)
 
     def _begin_controller_lifecycle(self, cancellation: Event | None = None) -> int:
+        self._cancel_live_stop_continuation()
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
         self._resume_live_after_narrator = False
@@ -5963,7 +6047,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _cancel_shutdown_tasks(self) -> None:
         self._controller_busy = True
-        self._live_stop_continuation = None
+        self._cancel_live_stop_continuation()
         self._live_stop_generation = None
         self.live_stop_runner.cancel()
         self._cancel_calibration()
