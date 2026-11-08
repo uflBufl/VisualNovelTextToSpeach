@@ -552,7 +552,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         with patch.object(self.dialog, "_choose_character_voice") as open_voice:
             QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
             open_voice.assert_called_once()
-        button = self.dialog._summary_preview_rows[second.group_id][0]
+        button = self.dialog._summary_preview_rows[second.group_id]
         button.setFocus()
         with patch.object(self.dialog, "_play_summary_voice") as preview:
             QTest.keyClick(button, Qt.Key.Key_Space)

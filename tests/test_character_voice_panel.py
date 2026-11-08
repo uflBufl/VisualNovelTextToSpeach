@@ -432,7 +432,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertTrue(self.panel.status.isHidden())
         self.assertEqual(self.panel.status.toPlainText(), "")
         self.assertTrue(self.panel.recommendation.isHidden())
-        self.assertEqual(self.panel.a_box.title(), "")
+        self.assertFalse(self.panel.a_box.inherits("QGroupBox"))
         self.assertNotIn("Voice:", self.panel.a_reason.text())
         self.assertNotIn("Original spoken text:", self.panel.a_reason.text())
         for row in range(self.panel.reference_model.rowCount()):
