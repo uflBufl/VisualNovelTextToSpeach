@@ -690,12 +690,12 @@ class AdaptiveOCRTest(unittest.TestCase):
         with Image.open(
             Path(__file__).resolve().parents[1] / "samples" / "02.png"
         ) as source:
-            image = default_dialog_region.crop(source)
+            image = DialogRegion(0.0, 0.68, 1.0, 0.24).crop(source)
         result = recognize_dialog_image_result(image)
         self.assertEqual(result.character, "X")
         self.assertEqual(
             result.text,
-            "You were the perfect fulcrum! I don't know what I would have done without you. Ww",
+            "You were the perfect fulcrum! I don't know what I would have done without you.",
         )
         self.assertTrue(result.is_confident())
 

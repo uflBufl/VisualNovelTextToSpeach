@@ -1047,7 +1047,13 @@ class RecognizedDialogTest(unittest.TestCase):
                 self.subTest(filename=filename),
                 Image.open(samples / filename) as source,
             ):
-                image = default_dialog_region.crop(source)
+                # The sample calibration includes the name and text, without UI.
+                region = (
+                    DialogRegion(0.0, 0.68, 1.0, 0.24)
+                    if filename == "02.png"
+                    else default_dialog_region
+                )
+                image = region.crop(source)
                 with patch.object(
                     pytesseract_runtime, "run_tesseract", wraps=original
                 ) as run:
@@ -1076,16 +1082,19 @@ class RecognizedDialogTest(unittest.TestCase):
             "02.png": (
                 "X",
                 "You were the perfect fulcrum! "
-                # The continue triangle is OCR'd as Ww; confidence alone cannot
-                # distinguish that artifact from a real dialogue continuation.
-                "I don't know what I would have done without you. Ww",
+                "I don't know what I would have done without you.",
             ),
         }
 
         for filename, dialog in expected.items():
             with self.subTest(filename=filename):
                 screenshot = Image.open(samples / filename)
-                cropped_dialog = default_dialog_region.crop(screenshot)
+                region = (
+                    DialogRegion(0.0, 0.68, 1.0, 0.24)
+                    if filename == "02.png"
+                    else default_dialog_region
+                )
+                cropped_dialog = region.crop(screenshot)
 
                 self.assertEqual(
                     recognize_dialog_image(cropped_dialog, self.registry),

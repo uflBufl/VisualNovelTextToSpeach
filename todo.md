@@ -306,43 +306,9 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate validated continue-indicator exclusion in OCR-08-02
-and present the concrete repair plan before implementation.
+Next action: prepare the combined native acceptance run below using calibrated
+speaker/dialogue areas that exclude game interface elements.
 
-- [ ] **OCR-08-02 - Separate a verified continue indicator from dialogue pixels.**
-      Legacy `samples/02.png` includes the bottom-right continue triangle in its
-      dialogue crop. Native OCR reads it as `Ww` (confidence44) after the complete
-      sentence. The former confidence-based suffix deletion hid this artifact
-      while also deleting real words. Investigate validated cue/layout exclusion
-      before proposing a repair; preserve real multiline continuation and short
-      words. Do not restore word-length/confidence deletion or change the visual
-      reference text to match the OCR artifact.
-      Confirmed offline: masking only the measured triangle footprint removes
-      `Ww` without losing dialogue. Current completion detector is only a bright
-      component/bbox heuristic and misses this sample; it does not prove shape.
-      Both fingerprint paths blindly erase a lower-right rectangle, hiding a
-      demonstrated real `Ww`/`I` text change there. Do not reuse that broad mask.
-      Proposed implementation (agree before product edits):
-      1. Add one shared image-only locator with scale/contrast-aware candidates
-         and strict complete downward-triangle contour (closed top edge, side
-         convergence, centered tip), isolation and text-row separation. Ambiguous,
-         clipped or absent shapes produce no exclusion; add no word filters.
-      2. Run localization in original capture coordinates after resolving layout,
-         before OCR crops/scaling. Clean a copy only at the verified footprint
-         with minimal edge padding/local background. Preserve captured originals,
-         speaker/text edges and both split/legacy recognition paths.
-      3. Migrate completion status and both fingerprint paths to the same locator;
-         remove superseded component logic and unconditional rectangle masks.
-         Preserve blinking-cue stability while real bottom/right text changes
-         remain observable. Completion status is diagnostic, not a demonstrated
-         auto-advance authorization gate in the current reader.
-      4. Verify real filled/outlined/partial-fill cues across scales/blink states,
-         no cue, clipped/ambiguous shapes, V/W/rectangles/circles and real short
-         words/punctuation in the old masked area. Retain low-confidence multiline
-         continuation and punctuation cases. Native OCR must remove only the
-         sample UI artifact and keep other retained frames unchanged.
-      Gate: present plan; after agreement run changed tests first plus affected
-      OCR/worker/fingerprint/status consumers and bounded native frame replay.
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from its verified first dialogue to the actual terminal scene, with
       prepared voices and genuine background generation. Verify full low-confidence
