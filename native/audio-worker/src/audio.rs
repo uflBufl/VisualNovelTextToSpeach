@@ -213,18 +213,21 @@ pub(super) unsafe extern "C" fn audio_callback(
     user: *mut c_void,
 ) -> c_int {
     let state = &*user.cast::<CallbackState>();
+    let before = state.position.load(Ordering::Relaxed);
+    let sample =
+        state
+            .timing
+            .begin_callback(time.as_ref(), frame_count as u64, before, flags as u64);
     let Some(samples) = (frame_count as usize).checked_mul(state.channels) else {
         state.failed.store(true, Ordering::Release);
+        state.timing.end_callback(sample);
         return PA_ABORT;
     };
     if output.is_null() || samples > isize::MAX as usize / std::mem::size_of::<f32>() {
         state.failed.store(true, Ordering::Release);
+        state.timing.end_callback(sample);
         return PA_ABORT;
     }
-    let before = state.position.load(Ordering::Relaxed);
-    state
-        .timing
-        .observe(time.as_ref(), frame_count as u64, before);
     let seek_before = state.seek_applied.load(Ordering::Relaxed);
     let result = state.render(
         std::slice::from_raw_parts_mut(output.cast::<f32>(), samples),
@@ -257,6 +260,7 @@ pub(super) unsafe extern "C" fn audio_callback(
             state.first_written.store(written, Ordering::Release);
         }
     }
+    state.timing.end_callback(sample);
     result
 }
 

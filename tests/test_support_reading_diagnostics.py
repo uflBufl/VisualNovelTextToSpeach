@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from tests.test_rust_audio_diagnostics import TRACE
 from vntts import support
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.settings import AppSettings
@@ -14,6 +15,67 @@ from vntts.support import AudioLifecycleLog, RuntimeSupportLog, SupportBundleBui
 
 
 class SupportReadingDiagnosticsTest(unittest.TestCase):
+    def test_callback_trace_survives_support_and_session_runtime_without_private_fields(
+        self,
+    ):
+        from vntts.reading_diagnostics import record_diagnostic_event
+        from vntts.support_timeline_acquisition import TimelineAcquisition
+
+        trace = json.loads(json.dumps(TRACE))
+        trace["PRIVATE"] = "PRIVATE"
+        trace["events"][0]["PRIVATE"] = "PRIVATE"
+        trace["events"][0]["current"]["PRIVATE"] = "PRIVATE"
+        details = {
+            "worker_pid": 4321,
+            "worker_id": "worker-1",
+            "playback_id": "line-1",
+            "callback_trace": trace,
+        }
+        log = AudioLifecycleLog()
+        log.record("rust-worker-finished", **details)
+        event = support.sanitize_event(log.report()["events"][0])
+        self.assertEqual(event["callback_trace"], TRACE)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "runtime.jsonl"
+            journal = TimelineAcquisition(path)
+            with patch(
+                "vntts.reading_diagnostics._active", SimpleNamespace(runtime=journal)
+            ):
+                record_diagnostic_event("audio", "rust-worker-finished", **details)
+            journal.stop()
+            raw = path.read_text()
+        retained = next(
+            json.loads(line)
+            for line in raw.splitlines()
+            if json.loads(line)["kind"] == "event"
+        )
+        self.assertEqual(retained["callback_trace"], TRACE)
+        for key in ("worker_pid", "worker_id", "playback_id"):
+            self.assertEqual(retained[key], details[key])
+            self.assertEqual(event[key], details[key])
+        self.assertNotIn("PRIVATE", raw + json.dumps(event))
+        json.dumps(event, allow_nan=False)
+
+    def test_invalid_callback_trace_never_becomes_text_in_support_or_runtime(self):
+        from vntts.support_timeline_acquisition import TimelineAcquisition
+
+        for invalid in (
+            "PRIVATE",
+            {"events": ["PRIVATE"], "dropped_events": 0},
+            {"events": [], "dropped_events": True},
+        ):
+            with self.subTest(invalid=invalid), TemporaryDirectory() as directory:
+                log = AudioLifecycleLog()
+                log.record("rust-worker-finished", callback_trace=invalid)
+                event = support.sanitize_event(log.report()["events"][0])
+                self.assertIsNone(event.get("callback_trace"))
+                path = Path(directory) / "runtime.jsonl"
+                journal = TimelineAcquisition(path)
+                journal.record({"callback_trace": invalid})
+                journal.stop()
+                self.assertNotIn("callback_trace", path.read_text())
+                self.assertNotIn("PRIVATE", json.dumps(event))
+
     def test_query_boundaries_survive_audio_log_export_and_bounded_journal(self):
         from vntts.support_timeline_acquisition import TimelineAcquisition
 

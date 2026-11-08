@@ -309,7 +309,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the R12 step below, one repair at a time. The autonomous chapter and separate
+Next action: review the reproduced R12 callback stall below. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
@@ -322,10 +322,15 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       Callback has no allocation/lock/I/O, but current PCM/Box remain pageable.
       Agree bounded current-PCM/callback-state residency hardening separately;
       this removes a concrete RT paging risk, not a proven cause of these gaps.
-      For component-level attribution, agree a diagnostic-only bounded entry/exit
-      context around DAC jumps, then use one targeted clip under load. Existing
-      max-only counters cannot distinguish late entry, long residence or host DAC
-      clock change. Do not increase latency/buffers or weaken quality thresholds.
+      A targeted replay with the original low-latency parameters and real MLX
+      generation now ties a 336-frame (7.619ms) waveform shift to a 7.4935ms
+      callback residence, against a 64-frame/44100Hz (1.451ms) interval. Two warm
+      repeats are clean. Separate descheduling from a memory fault inside that
+      callback before claiming a root cause or approving the residency change.
+      Evidence: `.codex/investigations/callback-stall-20261108/`. The optional
+      eight-event callback trace is temporary; remove its native/protocol/Python
+      plumbing after the cause is fixed and verified. Do not increase latency/
+      buffers or weaken quality thresholds.
 
 - [ ] **OCR-03-01 - Handle internal punctuation in complete prepared matching (plan approval pending).**
       Reproduced: `Remember Nowa Mied:z` is within one edit, but normalization

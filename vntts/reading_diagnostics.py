@@ -37,6 +37,16 @@ _active: "ReadingDiagnosticSession | None" = None
 _dead_owners_seen: dict[tuple[int, float], float] = {}
 
 
+def audio_callback_trace_enabled() -> bool:
+    session = _active
+    return (
+        session is not None
+        and session.recording is not None
+        and session.phase == "recording"
+        and not session.stop_requested.is_set()
+    )
+
+
 def record_diagnostic_event(category: str, operation: str, **details: object) -> None:
     session = _active
     if session is None:

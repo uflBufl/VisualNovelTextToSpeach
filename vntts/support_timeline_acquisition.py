@@ -9,7 +9,7 @@ from itertools import islice
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
-from typing import Mapping
+from typing import Any, Mapping
 from uuid import UUID, uuid4
 
 from vntts.cleanup import attempt_cleanup
@@ -56,6 +56,81 @@ INPUT_DIAGNOSTIC_FIELDS = (
     | INPUT_DIAGNOSTIC_ENUMS.keys()
     | {"dispatch_id"}
 )
+
+
+def sanitize_callback_trace(value: object) -> dict[str, Any] | None:
+    """Retain only bounded, coherent native callback samples and numeric clocks."""
+    if not isinstance(value, Mapping):
+        return None
+    events, dropped = value.get("events"), value.get("dropped_events")
+    if (
+        not isinstance(events, list)
+        or len(events) > 8
+        or type(dropped) is not int
+        or not 0 <= dropped < 2**64
+    ):
+        return None
+    safe_events = []
+    last = None
+    for pair in events:
+        if not isinstance(pair, Mapping):
+            return None
+        safe_pair: dict[str, dict[str, Any]] = {}
+        for edge in ("previous", "current"):
+            sample = pair.get(edge)
+            if not isinstance(sample, Mapping):
+                return None
+            safe: dict[str, Any] = {}
+            for field in ("position_frames", "output_frame", "frame_count", "flags"):
+                number = sample.get(field)
+                if type(number) is not int or not 0 <= number < 2**64:
+                    return None
+                safe[field] = number
+            if (
+                not safe["frame_count"]
+                or safe["output_frame"] + safe["frame_count"] >= 2**64
+            ):
+                return None
+            for field in ("entry_seconds", "exit_seconds", "current_time", "dac_time"):
+                number = sample.get(field)
+                if (
+                    number is None
+                    and field in {"current_time", "dac_time"}
+                    and field in sample
+                ):
+                    safe[field] = None
+                    continue
+                if (
+                    not isinstance(number, (int, float))
+                    or isinstance(number, bool)
+                    or (isinstance(number, int) and number.bit_length() > 64)
+                    or not math.isfinite(number)
+                    or (field in {"entry_seconds", "exit_seconds"} and number < 0)
+                ):
+                    return None
+                safe[field] = number
+            if safe["exit_seconds"] < safe["entry_seconds"]:
+                return None
+            safe_pair[edge] = safe
+        previous, current = safe_pair["previous"], safe_pair["current"]
+        if (
+            current["output_frame"]
+            != previous["output_frame"] + previous["frame_count"]
+            or current["entry_seconds"] < previous["exit_seconds"]
+            or last is not None
+            and (
+                previous["output_frame"] < last["output_frame"]
+                or previous["output_frame"] == last["output_frame"]
+                and previous != last
+                or previous["output_frame"] > last["output_frame"]
+                and previous["entry_seconds"] < last["exit_seconds"]
+                or current["output_frame"] <= last["output_frame"]
+            )
+        ):
+            return None
+        last = current
+        safe_events.append(safe_pair)
+    return {"events": safe_events, "dropped_events": dropped}
 
 
 def sanitize_input_diagnostics(details: Mapping[str, object]) -> dict[str, object]:
@@ -431,7 +506,11 @@ class TimelineAcquisition:
                 "frame_equivalence_ms",
             ) and isinstance(value, bool):
                 continue
-            if key == "frame_comparison_passed" and isinstance(value, bool):
+            if key == "callback_trace":
+                trace = sanitize_callback_trace(value)
+                if trace is not None:
+                    safe[key] = trace
+            elif key == "frame_comparison_passed" and isinstance(value, bool):
                 safe[key] = value
             elif key in _NUMERIC_FIELDS and isinstance(value, (bool, int)):
                 if isinstance(value, bool) or value.bit_length() <= 64:
