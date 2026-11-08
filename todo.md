@@ -310,10 +310,13 @@ Next action: execute the combined Mac acceptance in this order. Keep the detaile
 gates below; completion of a stage does not close an unexercised scenario.
 
 - [ ] Preflight the current source/helpers, selected pack/voices and real unfinished
-      generation work. Confirm the game starts at the first narrator of 314001 and
+      generation work. Refresh the installed game after the season change and
+      choose an available current character-story chapter; verify its source ID,
+      first line and ending from the refreshed catalog and actual game rather than
+      assuming the historical314001 chapter. Confirm its first dialogue is shown and
       that video plus selected-game/speech audio are ready before Read. Set and
       verify the 3600s recording cap; preserve the starting settings/selection.
-- [ ] Run 314001 autonomously to its actual end with prepared voices and genuine
+- [ ] Run the selected current chapter to its actual end with prepared voices and genuine
       background generation. Do not mix control tests or manual recovery into
       this interval. Correlate OCR/source admission, first/last PCM, fresh-frame
       validation, key dispatch and visible game transitions; measure actual load
