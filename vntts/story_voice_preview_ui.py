@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 class StoryVoicePreview(QObject):
     statusChanged = Signal(str)
+    errorOccurred = Signal(str)
     activeChanged = Signal(bool)
 
     def __init__(
@@ -207,6 +208,7 @@ class StoryVoicePreview(QObject):
         if self.active:
             self.stop()
             self.statusChanged.emit(message)
+            self.errorOccurred.emit(message)
 
     def stop(self) -> None:
         was_active = self.active

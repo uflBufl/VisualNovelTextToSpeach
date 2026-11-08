@@ -981,6 +981,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.summary_voice_preview.statusChanged.connect(
             self._summary_preview_status_changed
         )
+        self.summary_voice_preview.errorOccurred.connect(
+            self.voice_confirmation_status.setText
+        )
         self.summary_voice_preview.activeChanged.connect(self._summary_preview_changed)
         self._layout_voice_confirmation()
 
@@ -1031,7 +1034,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes = _VoiceRouteList()
         self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Character voices for selected stories")
-        self._summary_preview_rows: dict[str, tuple[QPushButton, QLabel]] = {}
+        self._summary_preview_rows: dict[str, QPushButton] = {}
         self.voice_routes.setAlternatingRowColors(True)
         self.voice_routes.setVerticalScrollMode(
             QAbstractItemView.ScrollMode.ScrollPerPixel
@@ -1474,6 +1477,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.play_summary_narrator.setAccessibleName(
             "Stop narrator preview" if narrator_active else "Play narrator preview"
         )
+        self.play_summary_narrator.setAccessibleDescription("")
         if self.play_summary_narrator.isEnabled():
             self.play_summary_narrator.setToolTip(
                 "Stop the narrator preview."
@@ -1483,7 +1487,7 @@ class OfflineAudioPreparationDialog(QDialog):
         set_action_icon(
             self.play_summary_narrator, "square" if narrator_active else "play"
         )
-        for group_id, (button, status) in self._summary_preview_rows.items():
+        for group_id, button in self._summary_preview_rows.items():
             playing = active and group_id == self._summary_preview_target
             action = "Stop" if playing else "Play"
             button.setText(action)
@@ -1492,27 +1496,22 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             button.setToolTip(f"{action} this role's assigned voice preview.")
             set_action_icon(button, "square" if playing else "play")
-            if not active:
-                status.clear()
-                status.hide()
-        self.voice_routes.resize_rows()
+            button.setAccessibleDescription("")
 
     def _summary_preview_status_changed(self, message: str) -> None:
-        row = self._summary_preview_rows.get(self._summary_preview_target or "")
-        if row is None:
-            self.voice_confirmation_status.setText(message)
-        else:
-            row[1].setText(message.replace("selected voice preview", "preview"))
-            row[1].setVisible(bool(message))
-            self.voice_routes.resize_rows()
+        button = (
+            self.play_summary_narrator
+            if self._summary_preview_target == "narrator"
+            else self._summary_preview_rows.get(self._summary_preview_target or "")
+        )
+        if button is not None:
+            button.setToolTip(f"{button.accessibleName()}.\n{message}")
+            button.setAccessibleDescription(message)
 
     def _stop_summary_preview(self) -> None:
-        was_active = self.summary_voice_preview.active
         self.summary_voice_preview.stop()
         self._summary_preview_changed(False)
         self._summary_preview_target = None
-        if was_active:
-            self.voice_confirmation_status.setText("Voice preview stopped.")
 
     def _summary_narrator_request(
         self, role: VoiceGroup | None = None
@@ -1547,7 +1546,6 @@ class OfflineAudioPreparationDialog(QDialog):
     def _play_summary_voice(self, target: str) -> None:
         if self._summary_preview_target == target and self.summary_voice_preview.active:
             self._stop_summary_preview()
-            self.voice_confirmation_status.setText("Voice preview stopped.")
             return
         if (
             not self._awaiting_voice_confirmation
@@ -1592,7 +1590,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.summary_voice_preview.play(plan, group, source, text)
         except (OSError, ValueError) as error:
             logging.getLogger(__name__).exception("Unable to preview story voice")
-            self._summary_preview_status_changed(
+            self.voice_confirmation_status.setText(
                 f"Unable to preview this voice: {error}"
             )
 
@@ -1606,7 +1604,7 @@ class OfflineAudioPreparationDialog(QDialog):
         unchanged = not self._voice_plan_needs_update()
         ready = role is not None and unchanged
         self.inspect_character_voice.setEnabled(ready)
-        for button, _status in self._summary_preview_rows.values():
+        for button in self._summary_preview_rows.values():
             button.setEnabled(unchanged and not self.has_pending_work())
         if role and normalize_character_name(role) == "narrator":
             role = None
@@ -2495,10 +2493,9 @@ class OfflineAudioPreparationDialog(QDialog):
         controls = QWidget()
         controls.setProperty("voice_group_id", group_id)
         controls.installEventFilter(self.voice_routes)
-        layout = QVBoxLayout(controls)
+        layout = QHBoxLayout(controls)
         layout.setContentsMargins(0, 0, 0, 0)
-        voice_row = QHBoxLayout()
-        voice_row.addWidget(voice, 1)
+        layout.addWidget(voice, 1)
         button = QPushButton("Play")
         button.setObjectName("voice_preview_button")
         button.setProperty("voice_group_id", group_id)
@@ -2507,17 +2504,8 @@ class OfflineAudioPreparationDialog(QDialog):
         button.setToolTip("Play this role's assigned voice preview.")
         set_action_icon(button, "play")
         button.clicked.connect(lambda: self._play_voice_route(item, group_id))
-        status = QLabel()
-        status.setObjectName("voice_preview_status")
-        status.setTextFormat(Qt.TextFormat.PlainText)
-        status.setWordWrap(True)
-        status.setProperty("voice_group_id", group_id)
-        status.installEventFilter(self.voice_routes)
-        status.hide()
-        voice_row.addWidget(button)
-        layout.addLayout(voice_row)
-        layout.addWidget(status)
-        self._summary_preview_rows[group_id] = button, status
+        layout.addWidget(button)
+        self._summary_preview_rows[group_id] = button
         return controls
 
     def _play_voice_route(self, item: QListWidgetItem, group_id: str) -> None:
