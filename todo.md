@@ -306,38 +306,48 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: execute the combined Mac acceptance in this order. Keep the detailed
-gates below; completion of a stage does not close an unexercised scenario.
+Next action: review and agree the shared OCR repair below before implementation.
+Use the retained seasonal-run evidence before scheduling another chapter.
 
-- [ ] Preflight the current source/helpers, selected pack/voices and real unfinished
-      generation work. Refresh the installed game after the season change and
-      choose an available current character-story chapter; verify its source ID,
-      first line and ending from the refreshed catalog and actual game rather than
-      assuming the historical314001 chapter. Confirm its first dialogue is shown and
-      that video plus selected-game/speech audio are ready before Read. Set and
-      verify the 3600s recording cap; preserve the starting settings/selection.
-- [ ] Run the selected current chapter to its actual end with prepared voices and genuine
-      background generation. Do not mix control tests or manual recovery into
-      this interval. Correlate OCR/source admission, first/last PCM, fresh-frame
-      validation, key dispatch and visible game transitions; measure actual load
-      coverage and source/output continuity, including the first recording.
-- [ ] In separately marked short episodes, verify Stop/Read before explicit pack
-      activation, live/announcement Pause, active-speech preparation Close,
-      partial-preparation publication/cancel/resume, manual punctuation and voice/
-      diagnostic playback handoff. Exercise actual retained failures if available;
-      an unavailable failure or scene remains pending rather than synthetic proof.
+- [ ] **OCR-08-01 - Preserve real dialogue after low-confidence punctuation.**
+      On315601:60, Native Tesseract returns `Eurus ... Eurus ...`; TSV confidence
+      is82/82/23/23. Shared `_trim_trailing_ocr_noise` deletes the final two tokens
+      and reports only the retained half at82. Preserve legitimate continuation in
+      all consumers and calculate confidence over retained words. Keeping all
+      four tokens gives52.5; the current controller rejects it before complete
+      source matching, so trim-only repair does not resolve the stall. Agree a
+      bounded complete/unique exact-source authority plan without lowering the
+      global60 threshold or admitting partial/fuzzy/ambiguous unknown text. Cover
+      both OCR paths, truthful confidence, existing noise/symbol controls and the
+      real frame; run changed tests first, then focused checks and native replay.
+- [ ] **RUN-08-01 - Attribute the unconfirmed transition after315601:39.**
+      Completed audio/full canonical text, one52ms Quartz Space with selected
+      game foreground before/after, then unchanged readable line and timeout.
+      Reader blocks another automatic key as already dispatched. Reconcile video
+      and any user interventions before identifying game receipt/processing or
+      selecting a repair. Posting success alone is not receipt. Do not replace
+      diagnosis with extra keys, longer holds or timeouts; explicit Stop/Read
+      recovery does not qualify uninterrupted progression.
+- [ ] **DIAG-08-01 - Correct the offline correlation false warning.**
+      Main-session line50 has diagnostic16k linear-resampled correlation0.89536,
+      but production-equivalent48k->44.1k polyphase/source-CAF comparison gives
+      0.999793 over the full9.28s with zero local shift. Plan/check a consistent
+      analysis resampling method against retained positive and real-gap cases.
+      Keep existing quality thresholds; add no per-playback filesystem audits.
+- [ ] After these findings are triaged/fixed, rerun an available current-season
+      chapter from its verified first dialogue to the actual terminal scene, with
+      prepared voices and genuine background generation. Preserve source/voice
+      identity, recording readiness and3600s cap. Keep manual recovery and control
+      episodes separate; unavailable failure/scene cases remain pending.
 - [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
       import in isolated settings, long errors/copy/keyboard) and native physical
       scrolling. Keep ordinary/large-font layout evidence already obtained.
-- [ ] Audit finalized media and exact-source alignment, report each gate as
-      passed/failed/not exercised, retain first-failure evidence, restore settings
-      and quit VNTTS while leaving the game running. Remove only verified gates.
-
-The autonomous chapter and separate
-fullscreen/HUD controls have been run; do not repeat the whole chapter before
-triaging their retained evidence. Refactoring and linter debt remain deferred.
-Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
-session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
+Keep the detailed native gates below; an exercised stage does not close an
+unexercised scenario. Refactoring and linter debt remain deferred. Evidence:
+`.codex/investigations/seasonal-campaign-20261108/`, main diagnostic session
+`18652a84126f48d6b157ce78b55128a7` and separate live controls
+`4ca0a65c36554182a2929783b6a9f279`. Earlier evidence remains in
+`.codex/investigations/native-campaign-20261103/`. Keep raw recordings unchanged.
 
 - [ ] **R12 - Remaining historical output-gap acceptance.**
       In the next combined run, verify source/output continuity during prepared
@@ -366,7 +376,7 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       missing-line priority callbacks, and failure/cancel rollback. Do not repeat
       the chapter just for this gate before the other agreed repairs.
 
-- [ ] Complete only unexercised controls: live/announcement Pause/Resume, partly
+- [ ] Complete only unexercised controls: announcement Pause/Resume, partly
       prepared active-chapter catch-up and failed/not-ready policy, manual/other
       punctuation, and active-speech preparation Close. Prepared Pause/Resume,
       fullscreen/window continuation and volume HUD have been exercised. Keep
@@ -412,7 +422,7 @@ Remaining defects, missing measurements and native acceptance:
 1. **Remaining targeted native acceptance (M0/M1 and the chapter audit).**
    Use the November3 autonomous run and separate controls for exercised paths.
    Resolve the current restart, analysis and source/output findings above first.
-   Retain unexercised live/announcement, manual-mode and generation-failure cases;
+   Retain unexercised announcement, manual-mode and generation-failure cases;
    ordinary chapter completion does not qualify these distinct paths.
    Include native confirmation that authorized silent events do not wait for a
    WAV during generation/resume, and a newly accepted occurrence releases an
@@ -447,8 +457,8 @@ Remaining defects, missing measurements and native acceptance:
    - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
      and aligned Play buttons in the actual chapter at compact size and enlarged
      font, including `Narrator (Centurion)` substitutions and preview messages.
-   - **True Pause/Resume (RUN-29-01), remaining paths:** pause streamed live
-     synthesis and a speaker announcement mid-audio. Verify unchanged playback
+   - **True Pause/Resume (RUN-29-01), remaining paths:** pause a speaker
+     announcement mid-audio. Verify unchanged playback
      position during Pause, only remaining audio after Resume, one load/synthesis
      and one automatic transition after completion. Include an already paused
      start, ready pending audio, Stop and device/focus changes while paused.
