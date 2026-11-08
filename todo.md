@@ -306,8 +306,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate RUN-08-01 against the retained movie and input journal;
-reconcile the confirmed manual interventions before proposing an input repair.
+Next action: agree the bounded RUN-08-01 measurement below before another
+native run; retained evidence does not yet justify changing input dispatch.
 
 - [ ] **RUN-08-01 - Attribute the unconfirmed transition after315601:39.**
       Completed audio/full canonical text, one52ms Quartz Space with selected
@@ -316,7 +316,32 @@ reconcile the confirmed manual interventions before proposing an input repair.
       and any user interventions before identifying game receipt/processing or
       selecting a repair. Posting success alone is not receipt. Do not replace
       diagnosis with extra keys, longer holds or timeouts; explicit Stop/Read
-      recovery does not qualify uninterrupted progression.
+      recovery does not qualify uninterrupted progression. Retained samples show
+      high system swap around both the failed key and successful neighboring
+      keys; RAM pressure remains a hypothesis, not an attributed cause. Resident
+      RSS does not account for all paged/compressed memory. The old macOS psutil
+      `sin`/`sout` counters are host pageins/pageouts, not actual swapins/swapouts.
+      Measurement plan (temporary external Mac observer, no product metrics):
+      1. Validate a listen-only Space down/up tap for the selected game process
+         with a known control event; record tap health, source PID, flags and
+         event/receipt timestamps. Tap creation was checked, callback delivery
+         and game handling remain unverified. Ignore no-event periods if the
+         observer is disabled or unhealthy.
+      2. Sample native VM pressure, compressor and actual Swapins/Swapouts plus
+         game page faults/pageins alongside existing input/video journals. Use
+         the project runtime's monotonic clock; keep other processes' contents
+         and keyboard events out of the recording.
+      3. Compare a short, repeatable passage with prepared playback alone and
+         with real background generation, using the same input timing. Do not
+         force memory pressure, send retries or increase hold/timeouts. Cap each
+         diagnostic episode at5minutes, ending on failure/passage completion;
+         label controls separately and close the
+         app/helpers afterward while leaving the game open.
+      If target events arrive but the game remains unresponsive, obtain a
+      bounded game-thread sample before attributing a scheduler or VM wait.
+      Gate: distinguish absent target-stream events from events followed by an
+      unchanged game; attribute memory only with matching game fault/stall data.
+      Propose a code repair only after this evidence identifies an affected path.
 - [ ] **DIAG-08-01 - Correct the offline correlation false warning.**
       Main-session line50 has diagnostic16k linear-resampled correlation0.89536,
       but production-equivalent48k->44.1k polyphase/source-CAF comparison gives
