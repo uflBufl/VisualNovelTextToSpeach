@@ -309,22 +309,21 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: remove the temporary R12 callback trace after the verified residency repair. The autonomous chapter and separate
+Next action: review the OCR-03-01 repair plan below. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
 session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
 
-- [ ] **R12 - Remove temporary tracing and retain historical-gap acceptance.**
-      - Remove the eight-event native/protocol/Python callback trace and its tests;
-        preserve aggregate output timing and older normal protocol peers. Run
-        affected native/Python checks and the final native controls smoke check.
-      - Keep the earlier 7.49/17.2ms stalls open for the next combined run; the
-        qualified residency comparison fixes owned-PCM faults but does not directly
-        classify those old long events. Do not increase latency/buffers or weaken
-        quality thresholds. Short-lived probes and before/after evidence belong in
-        `.codex/investigations/callback-attribution-20261108/` and
-        `.codex/investigations/pcm-residency-20261108/`.
+- [ ] **R12 - Remaining historical output-gap acceptance.**
+      In the next combined run, verify source/output continuity during prepared
+      playback with concurrent MOSS generation. The residency comparison removes
+      owned-PCM faults but does not directly classify the old 7.49/17.2ms stalls.
+      Retain exact playback/source/device/rate identity if a gap recurs; use local
+      attribution probes when needed. Do not increase latency/buffers or weaken
+      quality thresholds. Before/after evidence belongs in
+      `.codex/investigations/callback-attribution-20261108/` and
+      `.codex/investigations/pcm-residency-20261108/`.
 
 - [ ] **OCR-03-01 - Handle internal punctuation in complete prepared matching (plan approval pending).**
       Reproduced: `Remember Nowa Mied:z` is within one edit, but normalization

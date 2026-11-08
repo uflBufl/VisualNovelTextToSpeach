@@ -1,22 +1,16 @@
 """Protocol evidence for native output gaps, independent of output hardware."""
 
-import copy
 import sys
 import threading
 import time
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.rust_audio import (
-    RustAudioWorker,
-    _validate_timing_diagnostics,
-    active_audio_workers,
-)
+from vntts.rust_audio import RustAudioWorker, active_audio_workers
 from vntts.rust_output import RustOutputStream
 
 PEER = r"""
@@ -25,17 +19,6 @@ mode = sys.argv[1]
 def emit(**value):
     print(json.dumps(value), flush=True)
 def finished(outcome):
-    extra = {}
-    if clip.get('callback_trace') or mode == 'invalid-trace':
-        previous = dict(position_frames=4, output_frame=0, frame_count=4, flags=0,
-                        entry_seconds=.000001, exit_seconds=.000002,
-                        current_time=None, dac_time=4.0)
-        current = dict(position_frames=0, output_frame=4, frame_count=4, flags=0,
-                       entry_seconds=.000003, exit_seconds=.000004,
-                       current_time=4.1, dac_time=4.2)
-        extra['callback_trace'] = dict(events=[dict(previous=previous, current=current)], dropped_events=0)
-        if mode == 'invalid-trace':
-            current['entry_seconds'] = True
     metric = dict(observation_count=3, unavailable_count=0,
                   discontinuity_count=1, max_gap_seconds=.03,
                   max_offset_seconds=.02, max_offset_position_frames=4,
@@ -50,11 +33,12 @@ def finished(outcome):
          callback_count=3, sample_rate=clip['sample_rate'], channels=clip['channels'],
          callback_timing=metric, dac_timing=metric,
          timing_sample_rate=48000.0, timing_output_frames=12,
-         worker_pid=-1, worker_path='/spoofed/worker', **extra)
-emit(event='ready', protocol=2, **({'callback_trace': True} if mode == 'trace' else {}))
+         worker_pid=-1, worker_path='/spoofed/worker')
+emit(event='ready', protocol=2)
 clip = None
 for line in sys.stdin.buffer:
     command = json.loads(line)
+    assert 'callback_trace' not in command
     op = command['op']
     if op in ('load', 'open_stream'):
         clip = command
@@ -65,7 +49,6 @@ for line in sys.stdin.buffer:
         sys.stdin.buffer.read(command['frames'] * clip['channels'] * 4)
         emit(event='appended', id=clip['id'])
     elif op == 'start':
-        clip.update(command)
         emit(event='started', id=clip['id'])
         emit(event='first_callback', id=clip['id'], frames_written=1)
         if mode != 'stop':
@@ -75,48 +58,6 @@ for line in sys.stdin.buffer:
     elif op == 'end':
         finished('complete')
 """
-
-TRACE = {
-    "events": [
-        {
-            "previous": {
-                "position_frames": 4,
-                "output_frame": 0,
-                "frame_count": 4,
-                "flags": 0,
-                "entry_seconds": 0.000001,
-                "exit_seconds": 0.000002,
-                "current_time": None,
-                "dac_time": 4.0,
-            },
-            "current": {
-                "position_frames": 0,
-                "output_frame": 4,
-                "frame_count": 4,
-                "flags": 0,
-                "entry_seconds": 0.000003,
-                "exit_seconds": 0.000004,
-                "current_time": 4.1,
-                "dac_time": 4.2,
-            },
-        }
-    ],
-    "dropped_events": 0,
-}
-TRACE_EVENT = {
-    "callback_trace": TRACE,
-    "callback_count": 3,
-    "timing_output_frames": 12,
-    "dac_timing": {
-        "observation_count": 3,
-        "unavailable_count": 0,
-        "discontinuity_count": 1,
-        "max_offset_position_frames": 4,
-        "max_offset_output_frame": 4,
-        "max_gap_seconds": 0.03,
-        "max_offset_seconds": 0.02,
-    },
-}
 
 
 class NativeAudioDiagnosticsTest(unittest.TestCase):
@@ -142,140 +83,6 @@ class NativeAudioDiagnosticsTest(unittest.TestCase):
             first_write,
             stop,
         )
-
-    def test_callback_trace_requires_active_recording_and_peer_capability(self):
-        for capable, recording, phase, stopped in (
-            (True, True, "recording", False),
-            (False, True, "recording", False),
-            (True, False, "recording", False),
-            (True, True, "stopping", False),
-            (True, True, "recording", True),
-        ):
-            with self.subTest(
-                capable=capable, recording=recording, phase=phase, stopped=stopped
-            ):
-                worker = self.worker("trace" if capable else "complete")
-                stop = threading.Event()
-                if stopped:
-                    stop.set()
-                session = SimpleNamespace(
-                    recording=Mock() if recording else None,
-                    phase=phase,
-                    stop_requested=stop,
-                )
-                with (
-                    patch("vntts.reading_diagnostics._active", session),
-                    patch(
-                        "vntts.reading_diagnostics.arm_audio_worker_recording",
-                        return_value=True,
-                    ),
-                    patch("vntts.rust_audio.record_audio_lifecycle") as record,
-                ):
-                    self.assertEqual(self.play(worker), (True, False))
-                event = next(
-                    call.kwargs
-                    for call in record.call_args_list
-                    if call.args == ("rust-worker-finished",)
-                )
-                enabled = capable and recording and phase == "recording" and not stopped
-                self.assertEqual("callback_trace" in event, enabled)
-                if enabled:
-                    self.assertEqual(event["callback_trace"], TRACE)
-
-    def test_stream_open_opts_into_trace_before_first_callback(self):
-        worker = self.worker("trace")
-        module = Mock()
-        module.acquire.return_value = worker
-        stream = RustOutputStream(
-            module, samplerate=24000, channels=1, dtype="float32", latency="low"
-        )
-        with (
-            patch(
-                "vntts.reading_diagnostics.audio_callback_trace_enabled",
-                return_value=True,
-            ),
-            patch(
-                "vntts.reading_diagnostics.arm_audio_worker_recording",
-                return_value=True,
-            ),
-        ):
-            stream.start()
-            stream._open()
-        worker.send({"op": "end", "id": stream.clip_id})
-        self.assertEqual(worker.receive(2)["callback_trace"], TRACE)
-
-    def test_callback_trace_rejects_malformed_or_incoherent_samples(self):
-        trace_fields = [
-            ("dropped_events", True),
-            ("dropped_events", -1),
-            ("dropped_events", 2**64),
-            ("events", TRACE["events"] * 9),
-        ]
-        samples = [
-            ("position_frames", True),
-            ("output_frame", -1),
-            ("frame_count", 0),
-            ("frame_count", 2**64),
-            ("flags", "PRIVATE"),
-            ("entry_seconds", float("nan")),
-            ("entry_seconds", -1),
-            ("entry_seconds", 0),
-            ("exit_seconds", 0),
-            ("current_time", float("inf")),
-            ("dac_time", True),
-            ("dac_time", 10**400),
-            ("output_frame", 5),
-        ]
-        _validate_timing_diagnostics(TRACE_EVENT)
-        for whole_trace, cases in ((True, trace_fields), (False, samples)):
-            for field, value in cases:
-                with self.subTest(field=field, value=value):
-                    event = copy.deepcopy(TRACE_EVENT)
-                    trace = event["callback_trace"]
-                    target = trace if whole_trace else trace["events"][0]["current"]
-                    target[field] = value
-                    with self.assertRaisesRegex(RuntimeError, "invalid callback_trace"):
-                        _validate_timing_diagnostics(event)
-
-    def test_trace_samples_cannot_exceed_finished_counts(self):
-        for overrides in (
-            {"timing_output_frames": 7},
-            {"callback_count": 1},
-            {"dac_timing": {**TRACE_EVENT["dac_timing"], "discontinuity_count": 0}},
-            {"callback_trace": {**TRACE, "dropped_events": 1}},
-            {
-                "callback_trace": {**TRACE, "dropped_events": 2},
-                "dac_timing": {**TRACE_EVENT["dac_timing"], "discontinuity_count": 3},
-            },
-        ):
-            with self.subTest(overrides=overrides):
-                with self.assertRaisesRegex(RuntimeError, "invalid callback_trace"):
-                    _validate_timing_diagnostics({**TRACE_EVENT, **overrides})
-
-    def test_trace_pairs_preserve_callback_order_and_allow_shared_previous_sample(self):
-        event = copy.deepcopy(TRACE_EVENT)
-        first = event["callback_trace"]["events"][0]
-        second = {
-            "previous": copy.deepcopy(first["current"]),
-            "current": {
-                **first["current"], "output_frame": 8,
-                "entry_seconds": 0.000005, "exit_seconds": 0.000006,
-            },
-        }
-        event["callback_trace"]["events"].append(second)
-        event["dac_timing"]["discontinuity_count"] = 2
-        _validate_timing_diagnostics(event)
-        second["previous"]["entry_seconds"] = 0.000002
-        with self.assertRaisesRegex(RuntimeError, "invalid callback_trace"):
-            _validate_timing_diagnostics(event)
-
-    def test_trace_failure_closes_playback_before_logging_invalid_evidence(self):
-        worker = self.worker("invalid-trace")
-        with patch("vntts.rust_audio.record_audio_lifecycle") as record:
-            with self.assertRaisesRegex(RuntimeError, "invalid callback_trace"):
-                self.play(worker)
-        record.assert_not_called()
-        self.assertTrue(worker.closed.is_set())
 
     def test_cold_owner_is_published_before_pcm_and_every_clip_checks_session(self):
         worker = self.worker()
@@ -387,6 +194,7 @@ class NativeAudioDiagnosticsTest(unittest.TestCase):
             for call in record.call_args_list
             if call.args == ("rust-worker-finished",)
         )
+        self.assertNotIn("callback_trace", evidence)
         self.assertEqual(evidence["source_samples"], 16)
         self.assertEqual(evidence["sample_rate"], 24000)
         self.assertEqual(evidence["timing_sample_rate"], 48000)

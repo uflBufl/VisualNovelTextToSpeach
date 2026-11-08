@@ -34,8 +34,6 @@ pub(super) enum Command {
         id: u64,
         #[serde(default)]
         paused: bool,
-        #[serde(default)]
-        callback_trace: bool,
     },
     Stop {
         id: u64,
@@ -71,8 +69,6 @@ pub(super) enum Command {
         capacity_frames: u64,
         #[serde(default)]
         paused: bool,
-        #[serde(default)]
-        callback_trace: bool,
     },
     Append {
         id: u64,

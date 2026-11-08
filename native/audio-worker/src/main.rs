@@ -75,12 +75,7 @@ struct Active<'a> {
 }
 
 impl<'a> Active<'a> {
-    fn open(
-        pa: &'a PortAudio,
-        clip: Clip,
-        capacity: Option<u64>,
-        callback_trace: bool,
-    ) -> Result<Self, String> {
+    fn open(pa: &'a PortAudio, clip: Clip, capacity: Option<u64>) -> Result<Self, String> {
         let device = unsafe { (pa.default_output)() };
         if device < 0 {
             return Err("no default output device".into());
@@ -139,9 +134,6 @@ impl<'a> Active<'a> {
             audible: AudiblePosition::new(clip.position),
         };
         active.state.pin_samples()?;
-        if callback_trace {
-            active.state.timing.enable_trace();
-        }
         active
             .state
             .position
@@ -302,7 +294,6 @@ impl<'a> Active<'a> {
             event["error"] = json!(error);
         }
         self.state.timing.add_to(&mut event);
-        self.state.timing.add_trace_to(&mut event);
         event["producer_starvation_count"] = json!(self.state.starvations.load(Ordering::Relaxed));
         let mut status = self.status(true, error.clone());
         status["outcome"] = json!(outcome);
@@ -454,7 +445,7 @@ fn admit_pending(
 fn run(pa: &PortAudio) -> io::Result<()> {
     emit(
         json!({"event":"ready", "protocol":2, "pid":std::process::id(), "max_pcm_bytes":MAX_PCM_BYTES,
-            "query_trace":true, "callback_trace":true}),
+            "query_trace":true}),
     )?;
     let input = input_channel();
     let mut loaded: Option<Clip> = None;
@@ -532,7 +523,6 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                 latency,
                 capacity_frames,
                 paused,
-                callback_trace,
             }) => {
                 if active.is_some() || loaded.is_some() || id <= last_id {
                     reject(
@@ -551,7 +541,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                         pcm: Vec::new(),
                         position: 0,
                     };
-                    match Active::open(pa, clip, Some(capacity_frames), callback_trace) {
+                    match Active::open(pa, clip, Some(capacity_frames)) {
                         Ok(playing) => {
                             playing.state.paused.store(paused, Ordering::Release);
                             emit(playing.metadata("opened"))?;
@@ -603,15 +593,11 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     reject(id, "end requires the current open stream")?;
                 }
             }
-            Input::Control(Command::Start {
-                id,
-                paused,
-                callback_trace,
-            }) => {
+            Input::Control(Command::Start { id, paused }) => {
                 if loaded.as_ref().is_some_and(|clip| clip.id == id) {
                     let clip = loaded.take().unwrap();
                     let mut failed_status = unstarted_status(&clip, true, None);
-                    match Active::open(pa, clip, None, callback_trace).and_then(|mut playing| {
+                    match Active::open(pa, clip, None).and_then(|mut playing| {
                         playing.state.paused.store(paused, Ordering::Release);
                         playing.start()?;
                         Ok(playing)
@@ -911,7 +897,7 @@ mod tests {
             let input = format!("{header}\n");
             assert!(matches!(
                 read_input(&mut Cursor::new(input.as_bytes()), &mut None).unwrap(),
-                Some(Input::Control(Command::Start { id: 1, paused, callback_trace: false })) if paused == expected
+                Some(Input::Control(Command::Start { id: 1, paused })) if paused == expected
             ));
         }
         let input = b"{\"op\":\"open_stream\",\"id\":1,\"sample_rate\":24000,\"channels\":1,\"latency\":\"low\",\"capacity_frames\":1,\"paused\":true}\n";
@@ -919,29 +905,6 @@ mod tests {
             read_input(&mut Cursor::new(input), &mut None).unwrap(),
             Some(Input::Control(Command::OpenStream { paused: true, .. }))
         ));
-    }
-
-    #[test]
-    fn callback_trace_is_opt_in_for_both_activation_paths() {
-        for (header, expected) in [
-            (r#"{"op":"start","id":1}"#, false),
-            (r#"{"op":"start","id":1,"callback_trace":true}"#, true),
-        ] {
-            let input = format!("{header}\n");
-            assert!(matches!(
-                read_input(&mut Cursor::new(input.as_bytes()), &mut None).unwrap(),
-                Some(Input::Control(Command::Start { callback_trace, .. })) if callback_trace == expected
-            ));
-        }
-        for (field, expected) in [("", false), (",\"callback_trace\":true", true)] {
-            let input = format!("{{\"op\":\"open_stream\",\"id\":1,\"sample_rate\":24000,\"channels\":1,\"latency\":\"low\",\"capacity_frames\":1{field}}}\n");
-            assert!(matches!(
-                read_input(&mut Cursor::new(input.as_bytes()), &mut None).unwrap(),
-                Some(Input::Control(Command::OpenStream { callback_trace, .. })) if callback_trace == expected
-            ));
-        }
-        let input = b"{\"op\":\"start\",\"id\":1,\"callback_trace\":1}\n";
-        assert!(read_input(&mut Cursor::new(input), &mut None).is_err());
     }
 
     #[test]

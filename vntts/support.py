@@ -42,7 +42,6 @@ from vntts.support_timeline_acquisition import (
     INPUT_DIAGNOSTIC_FIELDS,
     PREROUTE_DIAGNOSTIC_REASONS,
     TimelineAcquisition,
-    sanitize_callback_trace,
     sanitize_input_diagnostics,
 )
 from vntts.versioned_json import read_versioned_json
@@ -92,7 +91,6 @@ audio_lifecycle_fields = (
     "source_sample_rate",
     "source_audio_lead_ms",
     "callback_timing",
-    "callback_trace",
     "dac_timing",
     "timing_output_frames",
     "timing_sample_rate",
@@ -1997,8 +1995,6 @@ class AudioLifecycleLog(RuntimeSupportLog):
 
 
 def _sanitize_audio_lifecycle_value(value: object, key: str | None = None) -> object:
-    if key == "callback_trace":
-        return sanitize_callback_trace(value)
     if key in {"callback_timing", "dac_timing"}:
         if not isinstance(value, Mapping):
             return None

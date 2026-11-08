@@ -26,7 +26,6 @@ import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
 from vntts.audio_output import PlaybackPause, playback_pause_context
-from vntts.support_timeline_acquisition import sanitize_callback_trace
 
 MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
@@ -279,14 +278,6 @@ class RustAudioWorker:
                 return
             if self.closed.is_set():
                 raise RuntimeError("Rust audio worker is closed")
-            if message.get("op") in {"start", "open_stream"}:
-                from vntts.reading_diagnostics import audio_callback_trace_enabled
-
-                if (
-                    self.ready.get("callback_trace") is True
-                    and audio_callback_trace_enabled()
-                ):
-                    message = {**message, "callback_trace": True}
             assert self.process.stdin is not None
             data = json.dumps(message, allow_nan=False).encode() + b"\n" + payload
             remaining = memoryview(data)
@@ -769,34 +760,6 @@ def _validate_timing_diagnostics(event: dict[str, Any]) -> None:
                 or (name == "timing_output_frames" and type(value) is not int)
             ):
                 raise RuntimeError(f"Rust audio returned invalid {name}")
-
-    if "callback_trace" in event:
-        trace = sanitize_callback_trace(event["callback_trace"])
-        if trace is None:
-            raise RuntimeError("Rust audio returned invalid callback_trace")
-        events = trace["events"]
-        total = event.get("timing_output_frames")
-        count = event.get("callback_count")
-        metric = event.get("dac_timing")
-        discontinuities = (
-            metric.get("discontinuity_count") if isinstance(metric, dict) else None
-        )
-        if (
-            type(total) is not int
-            or not 0 <= total < 2**64
-            or type(count) is not int
-            or not 0 <= count < 2**64
-            or type(discontinuities) is not int
-            or len(events) + trace["dropped_events"] > discontinuities
-            or len(events) + trace["dropped_events"] > max(0, count - 1)
-            or events
-            and count < 2
-            or any(
-                pair["current"]["output_frame"] + pair["current"]["frame_count"] > total
-                for pair in events
-            )
-        ):
-            raise RuntimeError("Rust audio returned invalid callback_trace counts")
 
 
 def active_audio_workers() -> tuple[dict[str, object], ...]:
