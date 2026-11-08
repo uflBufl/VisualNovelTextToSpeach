@@ -309,39 +309,22 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review the R12 active-audio residency plan below. The autonomous chapter and separate
+Next action: remove the temporary R12 callback trace after the verified residency repair. The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
 Evidence: `.codex/investigations/native-campaign-20261103/` and diagnostic
 session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged.
 
-- [ ] **R12 - Fix verified PCM paging; retain historical-gap attribution (plan approval pending).**
-      Two qualified kernel traces prove 142 and 138 compressor faults inside
-      active PCM on the actual audio callback threads. A 543.292us fault contains
-      MACH_BLOCK and a switch away from the callback. No CallbackState faults
-      were observed. These clean plays establish a residency defect; they do not
-      classify the earlier 7.49/17.2ms stalls or explain every historical gap.
-      Evidence: `.codex/investigations/callback-attribution-20261108/`.
-      Proposed implementation, after agreement:
-      - Acquire a scoped residency guard for the existing active sample storage
-        on the control thread before native start: prepared PCM or the streaming
-        ring. Keep allocation addresses stable; pin only the current audio buffer,
-        not the voice cache, shared framework pages or the whole heap.
-      - Use page-aligned mlock/munlock on macOS and VirtualLock/VirtualUnlock on
-        Windows 10, handling the process working-set quota. On acquisition failure,
-        unwind acquired ranges and fail audio setup with the native error before
-        callbacks start. Release only after successful native close; preserve the
-        existing fatal-close ownership rule.
-      - Cover successful/failed lock, partial acquisition cleanup, Stop/cancel,
-        startup failure, repeated clips, seek/pause and streaming consumers. Run
-        required changed-test selection first, then affected native/Python checks.
-      - Verify under real MOSS load that owned-PCM VM faults become zero and source
-        correlation/continuity remain intact. Keep attribution of the earlier long
-        stalls open until matched kernel evidence or a qualified repair comparison
-        resolves it. Do not increase latency/buffers or weaken quality thresholds.
-      - Remove the temporary eight-event native/protocol/Python callback trace
-        after the repair is verified; retain short-lived attribution probes only
-        as local investigation artifacts.
+- [ ] **R12 - Remove temporary tracing and retain historical-gap acceptance.**
+      - Remove the eight-event native/protocol/Python callback trace and its tests;
+        preserve aggregate output timing and older normal protocol peers. Run
+        affected native/Python checks and the final native controls smoke check.
+      - Keep the earlier 7.49/17.2ms stalls open for the next combined run; the
+        qualified residency comparison fixes owned-PCM faults but does not directly
+        classify those old long events. Do not increase latency/buffers or weaken
+        quality thresholds. Short-lived probes and before/after evidence belong in
+        `.codex/investigations/callback-attribution-20261108/` and
+        `.codex/investigations/pcm-residency-20261108/`.
 
 - [ ] **OCR-03-01 - Handle internal punctuation in complete prepared matching (plan approval pending).**
       Reproduced: `Remember Nowa Mied:z` is within one edit, but normalization

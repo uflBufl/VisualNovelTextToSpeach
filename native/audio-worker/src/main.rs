@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 mod audio;
 mod portaudio;
 mod protocol;
+mod resident;
 mod timing;
 use audio::{audio_callback, CallbackState};
 #[cfg(test)]
@@ -137,6 +138,7 @@ impl<'a> Active<'a> {
             seek_reported: 0,
             audible: AudiblePosition::new(clip.position),
         };
+        active.state.pin_samples()?;
         if callback_trace {
             active.state.timing.enable_trace();
         }

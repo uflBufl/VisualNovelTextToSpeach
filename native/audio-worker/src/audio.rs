@@ -1,3 +1,4 @@
+use super::resident::ResidentBuffer;
 use super::timing::CallbackTiming;
 use super::{c_int, c_ulong, c_void, CallbackTimeInfo, PA_ABORT, PA_COMPLETE, PA_OUTPUT_UNDERFLOW};
 use std::cell::UnsafeCell;
@@ -80,6 +81,8 @@ impl Ring {
 }
 
 pub(super) struct CallbackState {
+    // Unlock before dropping either stable sample allocation, after native close.
+    resident: Option<ResidentBuffer>,
     pub(super) timing: CallbackTiming,
     pcm: Vec<f32>,
     ring: Option<Ring>,
@@ -109,6 +112,7 @@ impl CallbackState {
     pub(super) fn new(pcm: Vec<f32>, channels: u8) -> Self {
         let total = (pcm.len() / usize::from(channels)) as u64;
         Self {
+            resident: None,
             timing: CallbackTiming::default(),
             pcm,
             ring: None,
@@ -143,6 +147,25 @@ impl CallbackState {
 
     pub(super) fn streaming(&self) -> bool {
         self.ring.is_some()
+    }
+
+    pub(super) fn pin_samples(&mut self) -> Result<(), String> {
+        if self.resident.is_none() {
+            let (address, bytes) = if let Some(ring) = &self.ring {
+                (
+                    ring.samples.as_ptr().cast::<u8>(),
+                    std::mem::size_of_val(&*ring.samples),
+                )
+            } else {
+                (
+                    self.pcm.as_ptr().cast::<u8>(),
+                    std::mem::size_of_val(&*self.pcm),
+                )
+            };
+            // The Vec/Box never reallocates while callbacks own this state.
+            self.resident = Some(unsafe { ResidentBuffer::lock(address, bytes)? });
+        }
+        Ok(())
     }
 
     pub(super) fn append(&self, pcm: &[f32]) -> usize {
@@ -357,7 +380,12 @@ mod tests {
 
     #[test]
     fn seek_applies_even_while_paused_without_consuming_audio() {
-        let state = CallbackState::new(vec![1., 2., 3., 4.], 1);
+        let mut state = CallbackState::new(vec![1., 2., 3., 4.], 1);
+        let address = state.pcm.as_ptr();
+        state.pin_samples().unwrap();
+        state.pin_samples().unwrap();
+        assert!(state.resident.is_some());
+        assert_eq!(state.pcm.as_ptr(), address);
         state.paused.store(true, Ordering::Release);
         state.seek_position.store(2, Ordering::Relaxed);
         state.seek_request.store(1, Ordering::Release);
@@ -371,7 +399,8 @@ mod tests {
     }
     #[test]
     fn concurrent_producer_drains_all_frames_once_and_in_order() {
-        let state = CallbackState::stream(23, 2);
+        let mut state = CallbackState::stream(23, 2);
+        state.pin_samples().unwrap();
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 for frame in 0..100_000_u32 {
@@ -404,7 +433,12 @@ mod tests {
 
     #[test]
     fn paused_stream_preserves_ring_and_cancel_does_not_consume_late_data() {
-        let state = CallbackState::stream(2, 1);
+        let mut state = CallbackState::stream(2, 1);
+        let address = state.ring.as_ref().unwrap().samples.as_ptr();
+        state.pin_samples().unwrap();
+        state.pin_samples().unwrap();
+        assert!(state.resident.is_some());
+        assert_eq!(state.ring.as_ref().unwrap().samples.as_ptr(), address);
         assert_eq!(state.append(&[1., 2.]), 2);
         state.paused.store(true, Ordering::Release);
         let mut out = [3.; 2];
