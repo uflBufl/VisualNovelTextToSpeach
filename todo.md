@@ -3,8 +3,11 @@
 ## Active - Windows story preparation ASR compatibility
 
 - [ ] On Windows, resume the affected new-story preparation and verify source
-      audio analysis, voice planning and synthesis complete. Local Whisper
-      inference and cache regressions do not replace this platform gate.
+      audio analysis, voice planning and synthesis complete. Verify live progress
+      and cancellation through stdout pipes for duration, semantics, references
+      and portraits, including the windowed packaged worker's inherited stdout
+      and stderr. Local Whisper inference and pipe regressions do not replace
+      this platform gate.
 
 ## Active - SQLite runtime generation playback
 
@@ -1525,6 +1528,12 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       tests do not qualify these platforms or neural-model/hardware behavior.
 
 ## Restore pre-existing repository quality gates
+
+- [ ] Reconcile the complexity ratchet with the unchanged live-replay seal,
+      missing-voice fallback, publication-contention and authoring-workbench code.
+      It reports new/increased findings and stale metric allowances on these
+      files at `3bee3b79`; source-progress changes introduce no new findings.
+      Inspect actual complexity before updating the baseline.
 
 - [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
       process reports `The prepared pack was not activated`. Reproduces alone

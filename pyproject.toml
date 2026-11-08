@@ -95,7 +95,7 @@ torchcodec = [
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "64635e55a28d566331090a070aec376c57ee7ed7" }
-reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "8d9c624e8556166e437625abc6670db304e0d34c" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "9f7af369592a0f19ff63c37b9ed7209905ab629a" }
 
 durable-file = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "0e22c629dde9de070eb7f13c87609e5905277ab9" }
 

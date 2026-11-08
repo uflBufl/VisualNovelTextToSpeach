@@ -6013,6 +6013,13 @@ def _worker_exit_code(value: object) -> int:
 def _dispatch_application_worker(
     arguments: argparse.Namespace, qt_arguments: list[str], release_smoke: bool
 ) -> int | None:
+    if (
+        arguments.game_content_import_worker == "reverse1999"
+        or arguments.source_audio_publisher_worker is not None
+    ):
+        from vntts.worker_stdio import restore_worker_stdio
+
+        restore_worker_stdio()
     if arguments.game_content_import_worker == "reverse1999":
         from r1999extractor.bootstrap import main as reverse1999_bootstrap_main
 

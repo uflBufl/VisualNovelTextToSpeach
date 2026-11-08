@@ -2,8 +2,11 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import unittest
+from functools import partial
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
@@ -39,8 +42,10 @@ from vntts.source_audio_semantics import (
 class FinishedProcess:
     def __init__(self, returncode=0, *, stdout="", stderr=""):
         self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
+        self.stdout = StringIO(stdout)
+        self.stderr = StringIO(stderr)
+        self._stdout = stdout
+        self._stderr = stderr
         self.terminated = False
         self.killed = False
 
@@ -48,7 +53,7 @@ class FinishedProcess:
         return self.returncode
 
     def communicate(self, timeout=None):
-        return self.stdout, self.stderr
+        return self._stdout, self._stderr
 
     def terminate(self):
         self.terminated = True
@@ -1165,41 +1170,33 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             observed.append(value)
             cancelled.set()
 
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "progress.json"
-            script = (
-                "import json,sys,time; from pathlib import Path; "
-                "Path(sys.argv[1]).write_text(json.dumps({"
-                "'schema':'r1999.source-audio-progress','schema_version':1,"
-                "'stage':'duration','processed':1,'total':8,'state':'analyzing'})); "
-                "time.sleep(30)"
+        script = (
+            "import json,time; print('R1999_PROGRESS '+json.dumps({"
+            "'schema':'r1999.source-audio-progress','schema_version':1,"
+            "'stage':'duration','processed':1,'total':8,'state':'analyzing'}),flush=True); "
+            "time.sleep(30)"
+        )
+        with self.assertRaises(GameContentImportCancelled):
+            Reverse1999GameImporter()._run(
+                (sys.executable, "-c", script),
+                cancelled,
+                scan_progress=progress,
             )
-            with self.assertRaises(GameContentImportCancelled):
-                Reverse1999GameImporter()._run(
-                    (sys.executable, "-c", script, str(path)),
-                    cancelled,
-                    progress_file=path,
-                    scan_progress=progress,
-                )
         self.assertEqual(observed, [SourceAudioProgress("duration", 1, 8, "analyzing")])
 
     def test_final_source_audio_progress_preserves_large_stdout_and_stderr(self):
         observed = []
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "progress.json"
-            script = (
-                "import json,sys; from pathlib import Path; "
-                "Path(sys.argv[1]).write_text(json.dumps({"
-                "'schema':'r1999.source-audio-progress','schema_version':1,"
-                "'stage':'semantics','processed':8,'total':8,'state':'publishing'})); "
-                "sys.stdout.write('x'*1048576); sys.stderr.write('y'*1048576)"
-            )
-            stdout, stderr = Reverse1999GameImporter()._run(
-                (sys.executable, "-c", script, str(path)),
-                None,
-                progress_file=path,
-                scan_progress=observed.append,
-            )
+        script = (
+            "import json,sys; print('R1999_PROGRESS '+json.dumps({"
+            "'schema':'r1999.source-audio-progress','schema_version':1,"
+            "'stage':'semantics','processed':8,'total':8,'state':'publishing'}),flush=True); "
+            "sys.stdout.write('x'*1048576); sys.stderr.write('y'*1048576)"
+        )
+        stdout, stderr = Reverse1999GameImporter()._run(
+            (sys.executable, "-c", script),
+            None,
+            scan_progress=observed.append,
+        )
         self.assertEqual(stdout, "x" * 1048576)
         self.assertEqual(stderr, "y" * 1048576)
         self.assertEqual(
@@ -1218,6 +1215,111 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 )
         finally:
             timeout.cancel()
+
+    def test_extractor_stream_delivers_both_phases_and_keeps_final_json(self):
+        observed = []
+        script = (
+            "import argparse,json,sys; "
+            "from r1999extractor.source_audio_progress import "
+            "SourceAudioProgressStream,report_source_audio_progress; "
+            "parser=argparse.ArgumentParser(); "
+            "parser.add_argument('--progress-stdout',action='store_true'); "
+            "assert parser.parse_args().progress_stdout; "
+            "writer=SourceAudioProgressStream(); sys.stdout.write('decoder status'); "
+            "report_source_audio_progress(writer,'references',0,1); "
+            "report_source_audio_progress(writer,'references',1,1,'publishing'); "
+            "report_source_audio_progress(writer,'portraits',0,1); "
+            "report_source_audio_progress(writer,'portraits',1,1,'publishing'); "
+            "print(json.dumps({'voice_manifest':'voices.json'}))"
+        )
+        with TemporaryDirectory() as directory:
+            importer = Reverse1999GameImporter(
+                popen_factory=partial(subprocess.Popen, cwd=directory)
+            )
+            stdout, stderr = importer._run_source_audio_publisher(
+                (sys.executable, "-c", script), None, observed.append
+            )
+            self.assertEqual(list(Path(directory).iterdir()), [])
+        self.assertEqual(
+            observed,
+            [
+                SourceAudioProgress("references", 0, 1, "analyzing"),
+                SourceAudioProgress("references", 1, 1, "publishing"),
+                SourceAudioProgress("portraits", 0, 1, "analyzing"),
+                SourceAudioProgress("portraits", 1, 1, "publishing"),
+            ],
+        )
+        self.assertIn("decoder status\n", stdout)
+        self.assertNotIn("R1999_PROGRESS", stdout)
+        self.assertEqual(
+            json.loads(stdout.splitlines()[-1]), {"voice_manifest": "voices.json"}
+        )
+        self.assertEqual(stderr, "")
+
+    def test_progress_rejects_malformed_embedded_and_regressing_events(self):
+        document = {
+            "schema": "r1999.source-audio-progress",
+            "schema_version": 1,
+            "stage": "semantics",
+            "processed": 3,
+            "total": 8,
+            "state": "analyzing",
+        }
+        embedded = "x" * 4097 + "R1999_PROGRESS " + json.dumps(document) + "\n"
+        malformed = "R1999_PROGRESS " + " " * 4097 + "\nR1999_PROGRESS {broken\n"
+        documents = (
+            document,
+            document,
+            document | {"processed": 2},
+            document | {"total": 9},
+            document | {"stage": "duration"},
+            document | {"processed": 8, "state": "publishing"},
+            document | {"processed": 8},
+        )
+        script = (
+            "import json,sys; "
+            f"sys.stdout.write({embedded + malformed!r}); "
+            f"[print('R1999_PROGRESS '+json.dumps(d)) for d in {documents!r}]"
+        )
+        observed = []
+        stdout, stderr = Reverse1999GameImporter()._run(
+            (sys.executable, "-c", script), None, scan_progress=observed.append
+        )
+        self.assertEqual(stdout, embedded + malformed)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            observed,
+            [
+                SourceAudioProgress("semantics", 3, 8, "analyzing"),
+                SourceAudioProgress("semantics", 8, 8, "publishing"),
+            ],
+        )
+
+    def test_progress_callback_failure_reaps_child_and_closes_stdout(self):
+        processes = []
+        streams = []
+
+        def start(*args, **kwargs):
+            process = subprocess.Popen(*args, **kwargs)
+            processes.append(process)
+            streams.append(process.stdout)
+            return process
+
+        script = (
+            "import time; print('R1999_PROGRESS "
+            '{"schema":"r1999.source-audio-progress","schema_version":1,'
+            '"stage":"duration","processed":0,"total":1,"state":"analyzing"}'
+            "',flush=True); time.sleep(30)"
+        )
+        importer = Reverse1999GameImporter(popen_factory=start)
+        with self.assertRaisesRegex(RuntimeError, "callback failed"):
+            importer._run(
+                (sys.executable, "-c", script),
+                None,
+                scan_progress=Mock(side_effect=RuntimeError("callback failed")),
+            )
+        self.assertIsNotNone(processes[0].poll())
+        self.assertTrue(streams[0].closed)
 
     def test_communication_failure_reaps_owned_importer(self):
         class BrokenPipeProcess(RunningProcess):
