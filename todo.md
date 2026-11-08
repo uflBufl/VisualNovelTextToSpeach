@@ -306,8 +306,30 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: prepare one combined Mac acceptance plan for the remaining controls
-and native gates below; do not repeat already exercised layout/inspector checks.
+Next action: execute the combined Mac acceptance in this order. Keep the detailed
+gates below; completion of a stage does not close an unexercised scenario.
+
+- [ ] Preflight the current source/helpers, selected pack/voices and real unfinished
+      generation work. Confirm the game starts at the first narrator of 314001 and
+      that video plus selected-game/speech audio are ready before Read. Set and
+      verify the 3600s recording cap; preserve the starting settings/selection.
+- [ ] Run 314001 autonomously to its actual end with prepared voices and genuine
+      background generation. Do not mix control tests or manual recovery into
+      this interval. Correlate OCR/source admission, first/last PCM, fresh-frame
+      validation, key dispatch and visible game transitions; measure actual load
+      coverage and source/output continuity, including the first recording.
+- [ ] In separately marked short episodes, verify Stop/Read before explicit pack
+      activation, live/announcement Pause, active-speech preparation Close,
+      partial-preparation publication/cancel/resume, manual punctuation and voice/
+      diagnostic playback handoff. Exercise actual retained failures if available;
+      an unavailable failure or scene remains pending rather than synthetic proof.
+- [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
+      import in isolated settings, long errors/copy/keyboard) and native physical
+      scrolling. Keep ordinary/large-font layout evidence already obtained.
+- [ ] Audit finalized media and exact-source alignment, report each gate as
+      passed/failed/not exercised, retain first-failure evidence, restore settings
+      and quit VNTTS while leaving the game running. Remove only verified gates.
+
 The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
