@@ -43,7 +43,7 @@ def read_live_snapshot(
         ocr_regions=ocr_regions,
         result_resolver=result_resolver,
     )
-    if result.text and not result.is_confident(minimum_confidence):
+    if result.text and not result.is_readable(minimum_confidence):
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(image, result, minimum_confidence)
         if uncertain_handler is not None:

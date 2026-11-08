@@ -561,9 +561,9 @@ class DialogFrameEquivalence:
             and after[0] is current
             and before[1] == after[1] == context
         ):
-            equivalent = ocr_texts_equivalent(before[2], after[2]) and ocr_texts_equivalent(
-                before[3], after[3], punctuation_fallback=True
-            )
+            equivalent = ocr_texts_equivalent(
+                before[2], after[2]
+            ) and ocr_texts_equivalent(before[3], after[3], punctuation_fallback=True)
             return equivalent and self.context() == context
         return False
 
@@ -758,7 +758,7 @@ def recognize_live_frame(
             )
         )
         and (recognized_text or result.speaker_note)
-        and not result.is_confident(minimum_confidence)
+        and not result.is_readable(minimum_confidence)
     ):
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(
@@ -788,7 +788,7 @@ def recognize_screenshot(
         ocr_language,
         correction_dictionary,
     )
-    if result.text and not result.is_confident(minimum_confidence):
+    if result.text and not result.is_readable(minimum_confidence):
         raise OCRUncertainError(result, minimum_confidence)
     return result.character, result.text
 
@@ -886,7 +886,7 @@ def read_dialog(
         ocr_regions=ocr_regions,
         result_resolver=result_resolver,
     )
-    if result.text and not result.is_confident(minimum_confidence):
+    if result.text and not result.is_readable(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(

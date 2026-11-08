@@ -695,7 +695,7 @@ class AdaptiveOCRTest(unittest.TestCase):
         self.assertEqual(result.character, "X")
         self.assertEqual(
             result.text,
-            "You were the perfect fulcrum! I don't know what I would have done without you.",
+            "You were the perfect fulcrum! I don't know what I would have done without you. Ww",
         )
         self.assertTrue(result.is_confident())
 

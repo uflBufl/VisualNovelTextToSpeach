@@ -1319,16 +1319,30 @@ class AppController:
             if result.dialogue_confidence is None
             else result.dialogue_confidence
         )
-        if (
-            not result.text.strip()
-            or not confidence >= self.settings.ocr_minimum_confidence
-        ):
+        if not result.text.strip():
             if resolution is not None:
-                resolution["match_result"] = (
-                    "empty" if not result.text.strip() else "ocr-uncertain"
-                )
+                resolution["match_result"] = "empty"
             return result
+        confident = confidence >= self.settings.ocr_minimum_confidence
         with self.story_cursor_lock:
+            preloader = self.chapter_voice_preloader
+            plan, cursor = self.live_sequence_plan, self.story_cursor
+            bounded = (
+                plan is not None
+                and self.settings.live_sequence_mode != "off"
+                and cursor is not None
+                and cursor.current_event is not None
+                and cursor.state
+                not in {
+                    StoryCursorState.UNSYNCHRONIZED,
+                    StoryCursorState.ANCHORING,
+                    StoryCursorState.DESYNCHRONIZED,
+                }
+            )
+            if not confident and not bounded:
+                if resolution is not None:
+                    resolution["match_result"] = "ocr-uncertain"
+                return result
             expected_prefix = self._expected_sequence_prefix_line_locked()
             if expected_prefix is not None:
                 evidence = compare_text(
@@ -1340,8 +1354,6 @@ class AppController:
                     if resolution is not None:
                         resolution["match_result"] = "owned-prefix"
                     return result
-            preloader = self.chapter_voice_preloader
-            plan, cursor = self.live_sequence_plan, self.story_cursor
             if plan is not None and self.settings.live_sequence_mode != "off":
                 events = (
                     (cursor.current_event, *cursor.bounded_visible_successors())
@@ -1368,7 +1380,10 @@ class AppController:
             line, match = preloader.resolve_complete_among(
                 "", result.text, line_ids, update_context=False
             )
-            if line is None:
+            if not confident and match not in {"expected-exact", "expected-text-only"}:
+                line = None
+                match = "ocr-uncertain"
+            if line is None and confident:
                 chapter_line, chapter_match = (
                     self._resolve_chapter_exact_sequence_line_locked("", result.text)
                 )
@@ -1383,6 +1398,7 @@ class AppController:
             character=line.speaker,
             text=line.text,
             confidence=confidence,
+            source_text_confirmed=not confident,
             speaker_note=(
                 f"Speaker from the prepared story; OCR name ignored: {result.character}"
             ),

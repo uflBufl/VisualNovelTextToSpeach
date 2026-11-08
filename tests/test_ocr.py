@@ -524,13 +524,13 @@ class RecognizedDialogTest(unittest.TestCase):
             "height": [72, 133, 65, 18, 6, 63],
         }
         dialog_data = {
-            "text": ["Hey!", "-", "™", "\\", "|", "a", "Se"],
-            "conf": [90, 73, 0, 0, 57, 62, 53],
+            "text": ["Hey!", "-", "™", "\\", "|"],
+            "conf": [90, 73, 0, 0, 57],
         }
 
         result = recognize_dialog_image_result(
             Image.new("RGB", (2560, 560), "black"),
-            recognize_text=Mock(return_value="Hey! - ™ \\\n| a\nSe\n"),
+            recognize_text=Mock(return_value="Hey! - ™ \\\n|\n"),
             recognize_data=Mock(side_effect=[merged_data, sparse_data, dialog_data]),
         )
 
@@ -691,7 +691,7 @@ class RecognizedDialogTest(unittest.TestCase):
                     OCRResult("Rhiannon", text, 95, "sauvola", 1).is_confident()
                 )
 
-    def test_dialog_cleanup_removes_low_confidence_background_suffix(self):
+    def test_dialog_cleanup_preserves_low_confidence_alphabetic_suffix(self):
         data = {
             "text": ["Alright,", "that", "makes", "five.", "ae"],
             "conf": [96, 95, 96, 96, 42],
@@ -702,8 +702,22 @@ class RecognizedDialogTest(unittest.TestCase):
                 data,
                 ["Alright, that makes five. ae"],
             ),
-            ["Alright, that makes five."],
+            ["Alright, that makes five. ae"],
         )
+
+    def test_dialog_cleanup_keeps_complete_text_and_its_confidence(self):
+        for continuation in ("Eurus", "Leave", "I"):
+            with self.subTest(continuation=continuation):
+                data = {
+                    "text": ["Eurus", "...", continuation, "..."],
+                    "conf": [82, 82, 23, 23],
+                }
+                text = f"Eurus ... {continuation} ..."
+                self.assertEqual(clean_dialog_lines_from_data(data, [text]), [text])
+                self.assertEqual(
+                    calculate_ocr_confidence(data),
+                    (82 * 6 + 23 * (len(continuation) + 1)) / (7 + len(continuation)),
+                )
 
     def test_dialog_cleanup_preserves_confident_sentence_after_sentence(self):
         data = {
@@ -741,7 +755,7 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(result.text, "...")
         self.assertGreaterEqual(result.confidence, 90)
 
-    def test_recognition_removes_background_suffix_from_dialog_result(self):
+    def test_recognition_preserves_low_confidence_alphabetic_suffix(self):
         frame_data = {
             "text": ["Rhiannon", "Alright,", "that", "makes", "five.", "ae"],
             "conf": [96, 96, 95, 96, 96, 42],
@@ -766,7 +780,38 @@ class RecognizedDialogTest(unittest.TestCase):
         )
 
         self.assertEqual(result.character, "Rhiannon")
-        self.assertEqual(result.text, "Alright, that makes five.")
+        self.assertEqual(result.text, "Alright, that makes five. ae")
+
+    def test_recognition_keeps_low_confidence_continuation_below_nameplate(self):
+        frame_data = {
+            "text": ["Marcus", "Eurus", "...", "Eurus", "..."],
+            "conf": [95, 82, 82, 23, 23],
+            "block_num": [1] * 5,
+            "par_num": [1, 2, 2, 2, 2],
+            "line_num": [1] * 5,
+            "left": [50, 38, 266, 352, 578],
+            "top": [0, 150, 195, 150, 195],
+            "width": [160, 197, 57, 196, 58],
+            "height": [45, 56, 12, 56, 12],
+        }
+        for continuation in ("Eurus", "Leave"):
+            with self.subTest(continuation=continuation):
+                text = f"Eurus ... {continuation} ..."
+                dialog_data = {
+                    "text": ["Eurus", "...", continuation, "..."],
+                    "conf": [82, 82, 23, 23],
+                }
+                result = recognize_dialog_image_result(
+                    Image.new("RGB", (1000, 300), "black"),
+                    self.registry,
+                    recognize_text=Mock(return_value=text),
+                    recognize_data=Mock(side_effect=[frame_data, dialog_data]),
+                )
+
+                self.assertEqual((result.character, result.text), ("Marcus", text))
+                self.assertEqual(result.confidence, 52.5)
+                self.assertEqual(result.dialogue_confidence, 52.5)
+                self.assertFalse(result.is_confident())
 
     def test_dialog_crop_preserves_the_right_edge_of_long_text(self):
         image = Image.new("RGB", (1000, 400), "white")
@@ -1031,7 +1076,9 @@ class RecognizedDialogTest(unittest.TestCase):
             "02.png": (
                 "X",
                 "You were the perfect fulcrum! "
-                "I don't know what I would have done without you.",
+                # The continue triangle is OCR'd as Ww; confidence alone cannot
+                # distinguish that artifact from a real dialogue continuation.
+                "I don't know what I would have done without you. Ww",
             ),
         }
 

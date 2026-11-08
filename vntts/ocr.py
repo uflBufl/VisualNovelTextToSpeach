@@ -515,12 +515,17 @@ class OCRResult:
     speaker_confidence: float | None = None
     dialogue_confidence: float | None = None
     speaker_note: str = ""
+    source_text_confirmed: bool = False
 
     def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
         return self.confidence >= minimum and (
             any(character.isalnum() for character in self.text)
             or is_symbol_only_text(self.text)
         )
+
+    def is_readable(self, minimum: float = default_minimum_ocr_confidence) -> bool:
+        # Exact source authority does not change the measured OCR confidence.
+        return self.source_text_confirmed or self.is_confident(minimum)
 
 
 def detect_standalone_ellipsis_frame(
@@ -1330,7 +1335,7 @@ def clean_dialog_lines(text: str) -> list[str]:
 def clean_dialog_lines_from_data(
     data: OcrData, fallback_lines: Sequence[str]
 ) -> list[str]:
-    """Remove low-confidence background words appended after a full sentence."""
+    """Remove trailing non-alphanumeric glyphs after a full sentence."""
     fallback_lines = list(fallback_lines)
     words = _recognized_words(data)
     cleaned_words = _trim_trailing_ocr_noise(words)
@@ -1386,17 +1391,8 @@ def _trim_trailing_ocr_noise(
     suffix = words[terminal_position + 1 :]
     return (
         words[: terminal_position + 1]
-        if all(_is_suspicious_trailing_word(*word) for word in suffix)
+        if not any(character.isalnum() for text, _ in suffix for character in text)
         else words
-    )
-
-
-def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:
-    alphanumeric_characters = sum(character.isalnum() for character in word)
-    return (
-        alphanumeric_characters == 0
-        or confidence < 45
-        or (alphanumeric_characters <= 3 and confidence < 65)
     )
 
 

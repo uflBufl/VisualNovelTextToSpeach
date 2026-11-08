@@ -306,20 +306,9 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review and agree the shared OCR repair below before implementation.
-Use the retained seasonal-run evidence before scheduling another chapter.
+Next action: investigate RUN-08-01 against the retained movie and input journal;
+reconcile the confirmed manual interventions before proposing an input repair.
 
-- [ ] **OCR-08-01 - Preserve real dialogue after low-confidence punctuation.**
-      On315601:60, Native Tesseract returns `Eurus ... Eurus ...`; TSV confidence
-      is82/82/23/23. Shared `_trim_trailing_ocr_noise` deletes the final two tokens
-      and reports only the retained half at82. Preserve legitimate continuation in
-      all consumers and calculate confidence over retained words. Keeping all
-      four tokens gives52.5; the current controller rejects it before complete
-      source matching, so trim-only repair does not resolve the stall. Agree a
-      bounded complete/unique exact-source authority plan without lowering the
-      global60 threshold or admitting partial/fuzzy/ambiguous unknown text. Cover
-      both OCR paths, truthful confidence, existing noise/symbol controls and the
-      real frame; run changed tests first, then focused checks and native replay.
 - [ ] **RUN-08-01 - Attribute the unconfirmed transition after315601:39.**
       Completed audio/full canonical text, one52ms Quartz Space with selected
       game foreground before/after, then unchanged readable line and timeout.
@@ -334,10 +323,20 @@ Use the retained seasonal-run evidence before scheduling another chapter.
       0.999793 over the full9.28s with zero local shift. Plan/check a consistent
       analysis resampling method against retained positive and real-gap cases.
       Keep existing quality thresholds; add no per-playback filesystem audits.
+- [ ] **OCR-08-02 - Separate a verified continue indicator from dialogue pixels.**
+      Legacy `samples/02.png` includes the bottom-right continue triangle in its
+      dialogue crop. Native OCR reads it as `Ww` (confidence44) after the complete
+      sentence. The former confidence-based suffix deletion hid this artifact
+      while also deleting real words. Investigate validated cue/layout exclusion
+      before proposing a repair; preserve real multiline continuation and short
+      words. Do not restore word-length/confidence deletion or change the visual
+      reference text to match the OCR artifact.
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from its verified first dialogue to the actual terminal scene, with
-      prepared voices and genuine background generation. Preserve source/voice
-      identity, recording readiness and3600s cap. Keep manual recovery and control
+      prepared voices and genuine background generation. Verify full low-confidence
+      source dialogue after playback, one automatic transition and no replay.
+      Preserve source/voice identity, recording readiness and3600s cap. Keep
+      manual recovery and control
       episodes separate; unavailable failure/scene cases remain pending.
 - [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
       import in isolated settings, long errors/copy/keyboard) and native physical

@@ -20,6 +20,7 @@ from vntts.dialog_capture import (
     CapturedDialogFrame,
     OCRUncertainError,
     analyze_dialog_snapshot,
+    read_dialog,
 )
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
@@ -28,6 +29,7 @@ from vntts.generated_audio import (
 )
 from vntts.live import RecognizedDialog
 from vntts.live_sequence import StoryCursorState
+from vntts.live_snapshot import read_live_snapshot
 from vntts.ocr import OCRResult, recognize_dialog_image_result
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
@@ -64,6 +66,213 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         controller._publish_diagnostic = Mock()
         controller._resolve_voice_label = Mock(return_value="Prepared story voice")
         return controller
+
+    def anchor(self, controller, current, successors=(), state=StoryCursorState.LOCKED):
+        controller.settings = controller.settings.updated(
+            live_sequence_mode="audio-manual"
+        )
+        events = tuple(
+            SimpleNamespace(line_id=line.line_id, is_speech=True, chapter=line.chapter)
+            for line in (current, *successors)
+        )
+        controller.live_sequence_plan = SimpleNamespace(events=dict(enumerate(events)))
+        controller.story_cursor = SimpleNamespace(
+            state=state,
+            current_event=events[0],
+            bounded_visible_successors=Mock(return_value=events[1:]),
+        )
+
+    def test_bounded_exact_source_admits_low_confidence_without_inflating_it(self):
+        previous = story_line("The previous complete line.", line_id="previous")
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        for state in (
+            StoryCursorState.LOCKED,
+            StoryCursorState.PLAYING,
+            StoryCursorState.WAITING_TRANSITION,
+        ):
+            for successor in (False, True):
+                with self.subTest(state=state, successor=successor):
+                    controller = self.controller((previous, line))
+                    self.anchor(
+                        controller,
+                        previous if successor else line,
+                        (line,) if successor else (),
+                        state,
+                    )
+                    raw = observed(
+                        "Ｅｕｒｕｓ  ...\nEurus ...", dialogue_confidence=52.5
+                    )
+                    resolution = {}
+                    resolved = controller._resolve_story_ocr_result(
+                        raw, resolution=resolution
+                    )
+                    self.assertEqual(
+                        (resolved.character, resolved.text), (line.speaker, line.text)
+                    )
+                    self.assertEqual(resolved.confidence, 52.5)
+                    self.assertEqual(resolved.dialogue_confidence, 52.5)
+                    self.assertEqual(
+                        resolved.speaker_confidence, raw.speaker_confidence
+                    )
+                    self.assertFalse(resolved.is_confident())
+                    self.assertTrue(resolved.is_readable())
+                    self.assertTrue(resolved.source_text_confirmed)
+                    self.assertEqual(resolution["match_result"], "expected-text-only")
+                    self.assertIsNone(controller.chapter_voice_preloader.current_match)
+                    with patch(
+                        "vntts.dialog_capture.recognize_dialog_image_result",
+                        return_value=raw,
+                    ):
+                        actual = controller._recognize_live_frame(
+                            CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                        )
+                    self.assertIsInstance(actual, RecognizedDialog)
+                    self.assertTrue(actual.exact_match)
+                    self.assert_generated_route(controller, line, actual)
+                    snapshot = controller._publish_diagnostic.call_args.args[0]
+                    self.assertEqual(snapshot.confidence, 52.5)
+                    self.assertEqual(snapshot.dialogue_confidence, 52.5)
+                    controller._ocr_uncertain.assert_not_called()
+
+    def test_low_confidence_source_authority_does_not_admit_other_matches(self):
+        line = story_line("Remember Nowa Miedź?", "Elma")
+        previous = story_line("An unrelated previous line.", line_id="previous")
+        cases = (
+            ((line,), line, (), "Remember Nowa Miedź", StoryCursorState.LOCKED),
+            ((line,), line, (), "Remember Nowa Miedz?", StoryCursorState.LOCKED),
+            ((line,), line, (), "Rememher Nowa Miedź?", StoryCursorState.LOCKED),
+            ((line,), line, (), "Remember Nowa Miedź? dust", StoryCursorState.LOCKED),
+            ((line,), line, (), "Remember Nowa", StoryCursorState.LOCKED),
+            (
+                (line, story_line(line.text, "Other", "duplicate")),
+                line,
+                (story_line(line.text, "Other", "duplicate"),),
+                line.text,
+                StoryCursorState.LOCKED,
+            ),
+            (
+                (line, story_line(line.text + " More words.", line_id="longer")),
+                line,
+                (story_line(line.text + " More words.", line_id="longer"),),
+                line.text,
+                StoryCursorState.LOCKED,
+            ),
+            ((previous, line), previous, (), line.text, StoryCursorState.LOCKED),
+            (
+                (replace(line, line_id=None),),
+                line,
+                (),
+                line.text,
+                StoryCursorState.LOCKED,
+            ),
+            (
+                (replace(line, text_sha256=None),),
+                line,
+                (),
+                line.text,
+                StoryCursorState.LOCKED,
+            ),
+            *(
+                ((line,), line, (), line.text, state)
+                for state in (
+                    StoryCursorState.UNSYNCHRONIZED,
+                    StoryCursorState.ANCHORING,
+                    StoryCursorState.DESYNCHRONIZED,
+                )
+            ),
+        )
+        for rows, current, successors, text, state in cases:
+            with self.subTest(rows=rows, text=text, state=state):
+                controller = self.controller(rows)
+                self.anchor(controller, current, successors, state)
+                raw = observed(text, dialogue_confidence=52.5)
+                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertFalse(raw.source_text_confirmed)
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    with self.assertRaises(OCRUncertainError):
+                        controller._recognize_live_frame(
+                            CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                        )
+
+    def test_low_confidence_complete_source_advances_once_after_playback(self):
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        following = story_line("The next complete line.", "Elma", "next")
+        controller = self.controller((line, following))
+        self.anchor(controller, line, (following,))
+        harness = AutoAdvanceFakeFrameHarness(
+            tracker_options={"complete_dialogue_only": True}
+        )
+
+        def recognize(frame):
+            with patch(
+                "vntts.dialog_capture.recognize_dialog_image_result",
+                return_value=observed(frame["text"], frame["character"], 52.5),
+            ):
+                return controller._recognize_live_frame(
+                    CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                )
+
+        harness.reader.recognize_frame = recognize
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            self.addCleanup(harness.stop)
+            for _ in range(3):
+                harness.clock.advance(0.2)
+                harness.push(
+                    line.speaker, line.text, background="current", complete=True
+                )
+            harness.finish_playback()
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+            harness.push(line.speaker, line.text, background="recheck", complete=True)
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(len(harness.played), 1)
+            self.assertEqual(harness.speech_executor.jobs, [])
+            for _ in range(2):
+                harness.push(following.speaker, following.text, background="next")
+            self.assertEqual(
+                harness.states, [("dispatched", 1, 1), ("confirmed", 1, 1)]
+            )
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(harness.errors, [])
+
+    def test_all_reading_consumers_use_source_authority_and_keep_diagnostics(self):
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        controller = self.controller((line,))
+        self.anchor(controller, line)
+        raw = observed(line.text, dialogue_confidence=52.5)
+        image = Image.new("RGB", (300, 100))
+        speech = Mock()
+        snapshots = []
+        with (
+            patch("vntts.dialog_capture.capture_dialog", return_value=(image, None)),
+            patch(
+                "vntts.dialog_capture.recognize_dialog_image_result", return_value=raw
+            ),
+        ):
+            kwargs = dict(
+                result_resolver=controller._resolve_story_ocr_result,
+                diagnostic_handler=snapshots.append,
+            )
+            read_dialog(controller.voice_router, ".", speech_handler=speech, **kwargs)
+            speech.assert_called_once_with(line.speaker, line.text)
+            self.assertEqual(
+                read_live_snapshot(".", **kwargs), (line.speaker, line.text)
+            )
+            with patch.object(
+                type(controller.diagnostics), "_test_audio_route"
+            ) as route:
+                self.assertEqual(
+                    controller.diagnostics.test_current_dialog(prepare_live=Mock()),
+                    (line.speaker, line.text),
+                )
+                self.assertEqual(route.call_args.args[:2], (line.speaker, line.text))
+        self.assertEqual([item.confidence for item in snapshots], [52.5, 52.5])
+        self.assertEqual(
+            controller._publish_diagnostic.call_args.args[0].confidence, 52.5
+        )
 
     def assert_generated_route(self, controller, line, actual):
         if isinstance(actual, RecognizedDialog):

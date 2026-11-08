@@ -168,6 +168,68 @@ class SplitOCRTest(unittest.TestCase):
         self.assertEqual(data.call_count, 2)
         read.assert_called_once()
 
+    def test_dialogue_continuation_keeps_text_and_low_confidence(self):
+        for continuation in ("Eurus", "Leave"):
+            with self.subTest(continuation=continuation):
+                text = f"Eurus ... {continuation} ..."
+                image = self._image_with_name("Elma")
+                result = recognize_dialog_image_result(
+                    image,
+                    recognize_text=Mock(return_value=text),
+                    recognize_data=Mock(
+                        side_effect=[
+                            {"text": ["Elma"], "conf": [95]},
+                            {
+                                "text": ["Eurus", "...", continuation, "..."],
+                                "conf": [82, 82, 23, 23],
+                            },
+                        ]
+                    ),
+                    ocr_regions=self.regions,
+                )
+                self.assertEqual((result.character, result.text), ("Elma", text))
+                self.assertEqual(result.speaker_confidence, 95)
+                self.assertEqual(result.dialogue_confidence, 52.5)
+                self.assertEqual(result.confidence, 52.5)
+                self.assertFalse(result.is_confident())
+
+                uncertain = Mock()
+                snapshots = []
+                with patch(
+                    "vntts.dialog_capture.recognize_screenshot_result",
+                    return_value=result,
+                ):
+                    self.assertEqual(
+                        recognize_live_frame(
+                            CapturedDialogFrame(image, 0, self.regions),
+                            uncertain_handler=uncertain,
+                            diagnostic_handler=snapshots.append,
+                        ),
+                        (None, ""),
+                    )
+                uncertain.assert_called_once_with(result, 60)
+                self.assertEqual(snapshots[0].text, text)
+                self.assertEqual(snapshots[0].dialogue_confidence, 52.5)
+
+    def test_dialogue_still_removes_structural_glyph_suffix(self):
+        result = recognize_dialog_image_result(
+            self._image_with_name(),
+            recognize_text=Mock(return_value="Hey! - ™ \\ |"),
+            recognize_data=Mock(
+                side_effect=[
+                    {"text": ["Marcus"], "conf": [95]},
+                    {
+                        "text": ["Hey!", "-", "™", "\\", "|"],
+                        "conf": [90, 73, 0, 0, 57],
+                    },
+                ]
+            ),
+            ocr_regions=self.regions,
+        )
+        self.assertEqual((result.character, result.text), ("Marcus", "Hey!"))
+        self.assertEqual(result.dialogue_confidence, 90)
+        self.assertTrue(result.is_confident())
+
     def test_background_in_empty_nameplate_does_not_block_narration(self):
         image = Image.new("RGB", (1000, 300))
         ImageDraw.Draw(image).polygon(

@@ -1635,7 +1635,7 @@ class DiagnosticsComponent:
             result_resolver=controller._resolve_story_ocr_result,
             capture_context=capture_context,
         )
-        if result.text and not result.is_confident(
+        if result.text and not result.is_readable(
             controller.settings.ocr_minimum_confidence
         ):
             error = OCRUncertainError(
