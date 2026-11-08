@@ -325,15 +325,27 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       `.codex/investigations/callback-attribution-20261108/` and
       `.codex/investigations/pcm-residency-20261108/`.
 
-- [ ] **OCR-03-01 - Handle internal punctuation in complete prepared matching (plan approval pending).**
-      Reproduced: `Remember Nowa Mied:z` is within one edit, but normalization
-      splits the final word and completion guards reject it. Add a bounded full-
-      phrase equality path for punctuation within alphabetic words, retaining real
-      whitespace and Latin-diacritic folding. Preserve allowed-candidate scope,
-      uniqueness, protected numbers/negation and partial/final-word safeguards;
-      leave global OCR normalization and edit budgets unchanged. Cover raw retained
-      observations through canonical/prepared routing plus punctuation, real-space,
-      prefix and ambiguous-candidate counterexamples; no dictionary autocorrection.
+- [ ] **OCR-03-01 - Unify OCR candidate evidence and completion rules (revised plan approval pending).**
+      Current complete matching rejects punctuation-split words and final-word
+      substitutions, while bounded/startup matching accepts changed numbers/signs
+      and fuzzy truncated endings. Replace the proposed punctuation-only fallback
+      with one candidate comparison that retains alignment and coverage evidence.
+      Treat actual whitespace and punctuation separately; keep Latin folding,
+      existing letter-edit budgets and strict symbol-only matching. Relate protected
+      number/negation spans through alignment rather than normalized word indices.
+      Distinguish complete, prefix, ambiguous and no-match outcomes; do not use
+      word-count equality, exact last-word equality or similarity/coverage alone
+      as proof of completion. Keep the deliberate owner-authorized early-prefix
+      route and bounded nameplate/noise recovery, without allowing either to bypass
+      full-text or protected-content checks. Migrate canonical OCR, startup and
+      cursor consumers together, including replay recovery; preserve exact artifact
+      identity lookup and explicit candidate scope. Remove superseded guards and
+      controller string/coverage heuristics in the same change. Gate completion on
+      retained raw-observation routing plus counterexamples for final substitutions,
+      truncation, punctuation/real boundaries, protected spans and competing lines;
+      compare scoped runtime before/after. No dictionary autocorrection, new global
+      fuzzy story search or game rerun before the combined acceptance run. Research:
+      `.codex/investigations/ocr-matching-architecture-20261108/`.
 
 - [ ] **RUN-02-02 - Remaining native voice warmup-scope evidence.**
       Canonical43 used its ready generated recording after partial/name-loss OCR.
