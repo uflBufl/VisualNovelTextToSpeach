@@ -632,7 +632,6 @@ class VoiceAuditionPanel(QGroupBox):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self.reference_table.setWordWrap(False)
-        self.reference_table.setMouseTracking(True)
         self.reference_table.verticalHeader().hide()
         header = self.reference_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -644,15 +643,8 @@ class VoiceAuditionPanel(QGroupBox):
         self.reference_table.selectionModel().currentChanged.connect(
             self._reference_row_selected
         )
-        self.reference_table.entered.connect(self._reference_row_hovered)
         self.reference_search.textChanged.connect(self._filter_references)
         layout.addWidget(self.reference_table)
-        self._hover_index = 0
-        self._focus_index = 0
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.setInterval(180)
-        self._hover_timer.timeout.connect(self._prepare_highlighted_reference)
 
     def _initialize_advice(
         self,
@@ -747,6 +739,7 @@ class VoiceAuditionPanel(QGroupBox):
             and not self._shutdown_requested
             and not self._terminal_emitted
         ):
+            self._prefetch_window()
             self._refresh_reference_advice()
             self._check_ready_previews()
             self._refresh_preparation_failure()
@@ -907,7 +900,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._cache_cancel.set()
         self.cache_runner.cancel()
         self._cancel_advice()
-        self._hover_timer.stop()
         self._stop_player()
         self._cancel_preview_request()
         if getattr(self.preview_service, "supports_prefetch", False) is True:
@@ -922,7 +914,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._shutdown_requested = True
         self._cache_cancel.set()
         self.cache_runner.cancel()
-        self._hover_timer.stop()
         self._cancel_advice()
         if getattr(self.preview_service, "supports_prefetch", False) is True:
             self.preview_service.cancel()
@@ -935,7 +926,9 @@ class VoiceAuditionPanel(QGroupBox):
             self.preview_service.close()
 
     def _show_group(self) -> None:
-        self._hover_timer.stop()
+        previous_source = (
+            self._current_entry()[0].source_id if self._candidate_entries else None
+        )
         self._cancel_advice()
         self._candidate_offset = 0
         self._cancel_preview_request()
@@ -979,12 +972,16 @@ class VoiceAuditionPanel(QGroupBox):
             )
         )
         self._candidate_entries = tuple(entries)
+        if (
+            previous_source != self._current_entry()[0].source_id
+            and self._sample_text in self._game_phrases
+        ):
+            self._sample_text = None
         self.reference_browser.setVisible(bool(entries))
         self._advice_attempted.clear()
         self._content_checks.clear()
         self._advice_unavailable = False
         self._advice_error = None
-        self._focus_index = 0
         self._populate_reference_choices()
         self._show_preview_text(group)
         self._restore_cached_previews()
@@ -1056,7 +1053,6 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_saved_reference()
 
     def _filter_references(self, text: str) -> None:
-        self._hover_timer.stop()
         with QSignalBlocker(self.reference_table.selectionModel()):
             self.reference_proxy.setFilterFixedString(text)
             selected = self.reference_proxy.mapFromSource(
@@ -1069,12 +1065,6 @@ class VoiceAuditionPanel(QGroupBox):
     ) -> None:
         if index.isValid():
             self._voice_reference_selected(
-                self.reference_proxy.mapToSource(index).row()
-            )
-
-    def _reference_row_hovered(self, index: QModelIndex) -> None:
-        if index.isValid():
-            self._voice_reference_highlighted(
                 self.reference_proxy.mapToSource(index).row()
             )
 
@@ -1120,10 +1110,18 @@ class VoiceAuditionPanel(QGroupBox):
         self.setTitle("Selected reference" if same_preview else "New voice")
 
     def _show_preview_text(self, group: VoiceGroup) -> None:
-        phrases = [group.sample_text, group.alternate_sample_text]
+        phrases = []
         for candidate, _choice, _narrator in self._candidate_entries:
             phrases.extend(candidate.source_excerpts)
             phrases.append(candidate.reference_transcript)
+        phrases = [
+            group.sample_text,
+            group.alternate_sample_text,
+            *sorted(
+                (text.strip() for text in phrases if text and text.strip()),
+                key=lambda text: (text.casefold(), text),
+            ),
+        ]
         self._game_phrases = tuple(
             dict.fromkeys(
                 text.strip()
@@ -1163,13 +1161,18 @@ class VoiceAuditionPanel(QGroupBox):
         self.preview_text.setPlainText(self._game_phrases[index])
 
     def _voice_reference_selected(self, index: int) -> None:
-        if self.decision_runner.active or not 0 <= index < len(self._candidate_entries):
+        if (
+            self.decision_runner.active
+            or not 0 <= index < len(self._candidate_entries)
+            or index == self._candidate_offset
+        ):
             return
         self._cancel_preview_request()
         self._candidate_offset = index
-        self._focus_index = index
-        self._hover_timer.stop()
-        self._show_current_candidate()
+        if self._sample_text in self._game_phrases[1:]:
+            self.preview_text.setPlainText(self._game_phrases[0])
+        else:
+            self._show_current_candidate()
 
     def _preview_text_edited(self) -> None:
         if not self.decision_runner.active:
@@ -1514,58 +1517,36 @@ class VoiceAuditionPanel(QGroupBox):
             )
         return self._previews.get(self._preview_key(candidate))
 
-    def _voice_reference_highlighted(self, index: int) -> None:
-        if 0 <= index < len(self._candidate_entries):
-            self._hover_index = index
-            self._hover_timer.start()
-
-    def _prepare_highlighted_reference(self) -> None:
-        if (
-            self._shutdown_requested
-            or self._cancel_requested
-            or self.decision_runner.active
-        ):
-            return
-        self._focus_index = self._hover_index
-        self._prefetch_window()
-        self._refresh_reference_advice()
-
-    def _focus_candidates(self) -> tuple[VoiceCandidate, ...]:
-        focus = self.reference_proxy.mapFromSource(
-            self.reference_model.index(self._focus_index, 0)
-        )
-        if not focus.isValid():
+    def _ordered_candidates(self) -> tuple[VoiceCandidate, ...]:
+        if not self._candidate_entries:
             return ()
-        count = self.reference_proxy.rowCount()
-        row = focus.row()
-        indices = (row, row + 1, row - 1)
-        if row == 0:
-            indices = (0, 1, 2)
-        elif row == count - 1:
-            indices = (count - 1, count - 2, count - 3)
+        # Keep preparation stable while the table is filtered, sorted or scrolled.
+        indices = (self._candidate_offset, *range(len(self._candidate_entries)))
         return tuple(
-            self._candidate_entries[
-                self.reference_proxy.mapToSource(
-                    self.reference_proxy.index(index, 0)
-                ).row()
-            ][0]
-            for index in indices
-            if 0 <= index < count
+            self._candidate_entries[index][0] for index in dict.fromkeys(indices)
         )
 
     def _prefetch_window(self) -> None:
         if (
             getattr(self.preview_service, "supports_prefetch", False) is not True
             or not self._sample_text
+            or self._cancel_requested
+            or self._shutdown_requested
+            or self._terminal_emitted
+            or self._pending_decisions
+            or self.decision_runner.active
         ):
             return
         group = self.current_group()
-        requests = tuple(
-            (group, candidate.source_id, self._sample_text)
-            for candidate in self._focus_candidates()
-        )
+        requests = []
+        for candidate in self._ordered_candidates():
+            if self._availability(candidate) in {"Ready", "Preparation failed"}:
+                continue
+            requests.append((group, candidate.source_id, self._sample_text))
+            if len(requests) == 3:
+                break
         cast(_PrefetchVoiceAuditionPreviewer, self.preview_service).prefetch(
-            self._require_plan(), requests, automatic=True
+            self._require_plan(), tuple(requests), automatic=True
         )
 
     def _preview_key(self, candidate: VoiceCandidate) -> PreviewKey:
@@ -1746,7 +1727,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         previews = []
         text = self._advice_text(self.current_group())
-        for candidate in self._focus_candidates():
+        for candidate in self._ordered_candidates()[:3]:
             preview = self._ready_preview(candidate)
             if not isinstance(preview, VoiceAuditionPreview):
                 continue
@@ -1862,7 +1843,7 @@ class VoiceAuditionPanel(QGroupBox):
     ) -> None:
         if self._shutdown_requested or self._cancel_requested or self._terminal_emitted:
             return
-        if self._pending_decisions:
+        if self._pending_decisions or not self._candidate_entries:
             return
         if error is None:
             self._content_checks.update(checks or {})

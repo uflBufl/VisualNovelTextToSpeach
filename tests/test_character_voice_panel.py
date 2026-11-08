@@ -515,9 +515,10 @@ class CharacterVoicePanelTest(unittest.TestCase):
             candidate_inventory=(candidate,),
         )
         self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        self.assertEqual(self.panel._game_phrases, phrases)
+        expected = (phrases[0], phrases[1], phrases[3], phrases[4], phrases[2])
+        self.assertEqual(self.panel._game_phrases, expected)
         self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        for text in (*phrases[1:], phrases[0]):
+        for text in (*expected[1:], expected[0]):
             self.panel.game_phrase_button.click()
             self.assertEqual(self.panel.preview_text.toPlainText(), text)
             self.assertEqual(self.panel._sample_text, text)

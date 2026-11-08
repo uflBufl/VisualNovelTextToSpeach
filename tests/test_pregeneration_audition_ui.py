@@ -256,7 +256,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             self.assertEqual(panel.reference_model.index(499, 2).data(), "49.9 s")
 
-    def test_sorted_filtered_hover_and_preview_keep_source_identity(self):
+    def test_sorted_filtered_selection_and_preview_keep_source_identity(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))
             base = group.candidate_inventory[0]
@@ -289,15 +289,12 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             first = panel.reference_proxy.index(0, 0)
             self.assertEqual(first.data(Qt.ItemDataRole.UserRole), "reference:1")
             panel.reference_table.entered.emit(first)
-            panel._hover_timer.stop()
-            panel._prepare_highlighted_reference()
-            self.assertEqual(panel._focus_index, 1)
             self.assertEqual(panel._current_entry()[0].source_id, "reference:0")
             panel.reference_search.setText("Match 2")
             panel.reference_table.setCurrentIndex(panel.reference_proxy.index(0, 0))
             self.assertEqual(
-                [value.source_id for value in panel._focus_candidates()],
-                ["reference:2"],
+                [value.source_id for value in panel._ordered_candidates()],
+                ["reference:2", "reference:0", "reference:1"],
             )
             panel.play_a()
             self.finish_task(pool.tasks.pop())
@@ -811,8 +808,8 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(panel.preview_text.toPlainText(), group.sample_text)
             for text in (
                 group.alternate_sample_text,
-                "Third game phrase.",
                 "Fourth game phrase.",
+                "Third game phrase.",
                 group.sample_text,
             ):
                 panel.game_phrase_button.click()
@@ -822,6 +819,125 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(panel.preview_text.toPlainText(), group.sample_text)
             service.generate.assert_not_called()
             player.play_bytes.assert_not_called()
+
+    def test_game_phrase_order_does_not_depend_on_selected_reference(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            plan, group = with_second_candidate(plan, group)
+            candidates = (
+                replace(
+                    group.candidates[0],
+                    source_excerpts=("Zulu.", " Alpha. "),
+                    reference_transcript=None,
+                ),
+                replace(
+                    group.candidates[1], source_excerpts=("alpha.", "Zulu.", "Beta.")
+                ),
+            )
+            group = replace(
+                group, candidates=candidates, candidate_inventory=candidates
+            )
+            panel = VoiceAuditionPanel(
+                Mock(),
+                preview_service=Mock(),
+                player=Mock(),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            expected = (
+                group.sample_text,
+                group.alternate_sample_text,
+                "Alpha.",
+                "alpha.",
+                "Beta.",
+                "Zulu.",
+            )
+            for candidate in candidates:
+                chosen = replace(group, source_id=candidate.source_id)
+                panel.start(replace(plan, groups=(chosen,)), group_id=chosen.group_id)
+                self.assertEqual(panel._game_phrases, expected)
+
+    def test_new_reference_context_resets_game_phrase_but_keeps_custom_comparison(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            plan, group = with_second_candidate(plan, group)
+            panel = VoiceAuditionPanel(
+                Mock(),
+                preview_service=Mock(),
+                player=Mock(),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan, group_id=group.group_id)
+            panel.game_phrase_button.click()
+            panel.start(plan, group_id=group.group_id)
+            self.assertEqual(
+                panel.preview_text.toPlainText(), group.alternate_sample_text
+            )
+            chosen = replace(group, source_id=group.candidates[1].source_id)
+            panel.start(replace(plan, groups=(chosen,)), group_id=chosen.group_id)
+            self.assertEqual(panel.preview_text.toPlainText(), group.sample_text)
+            panel.preview_text.setPlainText("My comparison phrase.")
+            panel.start(plan, group_id=group.group_id)
+            self.assertEqual(panel.preview_text.toPlainText(), "My comparison phrase.")
+
+    def test_reference_change_resets_game_phrase_and_reuses_previous_previews(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            service, player, pool = Mock(), Mock(), ManualThreadPool()
+            service.generate.return_value = generated_preview(root)
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=service, player=player, thread_pool=pool
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan, group_id=group.group_id)
+            for index in (0, 1):
+                select_reference(panel, index)
+                panel.play_a()
+                self.finish_task(pool.tasks.pop())
+            panel.game_phrase_button.click()
+            self.assertEqual(
+                panel.preview_text.toPlainText(), group.alternate_sample_text
+            )
+            panel.play_a()
+            self.finish_task(pool.tasks.pop())
+            select_reference(panel, 0)
+            self.assertEqual(panel.preview_text.toPlainText(), group.sample_text)
+            panel.play_a()
+            select_reference(panel, 1)
+            self.assertEqual(panel.preview_text.toPlainText(), group.sample_text)
+            panel.play_a()
+            panel.game_phrase_button.click()
+            panel.play_a()
+            self.assertEqual(service.generate.call_count, 3)
+            self.assertEqual(pool.tasks, [])
+            self.assertEqual(player.play_bytes.call_count, 6)
+
+    def test_changing_column_in_same_reference_preserves_game_or_custom_phrase(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _manifest = ambiguous_fixture(Path(directory))
+            panel = VoiceAuditionPanel(
+                Mock(),
+                preview_service=Mock(),
+                player=Mock(),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan, group_id=group.group_id)
+            for column, text in enumerate(
+                (group.alternate_sample_text, "My own phrase."), 1
+            ):
+                panel.preview_text.setPlainText(text)
+                panel.reference_table.setCurrentIndex(
+                    panel.reference_proxy.index(0, column)
+                )
+                self.assertEqual(panel.preview_text.toPlainText(), text)
 
     def test_sparse_portraits_are_hidden_consistently(self):
         with TemporaryDirectory() as temporary_directory:

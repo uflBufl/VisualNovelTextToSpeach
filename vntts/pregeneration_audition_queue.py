@@ -61,6 +61,7 @@ class _Job:
     text: str | None
     foreground: bool = False
     automatic: bool = False
+    waiters: int = 0
     cancel: Event = field(default_factory=Event)
     done: Event = field(default_factory=Event)
     preview: VoiceAuditionPreview | None = None
@@ -375,6 +376,7 @@ class VoiceAuditionSession:
                 job.foreground = job.foreground or not automatic
                 job.automatic = job.automatic or automatic
                 job.progress = progress
+            job.waiters += 1
         return _wait_for_preview(job, cancel_event)
 
     def peek(
@@ -524,7 +526,7 @@ class VoiceAuditionSession:
                     )
                 elif automatic:
                     job.automatic = True
-            # Hovered/current targets precede stale speculative neighbours.
+            # Current targets precede stale speculative neighbours.
             pending = self.owner._pending
             prioritized = [
                 self._jobs[key]
@@ -540,7 +542,11 @@ class VoiceAuditionSession:
 
     def _cancel_displaced_jobs(self, keys: set[str]) -> None:
         for key, job in tuple(self._jobs.items()):
-            if key not in keys and not job.foreground:
+            if (
+                key not in keys
+                and not job.foreground
+                and job is not self.owner._running
+            ):
                 job.cancel.set()
                 if job in self.owner._pending:
                     self.owner._pending.remove(job)
@@ -577,13 +583,27 @@ class VoiceAuditionSession:
 def _wait_for_preview(
     job: _Job, cancel_event: _Cancellation | None
 ) -> VoiceAuditionPreview:
-    while not job.done.wait(0.05):
+    try:
+        while not job.done.wait(0.05):
+            if cancel_event is not None and cancel_event.is_set():
+                raise VoiceAuditionCancelled("Voice audition generation was cancelled")
         if cancel_event is not None and cancel_event.is_set():
-            job.cancel.set()
             raise VoiceAuditionCancelled("Voice audition generation was cancelled")
-    if cancel_event is not None and cancel_event.is_set():
-        raise VoiceAuditionCancelled("Voice audition generation was cancelled")
-    if job.error is not None:
-        raise job.error
-    assert job.preview is not None
-    return job.preview
+        if job.error is not None:
+            raise job.error
+        assert job.preview is not None
+        return job.preview
+    finally:
+        with job.session.owner._lock:
+            job.waiters -= 1
+            if (
+                not job.waiters
+                and not job.done.is_set()
+                and cancel_event is not None
+                and cancel_event.is_set()
+            ):
+                if job.session.owner._running is job:
+                    # Keep started work reusable, but allow suspension to stop it.
+                    job.foreground = False
+                else:
+                    job.cancel.set()

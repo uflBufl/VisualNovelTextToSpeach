@@ -374,17 +374,19 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 [request.text for request in backend.requests],
                 ["First.", "Third.", "Second.", "Fourth."],
             )
-            self.assertIsNone(session.peek(plan, groups[0], source))
+            self.assertIsNotNone(session.peek(plan, groups[0], source))
             self.assertEqual(
                 session.preparation_state(plan, groups[3], source), "ready"
             )
 
-    def test_returning_to_cancelled_running_preview_enqueues_a_replacement(self):
+    def test_changing_prefetch_window_preserves_running_preview_for_foreground_reuse(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             plan, group, _, backend, owner = self.fixture(Path(directory))
             session = owner.session()
             source = group.candidates[0].source_id
-            entered, release = Event(), Event()
+            entered, release, joined = Event(), Event(), Event()
 
             def block_first_render():
                 entered.set()
@@ -393,25 +395,40 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             backend.on_render = block_first_render
             first = ((group, source, None),)
             other = ((group, source, group.alternate_sample_text),)
-            try:
-                session.prefetch(plan, first, automatic=True)
-                self.assertTrue(entered.wait(5))
-                cancelled = owner._running
-                session.prefetch(plan, other, automatic=True)
-                session.prefetch(plan, first, automatic=True)
-                self.assertTrue(cancelled.cancel.is_set())
-                with owner._lock:
-                    self.assertEqual(len(owner._pending), 1)
-                    self.assertIsNot(owner._pending[0], cancelled)
-                self.assertEqual(
-                    session.preparation_state(plan, group, source), "queued"
-                )
-            finally:
-                release.set()
+
+            def wait_for_preview(job, cancel_event):
+                self.assertIs(job, running)
+                self.assertTrue(job.foreground)
+                joined.set()
+                return _wait_for_preview(job, cancel_event)
+
+            with ThreadPoolExecutor() as pool:
+                try:
+                    session.prefetch(plan, first, automatic=True)
+                    self.assertTrue(entered.wait(5))
+                    running = owner._running
+                    session.prefetch(plan, other, automatic=True)
+                    session.prefetch(plan, first, automatic=True)
+                    self.assertFalse(running.cancel.is_set())
+                    with owner._lock:
+                        self.assertEqual(owner._pending, [])
+                    self.assertEqual(
+                        session.preparation_state(plan, group, source), "preparing"
+                    )
+                    with patch(
+                        "vntts.pregeneration_audition_queue._wait_for_preview",
+                        side_effect=wait_for_preview,
+                    ):
+                        future = pool.submit(session.generate, plan, group, source)
+                        self.assertTrue(joined.wait(5))
+                        release.set()
+                        future.result(timeout=5)
+                finally:
+                    release.set()
             self.wait(owner)
             self.assertEqual(
                 [request.text for request in backend.requests],
-                [group.sample_text, group.sample_text],
+                [group.sample_text],
             )
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
             preview = session.peek(plan, group, source)
@@ -447,6 +464,59 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 ).reused
             )
             self.assertEqual(len(backend.requests), 2)
+
+    def test_foreground_waits_for_running_preparation_then_precedes_pending_background(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            session = owner.session()
+            source = group.candidates[0].source_id
+            entered, release, queued = Event(), Event(), Event()
+            pending_text = "Another background phrase."
+
+            def block():
+                entered.set()
+                self.assertTrue(release.wait(5))
+
+            def wait_for_preview(job, cancel_event):
+                queued.set()
+                return _wait_for_preview(job, cancel_event)
+
+            backend.on_render = block
+            with ThreadPoolExecutor() as pool:
+                try:
+                    session.prefetch(
+                        plan,
+                        ((group, source, None), (group, source, pending_text)),
+                        automatic=True,
+                    )
+                    self.assertTrue(entered.wait(5))
+                    running = owner._running
+                    with patch(
+                        "vntts.pregeneration_audition_queue._wait_for_preview",
+                        side_effect=wait_for_preview,
+                    ):
+                        future = pool.submit(
+                            session.generate,
+                            plan,
+                            group,
+                            source,
+                            text=group.alternate_sample_text,
+                        )
+                        self.assertTrue(queued.wait(5))
+                        self.assertIs(owner._running, running)
+                        self.assertFalse(running.cancel.is_set())
+                        release.set()
+                        future.result(timeout=5)
+                finally:
+                    release.set()
+            self.wait(owner)
+            self.assertEqual(
+                [request.text for request in backend.requests],
+                [group.sample_text, group.alternate_sample_text, pending_text],
+            )
+            self.assertIsNotNone(session.peek(plan, group, source))
 
     def test_failed_prediction_is_visible_without_automatic_retry_loop(self):
         with TemporaryDirectory() as directory:
@@ -722,7 +792,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             )
             owner.close()
 
-    def test_cancellation_does_not_publish_a_ready_preview(self):
+    def test_cancelling_a_waiter_keeps_the_running_preview_reusable(self):
         with TemporaryDirectory() as directory:
             plan, group, _, backend, owner = self.fixture(Path(directory))
             session = owner.session()
@@ -746,11 +816,89 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     cancel.set()
                     with self.assertRaises(VoiceAuditionCancelled):
                         future.result(timeout=2)
+                    self.assertFalse(owner._running.cancel.is_set())
                 finally:
                     release.set()
             self.wait(owner)
-            self.assertIsNone(session.peek(plan, group, group.candidates[0].source_id))
+            self.assertIsNotNone(
+                session.peek(plan, group, group.candidates[0].source_id)
+            )
+            self.assertTrue(
+                session.generate(plan, group, group.candidates[0].source_id).reused
+            )
+            self.assertEqual(len(backend.requests), 1)
             owner.close()
+
+    def test_explicit_cancellation_still_discards_running_background_preparation(self):
+        for action in ("cancel", "close", "suspend"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                plan, group, _, backend, owner = self.fixture(Path(directory))
+                session = owner.session()
+                source = group.candidates[0].source_id
+                entered, release = Event(), Event()
+
+                def block():
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+
+                backend.on_render = block
+                try:
+                    session.prefetch(plan, ((group, source, None),), automatic=True)
+                    self.assertTrue(entered.wait(5))
+                    running = owner._running
+                    getattr(owner if action == "suspend" else session, action)()
+                    self.assertTrue(running.cancel.is_set())
+                finally:
+                    release.set()
+                self.wait(owner)
+                self.assertIsNone(session.peek(plan, group, source))
+
+    def test_cancelling_pending_preview_only_stops_work_without_another_waiter(self):
+        for waiter_count in (1, 2):
+            with self.subTest(waiters=waiter_count), TemporaryDirectory() as directory:
+                plan, group, _, backend, owner = self.fixture(Path(directory))
+                session = owner.session()
+                source = group.candidates[0].source_id
+                release = Event()
+                cancellations = [Event() for _ in range(waiter_count)]
+                joined = [Event() for _ in range(waiter_count)]
+
+                def wait_for_preview(job, cancel_event):
+                    joined[cancellations.index(cancel_event)].set()
+                    return _wait_for_preview(job, cancel_event)
+
+                owner._pool.submit(lambda: release.wait(5))
+                with ThreadPoolExecutor() as pool:
+                    try:
+                        with patch(
+                            "vntts.pregeneration_audition_queue._wait_for_preview",
+                            side_effect=wait_for_preview,
+                        ):
+                            futures = [
+                                pool.submit(
+                                    session.generate,
+                                    plan,
+                                    group,
+                                    source,
+                                    cancel_event=cancel,
+                                )
+                                for cancel in cancellations
+                            ]
+                            for event in joined:
+                                self.assertTrue(event.wait(5))
+                            self.assertEqual(len(owner._pending), 1)
+                            job = owner._pending[0]
+                            cancellations[0].set()
+                            with self.assertRaises(VoiceAuditionCancelled):
+                                futures[0].result(timeout=2)
+                            self.assertEqual(job.cancel.is_set(), waiter_count == 1)
+                            release.set()
+                            if waiter_count == 2:
+                                futures[1].result(timeout=5)
+                    finally:
+                        release.set()
+                self.wait(owner)
+                self.assertEqual(len(backend.requests), waiter_count - 1)
 
     def test_cached_input_mutation_is_rejected_before_playback(self):
         with TemporaryDirectory() as directory:
