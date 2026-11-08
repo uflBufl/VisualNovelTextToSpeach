@@ -57,10 +57,21 @@ def qualify_story_references(
     """Keep character identity authoritative and checker failures unknown."""
     notify = progress or (lambda _message: None)
     selections: dict[str, str] = {}
+    total = sum(_automatic_group(group) for group in plan.groups)
+    if total:
+        notify(f"Checking automatic voice references. Characters: {total}.")
+    index = 0
     for group in plan.groups:
         _check_cancelled(cancellation)
         if not _automatic_group(group):
             continue
+        index += 1
+        context = f"Checking voice {index} of {total}: {group.character}"
+
+        def notify_group(message: str, context: str = context) -> object:
+            return notify(f"{context}. {message}")
+
+        notify(context)
         candidates = group.candidates[:3]
         baseline = candidates[0].source_id
         selections[group.group_id] = baseline
@@ -70,7 +81,6 @@ def qualify_story_references(
             "English",
         }:
             continue
-        notify(f"Checking automatic references for {group.character}")
         checks = cached_reference_checks(
             candidates,
             COMPARISON_PREVIEW_TEXT,
@@ -81,11 +91,11 @@ def qualify_story_references(
             advisor=content_advisor,
         )
         previews = _prepare_previews(
-            plan, group, candidates, checks, preview_service, cancellation, notify
+            plan, group, candidates, checks, preview_service, cancellation, notify_group
         )
         if previews:
             _check_cancelled(cancellation)
-            notify(f"Checking preview speech for {group.character}")
+            notify_group("Checking preview speech...")
             try:
                 checks.update(
                     (check.source_id, check)
@@ -97,9 +107,7 @@ def qualify_story_references(
                 raise PregenerationVoiceCancelled(str(error)) from error
             except Exception as error:
                 _check_cancelled(cancellation)
-                notify(
-                    f"Reference content advice unavailable for {group.character}: {error}"
-                )
+                notify_group(f"Reference content advice unavailable: {error}")
                 # A later failed check must not discard earlier exact cached evidence.
                 checks.update(
                     cached_reference_checks(
@@ -142,7 +150,12 @@ def _prepare_previews(
         _check_cancelled(cancellation)
         if candidate.source_id in checks:
             continue
-        notify(f"Preparing {group.character} reference {index}/{len(candidates)}")
+        context = f"Reference {index} of {len(candidates)}"
+
+        def notify_reference(message: str, context: str = context) -> object:
+            return notify(f"{context}. {message}")
+
+        notify_reference("Preparing preview...")
         try:
             previews.append(
                 preview_service.generate(
@@ -151,12 +164,12 @@ def _prepare_previews(
                     candidate.source_id,
                     text=COMPARISON_PREVIEW_TEXT,
                     cancel_event=cancellation,
-                    progress=notify,
+                    progress=notify_reference,
                 )
             )
         except VoiceAuditionCancelled as error:
             raise PregenerationVoiceCancelled(str(error)) from error
         except Exception as error:
             _check_cancelled(cancellation)
-            notify(f"Reference check unavailable for {group.character}: {error}")
+            notify_reference(f"Reference check unavailable: {error}")
     return tuple(previews)

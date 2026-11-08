@@ -434,6 +434,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovery_runner.finished.connect(self._recovery_finished)
         self.publication_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.publication_runner.finished.connect(self._publication_finished)
+        self._voice_progress_started_at: float | None = None
+        self._voice_progress_updated_at = monotonic()
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(500)
         self.progress_timer.timeout.connect(self._poll_generation_progress)
@@ -789,6 +791,8 @@ class OfflineAudioPreparationDialog(QDialog):
             QSizePolicy.Policy.Maximum,
         )
         self.progress_phase = QLabel()
+        self.progress_phase.setTextFormat(Qt.TextFormat.PlainText)
+        self.progress_phase.setWordWrap(True)
         self.progress_phase.setAccessibleName("Offline preparation phase")
         phase_font = self.progress_phase.font()
         phase_font.setBold(True)
@@ -3340,6 +3344,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_progress_runtime("")
         self.progress_coverage.clear()
         self._render_progress_story_readiness()
+        if self.planning_voices:
+            self._voice_progress_started_at = monotonic()
+            self._voice_progress_updated_at = self._voice_progress_started_at
+            self._refresh_voice_progress_timing()
+            self.progress_timer.start()
         self._emit_task_progress()
 
     def _set_progress_counts(
@@ -3397,6 +3406,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timer.start()
 
     def _poll_generation_progress(self) -> None:
+        if self.planning_voices:
+            self._refresh_voice_progress_timing()
+            return
+        if self._voice_progress_started_at is not None:
+            self._voice_progress_started_at = None
+            self.progress_timer.stop()
+            self._set_progress_timing("")
         if self._generation_input is None or not (self.generating or self.recovering):
             return
         self._refresh_progress_timing()
@@ -3406,6 +3422,16 @@ class OfflineAudioPreparationDialog(QDialog):
         if not callable(inspect):
             return
         self.progress_runner.start(inspect, self._generation_input)
+
+    def _refresh_voice_progress_timing(self) -> None:
+        if self._voice_progress_started_at is None:
+            return
+        now = monotonic()
+        elapsed = max(0, int(now - self._voice_progress_started_at))
+        age = max(0, int(now - self._voice_progress_updated_at))
+        self._set_progress_timing(
+            f"Voice preparation: {elapsed}s elapsed. Last update {age}s ago."
+        )
 
     def _progress_finished(self, progress: object, error: Exception | None) -> None:
         if not (self.generating or self.recovering) or self._close_after_voice_cancel:
@@ -5144,12 +5170,15 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _decoder_progress(self, message: str) -> None:
         if self.planning_voices and not self._close_after_voice_cancel:
-            self._set_phase_detail(message)
-            if message == "Matching character voices...":
-                self.progress_phase.setText("Matching character voices")
+            self.progress_phase.setText(message)
+            self._set_phase_detail("")
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat("")
             self.progress_counts.clear()
+            self.progress_counts.hide()
+            self._voice_progress_updated_at = monotonic()
+            self._refresh_voice_progress_timing()
+            self._emit_task_progress()
 
     def _source_audio_progress(self, value: object) -> None:
         if (
@@ -5173,15 +5202,21 @@ class OfflineAudioPreparationDialog(QDialog):
         counts = f"{value.processed} of {value.total} {unit} checked"
         self.progress_bar.setFormat(counts)
         self.progress_counts.setText(counts)
+        self.progress_counts.show()
         self._set_phase_detail(
             "Saving scanned story data..."
             if value.state == "publishing"
             else phase + "..."
         )
+        self._voice_progress_updated_at = monotonic()
+        self._refresh_voice_progress_timing()
         self._emit_task_progress()
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
+        self._voice_progress_started_at = None
+        self.progress_timer.stop()
+        self._set_progress_timing("")
         if self._recover_stale_voice_job(error):
             return
         if isinstance(plan, _SemanticVoicePlan):

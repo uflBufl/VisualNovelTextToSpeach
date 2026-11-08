@@ -4792,7 +4792,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             def match_voices(*_args, **_kwargs):
                 dialog.decoderProgress.emit("Checking preview speech for Tennant...")
                 self.assertEqual(
-                    dialog.progress_phase.text(), "Matching character voices"
+                    dialog.progress_phase.text(),
+                    "Checking preview speech for Tennant...",
                 )
                 return voice_plan
 
@@ -4830,6 +4831,57 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertIs(voice_plan_store.create.call_args.args[1], effective_settings)
             dialog.deleteLater()
+
+    def test_voice_preparation_shows_current_action_and_elapsed_time_until_cancelled(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            updates = []
+            dialog.phaseChanged.connect(updates.append)
+            with patch("vntts.pregeneration_ui.monotonic", return_value=100):
+                dialog.select_all_button.click()
+                dialog.continue_button.click()
+            self.assertTrue(dialog.progress_timer.isActive())
+            self.assertFalse(dialog.progress_timing.isHidden())
+            message = (
+                "Checking voice 2 of 17: Tennant. Reference 1 of 3: "
+                "Starting the preview model. First use also loads its weights..."
+            )
+            with patch("vntts.pregeneration_ui.monotonic", return_value=120):
+                dialog.decoderProgress.emit(message)
+            self.assertEqual(dialog.progress_phase.text(), message)
+            self.assertEqual(updates[-1], message)
+            self.assertIn("20s elapsed", dialog.progress_timing.text())
+            self.assertIn("Last update 0s ago", dialog.progress_timing.text())
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertTrue(dialog.progress_phase.wordWrap())
+            with patch("vntts.pregeneration_ui.monotonic", return_value=190):
+                dialog._poll_generation_progress()
+            self.assertIn("90s elapsed", dialog.progress_timing.text())
+            self.assertIn("Last update 70s ago", dialog.progress_timing.text())
+            with patch("vntts.pregeneration_ui.monotonic", return_value=195):
+                dialog.decoderProgress.emit(
+                    "Checking voice 2 of 17: Tennant. Generating preview audio..."
+                )
+            self.assertIn("Last update 0s ago", dialog.progress_timing.text())
+            dialog._cancel_or_reject()
+            phase = dialog.progress_phase.text()
+            dialog.decoderProgress.emit("Late progress after cancel")
+            self.assertEqual(dialog.progress_phase.text(), phase)
+            dialog._voice_plan_finished(None, PregenerationVoiceCancelled("cancelled"))
+            self.assertFalse(dialog.progress_timer.isActive())
+            self.assertTrue(dialog.progress_timing.isHidden())
+            dialog.voice_runner.cancel()
 
     def test_reverse1999_stage_asr_is_captured_before_voice_worker_starts(self):
         with TemporaryDirectory() as temporary_directory:

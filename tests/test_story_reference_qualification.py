@@ -141,14 +141,55 @@ class StoryReferenceQualificationTest(unittest.TestCase):
         )
         self.backend.on_render = lambda: self.fail("warm plan rendered audio")
         self.transcribe.side_effect = AssertionError("warm plan loaded ASR")
+        self.progress.clear()
         self.assertEqual(
             self.qualify(self.initial)[self.group.group_id], self.alternative.source_id
         )
         self.assertEqual(len(self.backend.requests), 2)
         self.assertEqual(self.transcribe.call_count, 2)
+        self.assertEqual(
+            self.progress,
+            [
+                "Checking automatic voice references. Characters: 1.",
+                "Checking voice 1 of 1: Rhiannon",
+            ],
+        )
         changed = replace(self.initial, synthesis_profile="natural")
         self.qualify(changed)
         self.assertGreater(len(self.backend.requests), 2)
+
+    def test_cold_progress_keeps_voice_and_reference_counts_during_inference(self):
+        def factory(*_args, **options):
+            options["startup_progress"]("Loading native model...")
+            return self.backend
+
+        self.previewer.backend_factory = factory
+        saved = replace(self.group, group_id="saved", resolution="saved-manual")
+        single = replace(
+            self.group,
+            group_id="single",
+            character="Other",
+            candidates=(self.baseline,),
+        )
+        self.qualify(replace(self.initial, groups=(saved, self.group, single)))
+
+        context = "Checking voice 1 of 2: Rhiannon. "
+        self.assertEqual(
+            self.progress[0], "Checking automatic voice references. Characters: 2."
+        )
+        self.assertIn(
+            context + "Reference 1 of 2. Loading native model...", self.progress
+        )
+        for index in (1, 2):
+            self.assertIn(
+                context
+                + f"Reference {index} of 2. Generating preview audio with the loaded model...",
+                self.progress,
+            )
+        self.assertIn(context + "Checking preview speech...", self.progress)
+        self.assertEqual(self.progress[-1], "Checking voice 2 of 2: Other")
+        self.assertEqual(len(self.backend.requests), 2)
+        self.assertEqual(self.transcribe.call_count, 2)
 
     def test_checker_failure_keeps_baseline_without_false_bad_evidence(self):
         self.transcribe.side_effect = RuntimeError("checker unavailable")

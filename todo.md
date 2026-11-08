@@ -8,6 +8,9 @@
       and portraits, including the windowed packaged worker's inherited stdout
       and stderr. Local Whisper inference and pipe regressions do not replace
       this platform gate.
+      During automatic reference qualification, verify model startup, preview
+      rendering and ASR show the current character/reference counters and elapsed
+      time in the main panel, including cancel/retry and a small Windows window.
 
 ## Active - SQLite runtime generation playback
 
