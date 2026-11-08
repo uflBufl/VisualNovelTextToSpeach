@@ -80,13 +80,11 @@
       MOSS/stable/seed0, retries0, отдельная очередь314501: один WAV получил
       speech_silence / sentence_boundary_pause_candidate, пауза3.44..5.04с.
       Проверка качества сработала, это не сбой воспроизведения главы314001.
-      В Stories проверить персонажа, полный текст и причину, прослушивание
-      последнего отклонённого WAV, остановку чтения перед ним и звука при закрытии.
-      Проверить различие «аудио не создано» и «запись не сохранена/недоступна»,
-      отмену автоматического повтора и итоговый экран с live fallback перед
+      В Stories прослушать последний реально отклонённый WAV, проверить остановку
+      активного чтения перед ним и диагностического звука при закрытии.
+      Проверить отмену автоматического повтора и итоговый экран с live fallback перед
       активацией. Диагностическое аудио не должно попадать в готовый пакет.
-      Проверить доступность панели при обычном и крупном шрифте. Новые действия
-      повтора, смены референса/движка и ручного принятия не добавлять.
+      Новые действия повтора, смены референса/движка и ручного принятия не добавлять.
 - [ ] **GEN-25-02: проверить лимит реплики314501:85 в общем прогоне.**
       MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
       max_tokens=517; WAV корректно не опубликован. Фраза Everecho:
@@ -102,12 +100,11 @@
       в Reading с обычным и крупным шрифтом, в том числе после Full controls
       из Compact. Повторные обновления статуса должны сохранять выделение
       и позицию прокрутки; новая реплика должна показываться с начала.
-- [ ] **UX-25-02: проверить Stories в заключительном живом прогоне.**
-      При 860x560 и уменьшении окна, включая крупный шрифт, проверить минимум
-      пять видимых строк, доступность Prepare again и основного действия без
-      прокрутки. Проверить раскрытие настроек/оценок, доступ к импорту при пустом
-      каталоге, видимость длинных ошибок, копирование и клавиатуру после возврата
-      из подготовки. Реальное колесо/трекпад проверить отдельно от MCP-событий.
+- [ ] **UX-25-02: оставшиеся взаимодействия Stories в общем прогоне.**
+      При обычном и крупном шрифте проверить доступность Prepare again после
+      возврата из подготовки, доступ к импорту при пустом каталоге, видимость
+      длинных ошибок, копирование и клавиатуру после возврата из подготовки.
+      Реальное колесо/трекпад проверить отдельно от MCP-событий.
 - [ ] **UX-26-01: проверить устройство генерации в общем живом прогоне.**
       В Stories / Show generation details сверить устройство и доступное имя
       чипа с health работающего MLX-воркера. После перезапуска воркера подпись
@@ -309,7 +306,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review the unexercised UI cases below before the combined native run.
+Next action: prepare one combined Mac acceptance plan for the remaining controls
+and native gates below; do not repeat already exercised layout/inspector checks.
 The autonomous chapter and separate
 fullscreen/HUD controls have been run; do not repeat the whole chapter before
 triaging their retained evidence. Refactoring and linter debt remain deferred.
@@ -343,9 +341,6 @@ session `3635151e1f2b4b92a27eaeea483e7a69`. Keep raw source recordings unchanged
       missing-line priority callbacks, and failure/cancel rollback. Do not repeat
       the chapter just for this gate before the other agreed repairs.
 
-- [ ] Complete the unexercised UI cases: enlarged font/smaller height and failure
-      inspector. History export/delete have been exercised. Preserve actual
-      usability observations; do not redesign for automation convenience.
 - [ ] Complete only unexercised controls: live/announcement Pause/Resume, partly
       prepared active-chapter catch-up and failed/not-ready policy, manual/other
       punctuation, and active-speech preparation Close. Prepared Pause/Resume,
