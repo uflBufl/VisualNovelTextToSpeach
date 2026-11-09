@@ -321,8 +321,11 @@ recovery separate from product defects.
       a hardcoded game icon detector or widen the existing crop over game UI.
       Include full-page text anecdotes: obtain real page/appearance/scroll or
       page-turn sequences and verify paragraph/speaker ordering against source
-      records. Compare the unchanged normal-dialogue path with configured
-      alternative areas plus automatic selection, and broader text-block search.
+      records. Choose a content/layout selector that excludes scenery and menus;
+      OCR confidence alone cannot identify story text. Compare configured
+      alternative areas with fallback-only text detection/line recognition,
+      preserving the current normal-dialogue path. Reuse the offline detector
+      evidence in `.codex/investigations/text-location-20261109/`.
       Reuse one native full-content frame; measure actual persistent OCR calls
       and median/p95 admission latency, correct text/order, duplicates, missed
       timed text and accidental UI reading. Test layout changes and return to
