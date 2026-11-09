@@ -1164,7 +1164,9 @@ class MainTest(unittest.TestCase):
         )
         wrapper.has_generated_line = Mock(return_value=True)
         controller.speech_backend = wrapper
-        line = SimpleNamespace(text="The complete generated dialogue.")
+        line = ChapterDialogue(
+            "early", "chapter", 1, "Rhiannon", "The complete generated dialogue.", None
+        )
         controller.chapter_voice_preloader.resolve_unique_prefix = Mock(
             return_value=line
         )
@@ -1174,7 +1176,7 @@ class MainTest(unittest.TestCase):
 
         self.assertEqual(
             resolver("Rhiannon", "The complete generated"),
-            line.text,
+            line,
         )
         controller.chapter_voice_preloader.resolve_unique_prefix.assert_called_once_with(
             "Rhiannon",
@@ -1198,7 +1200,9 @@ class MainTest(unittest.TestCase):
             controller.chapter_voice_preloader,
             audio_output=Mock(),
         )
-        line = SimpleNamespace(text="The complete generated dialogue.")
+        line = ChapterDialogue(
+            "early", "chapter", 1, "Rhiannon", "The complete generated dialogue.", None
+        )
         controller.chapter_voice_preloader.resolve_unique_prefix = Mock(
             return_value=line
         )

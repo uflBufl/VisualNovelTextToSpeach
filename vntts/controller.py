@@ -998,7 +998,9 @@ class AppController:
             "tracker_options": tracker_options,
         }
 
-    def _resolve_early_indexed_dialogue(self, character: str, text: str) -> str | None:
+    def _resolve_early_indexed_dialogue(
+        self, character: str, text: str
+    ) -> ChapterDialogue | None:
         backend = self.speech_backend
         if not isinstance(backend, GeneratedAudioFallbackBackend):
             return None
@@ -1009,7 +1011,7 @@ class AppController:
         )
         if line is None or not backend.has_generated_line(line):
             return None
-        return str(line.text)
+        return line
 
     def _has_manual_voice_override(self, character: str) -> bool:
         if is_unattributed_speaker(character):
@@ -3478,9 +3480,9 @@ class AppController:
             else:
                 reader.observation_frame = None
         canonical_character = self._canonical_observed_character(character, text)
-        resolved_text = self._resolve_early_indexed_dialogue(canonical_character, text)
-        if resolved_text is not None:
-            text = resolved_text
+        resolved_line = self._resolve_early_indexed_dialogue(canonical_character, text)
+        if resolved_line is not None:
+            canonical_character, text = resolved_line.speaker, resolved_line.text
         decision = self._dialog_observed(canonical_character, text)
         if decision is False:
             return False

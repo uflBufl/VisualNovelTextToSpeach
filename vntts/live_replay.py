@@ -1026,16 +1026,11 @@ class LiveReplayRunner:
             )
         if library is not None:
             tracker_options["early_dialogue_resolver"] = lambda character, text: (
-                line.text
-                if (
-                    line := resolver.resolve_unique_prefix(
-                        character,
-                        text,
-                        candidate_filter=router.has_generated_line,
-                    )
+                resolver.resolve_unique_prefix(
+                    character,
+                    text,
+                    candidate_filter=router.has_generated_line,
                 )
-                is not None
-                else None
             )
         reader = LiveDialogReader(
             capture_executor=executors[0],

@@ -134,13 +134,9 @@ class ProtectedLegacyResolverTest(unittest.TestCase):
             with self.subTest(observed=observed):
                 resolver = ChapterVoicePreloader([row])
 
-                def resolve(speaker, text):
-                    selected = resolver.resolve_unique_prefix(speaker, text)
-                    return None if selected is None else selected.text
-
                 tracker = IncrementalDialogTracker(
                     complete_dialogue_only=True,
-                    early_dialogue_resolver=resolve,
+                    early_dialogue_resolver=resolver.resolve_unique_prefix,
                     clock=lambda: 0,
                 )
                 self.assertEqual(tracker.observe("Ada", observed), [])

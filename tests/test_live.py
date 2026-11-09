@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
+from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.dialog import ocr_texts_equivalent
 from vntts.dialog_capture import OCRError
 from vntts.generated_audio import (
@@ -21,6 +22,7 @@ from vntts.live import (
     CanonicalDialogRoute,
     IncrementalDialogTracker,
     LiveDialogReader,
+    RecognizedDialog,
     SilentDialogRoute,
     SpeechChunk,
     _TrackerAdmissionDiagnostics,
@@ -357,6 +359,49 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_early_identity_keeps_one_playback_and_advance_through_partial_noise(self):
+        text = "These old accounts contradict the promise you just made."
+        prefix = "These old accounts contradict"
+        line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)
+        harness = AutoAdvanceFakeFrameHarness(
+            tracker_options={
+                "complete_dialogue_only": True,
+                "early_dialogue_resolver": lambda speaker, partial: (
+                    line if speaker == "Ada" and text.startswith(partial) else None
+                ),
+            },
+        )
+        harness.reader.recognize_frame = lambda frame: (
+            RecognizedDialog("Ada", text, "A")
+            if frame["text"] == text
+            else (frame["character"], frame["text"])
+        )
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            try:
+                for _ in range(2):
+                    harness.push("Ada", prefix, background="prefix")
+                for noisy in (
+                    prefix + " the promisc",
+                    "Ada: " + prefix + " the promise yov",
+                ):
+                    harness.push("Narrator", noisy, background="noise")
+                self.assertEqual(harness.reader.active_generation, 1)
+                self.assertEqual(len(harness.speech_executor.jobs), 1)
+                chunk = harness.speech_executor.jobs[0][2][0]
+                self.assertEqual(
+                    (chunk.character, chunk.text, chunk.line_id), ("Ada", text, "A")
+                )
+                harness.push("Ada", text, background="full", complete=True)
+                harness.finish_playback()
+                harness.fire_advance()
+                self.assertEqual(harness.advance_calls, [1])
+                self.assertEqual(len(harness.played), 1)
+                self.assertEqual(harness.speech_executor.jobs, [])
+                self.assertEqual(harness.errors, [])
+            finally:
+                harness.stop()
+
     def test_uncertain_ocr_controls_require_current_run_owner_epoch_and_focus(self):
         from vntts.dialog_capture import OCRUncertainError
         from vntts.ocr import OCRResult
@@ -481,7 +526,11 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             tracker_options={
                 "complete_dialogue_only": True,
                 "early_dialogue_resolver": (
-                    lambda _character, text: full if text == full else None
+                    lambda speaker, text: (
+                        ChapterDialogue("early", "chapter", 1, speaker, full, None)
+                        if text == full
+                        else None
+                    )
                 ),
             },
         )
@@ -866,7 +915,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             with self.subTest(speaker=speaker):
                 tracker = self.create_tracker(
                     complete_dialogue_only=True,
-                    early_dialogue_resolver=lambda *_: canonical,
+                    early_dialogue_resolver=lambda speaker, _text: ChapterDialogue(
+                        "early", "chapter", 1, speaker, canonical, None
+                    ),
                 )
                 tracker.observe(speaker, prefix)
                 self.assertEqual(
@@ -884,7 +935,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         canonical = "The visitor will stay at the Nowa Miedź office."
         tracker = self.create_tracker(
             complete_dialogue_only=True,
-            early_dialogue_resolver=lambda *_: canonical,
+            early_dialogue_resolver=lambda speaker, _text: ChapterDialogue(
+                "early", "chapter", 1, speaker, canonical, None
+            ),
         )
         tracker.observe("Clerk", "The visitor will stay")
         self.assertEqual(
@@ -1089,7 +1142,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
 
     def test_exact_route_mode_can_emit_unique_full_line_before_idle(self):
         full_text = "These old ones are enough to carry everyone."
-        resolver = Mock(return_value=full_text)
+        resolver = Mock(
+            return_value=ChapterDialogue("early", "chapter", 1, "Kamuta", full_text, None)
+        )
         tracker = self.create_tracker(
             idle_flush_seconds=0.7,
             complete_dialogue_only=True,
@@ -1110,7 +1165,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         tracker = self.create_tracker(
             idle_flush_seconds=0.7,
             complete_dialogue_only=True,
-            early_dialogue_resolver=lambda _character, _text: full_text,
+            early_dialogue_resolver=lambda speaker, _text: ChapterDialogue(
+                "early", "chapter", 1, speaker, full_text, None
+            ),
         )
         partial = full_text[:99]
 

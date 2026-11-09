@@ -312,14 +312,6 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-01 - Preserve identity after early canonical admission.**
-      One occurrence of line42 played twice: a trusted early prefix emitted the
-      full canonical text without binding its line ID. Noisy partial text then
-      changed the inferred speaker and reset the tracker; the final exact result
-      was admitted again. Pass canonical line/speaker identity into the tracker
-      at early admission and retain that occurrence through related partials.
-      Gate: early prefix -> noisy speaker/partial -> exact full line emits once;
-      a real next line still emits. Do not globally deduplicate dialogue text.
 - [ ] **RUN-09-02 - Confirm the current canonical line outside sequence mode.**
       Line60 was accepted at87.5%, played, then its complete correct text scored
       52.5% and invalidated auto advance indefinitely. Existing low-confidence
@@ -390,7 +382,10 @@ unexercised scenario. Refactoring and linter debt remain deferred. Evidence:
       run, verify punctuation-split names and final-letter OCR errors choose ready
       generated audio without transient live synthesis or repeated playback. Verify
       typewriter prefixes still wait for full text except the deliberately owned
-      early-prefix route; full recognition must confirm that route once. A crop
+      early-prefix route; full recognition must confirm that route once. Noisy
+      speaker/partial observations before and after full confirmation must retain
+      the early canonical identity without replay, including after an idle
+      interval; a genuinely different canonical line must still play. A crop
       containing an extra number/negation must remain unresolved rather than discard
       that content as decoration. Keep raw observations and prepared route identity
       when diagnosing a miss. Do not rerun the chapter separately for this gate.

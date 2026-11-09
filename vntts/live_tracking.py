@@ -7,10 +7,14 @@ from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from hashlib import sha256
 from time import monotonic
+from typing import TYPE_CHECKING
 from unicodedata import normalize
 from uuid import uuid4
 
 from vntts.dialog import is_symbol_only_text, symbol_text_key
+
+if TYPE_CHECKING:
+    from vntts.chapter_voice_preload import ChapterDialogue
 
 
 def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
@@ -56,7 +60,7 @@ class SpeechChunk:
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-TrackerResolver = Callable[[str, str], str | None]
+TrackerResolver = Callable[[str, str], "ChapterDialogue | None"]
 TrackerProbe = Callable[[str, str], bool]
 
 
@@ -97,6 +101,7 @@ class IncrementalDialogTracker:
         self.next_chunk_ordinal = 1
         self.silent_event_id: str | None = None
         self.canonical_line_id: str | None = None
+        self.early_dialogue_prefix: str | None = None
         self.accepted_line_ids: set[str] = set()
         self.admission_reason = "empty"
 
@@ -145,13 +150,22 @@ class IncrementalDialogTracker:
         idle = now - self.last_change_at >= self.idle_flush_seconds
         if (
             self.complete_dialogue_only
-            and not idle
             and self.committed_position == 0
             and self.early_dialogue_resolver is not None
         ):
-            resolved_text = self.early_dialogue_resolver(character, stable_text)
-            if resolved_text:
-                return self._emit(resolved_text, flush=True)
+            line = self.early_dialogue_resolver(character, stable_text)
+            if line is not None and line.line_id:
+                if line.line_id in self.accepted_line_ids:
+                    self.admission_reason = "canonical-held"
+                    return []
+                self.character = line.speaker
+                self.canonical_line_id = line.line_id
+                self.accepted_line_ids.add(line.line_id)
+                self.early_dialogue_prefix = stable_text
+                return [
+                    replace(chunk, line_id=line.line_id)
+                    for chunk in self._emit(line.text, flush=True)
+                ]
         if (
             self.complete_dialogue_only
             and idle
@@ -172,6 +186,10 @@ class IncrementalDialogTracker:
             return False
         if (
             self.canonical_line_id is not None
+            and (
+                self.early_dialogue_prefix is None
+                or self.latest_text == self.committed_text
+            )
             and character == self.character
             and not self.transition_expected
         ):
@@ -219,8 +237,7 @@ class IncrementalDialogTracker:
     ) -> list[SpeechChunk]:
         if line_id in self.accepted_line_ids:
             if self.canonical_line_id == line_id:
-                self._clear_pending_dialog()
-                self.conflicting_observation = False
+                return self.observe_canonical(character, text, line_id)
             self.admission_reason = "canonical-held"
             return []
         if not exact:
@@ -286,6 +303,9 @@ class IncrementalDialogTracker:
         if self.canonical_line_id == line_id:
             self._clear_pending_dialog()
             self.conflicting_observation = False
+            if self.early_dialogue_prefix is not None:
+                self.latest_text = text
+                self.stable_text = text
             self.admission_reason = "canonical-held"
             return []
         now = self.clock()
@@ -319,7 +339,9 @@ class IncrementalDialogTracker:
             return False
         if self.silent_event_id is not None:
             return True
-        if self.canonical_line_id is not None:
+        if self.canonical_line_id is not None and (
+            self.early_dialogue_prefix is None or self.latest_text == self.committed_text
+        ):
             return True
         if (
             not self.latest_text
@@ -369,6 +391,11 @@ class IncrementalDialogTracker:
         text_key = self._comparison_key(text)
         if len(committed_key) < 4 or not text_key:
             return False
+        if self.early_dialogue_prefix is not None and not self.transition_expected:
+            # Early speech owns only the prefix actually seen, not every similar reply.
+            prefix_key = self._comparison_key(self.early_dialogue_prefix)
+            if prefix_key in text_key:
+                return True
         return committed_key in text_key
 
     def _observe_new_dialog_candidate(
@@ -440,6 +467,7 @@ class IncrementalDialogTracker:
         self.next_chunk_ordinal = 1
         self.silent_event_id = None
         self.canonical_line_id = None
+        self.early_dialogue_prefix = None
         self._clear_pending_dialog()
 
     def _emit(self, stable_text: str, *, flush: bool) -> list[SpeechChunk]:

@@ -1,10 +1,139 @@
 import unittest
 from dataclasses import replace
 
+from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 
 
 class IdentifiedDialogTransitionsTest(unittest.TestCase):
+    def test_early_identity_survives_noisy_partial_speakers_and_full_confirmation(self):
+        text = "These old accounts contradict the promise you just made."
+        line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)
+        for observed_speaker in ("Ada", "Narrator"):
+            with self.subTest(observed_speaker=observed_speaker):
+                tracker = IncrementalDialogTracker(
+                    complete_dialogue_only=True,
+                    early_dialogue_resolver=lambda *_: line,
+                    clock=lambda: 0,
+                )
+                tracker.observe(observed_speaker, "These old accounts contradict")
+                chunks = tracker.observe(
+                    observed_speaker, "These old accounts contradict the"
+                )
+                self.assertEqual(
+                    [(c.generation, c.character, c.text, c.line_id) for c in chunks],
+                    [(1, "Ada", text, "A")],
+                )
+                self.assertEqual(tracker.canonical_line_id, "A")
+                self.assertIn("A", tracker.accepted_line_ids)
+                for noisy in (
+                    "These old accounts contradict the promisc",
+                    "These old accounts contradict the promise yov",
+                ):
+                    self.assertEqual(tracker.observe("Narrator", noisy), [])
+                    self.assertEqual(tracker.generation, 1)
+                    self.assertEqual(tracker.character, "Ada")
+                self.assertEqual(
+                    tracker.observe_identified("Ada", text, "A", exact=True), []
+                )
+                self.assertEqual(tracker.generation, 1)
+                self.assertTrue(tracker.is_idle_complete())
+                for noisy in (
+                    "These old accounts contradict the promisc",
+                    "Ada: These old accounts contradict the promise yov",
+                ):
+                    self.assertEqual(tracker.observe("Narrator", noisy), [])
+                    self.assertEqual(tracker.generation, 1)
+                    self.assertEqual(tracker.canonical_line_id, "A")
+                self.assertEqual(
+                    tracker.observe_identified("Ada", text, "A", exact=True), []
+                )
+                self.assertTrue(tracker.is_idle_complete())
+                next_chunks = tracker.observe_identified(
+                    "Ada", "Another account tells a different story.", "B", exact=True
+                )
+                self.assertEqual(
+                    [(c.generation, c.line_id) for c in next_chunks], [(2, "B")]
+                )
+
+    def test_accepted_early_line_cannot_replay_after_a_real_transition(self):
+        text = "These old accounts contradict the promise you just made."
+        line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)
+        now = [0.0]
+        tracker = IncrementalDialogTracker(
+            complete_dialogue_only=True,
+            early_dialogue_resolver=lambda speaker, _text: (
+                line if speaker == "Ada" else None
+            ),
+            clock=lambda: now[0],
+        )
+        tracker.observe("Ada", "These old accounts contradict")
+        chunks = tracker.observe("Ada", "These old accounts contradict")
+        self.assertEqual([c.line_id for c in chunks], ["A"])
+        tracker.observe_identified("Bea", "A new reply.", "B", exact=True)
+
+        for _ in range(4):
+            self.assertEqual(tracker.observe("Ada", "These old accounts contradict"), [])
+        now[0] = 1.0
+        for _ in range(2):
+            self.assertEqual(tracker.observe("Ada", "These old accounts contradict"), [])
+        self.assertEqual(tracker.admission_reason, "canonical-held")
+        next_chunks = tracker.observe_identified(
+            "Bea", "Another new reply.", "C", exact=True
+        )
+        self.assertEqual([c.line_id for c in next_chunks], ["C"])
+
+    def test_early_identity_is_bound_even_when_stability_arrives_after_idle(self):
+        text = "These old accounts contradict the promise you just made."
+        line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)
+        now = [0.0]
+        tracker = IncrementalDialogTracker(
+            complete_dialogue_only=True,
+            early_dialogue_resolver=lambda *_: line,
+            clock=lambda: now[0],
+        )
+        tracker.observe("Ada", "These old accounts contradict")
+        now[0] = 1.0
+        chunks = tracker.observe("Ada", "These old accounts contradict")
+        self.assertEqual([(c.text, c.line_id) for c in chunks], [(text, "A")])
+        self.assertEqual(
+            tracker.observe_identified("Ada", text, "A", exact=True), []
+        )
+
+    def test_early_identity_does_not_hide_a_new_shorter_speaker_reply(self):
+        line = ChapterDialogue("A", "chapter", 1, "Ada", "Please come inside.", None)
+        tracker = IncrementalDialogTracker(
+            early_dialogue_resolver=lambda *_: line,
+            complete_dialogue_only=True,
+            clock=lambda: 0,
+        )
+        tracker.observe("Ada", "Please come")
+        tracker.observe("Ada", "Please come")
+
+        self.assertEqual(tracker.observe("Bea", "Come inside."), [])
+        self.assertEqual(tracker.generation, 1)
+        chunks = tracker.observe_identified("Bea", "Come inside.", "B", exact=True)
+        self.assertEqual([(c.character, c.line_id) for c in chunks], [("Bea", "B")])
+        self.assertEqual(tracker.generation, 2)
+
+    def test_expected_transition_releases_the_early_prefix_speaker_guard(self):
+        text = "The shared introduction leads to the first ending."
+        line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)
+        tracker = IncrementalDialogTracker(
+            early_dialogue_resolver=lambda *_: line,
+            complete_dialogue_only=True,
+            clock=lambda: 0,
+        )
+        tracker.observe("Ada", "The shared introduction")
+        tracker.observe("Ada", "The shared introduction")
+        tracker.expect_new_dialog()
+
+        next_text = "The shared introduction leads to another ending."
+        self.assertEqual(tracker.observe("Bea", next_text), [])
+        self.assertFalse(tracker.is_idle_complete())
+        chunks = tracker.observe_identified("Bea", next_text, "B", exact=True)
+        self.assertEqual([(c.generation, c.line_id) for c in chunks], [(2, "B")])
+
     def test_exact_line_accepts_one_frame_and_skipped_same_speaker_line(self):
         tracker = IncrementalDialogTracker(stability_frames=4)
 
@@ -61,7 +190,9 @@ class IdentifiedDialogTransitionsTest(unittest.TestCase):
         canonical = "These old ones are enough to carry everyone."
         tracker = IncrementalDialogTracker(
             complete_dialogue_only=True,
-            early_dialogue_resolver=lambda *_: canonical,
+            early_dialogue_resolver=lambda speaker, _text: ChapterDialogue(
+                "A", "chapter", 1, speaker, canonical, None
+            ),
         )
         tracker.observe("Ada", "These old ones are enough")
         chunks = tracker.observe("Ada", "These old ones are enough to")

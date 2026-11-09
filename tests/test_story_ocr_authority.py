@@ -762,15 +762,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 harness = AutoAdvanceFakeFrameHarness(
                     tracker_options={
                         "complete_dialogue_only": True,
-                        "early_dialogue_resolver": lambda speaker, text: (
-                            resolved.text
-                            if (
-                                resolved := preloader.resolve_unique_prefix(
-                                    speaker, text
-                                )
-                            )
-                            else None
-                        ),
+                        "early_dialogue_resolver": preloader.resolve_unique_prefix,
                     },
                 )
 

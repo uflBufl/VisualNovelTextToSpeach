@@ -1147,11 +1147,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                     idle_flush_seconds=0.4,
                     complete_dialogue_only=True,
                     incomplete_dialogue_probe=preloader.is_unique_incomplete_prefix,
-                    early_dialogue_resolver=lambda speaker, text: (
-                        line.text
-                        if (line := preloader.resolve_unique_prefix(speaker, text))
-                        else None
-                    ),
+                    early_dialogue_resolver=preloader.resolve_unique_prefix,
                     clock=lambda: now[0],
                 )
                 emitted = []

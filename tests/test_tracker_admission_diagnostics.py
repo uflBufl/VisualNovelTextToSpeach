@@ -1,5 +1,6 @@
 import unittest
 
+from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 
 
@@ -99,7 +100,9 @@ class TrackerAdmissionDiagnosticsTests(unittest.TestCase):
     def test_early_resolver_emits_existing_canonical_text(self):
         tracker = self.tracker(
             complete_dialogue_only=True,
-            early_dialogue_resolver=lambda character, text: "Canonical full line.",
+            early_dialogue_resolver=lambda character, text: ChapterDialogue(
+                "early", "chapter", 1, character, "Canonical full line.", None
+            ),
         )
         tracker.observe("Ada", "Canonical")
         self.assertEqual(
