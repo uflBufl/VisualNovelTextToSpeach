@@ -320,6 +320,18 @@ recovery separate from product defects.
       policy checks on both open and refresh. Gate: intentionally different
       preference/runtime packs still show active coverage and the correct Read /
       Prepare again actions, without rewriting generation preferences.
+      Plan for approval: give the preparation dialog a separate effective
+      playback-settings snapshot, defaulting to its settings for standalone use.
+      Supply/update it on open and through the shared preparation refresh path.
+      Use it only for active-pack coverage/cache keys and Reading policy checks;
+      keep source discovery, engine/model/voice choices and generation snapshots
+      on the preparation settings. Cancel/rekey coverage checks when the active
+      pack changes using the existing task cancellation; routing-only changes
+      rerender the cached evidence without rescanning files. Playback refresh
+      must not reset a pending generation job or mutate its publisher base.
+      Regress activation/reopen with different preferences/runtime, same-dialog
+      pack switches with late single/batch callbacks, Reading overrides, and
+      pending-work preservation before native Stories acceptance.
 - [ ] **RUN-09-04 - Bind the generation-page Read action to its preparation.**
       An early Read failed against the old story index; retry after publication
       used the selected preparation. Reproduce the interval before the progress
