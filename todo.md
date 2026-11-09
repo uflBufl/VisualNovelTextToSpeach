@@ -312,23 +312,6 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-02 - Confirm the current canonical line outside sequence mode.**
-      Line60 was accepted at87.5%, played, then its complete correct text scored
-      52.5% and invalidated auto advance indefinitely. Existing low-confidence
-      source admission requires a sequence cursor; progressive OCR had no plan.
-      Let a fresh exact full match confirm the already accepted current identity
-      in this path too, scoped to its run/window. Gate: completion sends one key;
-      incomplete, different and ambiguous observations do not authorize it.
-      Plan for approval: expose the reader's unique accepted canonical line in
-      the current run/generation from its existing accepted_chunks, including
-      after playback completion. Exclude cancelled/replay-only or retired
-      ownership; do not use last_spoken_chunk or add another remembered line.
-      For unbounded low-confidence OCR, pass only that current identity to the
-      existing complete exact matcher. Reuse frame/run/owner freshness checks
-      and source_text_confirmed without raising the recorded OCR confidence.
-      Regression: trusted admission -> complete low-confidence OCR during and
-      after playback -> one playback and one advance; unrelated/prefix/fuzzy
-      text and stale Stop/Read, clear, replay or reconfiguration must not qualify.
 - [ ] **RUN-09-03 - Use effective Reading state in Stories coverage.**
       After successful activation, Reading uses the new pack while reopened
       Stories checks the old preference pack, offers activation again and hides
@@ -399,6 +382,11 @@ unexercised scenario. Refactoring and linter debt remain deferred. Evidence:
       containing an extra number/negation must remain unresolved rather than discard
       that content as decoration. Keep raw observations and prepared route identity
       when diagnosing a miss. Do not rerun the chapter separately for this gate.
+      Include ordinary progressive reading without a sequence plan: a complete
+      exact current line with low OCR confidence must confirm the accepted
+      dialogue during and after playback, without replay or a stalled advance.
+      Preserve the actual confidence; prefixes, other text and retired ownership
+      after Stop/Read or configuration changes must not authorize continuation.
 
 - [ ] **UX-03-01 - Remaining native acceptance of repeat Read.**
       In the next combined run, toggle auto advance during pending/completed

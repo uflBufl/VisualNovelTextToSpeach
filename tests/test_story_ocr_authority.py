@@ -1,5 +1,6 @@
 import shutil
 import unittest
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,7 @@ from vntts.generated_audio import (
     GeneratedAudioRoute,
     PreparedGeneratedAudio,
 )
-from vntts.live import RecognizedDialog
+from vntts.live import RecognizedDialog, SpeechChunk
 from vntts.live_sequence import StoryCursorState
 from vntts.live_snapshot import read_live_snapshot
 from vntts.ocr import OCRResult, recognize_dialog_image_result
@@ -237,6 +238,206 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             )
             self.assertEqual(harness.advance_calls, [1])
             self.assertEqual(harness.errors, [])
+
+    def test_current_line_admits_low_confidence_during_and_after_playback(self):
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        following = story_line("The next complete line.", "Elma", "next")
+        controller = self.controller((line, following))
+        controller.settings = controller.settings.updated(live_sequence_mode="off")
+        harness = AutoAdvanceFakeFrameHarness(
+            tracker_options={"complete_dialogue_only": True}
+        )
+        controller.live_reader = harness.reader
+        confidence = [87.5]
+
+        def recognize(frame):
+            with patch(
+                "vntts.dialog_capture.recognize_dialog_image_result",
+                return_value=observed(frame["text"], frame["character"], confidence[0]),
+            ):
+                return controller._recognize_live_frame(
+                    CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                )
+
+        def play(chunk, prepared):
+            self.assertIs(harness.reader.current_chunk, chunk)
+            confidence[0] = 52.5
+            for _ in range(3):
+                harness.clock.advance(0.2)
+                harness.push(
+                    line.speaker, line.text, background="playing", complete=True
+                )
+            self.assertEqual(harness.advance_calls, [])
+            self.assertTrue(harness.reader.seal_generation(chunk.generation))
+            return harness._play(chunk, prepared)
+
+        harness.reader.recognize_frame = recognize
+        harness.reader.play_prepared = play
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            self.addCleanup(harness.stop)
+            harness.push(line.speaker, line.text, background="trusted")
+            chunk = next(iter(harness.reader.accepted_chunks.values()))
+            self.assertEqual(
+                (chunk.character, chunk.text, chunk.line_id),
+                (line.speaker, line.text, line.line_id),
+            )
+            harness.finish_playback()
+            self.assertIn(chunk.playback_id, harness.reader.completed_playback_ids)
+            self.assertNotIn(chunk.playback_id, harness.reader.cancelled_chunk_ids)
+            self.assertIsNone(harness.reader.current_chunk)
+            raw = observed(line.text, dialogue_confidence=52.5)
+            resolved = controller._resolve_story_ocr_result(raw)
+            self.assertTrue(resolved.source_text_confirmed)
+            self.assertEqual(resolved.confidence, 52.5)
+            self.assertEqual(resolved.dialogue_confidence, 52.5)
+            self.assertFalse(resolved.is_confident())
+            self.assertTrue(resolved.is_readable())
+            harness.push(line.speaker, line.text, background="completed", complete=True)
+            harness.timer_scheduler.fire_next("_run_auto_advance")
+            self.assertEqual(harness.advance_calls, [])
+            harness.push(
+                line.speaker, line.text, background="advance-recheck", complete=True
+            )
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(len(harness.played), 1)
+            self.assertEqual(harness.speech_executor.jobs, [])
+            snapshot = controller._publish_diagnostic.call_args.args[0]
+            self.assertEqual(snapshot.confidence, 52.5)
+            self.assertEqual(snapshot.dialogue_confidence, 52.5)
+            confidence[0] = 87.5
+            for _ in range(2):
+                harness.push(following.speaker, following.text, background="next")
+            self.assertEqual(
+                harness.states, [("dispatched", 1, 1), ("confirmed", 1, 1)]
+            )
+            self.assertEqual(harness.advance_calls, [1])
+            self.assertEqual(harness.errors, [])
+            controller._ocr_uncertain.assert_not_called()
+
+    def test_current_line_authority_requires_its_complete_exact_text(self):
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        other = story_line("The next complete line.", "Elma", "next")
+        controller = self.controller((line, other))
+        controller.settings = controller.settings.updated(live_sequence_mode="off")
+        harness = AutoAdvanceFakeFrameHarness()
+        controller.live_reader = harness.reader
+        self.assertTrue(
+            harness.reader.enqueue(line.speaker, line.text, line_id=line.line_id)
+        )
+        for text in (
+            "Evrus ... Eurus ...",
+            "Eurus ...",
+            "Eurus ... Eurus ... dust",
+            other.text,
+        ):
+            with self.subTest(text=text):
+                raw = observed(text, dialogue_confidence=52.5)
+                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    with self.assertRaises(OCRUncertainError):
+                        controller._recognize_live_frame(
+                            CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                        )
+        self.assertEqual(harness.advance_calls, [])
+        self.assertEqual(len(harness.speech_executor.jobs), 1)
+
+    def test_current_line_authority_requires_a_current_canonical_owner(self):
+        line = story_line("Eurus ... Eurus ...", "Elma")
+        for state in (
+            "no-owner",
+            "stopped",
+            "cleared",
+            "old-run",
+            "old-generation",
+            "cancelled",
+            "replay-only",
+            "paused",
+            "emergency",
+            "shutdown",
+            "ambiguous-owner",
+            "changed-source-text",
+            "changed-source-speaker",
+            "missing-source",
+            "unanchored-sequence",
+        ):
+            with self.subTest(state=state):
+                controller = self.controller((line,))
+                controller.settings = controller.settings.updated(
+                    live_sequence_mode="off"
+                )
+                reader = AutoAdvanceFakeFrameHarness().reader
+                controller.live_reader = reader
+                raw = observed(line.text, dialogue_confidence=52.5)
+                if state != "no-owner":
+                    self.assertTrue(
+                        reader.enqueue(line.speaker, line.text, line_id=line.line_id)
+                    )
+                    chunk = next(iter(reader.accepted_chunks.values()))
+                    self.assertTrue(
+                        controller._resolve_story_ocr_result(raw).source_text_confirmed
+                    )
+                if state == "stopped":
+                    reader.capture_future = Future()
+                    self.assertTrue(reader.stop())
+                elif state == "cleared":
+                    reader.clear_queue()
+                elif state == "old-run":
+                    reader.run_id = "next-reading-run"
+                elif state == "old-generation":
+                    reader._set_generation(reader.active_generation + 1)
+                elif state == "cancelled":
+                    reader.cancelled_chunk_ids.add(chunk.playback_id)
+                elif state == "replay-only":
+                    reader.clear_queue()
+                    reader._set_generation(reader.active_generation + 1)
+                    reader._schedule(
+                        [
+                            SpeechChunk(
+                                reader.active_generation,
+                                line.speaker,
+                                line.text,
+                                line_id=line.line_id,
+                                explicit_replay=True,
+                            )
+                        ]
+                    )
+                elif state == "paused":
+                    reader.toggle_pause()
+                elif state == "emergency":
+                    reader.emergency_stop()
+                elif state == "shutdown":
+                    reader.shutdown()
+                elif state == "ambiguous-owner":
+                    reader._schedule(
+                        [
+                            SpeechChunk(
+                                reader.active_generation,
+                                line.speaker,
+                                "Another canonical line.",
+                                line_id="other",
+                            )
+                        ]
+                    )
+                elif state.startswith("changed-source"):
+                    replacement = (
+                        replace(line, text="Changed canonical text.")
+                        if state == "changed-source-text"
+                        else replace(line, speaker="Another speaker")
+                    )
+                    controller.chapter_voice_preloader = ChapterVoicePreloader(
+                        (replacement,)
+                    )
+                elif state == "missing-source":
+                    controller.chapter_voice_preloader = ChapterVoicePreloader(())
+                elif state == "unanchored-sequence":
+                    self.anchor(controller, line, state=StoryCursorState.UNSYNCHRONIZED)
+                if state == "no-owner":
+                    controller.chapter_voice_preloader.select_line_id(line.line_id)
+                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
 
     def test_all_reading_consumers_use_source_authority_and_keep_diagnostics(self):
         line = story_line("Eurus ... Eurus ...", "Elma")

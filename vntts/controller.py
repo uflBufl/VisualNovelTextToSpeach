@@ -1341,10 +1341,30 @@ class AppController:
                     StoryCursorState.DESYNCHRONIZED,
                 }
             )
+            confirmation_line_id = None
             if not confident and not bounded:
-                if resolution is not None:
-                    resolution["match_result"] = "ocr-uncertain"
-                return result
+                reader = self.live_reader
+                chunk = (
+                    reader.current_canonical_chunk()
+                    if isinstance(reader, LiveDialogReader)
+                    and (plan is None or self.settings.live_sequence_mode == "off")
+                    else None
+                )
+                current_line = (
+                    preloader.by_line_id.get(chunk.line_id)
+                    if chunk is not None and chunk.line_id is not None
+                    else None
+                )
+                if (
+                    current_line is None
+                    or chunk is None
+                    or (chunk.character, chunk.text)
+                    != (current_line.speaker, current_line.text)
+                ):
+                    if resolution is not None:
+                        resolution["match_result"] = "ocr-uncertain"
+                    return result
+                confirmation_line_id = current_line.line_id
             expected_prefix = self._expected_sequence_prefix_line_locked()
             if expected_prefix is not None:
                 evidence = compare_text(
@@ -1356,7 +1376,9 @@ class AppController:
                     if resolution is not None:
                         resolution["match_result"] = "owned-prefix"
                     return result
-            if plan is not None and self.settings.live_sequence_mode != "off":
+            if confirmation_line_id is not None:
+                line_ids = (confirmation_line_id,)
+            elif plan is not None and self.settings.live_sequence_mode != "off":
                 events = (
                     (cursor.current_event, *cursor.bounded_visible_successors())
                     if cursor is not None

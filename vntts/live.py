@@ -1189,6 +1189,28 @@ class LiveDialogReader:
                 and chunk.playback_id not in self.cancelled_chunk_ids
             )
 
+    def current_canonical_chunk(self) -> SpeechChunk | None:
+        """Keep current dialogue identity available after its audio has completed."""
+        with self.state_lock:
+            if (
+                self.stop_event.is_set()
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+                or self.suppressed_generation == self.active_generation
+            ):
+                return None
+            current = {
+                (chunk.line_id, chunk.character, chunk.text): chunk
+                for chunk in self.accepted_chunks.values()
+                if chunk.line_id
+                and chunk.generation == self.active_generation
+                and chunk.run_id == self.run_id
+                and not chunk.explicit_replay
+                and chunk.playback_id not in self.cancelled_chunk_ids
+            }
+            return next(iter(current.values())) if len(current) == 1 else None
+
     def _owns_chunk(self, chunk: SpeechChunk) -> bool:
         return (
             chunk.run_id in (None, self.run_id)
