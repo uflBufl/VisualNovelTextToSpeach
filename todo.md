@@ -317,14 +317,19 @@ recovery separate from product defects.
       No product implementation is authorized by writing this proposal.
       Deliver separate working changes, migrating all affected consumers and
       removing superseded runtime paths in each change:
-      (1) extractor link resolution and affected catalog/audio refresh;
-      (2) canonical frame/layout/structured-observation contracts, one-format
+      (1) shared frame/layout/structured-observation contracts, one-format
       calibration/profile migration and normal-reader parity;
-      (3) one occurrence/admission owner with per-document position, migrating
+      (2) one occurrence/admission owner with per-document position, migrating
       tracker identity authority while keeping its stabilization and current FIFO;
-      (4) caption reader, bounded alternate worker and selector/discovery;
-      (5) document reader, geometry/order, source-backed and source-free overlap;
-      (6) combined live acceptance with generation and layout transitions.
+      (3) source-free new-game bootstrap, caption reader, bounded alternate worker
+      and selector/discovery, with one-region manual fallback for ambiguity;
+      (4) document reader, geometry/order and source-free overlap;
+      (5) optional source/prepared-audio integration;
+      (6) acceptance first in a new game without extraction/catalog/adapters,
+      then current prepared-audio/background-generation and layout controls.
+      The generic path must read valid OCR with a standard available TTS voice;
+      no resource parser, story index or game-specific reference is required.
+      Never inherit a previous game's source binding for a newly selected game.
       Register new readers through the common observation contract; do not add
       game/mode branches throughout controller, audio routing or navigation.
       Final speakable lines88/89 appeared as centered quote cards outside the
@@ -345,8 +350,10 @@ recovery separate from product defects.
       preserving the current normal-dialogue path. Reuse the offline detector
       evidence in `.codex/investigations/text-location-20261109/`.
       Gate speech on allowed content bounds plus confirmed story-layout/session
-      evidence; selected-source alternate reading must also bind permitted story
-      occurrences. Suspend new admission/keys when story layout disappears;
+      evidence. Generic screen reading may use optional source enrichment but
+      must not require a catalog match. Explicit source-bound/sequence routes
+      retain strict source authority. Suspend new admission/keys when story
+      layout disappears;
       never fall back to reading all detected screen text. Exercise main menus,
       overlays, chapter selection and the excluded left book information card,
       including similar-looking source-free screens and return to the story.
@@ -358,7 +365,8 @@ recovery separate from product defects.
       define page-advance behavior separately from per-dialogue auto-advance.
       Add explicit page presence/text-only semantics instead of the ordinary
       bright-dialogue gate; order detected lines geometrically before grouping.
-      Plan for approval, source prerequisite: in the extractor, expand known
+      Independent source improvement, not a prerequisite for generic live OCR:
+      in the extractor, expand known
       hero-story links through localized json_hero_story_introduce titles before
       classification/hash. Real example: [3020901] must display Abendmuse Radio.
       Preserve unknown literals such as [1920]; test known, repeated/multiple and
