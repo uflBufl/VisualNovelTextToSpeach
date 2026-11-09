@@ -312,7 +312,21 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-05 - Plan timed quotes and book-style anecdote layouts.**
+- [ ] **RUN-09-05 - Approve and implement shared text-reading architecture.**
+      Architecture for approval: [text-reading-architecture.md](docs/text-reading-architecture.md).
+      No product implementation is authorized by writing this proposal.
+      Deliver separate working changes, migrating all affected consumers and
+      removing superseded runtime paths in each change:
+      (1) extractor link resolution and affected catalog/audio refresh;
+      (2) canonical frame/layout/structured-observation contracts, one-format
+      calibration/profile migration and normal-reader parity;
+      (3) one occurrence/admission owner with per-document position, migrating
+      tracker identity authority while keeping its stabilization and current FIFO;
+      (4) caption reader, bounded alternate worker and selector/discovery;
+      (5) document reader, geometry/order, source-backed and source-free overlap;
+      (6) combined live acceptance with generation and layout transitions.
+      Register new readers through the common observation contract; do not add
+      game/mode branches throughout controller, audio routing or navigation.
       Final speakable lines88/89 appeared as centered quote cards outside the
       calibrated bottom region and were not read. Video proves game-owned timed
       transitions, with no extra application key. Review a game-independent way
@@ -348,8 +362,9 @@ recovery separate from product defects.
       duplicate side-panel text by content bounds, not by deleting source rows.
       A backward viewport update must not reanchor automatic reading to an older
       source occurrence; keep ordinary dialogue navigation behavior unchanged.
-      Present the concrete implementation plan after the temporal comparisons,
-      before changing the pipeline/calibration or promising live performance.
+      Require approval of the architecture and the concrete first change before
+      implementation. Remaining temporal comparisons and real-load performance
+      are gates for the corresponding slices, not assumed completed by design.
 - [ ] **RUN-09-06 - Clear completed calibration status.**
       Successful review/Save left the dashboard saying it was capturing for
       calibration through subsequent actions. Restore the actual idle/reading

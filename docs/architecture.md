@@ -72,6 +72,12 @@ truth for current APIs.
 - [`macos-test-execution.md`](macos-test-execution.md) - exact macOS test
   sharding and duplicate-discovery handling.
 
+## Proposed designs
+
+- [`text-reading-architecture.md`](text-reading-architecture.md) - proposed
+  shared reading pipeline for dialogue, captions and scrollable pages;
+  implementation requires approval and does not replace current contracts yet.
+
 ## Operational evidence and histories
 
 The following documents are retained as evidence and should not be read first
