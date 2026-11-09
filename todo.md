@@ -315,15 +315,22 @@ recovery separate from product defects.
 - [ ] **RUN-09-05 - Approve and implement shared text-reading architecture.**
       Architecture for approval: [text-reading-architecture.md](docs/text-reading-architecture.md).
       No product implementation is authorized by writing this proposal.
+      First delivery priority: fix the missed centered timed text in the recorded
+      chapter. Complete and verify normal dialogue -> caption -> normal dialogue
+      before starting the book reader, scrolling or paragraph-position work.
+      Scope shared infrastructure to this working slice; do not require the
+      entire document architecture before fixing the original defect.
       Deliver separate working changes, migrating all affected consumers and
       removing superseded runtime paths in each change:
       (1) shared frame/layout/structured-observation contracts, one-format
       calibration/profile migration and normal-reader parity;
-      (2) one occurrence/admission owner with per-document position, migrating
+      (2) one occurrence/admission owner for dialogue/caption, migrating
       tracker identity authority while keeping its stabilization and current FIFO;
       (3) source-free new-game bootstrap, caption reader, bounded alternate worker
       and selector/discovery, with one-region manual fallback for ambiguity;
-      (4) document reader, geometry/order and source-free overlap;
+      verify the original centered quotes and existing prepared-audio route here,
+      as well as source-free portability, before moving to books;
+      (4) document reader, per-document position, geometry/order and source-free overlap;
       (5) optional source/prepared-audio integration;
       (6) acceptance first in a new game without extraction/catalog/adapters,
       then current prepared-audio/background-generation and layout controls.
