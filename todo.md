@@ -312,13 +312,26 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-05 - Plan support for timed dialogue in another screen region.**
+- [ ] **RUN-09-05 - Plan timed quotes and book-style anecdote layouts.**
       Final speakable lines88/89 appeared as centered quote cards outside the
       calibrated bottom region and were not read. Video proves game-owned timed
       transitions, with no extra application key. Review a game-independent way
       to configure/recognize additional layouts and retain recognized prepared
       speech across timed changes. Agree scope before implementation; do not add
       a hardcoded game icon detector or widen the existing crop over game UI.
+      Include full-page text anecdotes: obtain real page/appearance/scroll or
+      page-turn sequences and verify paragraph/speaker ordering against source
+      records. Compare the unchanged normal-dialogue path with configured
+      alternative areas plus automatic selection, and broader text-block search.
+      Reuse one native full-content frame; measure actual persistent OCR calls
+      and median/p95 admission latency, correct text/order, duplicates, missed
+      timed text and accidental UI reading. Test layout changes and return to
+      normal dialogue, with both light and dark text-page backgrounds.
+      Book reading must preserve paragraph boundaries and already-read position;
+      define page-advance behavior separately from per-dialogue auto-advance.
+      Do not choose a detector or promise performance until these measurements
+      include a real anecdote page. Present the concrete implementation plan
+      after comparison, before changing the pipeline/calibration.
 - [ ] **RUN-09-06 - Clear completed calibration status.**
       Successful review/Save left the dashboard saying it was capturing for
       calibration through subsequent actions. Restore the actual idle/reading
