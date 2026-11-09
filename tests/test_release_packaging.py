@@ -118,7 +118,7 @@ class ReleasePackagingTest(unittest.TestCase):
                 raise RuntimeError("metadata unavailable")
             return [(f"{distribution}-metadata", "metadata")]
 
-        packages = "r1999extractor TTS coqpit gruut ko_speech_tools trainer".split()
+        packages = "r1999extractor TTS coqpit gruut ko_speech_tools trainer rapidocr onnxruntime".split()
         distributions = (
             "coqui-tts coqpit gruut ko-speech-tools torch torchaudio torchcodec "
             "trainer transformers reverse1999-extractor"

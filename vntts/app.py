@@ -579,6 +579,14 @@ class SettingsDialog(QDialog):
 
     def _build_speech_routing_controls(self, settings: AppSettings) -> None:
         self.ocr_language = QLineEdit(settings.ocr_language)
+        self.discover_text_layouts = QCheckBox(
+            "Find story text outside the dialogue area"
+        )
+        self.discover_text_layouts.setChecked(settings.discover_text_layouts)
+        self.discover_text_layouts.setToolTip(
+            "Read temporary text cards as well as the calibrated dialogue area. "
+            "Start reading on a story screen; pause for menus that look like story text."
+        )
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
         self.narrator_reference.setAccessibleName("Narrator reference")
@@ -825,6 +833,7 @@ class SettingsDialog(QDialog):
         )
         capture_form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
         capture_form.addRow("OCR language", self.ocr_language)
+        capture_form.addRow("Text placement", self.discover_text_layouts)
         capture_form.addRow("OCR diagnostics", self.retain_uncertain_frames)
         _add_composite_form_row(
             capture_form,
@@ -1762,6 +1771,7 @@ class SettingsDialog(QDialog):
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "ocr_minimum_confidence": self.ocr_minimum_confidence.value(),
                 "ocr_language": self.ocr_language.text().strip(),
+                "discover_text_layouts": self.discover_text_layouts.isChecked(),
                 "speech_backend": self.speech_backend.currentData(),
                 "offline_speech_backend": self.offline_speech_backend.currentData(),
                 "audio_source_policy": self.audio_source_policy.currentData(),
@@ -2611,7 +2621,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _runtime_settings(self, settings: AppSettings | None = None) -> AppSettings:
         settings = self.settings if settings is None else settings
         base = self._prepared_base_settings
-        if base is None or self._playback_source(settings) != self._playback_source(base):
+        if base is None or self._playback_source(settings) != self._playback_source(
+            base
+        ):
             self._prepared_base_settings = base = settings
             self._progress_preparation_active = False
             restored = (
@@ -4259,9 +4271,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if not self.controller.is_live_running:
                 self.toggle_live()
             return
-        self.prepare_reading(
-            start_live=True, require_preparation=require_preparation
-        )
+        self.prepare_reading(start_live=True, require_preparation=require_preparation)
 
     def _remember_preparation_context(self) -> None:
         self._preparation_activation_settings = self.settings

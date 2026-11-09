@@ -443,6 +443,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
             "correction_dictionary_provider": ANY,
             "region_provider": controller._capture_region,
             "ocr_regions_provider": controller._capture_ocr_regions,
+            "frame_selector": controller._select_text_layout,
             "result_resolver": controller._resolve_story_ocr_result,
         }
         self.assertEqual(refreshed.kwargs, expected)

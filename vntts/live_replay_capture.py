@@ -17,11 +17,13 @@ from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 from PIL import Image
 
+from vntts.caption_layout import select_caption
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.dialog_capture import (
+    CapturedDialogFrame,
     DialogLayoutSession,
     capture_live_frame,
     detect_standalone_ellipsis_frame,
@@ -37,6 +39,8 @@ from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
 from vntts.profiles import GameProfileStore
 from vntts.settings import load_app_settings
+from vntts.text_detection import group_text_lines, prepare_text_detection_models
+from vntts.text_detection_worker import TextDetectionWorker
 from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget
 
 LIVE_REPLAY_CAPTURE_VERSION = 1
@@ -95,6 +99,9 @@ class CapturedImageFrame(Protocol):
 class FrameSpecification(TypedDict):
     path: str
     sha256: str
+    layout_kind: NotRequired[str]
+    observed_character: NotRequired[str]
+    observed_text: NotRequired[str]
 
 
 class DialogueItem(TypedDict):
@@ -528,7 +535,18 @@ class LiveReplayCaptureSession:
                 f"Unable to save replay frame: {error}"
             ) from error
         self.frame_count += 1
-        return {"path": relative.as_posix(), "sha256": digest}
+        specification: FrameSpecification = {
+            "path": relative.as_posix(),
+            "sha256": digest,
+        }
+        if isinstance(frame, CapturedDialogFrame) and frame.layout_kind != "dialogue":
+            specification["layout_kind"] = frame.layout_kind
+            if frame.recognized_result is not None:
+                specification["observed_character"] = (
+                    frame.recognized_result.character or "Narrator"
+                )
+                specification["observed_text"] = frame.recognized_result.text
+        return specification
 
     def _corpus_record(self, index: int, item: FinalizedDialogueItem) -> CorpusRecord:
         line = item["story_line"]
@@ -822,6 +840,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
         def recognize(frame: CapturedImageFrame) -> tuple[str, str]:
+            if isinstance(frame, CapturedDialogFrame):
+                if frame.layout_kind == "pending":
+                    return "Narrator", ""
+                if frame.recognized_result is not None:
+                    result = corrections.correct_result(frame.recognized_result)
+                    return result.character or "Narrator", result.text
             frame_regions = getattr(frame, "ocr_regions", None)
             result = recognize_screenshot_result(
                 frame.image,
@@ -852,17 +876,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             return result.character or "Narrator", result.text
 
         layout_session = DialogLayoutSession()
+        text_worker: TextDetectionWorker | None = None
+
+        def capture() -> CapturedDialogFrame:
+            nonlocal text_worker
+            frame = capture_live_frame(
+                get_screenshot_directory(settings),
+                capture_target,
+                region=region,
+                ocr_regions=ocr_regions,
+                layout_session=layout_session,
+            )
+            if settings.discover_text_layouts and frame.canonical_image is not None:
+                if text_worker is None:
+                    paths = prepare_text_detection_models()
+                    text_worker = TextDetectionWorker(*paths)
+                return select_caption(
+                    frame,
+                    group_text_lines(text_worker.detect(frame.canonical_image)),
+                    settings.ocr_minimum_confidence,
+                )
+            return frame
+
         print("Capturing accepted OCR frames; press Ctrl+C to finish and validate")
         try:
             result = capture_replay_session(
                 session,
-                capture_frame=lambda: capture_live_frame(
-                    get_screenshot_directory(settings),
-                    capture_target,
-                    region=region,
-                    ocr_regions=ocr_regions,
-                    layout_session=layout_session,
-                ),
+                capture_frame=capture,
                 recognize_frame=recognize,
                 interval_seconds=interval_seconds,
                 maximum_frames=arguments.max_accepted_frames,
@@ -876,7 +916,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         except KeyboardInterrupt:
             result = session.finish()
         finally:
-            capture_target.close()
+            try:
+                if text_worker is not None:
+                    text_worker.close()
+            finally:
+                capture_target.close()
     except (OSError, RuntimeError, ValueError) as error:
         return cli_error(error)
     return cli_messages(

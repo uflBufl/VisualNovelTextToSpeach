@@ -668,6 +668,7 @@ class RuntimeLifecycleComponent:
 
     def _refresh_live_reader_settings(self) -> bool | None:
         controller = self.controller
+        controller._close_text_layouts()
         reader = controller.live_reader
         if reader is None:
             return None
@@ -710,6 +711,7 @@ class RuntimeLifecycleComponent:
             correction_dictionary_provider=lambda: controller.correction_dictionary,
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
+            frame_selector=controller._select_text_layout,
             result_resolver=controller._resolve_story_ocr_result,
         )
         return True
@@ -758,6 +760,7 @@ class RuntimeLifecycleComponent:
         controller = self.controller
         with ExitStack() as cleanup:
             for release, description in (
+                (controller._close_text_layouts, "Screen text worker shutdown"),
                 (close_ocr_worker, "OCR worker shutdown"),
                 (controller._close_capture_source, "Native capture shutdown"),
                 (stop_reader, "Reader shutdown"),
@@ -1004,6 +1007,7 @@ class LiveSessionComponent:
                 controller._capture_region(),
                 controller._capture_ocr_regions(),
                 controller._resolve_story_ocr_result,
+                controller._select_text_layout,
             )
             with controller.story_cursor_lock:
                 refusal = request_refusal()
@@ -1603,6 +1607,7 @@ class DiagnosticsComponent:
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
             result_resolver=controller._resolve_story_ocr_result,
+            frame_selector=controller._select_text_layout,
         )
         snapshot = snapshots[-1]
         return (
@@ -1634,6 +1639,7 @@ class DiagnosticsComponent:
             ocr_regions=controller._capture_ocr_regions(),
             result_resolver=controller._resolve_story_ocr_result,
             capture_context=capture_context,
+            frame_selector=controller._select_text_layout,
         )
         if result.text and not result.is_readable(
             controller.settings.ocr_minimum_confidence

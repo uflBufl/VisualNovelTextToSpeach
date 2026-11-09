@@ -26,7 +26,7 @@ from vntts.versioned_json import (
     write_versioned_json_if_unchanged,
 )
 
-profiles_schema_version = 10
+profiles_schema_version = 11
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -54,6 +54,7 @@ class GameProfile:
     force_live_narrator: bool
     ocr_regions: OCRRegions | None = None
     coordinate_space: str = CAPTURE_COORDINATE_SPACE
+    discover_text_layouts: bool = False
 
     @property
     def needs_recalibration(self) -> bool:
@@ -86,6 +87,7 @@ class GameProfile:
             audio_source_policy=settings.audio_source_policy,
             force_live_narrator=settings.force_live_narrator,
             ocr_regions=ocr_regions,
+            discover_text_layouts=settings.discover_text_layouts,
         )
 
     @classmethod
@@ -109,6 +111,9 @@ class GameProfile:
         force_live_narrator = values.get("force_live_narrator", False)
         if not isinstance(force_live_narrator, bool):
             raise ValueError("force_live_narrator must be a boolean")
+        discover_text_layouts = values.get("discover_text_layouts", False)
+        if not isinstance(discover_text_layouts, bool):
+            raise ValueError("discover_text_layouts must be a boolean")
         force_live_narrator = force_live_narrator or (
             source_schema < 5 and legacy_narrator_assignment_forces_live_tts(values)
         )
@@ -144,6 +149,7 @@ class GameProfile:
             ),
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
             force_live_narrator=force_live_narrator,
+            discover_text_layouts=discover_text_layouts,
             ocr_regions=ocr_regions,
             coordinate_space=str(
                 values.get("coordinate_space", CAPTURE_COORDINATE_SPACE)
@@ -163,6 +169,7 @@ class GameProfile:
             capture_mode=self.capture_mode,
             game_window_title=self.game_window_title,
             ocr_language=self.ocr_language,
+            discover_text_layouts=self.discover_text_layouts,
             game_pack=self.game_pack,
             voice_manifest=self.voice_manifest,
             story_index=self.story_index,

@@ -97,7 +97,7 @@ class RapidOCRBackend:
                 from rapidocr import RapidOCR
             except ImportError as error:
                 raise RuntimeError(
-                    "RapidOCR is not installed. Run `uv sync --extra rapidocr`."
+                    "RapidOCR is not installed. Run `uv sync`."
                 ) from error
             engine = RapidOCR()
         self.engine = engine

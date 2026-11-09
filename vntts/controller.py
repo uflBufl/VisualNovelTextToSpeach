@@ -18,6 +18,7 @@ from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import PcmAdmissionRejected
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
+from vntts.caption_layout import select_caption
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterVoicePreloader,
@@ -93,10 +94,11 @@ from vntts.live_speech import (
     play_typed_text,
     raise_playback_failure,
 )
-from vntts.model_assets import ModelAssetManager
+from vntts.model_assets import ModelAssetManager, ModelDownloadCancelled
 from vntts.numeric_values import optional_finite_number
 from vntts.ocr import (
     DialogRegion,
+    OCRPreviewCancelled,
     OCRRegions,
     OCRResult,
     UncertainFrameRecorder,
@@ -139,6 +141,8 @@ from vntts.speech_worker import (
     create_qwen_worker_backend,
 )
 from vntts.story_text_matching import compare_text, prepare_text
+from vntts.text_detection import group_text_lines, prepare_text_detection_models
+from vntts.text_detection_worker import TextDetectionWorker
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
@@ -464,6 +468,7 @@ def create_dialog_read_scheduler(
     region_provider: Callable[[], DialogRegion] | None = None,
     ocr_regions_provider: Callable[[], OCRRegions | None] | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    frame_selector: Callable[[CapturedDialogFrame], CapturedDialogFrame] | None = None,
 ) -> _ScheduledDialogRead:
     def deliver(character: str, text: str) -> object:
         if speech_handler is not None:
@@ -493,6 +498,7 @@ def create_dialog_read_scheduler(
             if ocr_regions_provider is not None
             else None,
             result_resolver=result_resolver,
+            frame_selector=frame_selector,
         )
 
     return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
@@ -653,6 +659,9 @@ class AppController:
         self._initialize_live_sequence_state()
         self.capture_target = self._create_capture_target()
         self.live_dialog_layout = DialogLayoutSession()
+        self.caption_discovery_lock = RLock()
+        self.caption_discovery: TextDetectionWorker | None = None
+        self.caption_discovery_unavailable = False
         self.uncertain_frame_recorder = self._create_uncertain_frame_recorder()
         self.tts = None
         self.voice_router = None
@@ -1103,8 +1112,20 @@ class AppController:
         if isinstance(self.capture_target, DisplayCaptureTarget):
             self.capture_target.close()
 
+    def _close_text_layouts(self) -> None:
+        with self.caption_discovery_lock:
+            if self.caption_discovery is not None:
+                self.caption_discovery.close()
+                self.caption_discovery = None
+            self.caption_discovery_unavailable = False
+
     def _capture_live_frame(self) -> object:
-        return capture_live_frame(
+        cancellation = (
+            self.live_reader.stop_event
+            if isinstance(self.live_reader, LiveDialogReader)
+            else self.shutdown_requested
+        )
+        frame = capture_live_frame(
             get_screenshot_directory(self.settings),
             self.capture_target,
             region=self._capture_region(),
@@ -1113,6 +1134,60 @@ class AppController:
             provenance_handler=self._record_capture_provenance,
             layout_session=self.live_dialog_layout,
             layout_context=self.settings.active_profile_id,
+        )
+        return self._select_text_layout(frame, cancel_event=cancellation)
+
+    def _select_text_layout(
+        self, frame: CapturedDialogFrame, *, cancel_event: Event | None = None
+    ) -> CapturedDialogFrame:
+        cancellation = (
+            cancel_event if cancel_event is not None else self.shutdown_requested
+        )
+        if (
+            not self.settings.discover_text_layouts
+            or not isinstance(frame, CapturedDialogFrame)
+            or frame.canonical_image is None
+            or self.caption_discovery_unavailable
+        ):
+            return frame
+        with self.caption_discovery_lock:
+            if cancellation.is_set() or self.shutdown_requested.is_set():
+                raise OCRPreviewCancelled("Screen text preparation cancelled")
+            if self.caption_discovery_unavailable:
+                return frame
+            if self.caption_discovery is None:
+                self.status_handler("Preparing screen text recognition…")
+                try:
+                    detector, recognizer = prepare_text_detection_models(
+                        self.model_assets,
+                        progress=lambda _percent, message: self.status_handler(message),
+                        cancel_event=cancellation,
+                    )
+                    if cancellation.is_set() or self.shutdown_requested.is_set():
+                        raise OCRPreviewCancelled("Screen text preparation cancelled")
+                    self.caption_discovery = TextDetectionWorker(detector, recognizer)
+                except ModelDownloadCancelled, OCRPreviewCancelled:
+                    raise
+                except Exception as error:
+                    self.caption_discovery_unavailable = True
+                    self.error_handler(
+                        RuntimeError(
+                            f"Text outside the dialogue area is unavailable: {error}. "
+                            "The calibrated dialogue area remains available."
+                        )
+                    )
+                    return frame
+            discovery = self.caption_discovery
+        started = monotonic()
+        lines = discovery.detect(
+            frame.canonical_image,
+            cancel_event=cancellation,
+        )
+        return replace(
+            select_caption(
+                frame, group_text_lines(lines), self.settings.ocr_minimum_confidence
+            ),
+            layout_detection_ms=(monotonic() - started) * 1000,
         )
 
     def _record_capture_provenance(self, provenance: object) -> None:
@@ -3708,6 +3783,11 @@ class AppController:
             return None
         if reader.observation_uncertain is True:
             return AutoAdvanceAttempt(False, "visual-wait")
+        if (
+            isinstance(reader, LiveDialogReader)
+            and not reader.layout_navigation_allowed()
+        ):
+            return AutoAdvanceAttempt(False, "layout-navigation-disabled")
         if (
             reader.paused is True
             or reader.emergency_stopped is True

@@ -728,6 +728,7 @@ class MainTest(unittest.TestCase):
             region=None,
             ocr_regions=None,
             result_resolver=None,
+            frame_selector=None,
         )
 
     def test_one_shot_routes_from_its_diagnostic_frame_not_previous_live_capture(self):
@@ -1396,6 +1397,7 @@ class MainTest(unittest.TestCase):
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
             result_resolver=controller._resolve_story_ocr_result,
+            frame_selector=controller._select_text_layout,
         )
         self.assertIs(
             schedule_dialog_read.call_args.kwargs["correction_dictionary_provider"](),
@@ -2593,7 +2595,9 @@ class MainTest(unittest.TestCase):
             1.0,
         )
         controller.capture_target = Mock()
-        image = object()
+        from PIL import Image
+
+        image = Image.new("RGB", (100, 100))
         capture_events = []
 
         @contextmanager

@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from vntts.diagnostics import DiagnosticSnapshot
-from vntts.dialog_capture import PathInput, analyze_dialog_snapshot
+from vntts.dialog_capture import CapturedDialogFrame, PathInput, analyze_dialog_snapshot
 from vntts.ocr import (
     DialogRegion,
     OCRRegions,
@@ -29,6 +29,7 @@ def read_live_snapshot(
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    frame_selector: Callable[[CapturedDialogFrame], CapturedDialogFrame] | None = None,
 ) -> tuple[str | None, str]:
     image, _, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -42,6 +43,7 @@ def read_live_snapshot(
         region=region,
         ocr_regions=ocr_regions,
         result_resolver=result_resolver,
+        frame_selector=frame_selector,
     )
     if result.text and not result.is_readable(minimum_confidence):
         if uncertain_frame_recorder is not None:

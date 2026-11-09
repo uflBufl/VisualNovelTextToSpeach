@@ -19,7 +19,7 @@ from vntts.versioned_json import load_versioned_json, write_versioned_json
 if TYPE_CHECKING:
     from vntts.game_pack import GamePackImport
 
-settings_schema_version = 31
+settings_schema_version = 32
 main_sections = ("stories", "voices", "reading")
 content_path_setting_names = (
     "game_pack",
@@ -164,6 +164,7 @@ class AppSettingsChanges(TypedDict, total=False):
     auto_advance_delay_ms: int
     ocr_minimum_confidence: int
     ocr_language: str
+    discover_text_layouts: bool
     speech_backend: str
     offline_speech_backend: str
     audio_source_policy: str
@@ -264,6 +265,7 @@ class AppSettings:
     auto_advance_delay_ms: int = 350
     ocr_minimum_confidence: int = 60
     ocr_language: str = "eng"
+    discover_text_layouts: bool = True
     speech_backend: str = "pocket-tts"
     offline_speech_backend: str = ""
     audio_source_policy: str = default_audio_source_policy
@@ -397,6 +399,7 @@ class AppSettings:
             "auto_advance_enabled",
             "announce_speaker_changes",
             "force_live_narrator",
+            "discover_text_layouts",
         )
 
         for name in string_fields:
@@ -436,6 +439,9 @@ class AppSettings:
                 parsed[name] = value
             else:
                 report(f"Invalid {name!r} setting; using its default")
+
+        if source_schema < 32 and "discover_text_layouts" not in values:
+            parsed["discover_text_layouts"] = False
 
         # Schema 27 promotes guarded sequence control for new installations.
         # Settings created before that rollout retain their former conservative

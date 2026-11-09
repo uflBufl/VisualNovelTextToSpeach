@@ -99,10 +99,21 @@ class CapturedDialogFrame:
     capture_ms: float
     ocr_regions: OCRRegions | None = None
     provenance: CaptureProvenance | None = None
+    canonical_image: Image.Image | None = None
+    capture_region: DialogRegion | None = None
+    layout_id: str = "dialogue"
+    layout_kind: str = "dialogue"
+    navigation_allowed: bool = True
+    recognized_result: OCRResult | None = None
+    layout_detection_ms: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "ocr_regions", resolve_ocr_regions(self.image, self.ocr_regions)
+            self,
+            "ocr_regions",
+            resolve_ocr_regions(self.image, self.ocr_regions)
+            if self.layout_kind == "dialogue"
+            else None,
         )
 
 
@@ -237,6 +248,7 @@ def capture_dialog(
     capture_target: object | None = None,
     run_id: str | None = None,
     provenance_handler: Callable[[CaptureProvenance], object] | None = None,
+    canonical_handler: Callable[[Image.Image], None] | None = None,
 ) -> tuple[Image.Image, Path | None]:
     capture_id = uuid4().hex
     started = monotonic()
@@ -271,6 +283,8 @@ def capture_dialog(
         frame = target.capture_native()
         x, y, width, height = frame.content_rect
         canonical = frame.to_image().crop((x, y, x + width, y + height))
+        if canonical_handler is not None:
+            canonical_handler(canonical)
         region = region or get_dialog_region()
         dialog_box = region.capture_box({"width": width, "height": height})
         image = region.crop(canonical)
@@ -367,21 +381,29 @@ def recognize_screenshot_result(
                 language=ocr_language,
                 ocr_regions=ocr_regions,
             )
-        if raw_result_observer is not None:
-            try:
-                raw_result_observer(result)
-            except Exception:
-                pass
-        result = (
-            correction_dictionary.correct_result(result)
-            if correction_dictionary is not None
-            else result
+        return _resolve_ocr_result(
+            result, correction_dictionary, result_resolver, raw_result_observer
         )
-        return result_resolver(result) if result_resolver is not None else result
     except OCRPreviewCancelled:
         raise
     except Exception as error:
         raise OCRError(str(error)) from error
+
+
+def _resolve_ocr_result(
+    result: OCRResult,
+    corrections: OCRCorrectionDictionary | None,
+    resolver: Callable[[OCRResult], OCRResult] | None,
+    observer: Callable[[OCRResult], None] | None,
+) -> OCRResult:
+    if observer is not None:
+        try:
+            observer(result)
+        except Exception:
+            pass
+    if corrections is not None:
+        result = corrections.correct_result(result)
+    return resolver(result) if resolver is not None else result
 
 
 def capture_live_frame(
@@ -398,6 +420,7 @@ def capture_live_frame(
 ) -> CapturedDialogFrame:
     capture_started = clock()
     records: list[CaptureProvenance] = []
+    canonical_frames: list[Image.Image] = []
 
     def captured(record: CaptureProvenance) -> None:
         records.append(record)
@@ -411,12 +434,15 @@ def capture_live_frame(
         capture_target=capture_target,
         run_id=run_id,
         provenance_handler=captured,
+        canonical_handler=canonical_frames.append,
     )
     frame = CapturedDialogFrame(
         image=image,
         capture_ms=(clock() - capture_started) * 1000,
         ocr_regions=ocr_regions,
         provenance=records[-1] if records else None,
+        canonical_image=canonical_frames[-1] if canonical_frames else None,
+        capture_region=region or get_dialog_region(),
     )
     return (
         frame
@@ -437,6 +463,10 @@ def _frame_image(frame: object) -> Image.Image:
 
 def fingerprint_dialog_frame(frame: object) -> bytes:
     """Fingerprint bright dialogue glyphs while ignoring the animated backdrop."""
+    if getattr(frame, "layout_kind", "dialogue") != "dialogue":
+        result = getattr(frame, "recognized_result", None)
+        text = result.text if isinstance(result, OCRResult) else ""
+        return blake2b(text.encode("utf-8"), digest_size=16).digest()
     grayscale = _frame_image(frame).convert("L")
     # Dialogue boxes in supported games are translucent, so hashing the whole
     # crop makes character animation and video behind the box look like new
@@ -576,6 +606,9 @@ def dialog_glyphs_visible(frame: object) -> bool:
     while a mostly bright crop is treated as a popup or calibration failure
     rather than dialogue.
     """
+    if getattr(frame, "layout_kind", "dialogue") != "dialogue":
+        result = getattr(frame, "recognized_result", None)
+        return isinstance(result, OCRResult) and bool(result.text.strip())
     grayscale = _frame_image(frame).convert("L")
     width, height = grayscale.size
     dialog_top = min(height - 1, round(height * 0.25))
@@ -641,7 +674,9 @@ def _dialog_completion_cue_pixels(frame: object) -> list[tuple[int, int]]:
 
 def dialog_completion_cue_visible(frame: object) -> bool:
     """Detect the game's small downward continue indicator, not dialogue text."""
-    return bool(_dialog_completion_cue_pixels(frame))
+    return getattr(frame, "navigation_allowed", True) and bool(
+        _dialog_completion_cue_pixels(frame)
+    )
 
 
 def _without_continue_indicator(image: Image.Image) -> Image.Image:
@@ -692,21 +727,30 @@ def recognize_live_frame(
     if not isinstance(capture_ms, (int, float)) or isinstance(capture_ms, bool):
         raise TypeError("Dialog frame has no capture timing")
     ocr_started = clock()
-    result = recognize_screenshot_result(
-        image,
-        voice_registry,
-        minimum_confidence,
-        ocr_language,
-        correction_dictionary,
-        ocr_regions=getattr(frame, "ocr_regions", None),
-        result_resolver=result_resolver,
-        raw_result_observer=raw_result_observer,
+    precomputed = getattr(frame, "recognized_result", None)
+    result = (
+        _resolve_ocr_result(
+            precomputed, correction_dictionary, result_resolver, raw_result_observer
+        )
+        if isinstance(precomputed, OCRResult)
+        else recognize_screenshot_result(
+            image,
+            voice_registry,
+            minimum_confidence,
+            ocr_language,
+            correction_dictionary,
+            ocr_regions=getattr(frame, "ocr_regions", None),
+            result_resolver=result_resolver,
+            raw_result_observer=raw_result_observer,
+        )
     )
     regions = getattr(frame, "ocr_regions", None)
     dialogue_image = (
         regions.dialogue.crop(image) if isinstance(regions, OCRRegions) else image
     )
-    visual_ellipsis = detect_standalone_ellipsis_frame(
+    visual_ellipsis = getattr(
+        frame, "layout_kind", "dialogue"
+    ) == "dialogue" and detect_standalone_ellipsis_frame(
         dialogue_image, dialogue_only=isinstance(regions, OCRRegions)
     )
     recognized_text = (
@@ -724,7 +768,7 @@ def recognize_live_frame(
             result.text,
             ellipsis_speaker_resolver,
         )
-    ocr_ms = (clock() - ocr_started) * 1000
+    ocr_ms = (clock() - ocr_started) * 1000 + getattr(frame, "layout_detection_ms", 0.0)
     snapshot = DiagnosticSnapshot(
         image=image,
         character=recognized_character or "Narrator",
@@ -809,7 +853,10 @@ def analyze_dialog_snapshot(
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
     capture_context: Callable[[], AbstractContextManager[None]] | None = None,
+    frame_selector: Callable[[CapturedDialogFrame], CapturedDialogFrame] | None = None,
 ) -> tuple[Image.Image, Path | None, OCRResult]:
+    canonical: list[Image.Image] = []
+    provenance: list[CaptureProvenance] = []
     with capture_context() if capture_context is not None else nullcontext():
         capture_started = clock()
         image, output = capture_dialog(
@@ -817,18 +864,50 @@ def analyze_dialog_snapshot(
             save_screenshot=save_screenshot,
             region=region,
             capture_target=capture_target,
+            canonical_handler=canonical.append if frame_selector is not None else None,
+            provenance_handler=provenance.append
+            if frame_selector is not None
+            else None,
         )
         capture_ms = (clock() - capture_started) * 1000
 
     ocr_started = clock()
-    result = recognize_screenshot_result(
-        image,
-        voice_registry,
-        minimum_confidence,
-        ocr_language,
-        correction_dictionary,
-        ocr_regions=ocr_regions,
-        result_resolver=result_resolver,
+    selected = None
+    if frame_selector is not None:
+        selected = frame_selector(
+            CapturedDialogFrame(
+                image,
+                capture_ms,
+                ocr_regions,
+                provenance=provenance[-1] if provenance else None,
+                canonical_image=canonical[-1] if canonical else None,
+                capture_region=region or get_dialog_region(),
+            )
+        )
+        image, ocr_regions = selected.image, selected.ocr_regions
+        if output is not None and selected.layout_kind == "caption":
+            metadata = json.dumps(
+                image.info.get("capture_provenance", {}), sort_keys=True
+            )
+            png_metadata = PngInfo()
+            png_metadata.add_text("capture_provenance", metadata)
+            image.save(output, pnginfo=png_metadata)
+            _save_capture_sidecar(output, metadata)
+    precomputed = selected.recognized_result if selected is not None else None
+    if selected is not None and selected.layout_kind == "pending":
+        precomputed = OCRResult("Narrator", "", 0, "layout-pending", 0)
+    result = (
+        _resolve_ocr_result(precomputed, correction_dictionary, result_resolver, None)
+        if precomputed is not None
+        else recognize_screenshot_result(
+            image,
+            voice_registry,
+            minimum_confidence,
+            ocr_language,
+            correction_dictionary,
+            ocr_regions=ocr_regions,
+            result_resolver=result_resolver,
+        )
     )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
@@ -871,6 +950,7 @@ def read_dialog(
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    frame_selector: Callable[[CapturedDialogFrame], CapturedDialogFrame] | None = None,
 ) -> None:
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
@@ -885,6 +965,7 @@ def read_dialog(
         correction_dictionary=correction_dictionary,
         ocr_regions=ocr_regions,
         result_resolver=result_resolver,
+        frame_selector=frame_selector,
     )
     if result.text and not result.is_readable(minimum_confidence):
         error = OCRUncertainError(result, minimum_confidence)
@@ -926,6 +1007,7 @@ def read_dialog_safely(
     region: DialogRegion | None = None,
     ocr_regions: OCRRegions | None = None,
     result_resolver: Callable[[OCRResult], OCRResult] | None = None,
+    frame_selector: Callable[[CapturedDialogFrame], CapturedDialogFrame] | None = None,
 ) -> None:
     try:
         read_dialog(
@@ -942,6 +1024,7 @@ def read_dialog_safely(
             region,
             ocr_regions,
             result_resolver,
+            frame_selector,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)

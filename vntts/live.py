@@ -27,6 +27,7 @@ from vntts.live_tracking import TrackerResolver as TrackerResolver
 from vntts.numeric_values import optional_finite_number
 from vntts.ocr import OCRPreviewCancelled
 from vntts.reading_diagnostics import retain_visual_wait_frames
+from vntts.reading_session import ReadingSession
 from vntts.support_timeline_acquisition import CONTINUATION_GATE_REASONS
 
 Frame: TypeAlias = object
@@ -587,6 +588,8 @@ class LiveDialogReader:
         self.pending_transition_text = ""
 
     def _reset_frame_observations(self) -> None:
+        self._layout_context = ("dialogue", "dialogue", True)
+        self.reading_session: ReadingSession | None = None
         self.observation_uncertain = False
         self.observation_frame: Frame | None = None
         self.latest_frame_captured_at: float | None = None
@@ -596,6 +599,48 @@ class LiveDialogReader:
         self.latest_frame_complete = False
         self.routed_frame: Frame | None = None
         self.routed_frame_fingerprint: FrameFingerprint | None = None
+
+    def _observe_frame_layout_locked(self, frame: Frame) -> None:
+        context = (
+            getattr(frame, "layout_id", "dialogue"),
+            getattr(frame, "layout_kind", "dialogue"),
+            getattr(frame, "navigation_allowed", True),
+        )
+        if context == self._layout_context:
+            return
+        self._layout_context = context
+        self.frame_route_epoch += 1
+        self.dialog_ready_generation = None
+        self.routed_frame = None
+        self.routed_frame_fingerprint = None
+        self.last_observation = None
+        self.last_accepted_observation = None
+        self.deferred_observation = None
+        self._cancel_auto_advance_locked()
+
+    def _layout_navigation_allowed_locked(self) -> bool:
+        latest, routed = self.latest_frame, self.routed_frame
+        return bool(
+            getattr(latest, "navigation_allowed", True)
+            and getattr(routed, "navigation_allowed", True)
+            and getattr(latest, "layout_kind", "dialogue") == "dialogue"
+            and getattr(routed, "layout_kind", "dialogue") == "dialogue"
+            and getattr(latest, "layout_id", "dialogue")
+            == getattr(routed, "layout_id", "dialogue")
+        )
+
+    def layout_navigation_allowed(self) -> bool:
+        with self.state_lock:
+            return self._layout_navigation_allowed_locked()
+
+    def _frame_ocr_purpose(self) -> str | None:
+        with self.state_lock:
+            kind = getattr(self.latest_frame, "layout_kind", "dialogue")
+            if kind == "pending":
+                return None
+            if kind == "caption":
+                return "layout-caption"
+        return self.ocr_purpose()
 
     @property
     def interval_seconds(self) -> float:
@@ -1322,6 +1367,7 @@ class LiveDialogReader:
                 visible = bool(self.frame_presence(frame))
                 complete = bool(self.frame_completion(frame))
                 with self.pause_condition:
+                    self._observe_frame_layout_locked(frame)
                     self.latest_frame = frame
                     self.latest_frame_captured_at = captured_at
                     self.latest_frame_fingerprint = fingerprint
@@ -1343,6 +1389,8 @@ class LiveDialogReader:
                         self.pause_condition.wait(timeout=self.interval_seconds)
                     interval = self.next_capture_interval
             except Exception as error:
+                if stop_event.is_set() or self.is_shutting_down:
+                    break
                 self.report_error(error)
                 interval = self.interval_seconds
             self._notify_capture_state(True, interval)
@@ -1412,7 +1460,7 @@ class LiveDialogReader:
     def _recognition_context_refusal(
         self, purpose: str, recognition_owner: str | None
     ) -> str | None:
-        if self._ocr_callback("validating-purpose", self.ocr_purpose) != purpose:
+        if self._ocr_callback("validating-purpose", self._frame_ocr_purpose) != purpose:
             return "ocr-purpose-changed"
         if recognition_owner != self._ocr_callback(
             "validating-owner", self.stable_frame_owner
@@ -1535,6 +1583,7 @@ class LiveDialogReader:
             admission.finish()
         self._ocr_progress("flushing")
         if not self.stop_event.is_set() and not self.is_shutting_down:
+            tracker = self.reading_session.tracker if self.reading_session else tracker
             self._ocr_callback(
                 "scheduling-flush",
                 self._schedule_tracked_chunks,
@@ -1550,6 +1599,8 @@ class LiveDialogReader:
         policy: _CapturePolicy,
         admission: _TrackerAdmissionDiagnostics,
     ) -> None:
+        session: ReadingSession | None = None
+        self.reading_session = None
         cached_canonical: _CanonicalRecognition | None = None
         while True:
             self._ocr_progress("waiting-for-frame")
@@ -1567,6 +1618,23 @@ class LiveDialogReader:
                 complete = self.latest_frame_complete
                 recognition_version = self.frame_version
                 recognition_capture_at = self.latest_frame_captured_at
+                self._observe_frame_layout_locked(frame)
+                previous_tracker = tracker
+                if getattr(frame, "layout_kind", None) in ("dialogue", "caption"):
+                    if session is None:
+                        session = ReadingSession(
+                            tracker, self.tracker_factory, self.tracker_options
+                        )
+                        self.reading_session = session
+                    tracker = session.select(
+                        getattr(frame, "layout_id", "dialogue"),
+                        getattr(frame, "layout_kind", "dialogue"),
+                    )
+                if tracker is not previous_tracker:
+                    cached_canonical = None
+                    self._set_generation(
+                        tracker.generation + self._explicit_generation_offset
+                    )
             try:
                 with self.state_lock:
                     awaiting_post_advance_dialog = (
@@ -1578,7 +1646,7 @@ class LiveDialogReader:
                             == self.active_generation
                         )
                     )
-                purpose = self._ocr_callback("reading-purpose", self.ocr_purpose)
+                purpose = self._ocr_callback("reading-purpose", self._frame_ocr_purpose)
                 if purpose is None:
                     admission.observe(
                         tracker,
@@ -1700,6 +1768,36 @@ class LiveDialogReader:
                     fingerprint,
                     route_kind,
                 )
+                line_id = (
+                    self._ocr_callback(
+                        "resolving-line", self.line_id_resolver, character, text
+                    )
+                    if silent_route is None
+                    else None
+                )
+                if (
+                    session is not None
+                    and session.adjacent_tracker is not None
+                    and silent_route is None
+                ):
+                    canonical_id = line_id
+                    if (
+                        canonical_id is None
+                        and cached_canonical is not None
+                        and (character, text)
+                        == (
+                            cached_canonical.dialog.character,
+                            cached_canonical.dialog.text,
+                        )
+                        and cached_canonical.run_id == self.run_id
+                        and cached_canonical.epoch == self.frame_route_epoch
+                        and cached_canonical.is_current(self.frame_route_epoch)
+                    ):
+                        canonical_id = cached_canonical.dialog.line_id
+                    previous_tracker = tracker
+                    tracker = session.coalesce(text, canonical_id)
+                    if tracker is not previous_tracker:
+                        character = tracker.character or character
                 if not frame_already_routed:
                     self._ocr_callback(
                         "publishing-route",
@@ -1732,6 +1830,7 @@ class LiveDialogReader:
                         text,
                         cached_canonical,
                         awaiting_post_advance_dialog,
+                        line_id,
                     )
                 admission.observe(
                     tracker, self.run_id, route_kind, frame, recognition_version
@@ -1811,10 +1910,8 @@ class LiveDialogReader:
         text: str,
         canonical: _CanonicalRecognition | None,
         awaiting_post_advance_dialog: bool,
+        line_id: str | None,
     ) -> list[SpeechChunk] | None:
-        line_id = self._ocr_callback(
-            "resolving-line", self.line_id_resolver, character, text
-        )
         if (
             line_id is None
             and canonical is not None
@@ -2525,7 +2622,14 @@ class LiveDialogReader:
             if generation != self.active_generation:
                 return
             self.dialog_ready_generation = (
-                generation if tracker.is_idle_complete() else None
+                generation
+                if tracker.is_idle_complete()
+                and self._layout_navigation_allowed_locked()
+                and (
+                    self.reading_session is None
+                    or self.reading_session.can_advance(tracker)
+                )
+                else None
             )
             if (
                 self.dialog_ready_generation is None
@@ -2610,6 +2714,7 @@ class LiveDialogReader:
             generation = self.active_generation
             if (
                 self.auto_advance is None
+                or not self._layout_navigation_allowed_locked()
                 or self.dialog_ready_generation != generation
                 or self.pending_auto_advance_generation == generation
                 or self.failed_auto_advance_generation == generation
@@ -2671,6 +2776,7 @@ class LiveDialogReader:
                     and timer_serial != self._auto_advance_timer_serial
                 )
                 or self.auto_advance is None
+                or not self._layout_navigation_allowed_locked()
                 or self.dialog_ready_generation != generation
                 or self.pending_auto_advance_generation == generation
                 or self._advance_requested_generation is not None
@@ -2712,6 +2818,7 @@ class LiveDialogReader:
                 self.auto_advance_timer = None
                 if (
                     self.auto_advance is None
+                    or not self._layout_navigation_allowed_locked()
                     or generation != self.active_generation
                     or self.dialog_ready_generation != generation
                     or self.failed_auto_advance_generation == generation
@@ -2802,6 +2909,7 @@ class LiveDialogReader:
                 or run_id != self.run_id
                 or owner != current_owner
                 or self.dialog_ready_generation != generation
+                or not self._layout_navigation_allowed_locked()
                 or self.failed_auto_advance_generation == generation
                 or self.last_auto_advance_dispatched_generation == generation
                 or self.current_chunk is not None

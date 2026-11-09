@@ -12,7 +12,15 @@ def collect_packaged_dependencies(datas, binaries, hidden_imports):
     binaries.extend(provider_binaries)
     hidden_imports.extend(provider_imports)
 
-    for package in ("TTS", "coqpit", "gruut", "ko_speech_tools", "trainer"):
+    for package in (
+        "TTS",
+        "coqpit",
+        "gruut",
+        "ko_speech_tools",
+        "trainer",
+        "rapidocr",
+        "onnxruntime",
+    ):
         package_datas, package_binaries, package_imports = collect_all(package)
         datas.extend(package_datas)
         binaries.extend(package_binaries)

@@ -312,28 +312,29 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-05 - Approve and implement shared text-reading architecture.**
-      Architecture for approval: [text-reading-architecture.md](docs/text-reading-architecture.md).
-      No product implementation is authorized by writing this proposal.
-      First delivery priority: fix the missed centered timed text in the recorded
-      chapter. Complete and verify normal dialogue -> caption -> normal dialogue
-      before starting the book reader, scrolling or paragraph-position work.
-      Scope shared infrastructure to this working slice; do not require the
-      entire document architecture before fixing the original defect.
-      Deliver separate working changes, migrating all affected consumers and
-      removing superseded runtime paths in each change:
-      (1) shared frame/layout/structured-observation contracts, one-format
-      calibration/profile migration and normal-reader parity;
-      (2) one occurrence/admission owner for dialogue/caption, migrating
-      tracker identity authority while keeping its stabilization and current FIFO;
-      (3) source-free new-game bootstrap, caption reader, bounded alternate worker
-      and selector/discovery, with one-region manual fallback for ambiguity;
-      verify the original centered quotes and existing prepared-audio route here,
-      as well as source-free portability, before moving to books;
-      (4) document reader, per-document position, geometry/order and source-free overlap;
-      (5) optional source/prepared-audio integration;
-      (6) acceptance first in a new game without extraction/catalog/adapters,
-      then current prepared-audio/background-generation and layout controls.
+- [ ] **RUN-09-05 - Verify centered captions before extending text layouts.**
+      Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
+      First delivery gate: verify the missed centered timed text in the recorded
+      chapter and normal dialogue -> caption -> normal dialogue on the live game.
+      Exercise prepared audio and source-free TTS, queued speech surviving timed
+      changes, return without repetition, no late keys, Stop/restart, and actual
+      detection/admission latency with background generation. Compare discovery
+      enabled/disabled; saved stills are not loaded live-performance evidence.
+      Do not start the book reader, scrolling or paragraph-position work before
+      this centered-caption gate is complete.
+      Remaining shared-architecture work needs separate concrete plans:
+      - validate new-game discovery without catalog/resources, different text
+        styling, short captions and similar-looking menus; single-block geometry
+        is not a universal story/menu classifier;
+      - provide explicit preview/area confirmation for ambiguous discovery and
+        migrate persisted calibration/profile/preview/replay consumers to one
+        layout format together. Existing dialog_region/OCRRegions remain the
+        ordinary calibration input until this UI can replace them completely;
+      - extend the replacement-reading owner with per-document position, then
+        implement the document reader, ordering and source-free overlap;
+      - verify optional source/prepared-audio integration and strict sequence
+        behavior across all implemented layouts;
+      - run combined new-game and prepared-audio acceptance after those slices.
       The generic path must read valid OCR with a standard available TTS voice;
       no resource parser, story index or game-specific reference is required.
       Never inherit a previous game's source binding for a newly selected game.
@@ -341,9 +342,8 @@ recovery separate from product defects.
       game/mode branches throughout controller, audio routing or navigation.
       Final speakable lines88/89 appeared as centered quote cards outside the
       calibrated bottom region and were not read. Video proves game-owned timed
-      transitions, with no extra application key. Review a game-independent way
-      to configure/recognize additional layouts and retain recognized prepared
-      speech across timed changes. Agree scope before implementation; do not add
+      transitions, with no extra application key. Confirm the new caption path
+      handles these recorded cases in the live game; do not add
       a hardcoded game icon detector or widen the existing crop over game UI.
       Use the captured Easter backward-scroll pair to verify unchanged paragraph
       identity and clipped-prefix handling; capture new-text/page-turn sequences,
@@ -383,8 +383,8 @@ recovery separate from product defects.
       duplicate side-panel text by content bounds, not by deleting source rows.
       A backward viewport update must not reanchor automatic reading to an older
       source occurrence; keep ordinary dialogue navigation behavior unchanged.
-      Require approval of the architecture and the concrete first change before
-      implementation. Remaining temporal comparisons and real-load performance
+      Agree further slices separately after centered-caption delivery.
+      Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
 - [ ] **RUN-09-06 - Clear completed calibration status.**
       Successful review/Save left the dashboard saying it was capturing for

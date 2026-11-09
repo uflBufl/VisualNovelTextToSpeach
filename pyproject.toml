@@ -30,6 +30,8 @@ dependencies = [
     # Coqui XTTS 0.27.5 imports an API removed in Transformers 5.
     "transformers>=4.57.6,<5",
     "pytesseract>=0.3.13",
+    "rapidocr>=3.9.2,<4",
+    "onnxruntime>=1.29,<2",
     "numpy>=2.5,<3",
     "soundfile>=0.14,<0.15",
     "platformdirs>=4.11,<5",
@@ -44,10 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-rapidocr = [
-    "rapidocr>=3.8.1,<4",
-    "onnxruntime>=1.29,<2",
-]
 speaker-identity = [
     "speechbrain==1.1.1",
 ]

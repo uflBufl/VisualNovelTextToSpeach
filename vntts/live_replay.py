@@ -57,7 +57,7 @@ from vntts.live import (
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan, StoryCursor
 from vntts.numeric_values import optional_finite_number
-from vntts.ocr import DialogRegion
+from vntts.ocr import DialogRegion, OCRResult
 from vntts.path_safety import ensure_separate_output, open_regular_candidate
 from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
@@ -1705,10 +1705,19 @@ def _load_frame(
 ) -> tuple[CapturedDialogFrame, str, str, str]:
     expected_sha256: object | None = None
     observation: ReplayRecognition | None = None
+    layout_kind = "dialogue"
     relative_path: object
     if isinstance(frame_spec, str):
         relative_path = frame_spec
     elif isinstance(frame_spec, dict):
+        raw_layout_kind = frame_spec.get("layout_kind", "dialogue")
+        if not isinstance(raw_layout_kind, str) or raw_layout_kind not in {
+            "dialogue",
+            "caption",
+            "pending",
+        }:
+            raise ValueError("Replay frame has an unsupported layout kind")
+        layout_kind = raw_layout_kind
         relative_path = frame_spec.get("path")
         raw_expected_sha256 = frame_spec.get("sha256")
         expected_sha256 = raw_expected_sha256
@@ -1727,6 +1736,10 @@ def _load_frame(
             if not isinstance(observed_text, str) or not observed_text.strip():
                 raise ValueError("Replay frame observed_text must be non-empty")
             observation = observed_character.strip(), " ".join(observed_text.split())
+        if layout_kind == "caption" and observation is None:
+            raise ValueError(
+                "Caption replay frames require the captured OCR observation"
+            )
     else:
         raise ValueError("Live replay frame must be a path or an object")
     if expected_sha256 is not None:
@@ -1752,7 +1765,23 @@ def _load_frame(
         image.info["vntts_replay_observation"] = observation
     recognition_source = "declared-observation" if observation is not None else "ocr"
     image.info["vntts_replay_recognition_source"] = recognition_source
-    return CapturedDialogFrame(image, 0.0), relative, digest, recognition_source
+    return (
+        CapturedDialogFrame(
+            image,
+            0.0,
+            layout_id=layout_kind,
+            layout_kind=layout_kind,
+            navigation_allowed=layout_kind == "dialogue",
+            recognized_result=OCRResult(
+                observation[0], observation[1], 0, "replay-declared-caption", 0
+            )
+            if layout_kind == "caption" and observation is not None
+            else None,
+        ),
+        relative,
+        digest,
+        recognition_source,
+    )
 
 
 def _recognize_replay_frame(
