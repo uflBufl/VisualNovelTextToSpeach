@@ -319,9 +319,11 @@ recovery separate from product defects.
       to configure/recognize additional layouts and retain recognized prepared
       speech across timed changes. Agree scope before implementation; do not add
       a hardcoded game icon detector or widen the existing crop over game UI.
-      Include full-page text anecdotes: obtain real page/appearance/scroll or
-      page-turn sequences and verify paragraph/speaker ordering against source
-      records. Choose a content/layout selector that excludes scenery and menus;
+      For the observed Easter book page, capture overlapping scroll and new-text
+      or page-turn sequences; verify paragraph/speaker order and no rereading.
+      Use `.codex/investigations/text-location-20261110/` for the actual page and
+      `.codex/investigations/text-location-20261109/` for normal/quote controls.
+      Choose a content/layout selector that excludes scenery and menus;
       OCR confidence alone cannot identify story text. Compare configured
       alternative areas with fallback-only text detection/line recognition,
       preserving the current normal-dialogue path. Reuse the offline detector
@@ -332,9 +334,17 @@ recovery separate from product defects.
       normal dialogue, with both light and dark text-page backgrounds.
       Book reading must preserve paragraph boundaries and already-read position;
       define page-advance behavior separately from per-dialogue auto-advance.
-      Do not choose a detector or promise performance until these measurements
-      include a real anecdote page. Present the concrete implementation plan
-      after comparison, before changing the pipeline/calibration.
+      Add explicit page presence/text-only semantics instead of the ordinary
+      bright-dialogue gate; order detected lines geometrically before grouping.
+      Plan for approval, source prerequisite: in the extractor, expand known
+      hero-story links through localized json_hero_story_introduce titles before
+      classification/hash. Real example: [3020901] must display Abendmuse Radio.
+      Preserve unknown literals such as [1920]; test known, repeated/multiple and
+      unknown references, stable line IDs/order, then reimport and regenerate
+      affected prepared text. Decide separately whether left-panel location/time
+      metadata should be spoken; do not silently reclassify it.
+      Present the concrete implementation plan after the temporal comparisons,
+      before changing the pipeline/calibration or promising live performance.
 - [ ] **RUN-09-06 - Clear completed calibration status.**
       Successful review/Save left the dashboard saying it was capturing for
       calibration through subsequent actions. Restore the actual idle/reading
