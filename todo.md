@@ -344,6 +344,12 @@ recovery separate from product defects.
       alternative areas with fallback-only text detection/line recognition,
       preserving the current normal-dialogue path. Reuse the offline detector
       evidence in `.codex/investigations/text-location-20261109/`.
+      Gate speech on allowed content bounds plus confirmed story-layout/session
+      evidence; selected-source alternate reading must also bind permitted story
+      occurrences. Suspend new admission/keys when story layout disappears;
+      never fall back to reading all detected screen text. Exercise main menus,
+      overlays, chapter selection and the excluded left book information card,
+      including similar-looking source-free screens and return to the story.
       Reuse one native full-content frame; measure actual persistent OCR calls
       and median/p95 admission latency, correct text/order, duplicates, missed
       timed text and accidental UI reading. Test layout changes and return to
