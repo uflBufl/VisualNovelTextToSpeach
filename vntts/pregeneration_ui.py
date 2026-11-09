@@ -348,6 +348,7 @@ class OfflineAudioPreparationDialog(QDialog):
         recovery: OfflineRecoveryWorker | None = None,
         publisher: OfflinePackPublisher | None = None,
         base_pack: str | Path | None = None,
+        playback_settings: AppSettings | None = None,
         importer: Reverse1999GameImporter | None = None,
         game_narrator_chooser: Callable[..., AppSettings | None] | None = None,
         automatic_activation: bool = False,
@@ -357,6 +358,7 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.settings = settings
+        self._playback_settings = playback_settings
         self.voice_library = voice_library or application_voice_library()
         self.automatic_activation = automatic_activation
         self.job_store = job_store or PregenerationJobStore()
@@ -1861,6 +1863,23 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel")
         self._set_import_controls(True)
         self._selection_changed()
+
+    @property
+    def playback_settings(self) -> AppSettings:
+        return self._playback_settings or self.settings
+
+    def apply_playback_settings(self, settings: AppSettings) -> None:
+        previous = self.playback_settings
+        self._playback_settings = settings
+        if settings == previous:
+            return
+        if settings.game_pack != previous.game_pack:
+            self._cancel_story_audio_check()
+            self._story_audio_checks.clear()
+            self._story_playback_speakers.clear()
+        self._refresh_story_statuses()
+        if not self.has_pending_work() and not self.selection_panel.isHidden():
+            self._selection_changed()
 
     def apply_narrator_settings(
         self, settings: AppSettings, *, voice_changed: bool = False
@@ -3740,7 +3759,7 @@ class OfflineAudioPreparationDialog(QDialog):
         return (
             content.story_index_sha256 if content is not None else None,
             selection_id,
-            self.settings.game_pack,
+            self.playback_settings.game_pack,
         )
 
     def _cancel_story_audio_check(self) -> None:
@@ -3806,7 +3825,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _reading_override_reason(
         self, selection_id: str, coverage: StoryAudioCoverage
     ) -> str | None:
-        settings = self.settings
+        settings = self.playback_settings
         if settings.audio_source_policy == "live-tts-only":
             return "Reading uses live speech only. Choose a recording playback policy in Settings."
         if coverage.original and settings.audio_source_policy != "prefer-game-audio":
@@ -3849,7 +3868,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._inspect_story_audio,
             content,
             selection_id,
-            self.settings.game_pack,
+            self.playback_settings.game_pack,
             self._story_audio_cancel_event,
         )
         self._refresh_story_statuses()
@@ -3885,7 +3904,7 @@ class OfflineAudioPreparationDialog(QDialog):
             else self._inspect_story_audio_batch,
             content,
             keys[0][1] if len(keys) == 1 else keys,
-            self.settings.game_pack,
+            self.playback_settings.game_pack,
             self._story_audio_cancel_event,
         )
 

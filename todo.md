@@ -312,26 +312,6 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-03 - Use effective Reading state in Stories coverage.**
-      After successful activation, Reading uses the new pack while reopened
-      Stories checks the old preference pack, offers activation again and hides
-      Prepare again. Keep generation preferences separate from the effective
-      playback snapshot; use the latter for active coverage, cache identity and
-      policy checks on both open and refresh. Gate: intentionally different
-      preference/runtime packs still show active coverage and the correct Read /
-      Prepare again actions, without rewriting generation preferences.
-      Plan for approval: give the preparation dialog a separate effective
-      playback-settings snapshot, defaulting to its settings for standalone use.
-      Supply/update it on open and through the shared preparation refresh path.
-      Use it only for active-pack coverage/cache keys and Reading policy checks;
-      keep source discovery, engine/model/voice choices and generation snapshots
-      on the preparation settings. Cancel/rekey coverage checks when the active
-      pack changes using the existing task cancellation; routing-only changes
-      rerender the cached evidence without rescanning files. Playback refresh
-      must not reset a pending generation job or mutate its publisher base.
-      Regress activation/reopen with different preferences/runtime, same-dialog
-      pack switches with late single/batch callbacks, Reading overrides, and
-      pending-work preservation before native Stories acceptance.
 - [ ] **RUN-09-04 - Bind the generation-page Read action to its preparation.**
       An early Read failed against the old story index; retry after publication
       used the selected preparation. Reproduce the interval before the progress
@@ -365,7 +345,10 @@ recovery separate from product defects.
       episodes separate; unavailable failure/scene cases remain pending.
 - [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
       import in isolated settings, long errors/copy/keyboard) and native physical
-      scrolling. Keep ordinary/large-font layout evidence already obtained.
+      scrolling. With intentionally different generation preferences and active
+      Reading packs, reopen Stories and verify active coverage and the correct
+      Read / Prepare again actions without changing generation preferences.
+      Keep ordinary/large-font layout evidence already obtained.
 Keep the detailed native gates below; an exercised stage does not close an
 unexercised scenario. Refactoring and linter debt remain deferred. Evidence:
 `.codex/investigations/seasonal-campaign-20261108/`, main diagnostic session

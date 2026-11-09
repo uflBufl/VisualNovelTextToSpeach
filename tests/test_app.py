@@ -1651,6 +1651,7 @@ class TrayApplicationTest(unittest.TestCase):
             game_narrator_chooser=tray_application._open_preparation_narrator,
             automatic_activation=True,
             base_pack=None,
+            playback_settings=tray_application.settings,
             parent=tray_application.dashboard,
         )
         start_activation.assert_called_once()
@@ -10031,6 +10032,14 @@ class TrayApplicationTest(unittest.TestCase):
             ):
                 tray.open_pregeneration()
                 self.assertEqual(preparation.call_args.args[0], tray.settings)
+                self.assertEqual(
+                    preparation.call_args.kwargs["playback_settings"],
+                    tray._runtime_settings(),
+                )
+                self.assertEqual(
+                    preparation.call_args.kwargs["playback_settings"].audio_source_policy,
+                    "prefer-generated",
+                )
                 self.assertEqual(
                     preparation.call_args.kwargs["base_pack"], str(pack.manifest)
                 )

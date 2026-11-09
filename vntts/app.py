@@ -4178,6 +4178,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Controller reconfiguration is already in progress")
             return None
         audition_session = self.voice_auditions.session()
+        playback_settings = self._runtime_settings()
         dialog = OfflineAudioPreparationDialog(
             self.settings,
             audition_service=audition_session,
@@ -4187,7 +4188,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             game_narrator_chooser=self._open_preparation_narrator,
             automatic_activation=True,
-            base_pack=self._runtime_settings().game_pack,
+            base_pack=playback_settings.game_pack,
+            playback_settings=playback_settings,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog

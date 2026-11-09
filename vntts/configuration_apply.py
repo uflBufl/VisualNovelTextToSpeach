@@ -143,13 +143,16 @@ class ConfigurationApplyMixin:
 
     def _refresh_preparation_settings(self) -> None:
         preparation = self.pregeneration_dialog
-        if preparation is not None and not preparation.has_pending_work():
-            preparation.apply_narrator_settings(self.settings)
-            preparation.publisher.base_pack = (
-                Path(pack).expanduser().resolve()
-                if (pack := self._runtime_settings().game_pack)
-                else None
-            )
+        if preparation is not None:
+            playback_settings = self._runtime_settings()
+            if not preparation.has_pending_work():
+                preparation.apply_narrator_settings(self.settings)
+                preparation.publisher.base_pack = (
+                    Path(pack).expanduser().resolve()
+                    if (pack := playback_settings.game_pack)
+                    else None
+                )
+            preparation.apply_playback_settings(playback_settings)
 
     def _setup_configuration_apply(self) -> None:
         if not isinstance(self, QObject):

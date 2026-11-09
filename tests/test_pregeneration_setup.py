@@ -3050,6 +3050,72 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.run_next_task(pool)
             self.assertEqual(dialog._story_audio_checks, {})
 
+    def test_playback_pack_change_discards_late_single_and_batch_audio_checks(self):
+        for batch in (False, True):
+            with self.subTest(batch=batch), TemporaryDirectory() as directory:
+                root = Path(directory)
+                content = inspect_story_index(write_story_index(root / "content"))
+                pool = ManualThreadPool()
+                generation = AppSettings(game_pack=str(root / "generation.json"))
+                playback = generation.updated(
+                    game_pack=str(root / "pack-a.json"),
+                    audio_source_policy="prefer-generated",
+                )
+                dialog = OfflineAudioPreparationDialog(
+                    generation,
+                    playback_settings=playback,
+                    discovery=lambda: ContentDiscovery((content,)),
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                if batch:
+                    dialog.select_all_button.click()
+                else:
+                    dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
+                QTest.qWait(1)
+                pending = pool.tasks.pop()
+                cancellation = dialog._story_audio_cancel_event
+                selected = dialog.selected_story_ids()
+                key = dialog._story_audio_key("main-1")
+                old = StoryAudioCoverage(
+                    "Main Story 1", root / "pack-a.json", generated=2
+                )
+                dialog._story_audio_checks[key] = (old, old, None)
+                dialog._story_playback_speakers[key] = ("Narrator",)
+                updated = playback.updated(game_pack=str(root / "pack-b.json"))
+                ready = StoryAudioCoverage(
+                    "Main Story 1", root / "pack-b.json", generated=2
+                )
+                with patch.object(
+                    dialog, "_inspect_story_audio", return_value=(ready, ready, ())
+                ) as inspect:
+                    dialog.apply_playback_settings(updated)
+                    QTest.qWait(1)
+                    self.assertTrue(cancellation.is_set())
+                    self.assertEqual(dialog._story_audio_checks, {})
+                    self.assertEqual(dialog._story_playback_speakers, {})
+                    self.assertEqual(dialog.selected_story_ids(), selected)
+                    self.assertEqual(dialog._checking_story_ids, selected)
+                    self.assertEqual(len(pool.tasks), 1)
+                    pending.run()
+                    self.application.processEvents()
+                    self.assertEqual(dialog._story_audio_checks, {})
+                    self.assertEqual(dialog._checking_story_ids, selected)
+                    self.assertTrue(dialog.coverage_runner.active)
+                    self.run_next_task(pool)
+                self.assertEqual(inspect.call_count, len(selected))
+                for invocation in inspect.call_args_list:
+                    self.assertEqual(invocation.args[2], updated.game_pack)
+                self.assertEqual(
+                    set(dialog._story_audio_checks),
+                    {dialog._story_audio_key(story) for story in selected},
+                )
+                self.assertTrue(dialog._can_start_reading())
+                self.assertIs(dialog.settings, generation)
+                self.assertIs(dialog.playback_settings, updated)
+                dialog.close()
+
     def test_reading_and_activation_cancel_unselected_story_recheck(self):
         for activate in (False, True):
             with self.subTest(activate=activate), TemporaryDirectory() as directory:
@@ -3604,10 +3670,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 game_pack=str(root / "active.json"),
                 audio_source_policy="prefer-game-audio",
             )
+            generation = settings.updated(audio_source_policy="live-tts-only")
+            pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
-                settings,
+                generation,
+                playback_settings=settings,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
             dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
@@ -3635,10 +3705,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                         library.clear(role)
                     if binding is not None:
                         library.select(binding, route="voice", source_id="preset:alba")
-                    dialog.settings = settings.updated(**changed)
-                    dialog._refresh_story_statuses()
-                    dialog._selection_changed()
-                    dialog._story_audio_changed()
+                    with patch.object(dialog, "_inspect_story_audio") as inspect:
+                        dialog.apply_playback_settings(settings.updated(**changed))
+                        QTest.qWait(1)
+                    inspect.assert_not_called()
+                    self.assertEqual(pool.tasks, [])
+                    self.assertIs(dialog.settings, generation)
                     self.assertEqual(dialog._can_start_reading(), not blocked)
                     self.assertEqual(
                         dialog.stories.item(0).data(0, Qt.ItemDataRole.UserRole + 2),
@@ -3652,6 +3724,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                             "Reading needs attention", dialog.story_audio_status.text()
                         )
                     self.assertIs(dialog._story_audio_checks[key][1], ready)
+            dialog.close()
 
     def test_changed_character_default_prepares_new_inputs_only_for_selected_story(
         self,
@@ -3753,6 +3826,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(preparation.deleteLater)
+            self.assertIs(preparation.playback_settings, original)
             preparation.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
             preparation.stories.item(1).setCheckState(0, Qt.CheckState.Unchecked)
             preparation.stories.setCurrentRow(0)
@@ -3812,11 +3886,36 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertIs(preparation.voice_plan(), plan)
                 self.assertTrue(preparation._awaiting_voice_confirmation)
                 snapshot = preparation.settings
-                preparation.generating = True
-                tray.settings = tray.settings.updated(speech_rate_percent=120)
-                tray._refresh_preparation_settings()
-                self.assertIs(preparation.settings, snapshot)
-                preparation.generating = False
+                prepared_input = object()
+                preparation._generation_input = prepared_input
+                configuration = (snapshot, "Saved narrator")
+                preparation._generation_configuration = configuration
+                selected = preparation.selected_story_ids()
+                preparation.publisher.base_pack = root / "generation-base.json"
+                base_pack = preparation.publisher.base_pack
+                for stage, rate in (
+                    ("planning_voices", 110),
+                    ("preparing_inputs", 115),
+                    ("generating", 120),
+                ):
+                    with self.subTest(stage=stage):
+                        setattr(preparation, stage, True)
+                        tray.settings = tray.settings.updated(speech_rate_percent=rate)
+                        tray._refresh_preparation_settings()
+                        self.assertIs(preparation.settings, snapshot)
+                        self.assertEqual(
+                            preparation.playback_settings.speech_rate_percent, rate
+                        )
+                        self.assertIs(preparation.voice_plan(), plan)
+                        self.assertIs(preparation.generation_input(), prepared_input)
+                        self.assertIs(
+                            preparation._generation_configuration, configuration
+                        )
+                        self.assertEqual(preparation.selected_story_ids(), selected)
+                        self.assertEqual(preparation.publisher.base_pack, base_pack)
+                        self.assertTrue(preparation._awaiting_voice_confirmation)
+                        self.assertFalse(preparation.voice_cancel_event.is_set())
+                        setattr(preparation, stage, False)
                 self.assertIs(tray.open_pregeneration(), preparation)
                 self.assertEqual(preparation.settings.speech_rate_percent, 120)
                 tray.pregeneration_dialog = None
