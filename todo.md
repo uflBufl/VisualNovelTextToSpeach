@@ -319,6 +319,16 @@ recovery separate from product defects.
       Let a fresh exact full match confirm the already accepted current identity
       in this path too, scoped to its run/window. Gate: completion sends one key;
       incomplete, different and ambiguous observations do not authorize it.
+      Plan for approval: expose the reader's unique accepted canonical line in
+      the current run/generation from its existing accepted_chunks, including
+      after playback completion. Exclude cancelled/replay-only or retired
+      ownership; do not use last_spoken_chunk or add another remembered line.
+      For unbounded low-confidence OCR, pass only that current identity to the
+      existing complete exact matcher. Reuse frame/run/owner freshness checks
+      and source_text_confirmed without raising the recorded OCR confidence.
+      Regression: trusted admission -> complete low-confidence OCR during and
+      after playback -> one playback and one advance; unrelated/prefix/fuzzy
+      text and stale Stop/Read, clear, replay or reconfiguration must not qualify.
 - [ ] **RUN-09-03 - Use effective Reading state in Stories coverage.**
       After successful activation, Reading uses the new pack while reopened
       Stories checks the old preference pack, offers activation again and hides
