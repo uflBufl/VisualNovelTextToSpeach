@@ -312,30 +312,6 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **RUN-09-04 - Bind the generation-page Read action to its preparation.**
-      An early Read failed against the old story index; retry after publication
-      used the selected preparation. Reproduce the interval before the progress
-      manifest exists. Enable Read only for a usable selected runtime and never
-      fall back to another ready controller while this preparation is pending.
-      Gate: early click cannot start an unrelated pack; first usable publication
-      enables the selected preparation normally.
-      Plan for approval: make readingRequested carry an explicit required source:
-      the generation-page Read requires this preparation; the selection-page
-      Start reading uses active Reading. Replace prefer_preparation with
-      require_preparation in shared source selection/start. A required preparation
-      uses only its runtime settings; absent settings stop the request, including
-      paused/failed work, without falling back to an active pack, saved preferences
-      or previously selected progress. Keep ordinary Reading source precedence.
-      Enable generation Read only when a selected ready line and this preparation's
-      published runtime are both available. Reuse runtime_playback_settings and
-      existing progress polling; no new timer, manifest parsing or backend change.
-      Migrate both signal emissions and direct callers/tests together; explicitly
-      emit the generation intent rather than forwarding Qt clicked(False).
-      Regress absent runtime with loaded/unloaded old packs and previous progress;
-      publication with unchanged ready counts; selected/unselected ready lines;
-      stopped recovery with usable runtime; and unchanged selection-page reading.
-      Run focused UI/app/lifecycle checks; keep native acceptance for the combined
-      run with generation in the background.
 - [ ] **RUN-09-05 - Plan support for timed dialogue in another screen region.**
       Final speakable lines88/89 appeared as centered quote cards outside the
       calibrated bottom region and were not read. Video proves game-owned timed
@@ -365,6 +341,9 @@ recovery separate from product defects.
       scrolling. With intentionally different generation preferences and active
       Reading packs, reopen Stories and verify active coverage and the correct
       Read / Prepare again actions without changing generation preferences.
+      During background generation with an old pack loaded, verify generation
+      Read waits for its selected preparation's published runtime and starts
+      that preparation rather than the old pack.
       Keep ordinary/large-font layout evidence already obtained.
 Keep the detailed native gates below; an exercised stage does not close an
 unexercised scenario. Refactoring and linter debt remain deferred. Evidence:

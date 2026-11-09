@@ -2842,16 +2842,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return playable
 
     def _reading_source_choice(
-        self, *, prefer_preparation: bool = False
+        self, *, require_preparation: bool = False
     ) -> tuple[AppSettings | None, bool]:
+        if require_preparation:
+            candidate = self._preparation_runtime_settings()
+            return candidate, candidate is not None
         progress = self._progressive_runtime_settings()
-        if progress is not None and not prefer_preparation:
+        if progress is not None:
             return progress, True
         active_pack = self._active_pack_reading_available()
-        if active_pack and not prefer_preparation:
+        if active_pack:
             return None, True
-        candidate = self._preparation_runtime_settings() or progress
-        return candidate, active_pack or candidate is not None
+        candidate = self._preparation_runtime_settings()
+        return candidate, candidate is not None
 
     def _preparation_blocks_reading(self, *, loaded: bool) -> bool:
         candidate, available = self._reading_source_choice()
@@ -2877,7 +2880,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.show_reading()
 
     def prepare_reading(
-        self, *, start_live: bool = False, prefer_preparation: bool = False
+        self, *, start_live: bool = False, require_preparation: bool = False
     ) -> None:
         if self._controller_busy or self._shutting_down:
             return
@@ -2887,14 +2890,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not self._audio_runtime_available():
             return
         runtime_settings, source_available = self._reading_source_choice(
-            prefer_preparation=prefer_preparation
+            require_preparation=require_preparation
         )
-        if self.pregeneration_dialog is not None and (
-            self.pregeneration_dialog.has_pending_work() and not source_available
+        if not source_available and (
+            require_preparation
+            or (
+                self.pregeneration_dialog is not None
+                and self.pregeneration_dialog.has_pending_work()
+            )
         ):
             self.set_status(
-                "Preparation is still working on its first dialogue. Start reading "
-                "when the ready-dialogue button appears."
+                "This preparation is not ready for reading yet. "
+                "Continue preparation and wait for Read to become available."
             )
             self.dashboard.show_stories()
             return
@@ -4246,13 +4253,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.settings = candidate
         self.dashboard.set_configuration(candidate)
 
-    def _read_prepared_story(self) -> None:
-        if self._controller_ready and self._preparation_runtime_settings() is None:
+    def _read_prepared_story(self, require_preparation: bool) -> None:
+        if self._controller_ready and not require_preparation:
             self.dashboard.show_reading()
             if not self.controller.is_live_running:
                 self.toggle_live()
             return
-        self.prepare_reading(start_live=True, prefer_preparation=True)
+        self.prepare_reading(
+            start_live=True, require_preparation=require_preparation
+        )
 
     def _remember_preparation_context(self) -> None:
         self._preparation_activation_settings = self.settings

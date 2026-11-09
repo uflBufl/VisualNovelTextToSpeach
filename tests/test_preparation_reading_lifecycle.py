@@ -141,7 +141,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
             patch.object(tray, "toggle_live") as start,
             patch.object(tray, "schedule_hotkeys"),
         ):
-            tray._read_prepared_story()
+            tray._read_prepared_story(True)
             self.assertLessEqual(len(pool.tasks), 1)
             if pool.tasks:
                 pool.run_next()
@@ -327,7 +327,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
             patch.object(tray, "toggle_live") as start,
             patch.object(tray, "show_error") as error,
         ):
-            tray._read_prepared_story()
+            tray._read_prepared_story(True)
             self.assertEqual(len(pool.tasks), 1)
             pool.run_next()
             self.application.processEvents()

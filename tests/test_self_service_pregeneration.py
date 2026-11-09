@@ -1605,7 +1605,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             self.assertEqual(active.continue_button.text(), "Start reading")
             active.continue_button.click()
-            reading_requested.assert_called_once_with()
+            reading_requested.assert_called_once_with(False)
             prepared.deleteLater()
             reopened.deleteLater()
             active.deleteLater()

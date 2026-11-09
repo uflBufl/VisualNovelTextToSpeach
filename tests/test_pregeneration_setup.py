@@ -23,6 +23,7 @@ from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
+from tests.pregeneration_fixtures import fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (  # noqa: E402
     write_story_index,
@@ -38,6 +39,7 @@ from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
     OfflineGenerationResult,
+    runtime_progress_manifest_path,
 )
 from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePackPublisher,
@@ -2932,7 +2934,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.readingRequested.connect(opened)
             dialog.continue_button.setFocus()
             QTest.keyClick(dialog.continue_button, Qt.Key.Key_Return)
-            opened.assert_called_once_with()
+            opened.assert_called_once_with(False)
             self.assertEqual(pool.tasks, [])
             dialog.close()
 
@@ -3159,7 +3161,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     dialog.activating_saved = False
                     opened.assert_not_called()
                 else:
-                    opened.assert_called_once_with()
+                    opened.assert_called_once_with(False)
                 dialog.close()
 
     def test_story_check_batch_keeps_each_result_and_error_with_its_story(self):
@@ -3344,7 +3346,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.change_voices.setChecked(False)
                 self.assertEqual(dialog.continue_button.text(), "Start reading")
                 dialog.continue_button.click()
-                opened.assert_called_once_with()
+                opened.assert_called_once_with(False)
                 self.assertEqual(pool.tasks, [])
             with patch.object(
                 dialog,
@@ -4232,9 +4234,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
     def test_progress_card_polls_durable_counts_during_slow_generation(self):
         with TemporaryDirectory() as temporary_directory:
-            content = inspect_story_index(
-                write_story_index(Path(temporary_directory) / "content")
-            )
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
             generator = Mock()
             generator.inspect_progress.side_effect = (
                 OfflineGenerationProgress(
@@ -4255,7 +4256,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 generator=generator,
                 thread_pool=pool,
             )
-            dialog._generation_input = Mock(progress_items=4)
+            _job, generation_input, _generated, _items = fixture(root / "runtime")
+            dialog._generation_input = replace(
+                generation_input,
+                story_index=content.story_index,
+                story_index_sha256=content.story_index_sha256,
+                ready_items=4,
+            )
             dialog.generating = True
             reading = Mock()
             dialog.readingRequested.connect(reading)
@@ -4289,7 +4296,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertTrue(dialog.play_ready_button.isEnabled())
             dialog.play_ready_button.click()
-            reading.assert_called_once_with()
+            reading.assert_called_once_with(True)
 
             dialog._poll_generation_progress()
             self.run_next_task(pool)
@@ -4309,6 +4316,70 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.progress_timer.stop()
             dialog.close()
             dialog.deleteLater()
+
+    def test_progress_reading_waits_for_current_manifest_and_selected_ready_line(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            _job, generation_input, _generated, _items = fixture(root / "runtime")
+            generation_input = replace(
+                generation_input,
+                story_index=content.story_index,
+                story_index_sha256=content.story_index_sha256,
+            )
+            manifest = runtime_progress_manifest_path(generation_input)
+            published_manifest = manifest.read_bytes()
+            manifest.unlink()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(game_pack=str(root / "previous-game-pack.json")),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+                generator=Mock(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = dialog.job_store.create_or_resume(content, ("main-1",))
+            dialog._generation_input = generation_input
+            dialog.generating = True
+            dialog._start_generation_progress()
+            dialog.progress_timer.stop()
+            ready_original = OfflineGenerationProgress(
+                ready_line_ids=("reverse1999:1",)
+            )
+
+            dialog._progress_finished(ready_original, None)
+
+            self.assertIsNone(dialog.runtime_playback_settings())
+            self.assertFalse(dialog.play_ready_button.isEnabled())
+            reading = Mock()
+            dialog.readingRequested.connect(reading)
+            dialog.play_ready_button.click()
+            reading.assert_not_called()
+
+            manifest.write_bytes(published_manifest)
+            dialog._progress_finished(ready_original, None)
+
+            self.assertEqual(
+                dialog.runtime_playback_settings().generated_audio_manifest,
+                str(manifest),
+            )
+            self.assertTrue(dialog.play_ready_button.isEnabled())
+            dialog.play_ready_button.click()
+            reading.assert_called_once_with(True)
+
+            dialog._progress_finished(
+                OfflineGenerationProgress(
+                    generated=2, ready_line_ids=("reverse1999:3",)
+                ),
+                None,
+            )
+
+            self.assertFalse(dialog.play_ready_button.isEnabled())
+            dialog.play_ready_button.click()
+            reading.assert_called_once_with(True)
+            dialog.generating = False
+            dialog._stop_generation_progress()
+            dialog.close()
 
     def test_runtime_history_survives_per_line_workers_and_resets_with_session(self):
         dialog = OfflineAudioPreparationDialog(
@@ -4410,7 +4481,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, tuple(s.selection_id for s in selections)
             )
-            dialog._generation_input = SimpleNamespace(progress_items=80)
+            _job, generation_input, _generated, _items = fixture(root / "runtime")
+            dialog._generation_input = replace(
+                generation_input,
+                story_index=content.story_index,
+                story_index_sha256=content.story_index_sha256,
+                ready_items=80,
+            )
             dialog.generating = True
             dialog._start_generation_progress()
             dialog.progress_timer.stop()
@@ -4552,7 +4629,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._generation_input = Mock(progress_items=3)
+            _job, generation_input, _generated, _items = fixture(root / "runtime")
+            dialog._generation_input = replace(
+                generation_input,
+                story_index=content.story_index,
+                story_index_sha256=content.story_index_sha256,
+                ready_items=3,
+            )
             dialog._generation_configuration = dialog._narrator_configuration_values()
             dialog._progress_snapshot = OfflineGenerationProgress(
                 generated=3, ready_line_ids=("reverse1999:1",)
@@ -4953,7 +5036,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._generation_input = Mock(ready_items=3, progress_items=3)
+            _job, generation_input, _generated, _items = fixture(root / "runtime")
+            dialog._generation_input = replace(
+                generation_input,
+                story_index=content.story_index,
+                story_index_sha256=content.story_index_sha256,
+                ready_items=3,
+            )
             dialog.recovering = True
             dialog._start_generation_progress()
             dialog._progress_finished(
@@ -4989,7 +5078,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             reading = Mock()
             dialog.readingRequested.connect(reading)
             dialog.play_ready_button.click()
-            reading.assert_called_once_with()
+            reading.assert_called_once_with(True)
             dialog.deleteLater()
 
     def test_missing_content_has_one_plain_recovery_action(self):

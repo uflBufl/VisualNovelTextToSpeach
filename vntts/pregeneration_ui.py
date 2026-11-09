@@ -330,7 +330,7 @@ class OfflineAudioPreparationDialog(QDialog):
     preparationRequested = Signal()
     offlinePreferencesChanged = Signal(object)
     packReady = Signal()
-    readingRequested = Signal()
+    readingRequested = Signal(bool)
     readingLineObserved = Signal(str, str)
 
     def __init__(
@@ -853,7 +853,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Start the selected story while preparation continues in the background"
         )
         self.play_ready_button.setToolTip("Start reading the selected story.")
-        self.play_ready_button.clicked.connect(self.readingRequested.emit)
+        self.play_ready_button.clicked.connect(lambda: self.readingRequested.emit(True))
         self._layout_progress_panel()
 
     def _build_progress_story_readiness(self) -> None:
@@ -3607,7 +3607,9 @@ class OfflineAudioPreparationDialog(QDialog):
             if not selected or selection.selection_id in selected
             for line_id in selection.line_ids
         )
-        self.play_ready_button.setEnabled(ready_count > 0)
+        self.play_ready_button.setEnabled(
+            ready_count > 0 and self.runtime_playback_settings() is not None
+        )
         self._refresh_story_statuses()
         self._emit_task_progress()
 
@@ -4965,7 +4967,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._cancel_story_audio_check()
         if self._pack_result is None and self._can_start_reading():
-            self.readingRequested.emit()
+            self.readingRequested.emit(False)
             return
         self.preparationRequested.emit()
         manifest = self._saved_manifest_for_selection()

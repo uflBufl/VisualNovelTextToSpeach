@@ -1978,14 +1978,14 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray, "prepare_reading") as prepare,
             patch.object(tray, "toggle_live") as start_reading,
         ):
-            tray._read_prepared_story()
+            tray._read_prepared_story(False)
             prepare.assert_called_once()
             start_reading.assert_not_called()
             tray._controller_ready = True
-            tray._read_prepared_story()
+            tray._read_prepared_story(False)
             start_reading.assert_called_once()
             controller.is_live_running = True
-            tray._read_prepared_story()
+            tray._read_prepared_story(False)
             start_reading.assert_called_once()
         controller.start.assert_not_called()
         tray.shutdown()
@@ -2080,6 +2080,62 @@ class TrayApplicationTest(unittest.TestCase):
             controller.settings = progress
             tray._retain_preparation_reading(progress)
         return tray, controller, preparation, progress
+
+    def test_required_preparation_without_runtime_never_reads_old_pack(self):
+        for loaded in (False, True):
+            for pending in (False, True):
+                with (
+                    self.subTest(loaded=loaded, pending=pending),
+                    TemporaryDirectory() as directory,
+                ):
+                    tray, controller, preparation, _wav = (
+                        self._prepared_pack_reading_tray(Path(directory), loaded=loaded)
+                    )
+                    preparation.has_pending_work.return_value = pending
+                    selected = controller.settings
+                    with (
+                        patch.object(tray, "_active_pack_reading_available") as inspect,
+                        patch.object(tray, "toggle_live") as start,
+                        patch.object(tray.initial_start_runner, "start") as initialize,
+                        patch.object(tray.session_owner, "attach") as attach,
+                    ):
+                        self.assertEqual(
+                            tray._reading_source_choice(require_preparation=True),
+                            (None, False),
+                        )
+                        inspect.assert_not_called()
+                        tray._read_prepared_story(True)
+                    start.assert_not_called()
+                    initialize.assert_not_called()
+                    attach.assert_not_called()
+                    self.assertEqual(controller.settings, selected)
+                    preparation._cancel_or_reject.assert_not_called()
+                    tray.pregeneration_dialog = None
+                    tray.shutdown()
+
+    def test_required_preparation_without_runtime_never_reuses_previous_progress(self):
+        with TemporaryDirectory() as directory:
+            tray, controller, preparation, previous = self._progressive_pack_reading_tray(
+                Path(directory)
+            )
+            preparation.runtime_playback_settings.return_value = None
+            self.assertEqual(tray._reading_source_choice(), (previous, True))
+            self.assertEqual(
+                tray._reading_source_choice(require_preparation=True), (None, False)
+            )
+            with (
+                patch.object(tray, "toggle_live") as start,
+                patch.object(tray.initial_start_runner, "start") as initialize,
+                patch.object(tray.session_owner, "attach") as attach,
+            ):
+                tray._read_prepared_story(True)
+            start.assert_not_called()
+            initialize.assert_not_called()
+            attach.assert_not_called()
+            self.assertEqual(controller.settings, previous)
+            self.assertEqual(tray._runtime_settings(), previous)
+            tray.pregeneration_dialog = None
+            tray.shutdown()
 
     def test_progressive_options_keep_selected_source_after_preparation(self):
         edits = (
@@ -2264,7 +2320,7 @@ class TrayApplicationTest(unittest.TestCase):
             pool = ManualThreadPool()
             tray.initial_start_runner.thread_pool = pool
             with patch.object(tray, "schedule_hotkeys"):
-                tray._read_prepared_story()
+                tray._read_prepared_story(True)
                 self.assertLessEqual(len(pool.tasks), 1)
                 if pool.tasks:
                     pool.run_next()
@@ -2312,7 +2368,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray._finish_controller_lifecycle()
             controller.apply_settings.return_value = True
             with patch.object(tray, "toggle_live") as start:
-                tray._read_prepared_story()
+                tray._read_prepared_story(True)
             controller.apply_settings.assert_called_once_with(
                 progress, cancellation=ANY
             )
@@ -2393,7 +2449,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray.pregeneration_dialog = preparation
 
         with patch.object(tray, "toggle_live") as start_reading:
-            tray._read_prepared_story()
+            tray._read_prepared_story(True)
 
         controller.apply_settings.assert_called_once_with(progress, cancellation=ANY)
         backend.progress_wait_request("line", "digest")
