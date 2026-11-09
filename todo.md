@@ -319,8 +319,10 @@ recovery separate from product defects.
       to configure/recognize additional layouts and retain recognized prepared
       speech across timed changes. Agree scope before implementation; do not add
       a hardcoded game icon detector or widen the existing crop over game UI.
-      For the observed Easter book page, capture overlapping scroll and new-text
-      or page-turn sequences; verify paragraph/speaker order and no rereading.
+      Use the captured Easter backward-scroll pair to verify unchanged paragraph
+      identity and clipped-prefix handling; capture new-text/page-turn sequences,
+      clipped paragraph starts and full viewport jumps before accepting the flow.
+      Verify source order, no rereading and preservation of queued speech.
       Use `.codex/investigations/text-location-20261110/` for the actual page and
       `.codex/investigations/text-location-20261109/` for normal/quote controls.
       Choose a content/layout selector that excludes scenery and menus;
@@ -341,8 +343,11 @@ recovery separate from product defects.
       classification/hash. Real example: [3020901] must display Abendmuse Radio.
       Preserve unknown literals such as [1920]; test known, repeated/multiple and
       unknown references, stable line IDs/order, then reimport and regenerate
-      affected prepared text. Decide separately whether left-panel location/time
-      metadata should be spoken; do not silently reclassify it.
+      affected prepared text. Preserve the location Narrator record: scrolling
+      reveals it inside the right page as well as the left metadata. Exclude
+      duplicate side-panel text by content bounds, not by deleting source rows.
+      A backward viewport update must not reanchor automatic reading to an older
+      source occurrence; keep ordinary dialogue navigation behavior unchanged.
       Present the concrete implementation plan after the temporal comparisons,
       before changing the pipeline/calibration or promising live performance.
 - [ ] **RUN-09-06 - Clear completed calibration status.**
