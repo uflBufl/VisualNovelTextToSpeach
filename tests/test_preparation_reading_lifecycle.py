@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QWidget  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
+from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.game_pack import import_game_pack  # noqa: E402
@@ -134,8 +135,18 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         return panel
 
     def _read(self, tray, controller):
-        with patch.object(tray, "toggle_live") as start:
+        pool = ManualThreadPool()
+        tray.initial_start_runner.thread_pool = pool
+        with (
+            patch.object(tray, "toggle_live") as start,
+            patch.object(tray, "schedule_hotkeys"),
+        ):
             tray._read_prepared_story()
+            self.assertLessEqual(len(pool.tasks), 1)
+            if pool.tasks:
+                pool.run_next()
+                self.application.processEvents()
+        self.assertEqual(pool.tasks, [])
         start.assert_called_once_with()
         controller.is_live_running = True
 
@@ -155,6 +166,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                 controller.runtime_control_snapshot.return_value = snapshot
                 before = tray._runtime_control_state()
                 controller.apply_settings.reset_mock()
+                controller.start.reset_mock()
                 with (
                     patch.object(tray, "_start_configuration_apply") as reconfigure,
                     patch.object(tray, "_save_settings_candidate") as save,
@@ -287,16 +299,19 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.assertEqual(tray._runtime_settings(), selected)
         self.assertEqual(tray.settings, saved)
 
-    def test_volume_change_keeps_transient_source(self):
+    def test_playback_preference_changes_keep_transient_source(self):
         tray, controller, panel, saved = self._tray()
         self._read(tray, controller)
         selected = controller.settings
         self._close(tray, panel)
-        tray.settings = saved.updated(output_volume_percent=37)
-        self.assertEqual(
-            tray._runtime_settings(), selected.updated(output_volume_percent=37)
-        )
-        self.assertTrue(tray._runtime_control_state().ready)
+        for update in (
+            {"output_volume_percent": 37},
+            {"audio_source_policy": "prefer-generated"},
+        ):
+            with self.subTest(update=update):
+                tray.settings = saved.updated(**update)
+                self.assertEqual(tray._runtime_settings(), selected.updated(**update))
+                self.assertTrue(tray._runtime_control_state().ready)
 
     def test_failed_handoff_keeps_previous_selected_source(self):
         tray, controller, panel, saved = self._tray()
@@ -306,16 +321,24 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self._panel(tray, self._progress_settings("second", saved))
         controller.apply_settings.side_effect = lambda *_args, **_kwargs: False
         controller.is_live_running = False
+        pool = ManualThreadPool()
+        tray.initial_start_runner.thread_pool = pool
         with (
             patch.object(tray, "toggle_live") as start,
             patch.object(tray, "show_error") as error,
         ):
             tray._read_prepared_story()
+            self.assertEqual(len(pool.tasks), 1)
+            pool.run_next()
+            self.application.processEvents()
         start.assert_not_called()
         error.assert_called_once()
         self.assertEqual(controller.settings, selected)
         self.assertEqual(tray._runtime_settings(), selected)
-        self.assertTrue(tray._runtime_control_state().ready)
+        self.assertFalse(tray._runtime_control_state().ready)
+        self.assertIn(
+            "Unable to restore previous speech settings", tray.last_controller_error
+        )
         self.assertEqual(tray.settings, saved)
 
     def test_terminal_preparation_activity_keeps_source_and_reports_stopped(self):
@@ -339,7 +362,6 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         for update in (
             {"active_profile_id": "other-profile"},
             {"story_index": "other-story.jsonl"},
-            {"audio_source_policy": "prefer-generated"},
         ):
             with self.subTest(update=update):
                 tray, controller, panel, saved = self._tray()
