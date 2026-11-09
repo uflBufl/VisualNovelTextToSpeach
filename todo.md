@@ -306,11 +306,61 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: prepare the combined native acceptance run below using calibrated
-speaker/dialogue areas that exclude game interface elements.
+Next action: review and approve the repairs below, one item at a time. The native
+run reached the chapter's terminal scene but did not pass uninterrupted reading.
+Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
+`9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
+recovery separate from product defects.
+
+- [ ] **RUN-09-01 - Preserve identity after early canonical admission.**
+      One occurrence of line42 played twice: a trusted early prefix emitted the
+      full canonical text without binding its line ID. Noisy partial text then
+      changed the inferred speaker and reset the tracker; the final exact result
+      was admitted again. Pass canonical line/speaker identity into the tracker
+      at early admission and retain that occurrence through related partials.
+      Gate: early prefix -> noisy speaker/partial -> exact full line emits once;
+      a real next line still emits. Do not globally deduplicate dialogue text.
+- [ ] **RUN-09-02 - Confirm the current canonical line outside sequence mode.**
+      Line60 was accepted at87.5%, played, then its complete correct text scored
+      52.5% and invalidated auto advance indefinitely. Existing low-confidence
+      source admission requires a sequence cursor; progressive OCR had no plan.
+      Let a fresh exact full match confirm the already accepted current identity
+      in this path too, scoped to its run/window. Gate: completion sends one key;
+      incomplete, different and ambiguous observations do not authorize it.
+- [ ] **RUN-09-03 - Use effective Reading state in Stories coverage.**
+      After successful activation, Reading uses the new pack while reopened
+      Stories checks the old preference pack, offers activation again and hides
+      Prepare again. Keep generation preferences separate from the effective
+      playback snapshot; use the latter for active coverage, cache identity and
+      policy checks on both open and refresh. Gate: intentionally different
+      preference/runtime packs still show active coverage and the correct Read /
+      Prepare again actions, without rewriting generation preferences.
+- [ ] **RUN-09-04 - Bind the generation-page Read action to its preparation.**
+      An early Read failed against the old story index; retry after publication
+      used the selected preparation. Reproduce the interval before the progress
+      manifest exists. Enable Read only for a usable selected runtime and never
+      fall back to another ready controller while this preparation is pending.
+      Gate: early click cannot start an unrelated pack; first usable publication
+      enables the selected preparation normally.
+- [ ] **RUN-09-05 - Plan support for timed dialogue in another screen region.**
+      Final speakable lines88/89 appeared as centered quote cards outside the
+      calibrated bottom region and were not read. Video proves game-owned timed
+      transitions, with no extra application key. Review a game-independent way
+      to configure/recognize additional layouts and retain recognized prepared
+      speech across timed changes. Agree scope before implementation; do not add
+      a hardcoded game icon detector or widen the existing crop over game UI.
+- [ ] **RUN-09-06 - Clear completed calibration status.**
+      Successful review/Save left the dashboard saying it was capturing for
+      calibration through subsequent actions. Restore the actual idle/reading
+      status after completion and cancellation; test both success and failure.
+- [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
+      A manual wait in the other selected chapter rejects the combined plan;
+      the UI silently falls back to OCR mode. Review per-chapter validation or a
+      clear unavailable reason before choosing an implementation. Preserve
+      game-owned waits and existing OCR reading; do not auto-skip unknown events.
 
 - [ ] After these findings are triaged/fixed, rerun an available current-season
-      chapter from its verified first dialogue to the actual terminal scene, with
+      chapter from the agreed visible dialogue to the actual terminal scene, with
       prepared voices and genuine background generation. Verify full low-confidence
       source dialogue after playback, one automatic transition and no replay.
       Preserve source/voice identity, recording readiness and3600s cap. Keep
