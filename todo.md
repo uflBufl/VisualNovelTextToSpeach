@@ -165,6 +165,11 @@
       previous expected and current sample/host timestamps and device-change
       evidence at the failure. Do not infer playback underrun from recorder failure;
       qualify recovery/coverage in a fresh uninterrupted native run.
+      In diagnostic `4cda5996f1fb4238be9ff45ab0375852`, the game-audio tap alone
+      failed with a sample-time discontinuity while video/own-playback capture
+      continued. Preserve that distinction and the expected/current sample times
+      in `.codex/investigations/story-region-20261110/live-issues.md`; do not
+      infer a playback glitch from a recording discontinuity.
 
 - [ ] **D1 - Finish recorder turnover and bounded-stop qualification.**
       After forced Rust-worker exit, the repaired session retains a partial segment,
@@ -312,6 +317,20 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
+- [ ] **Fix false process replacement after a clock adjustment before the next live retry.**
+      Proven in diagnostic `4cda5996f1fb4238be9ff45ab0375852`: selected PID/window
+      stayed unchanged, but psutil 7.2.2 adjusted public `create_time()` by one
+      second while its raw process start stayed equal to the saved value.
+      `WindowCaptureTarget._native_target` then rejected the still-running game.
+      Agree implementation before editing: retain a public `psutil.Process`
+      handle and use its stable `is_running()` identity for the live target;
+      preserve lifetime across source close/reopen and reject actual PID reuse.
+      Audit the same adjusted-float comparison in persisted diagnostic owner/helper
+      checks: a newly constructed `Process(pid).is_running()` cannot validate the
+      original persisted lifetime. Use a stable ownership protocol, without a
+      timestamp tolerance or disabled guard. Regress clock changes, real reuse,
+      vanished processes and active-session export/delete protection. Evidence:
+      `.codex/investigations/story-region-20261110/live-issues.md`.
 - [ ] **RUN-09-05 - Verify centered captions before extending text layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
       Repeat native acceptance with a confirmed Story area containing the dialogue
@@ -402,6 +421,43 @@ recovery separate from product defects.
       Successful review/Save left the dashboard saying it was capturing for
       calibration through subsequent actions. Restore the actual idle/reading
       status after completion and cancellation; test both success and failure.
+- [ ] **Investigate native capture deadlines during calibration and live reading.**
+      During Story area live acceptance, first capture/cancel succeeded but the
+      next Setup > Set story area failed with `Native capture deadline expired`.
+      Retrying after foregrounding the game succeeded; this is correlation, not
+      a proven focus dependency. Live capture later hit Python transport
+      `Native capture response timed out` on an established native stream, then
+      reopened and recovered. Distinguish native frame/recovery wait from Python
+      header/payload delivery and scheduling before choosing a fix. Use a bounded
+      temporary trace of request phases and reader/caller stacks; preserve exact
+      error code/message/session identity without raising timeouts or adding a
+      fallback. Keep ordinary calibration and fresh live-source paths in scope.
+      Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
+      `.codex/investigations/story-region-20261110/live-issues.md`.
+- [ ] **Investigate the unconfirmed Space on source `315601:10`.**
+      Hedone `Phew! What refreshment!` completed; native input reported success
+      and game focus before/after, but the same exact line remained. The later
+      capture errors started after this stall. Stop, one separately logged manual
+      Space and restart recovered progression. Inspect recorded pixels and key
+      timing before changing dispatch/admission; never blindly send another key.
+      Use diagnostic `4cda5996f1fb4238be9ff45ab0375852` and the manual-input marker
+      in `.codex/investigations/story-region-20261110/` to separate operator actions.
+- [ ] **Investigate text-detector inference timeout under background generation.**
+      During confirmed fresh MOSS renders, discovery hit `Screen text detection
+      timed out`; its worker was replaced and reading resumed without manual input.
+      Measure child inference versus startup/transport/scheduling on the same
+      loaded frame before changing worker budgets or recognition behavior. Check
+      queue/order across recovery. Evidence: diagnostic
+      `4cda5996f1fb4238be9ff45ab0375852` and the current live issue notes.
+- [ ] **Explain and fix failed quiescence when reopening preparation during reading.**
+      After closing a completed background job without activation, Choose stories
+      and prepare audio requested a live Stop but showed `Unable to stop live
+      capture: ` with an empty cause. Capture stopped, the current clip finished,
+      and no later old-run key was sent; preparation did not open. Trace the
+      failed wait/cancellation boundary before changing budgets, and preserve a
+      useful error message. Evidence: diagnostic
+      `4cda5996f1fb4238be9ff45ab0375852`, around source `315601:80`, plus
+      `.codex/investigations/story-region-20261110/live-issues.md`.
 - [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
       A manual wait in the other selected chapter rejects the combined plan;
       the UI silently falls back to OCR mode. Review per-chapter validation or a
