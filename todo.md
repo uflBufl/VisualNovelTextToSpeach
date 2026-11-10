@@ -397,19 +397,33 @@ recovery separate from product defects.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Investigate native capture deadlines during calibration and live reading.**
-      During Story area live acceptance, first capture/cancel succeeded but the
-      next Setup > Set story area failed with `Native capture deadline expired`.
-      Retrying after foregrounding the game succeeded; this is correlation, not
-      a proven focus dependency. Live capture later hit Python transport
-      `Native capture response timed out` on an established native stream, then
-      reopened and recovered. Distinguish native frame/recovery wait from Python
-      header/payload delivery and scheduling before choosing a fix. Use a bounded
-      temporary trace of request phases and reader/caller stacks; preserve exact
-      error code/message/session identity without raising timeouts or adding a
-      fallback. Keep ordinary calibration and fresh live-source paths in scope.
-      Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
-      `.codex/investigations/story-region-20261110/live-issues.md`.
+- [ ] **Replace bulk-pixel pipe transfer after approval of the shared-memory plan.**
+      Reproduced `Native capture response timed out` on the real selected window
+      under CPU-only Python thread load: native frame ready in about 1 ms, but raw
+      header/pixel reads miss the unchanged 2.5 s response deadline. Buffered header
+      alone still leaves a slow bulk-pixel pipe read. A temporary shared-memory
+      prototype returns the same-size frame in 15-30 ms under the same load.
+      Proposed implementation, awaiting agreement:
+      - Own a bounded shared pixel slot per NativeCaptureSession; buffer the small
+        metadata pipe and copy acknowledged pixels into owned frame bytes before
+        another request. Preserve target/sequence/layout/size validation.
+      - Migrate Python, macOS, Windows and the existing X11 worker together;
+        update protocol/build checks and remove the old bulk-pixel pipe path.
+        Preserve cancellation and deterministic child/map cleanup.
+      - Regress exact bytes, partial/stale replies, close/crash/cancel, resize and
+        repeated opens, then repeat the small/full-window load comparison. Keep
+        Windows native acceptance explicit; Mac tests do not qualify its hardware.
+      Evidence: `.codex/investigations/capture-timeouts-20261111/results.md`.
+- [ ] **Reproduce the separate native first-frame deadline during calibration.**
+      Historical capture/cancel then Setup > Set story area failed with
+      `Native capture deadline expired`; foreground retry succeeded, which does
+      not prove a focus dependency. Current repeated fresh captures passed.
+      Use the prepared temporary native stage trace to distinguish first-frame
+      wait, content enumeration, start/stop and recovery on recurrence. Old logs
+      lack these phases. Do not close this from the pixel-transport repair or
+      change timeout values on a hypothesis. Evidence: diagnostic
+      `4cda5996f1fb4238be9ff45ab0375852`, the earlier live-issues note and
+      `.codex/investigations/capture-timeouts-20261111/results.md`.
 - [ ] **Investigate the unconfirmed Space on source `315601:10`.**
       Hedone `Phew! What refreshment!` completed; native input reported success
       and game focus before/after, but the same exact line remained. The later
