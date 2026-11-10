@@ -331,26 +331,25 @@ recovery separate from product defects.
       timestamp tolerance or disabled guard. Regress clock changes, real reuse,
       vanished processes and active-session export/delete protection. Evidence:
       `.codex/investigations/story-region-20261110/live-issues.md`.
-- [ ] **RUN-09-05 - Verify centered captions before extending text layouts.**
+- [ ] **RUN-09-05 - Finish remaining caption qualification before extending layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
-      Repeat native acceptance with a confirmed Story area containing the dialogue
-      and central quotes but excluding controls. Verify that `SKIP EXIT` remains
-      silent and does not revoke ordinary advance readiness. Original failure
-      evidence: `.codex/investigations/caption-acceptance-20261110/`; bounded
-      saved-frame checks: `.codex/investigations/story-region-20261110/`.
-      Exercise Story area setup/save/cancel through the running app with the real
-      game; static frames and offscreen UI tests do not close this live gate.
+      Use native session `e4125dfcb5b7433aa35c0bde8bba3206` as the prepared-audio
+      terminal-caption baseline; exact media and evidence limits are in
+      `.codex/investigations/story-region-20261110/terminal-check-e4125.md`.
+      Remaining live gates:
+      - source-free TTS without catalog/resources, using an available narrator;
+      - multiple captions admitted while earlier accepted speech is still queued,
+        then return to unchanged lower dialogue without repetition. The current
+        chapter ends after the quotes, so use a suitable scene for the return;
+      - actual caption detection/admission latency under fresh background
+        generation, comparing discovery enabled/disabled on the same content;
+      - an uninterrupted combined chapter after the separately recorded native
+        capture, process-identity, dispatch and recorder defects are fixed.
       Keep one shared permission across live/bootstrap/one-shot/diagnostics/replay;
       do not blacklist game-specific labels, hardcode a top/center band, widen
       the ordinary dialogue crop or weaken key guards.
-      Retest merged/split UI-label OCR, real captions and return to unchanged
-      dialogue at native resolution; record the discovery cost separately.
-      First delivery gate: verify the missed centered timed text in the recorded
-      chapter and normal dialogue -> caption -> normal dialogue on the live game.
-      Exercise prepared audio and source-free TTS, queued speech surviving timed
-      changes, return without repetition, no late keys, Stop/restart, and actual
-      detection/admission latency with background generation. Compare discovery
-      enabled/disabled; saved stills are not loaded live-performance evidence.
+      Preserve queued speech, Stop/restart and no-late-key policies in those gates;
+      saved stills are not loaded live-performance evidence.
       Do not start the book reader, scrolling or paragraph-position work before
       this centered-caption gate is complete.
       Remaining shared-architecture work needs separate concrete plans:
@@ -371,11 +370,6 @@ recovery separate from product defects.
       Never inherit a previous game's source binding for a newly selected game.
       Register new readers through the common observation contract; do not add
       game/mode branches throughout controller, audio routing or navigation.
-      Final speakable lines88/89 appeared as centered quote cards outside the
-      calibrated bottom region and were not read. Video proves game-owned timed
-      transitions, with no extra application key. Confirm the new caption path
-      handles these recorded cases in the live game; do not add
-      a hardcoded game icon detector or widen the existing crop over game UI.
       Use the captured Easter backward-scroll pair to verify unchanged paragraph
       identity and clipped-prefix handling; capture new-text/page-turn sequences,
       clipped paragraph starts and full viewport jumps before accepting the flow.
