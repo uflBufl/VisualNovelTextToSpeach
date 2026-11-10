@@ -25,6 +25,7 @@ from vntts.diagnostic_recording import (
     NativeDiagnosticRecording,
 )
 from vntts.path_safety import open_regular_binary, safe_relative_path
+from vntts.process_identity import process_fingerprint, validate_process_fingerprint
 from vntts.support_timeline_acquisition import TimelineAcquisition
 from vntts.window_capture import WindowCaptureTarget
 
@@ -417,7 +418,9 @@ def load_saved_diagnostic_session(
         return None
 
 
-def _process_is_running(pid: object, created: object) -> bool:
+def _process_is_running(
+    pid: object, created: object, fingerprint: object = None
+) -> bool:
     if (
         not isinstance(pid, int)
         or isinstance(pid, bool)
@@ -430,12 +433,18 @@ def _process_is_running(pid: object, created: object) -> bool:
         or created <= 0
     ):
         raise ValueError("Diagnostic owner identity is invalid")
+    saved = validate_process_fingerprint(fingerprint)
     try:
         process = psutil.Process(pid)
-        return bool(
-            process.create_time() == created
-            and process.status() != psutil.STATUS_ZOMBIE
-        )
+        if process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        # Missing or incompatible identity cannot prove that an existing PID is dead.
+        if saved is None:
+            return True
+        current = process_fingerprint(process)
+        if current["scheme"] != saved["scheme"]:
+            return True
+        return current["token"] == saved["token"]
     except psutil.NoSuchProcess:
         return False
     except psutil.AccessDenied:
@@ -459,7 +468,9 @@ def _exportable_session(
         raise ValueError(reason)
     owner = report.get("owner")
     if isinstance(owner, dict):
-        if _process_is_running(owner.get("pid"), owner.get("created")):
+        if _process_is_running(
+            owner.get("pid"), owner.get("created"), owner.get("fingerprint")
+        ):
             raise ValueError(reason)
         if report.get("target") is not None:
             identity = (owner["pid"], owner["created"])
@@ -490,7 +501,9 @@ def _exportable_session(
                     continue
                 if capture.get("helper_created") is not None:
                     if _process_is_running(
-                        capture.get("helper_pid"), capture["helper_created"]
+                        capture.get("helper_pid"),
+                        capture["helper_created"],
+                        capture.get("helper_fingerprint"),
                     ):
                         raise ValueError("Diagnostic media is still finalizing")
                 elif type(capture.get("helper_pid")) is int and psutil.pid_exists(
@@ -674,7 +687,12 @@ class ReadingDiagnosticSession:
         self.visual_wait_dropped = 0
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.started_monotonic = monotonic()
-        self.owner = {"pid": os.getpid(), "created": psutil.Process().create_time()}
+        process = psutil.Process()
+        self.owner = {
+            "pid": os.getpid(),
+            "created": process.create_time(),
+            "fingerprint": process_fingerprint(process),
+        }
         self.stop_requested = Event()
         self.finished = Event()
         self.analysis_cancelled = Event()

@@ -78,8 +78,14 @@ class CaptureProvenanceTest(unittest.TestCase):
         self.factory = factory.start()
         self.addCleanup(factory.stop)
         process = patch("vntts.window_capture.psutil.Process")
-        process.start().return_value.create_time.return_value = 10
+        process.start()
         self.addCleanup(process.stop)
+        fingerprint = patch(
+            "vntts.window_capture.process_fingerprint",
+            return_value={"scheme": "test", "token": "selected-process"},
+        )
+        fingerprint.start()
+        self.addCleanup(fingerprint.stop)
         self.addCleanup(self.target.close)
         self.region = DialogRegion(0, 0.5, 1, 0.5)
 

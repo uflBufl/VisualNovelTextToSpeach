@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import psutil
+
 from vntts.window_capture import (
     LinuxX11WindowBackend,
     MacOSWindowBackend,
@@ -233,6 +235,77 @@ class WindowCaptureTargetTest(unittest.TestCase):
             target.input_focus_snapshot()
         self.assertEqual(target._handle, 100)
         self.assertIs(target.last_window, selected)
+
+
+class WindowCaptureIdentityTest(unittest.TestCase):
+    def setUp(self):
+        self.window = WindowInfo(100, "Game", 42)
+        self.backend = Mock()
+        self.backend.list_windows.return_value = [self.window]
+        self.backend.get_window.return_value = self.window
+        self.target = WindowCaptureTarget("Game", self.backend)
+        self.addCleanup(self.target.close)
+        self.worker = Mock(clock_offset=0.0, clock_uncertainty=0.0)
+        factory = patch(
+            "vntts.window_capture.NativeCaptureSession", return_value=self.worker
+        )
+        self.create = factory.start()
+        self.addCleanup(factory.stop)
+        process = patch("vntts.window_capture.psutil.Process")
+        self.process = process.start()
+        self.addCleanup(process.stop)
+        fingerprint = patch(
+            "vntts.window_capture.process_fingerprint",
+            return_value={"scheme": "test", "token": "original-process"},
+        )
+        self.fingerprint = fingerprint.start()
+        self.addCleanup(fingerprint.stop)
+
+    def test_wall_clock_adjustment_keeps_selected_process_across_source_reopen(self):
+        self.process.return_value.create_time.return_value = 1000.0
+        self.target.capture_native()
+        self.process.return_value.create_time.return_value = 999.0
+        self.target.capture_native()
+        self.create.assert_called_once()
+        self.target.close()
+        self.target.capture_native()
+        self.assertEqual(self.create.call_count, 2)
+        self.assertEqual(self.fingerprint.call_count, 3)
+
+    def test_pid_reuse_is_rejected_after_source_close_even_for_same_wall_clock_start(
+        self,
+    ):
+        self.process.return_value.create_time.return_value = 1000.0
+        self.target.capture_native()
+        self.target.close()
+        self.fingerprint.return_value = {"scheme": "test", "token": "new-process"}
+        with self.assertRaisesRegex(WindowNotFoundError, "process changed"):
+            self.target.capture_native()
+        self.create.assert_called_once()
+
+    def test_unavailable_process_discards_source_and_keeps_selected_owner(self):
+        for error in (psutil.NoSuchProcess(42), psutil.AccessDenied(42)):
+            with self.subTest(error=type(error).__name__):
+                self.target.capture_native()
+                self.fingerprint.side_effect = error
+                with self.assertRaisesRegex(
+                    WindowNotFoundError, "unavailable"
+                ) as caught:
+                    self.target.capture_native()
+                self.assertIs(caught.exception.__cause__, error)
+                self.assertIsNone(self.target._source)
+                self.fingerprint.side_effect = None
+                self.target.capture_native()
+
+    def test_minimized_window_does_not_probe_process_or_open_source(self):
+        self.backend.list_windows.return_value = [
+            WindowInfo(100, "Game", 42, minimized=True)
+        ]
+        with self.assertRaises(WindowMinimizedError):
+            self.target.capture_native()
+        self.process.assert_not_called()
+        self.fingerprint.assert_not_called()
+        self.create.assert_not_called()
 
 
 class MacOSWindowBackendTest(unittest.TestCase):

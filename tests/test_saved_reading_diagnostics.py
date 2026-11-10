@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+import psutil
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -19,6 +21,7 @@ from vntts.reading_diagnostics import (  # noqa: E402
     DiagnosticSessionEntry,
     ReadingDiagnosticSession,
     SavedDiagnosticSession,
+    _process_is_running,
     delete_saved_diagnostic_session,
     latest_finished_diagnostic_session,
     list_diagnostic_sessions,
@@ -202,24 +205,72 @@ class SavedReadingDiagnosticsTest(unittest.TestCase):
             metadata = session.directory / "session.json"
             report = json.loads(metadata.read_text())
             report["status"] = "recording"
-            metadata.write_text(json.dumps(report))
-            self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
-            with self.assertRaises(ValueError):
-                delete_saved_diagnostic_session(root, session.session_id)
+            report["owner"]["created"] += 1
+            fingerprint = report["owner"]["fingerprint"]
+            for saved in (
+                fingerprint,
+                None,
+                {**fingerprint, "scheme": "older-runtime"},
+            ):
+                report["owner"]["fingerprint"] = saved
+                metadata.write_text(json.dumps(report))
+                self.assertIsNone(
+                    load_saved_diagnostic_session(root, session.session_id)
+                )
+                with self.assertRaises(ValueError):
+                    delete_saved_diagnostic_session(root, session.session_id)
             owner = report.pop("owner")
             report["started_at"] = "2020-01-01T00:00:00+00:00"
-            report["recording"] = {
-                "captures": [
-                    {"helper_pid": owner["pid"], "helper_created": owner["created"]}
-                ]
-            }
-            metadata.write_text(json.dumps(report))
-            self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
-            with self.assertRaisesRegex(ValueError, "media is still finalizing"):
-                delete_saved_diagnostic_session(root, session.session_id)
+            capture = {"helper_pid": owner["pid"], "helper_created": owner["created"]}
+            report["recording"] = {"captures": [capture]}
+            for saved in (fingerprint, None):
+                capture["helper_fingerprint"] = saved
+                metadata.write_text(json.dumps(report))
+                self.assertIsNone(
+                    load_saved_diagnostic_session(root, session.session_id)
+                )
+                with self.assertRaisesRegex(ValueError, "media is still finalizing"):
+                    delete_saved_diagnostic_session(root, session.session_id)
             report["recording"]["captures"][0]["helper_created"] = None
             metadata.write_text(json.dumps(report))
             self.assertIsNone(load_saved_diagnostic_session(root, session.session_id))
+
+    def test_reused_owner_pid_does_not_block_interrupted_export_and_delete(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            metadata = session.directory / "session.json"
+            report = json.loads(metadata.read_text())
+            report["status"] = "recording"
+            report["owner"]["fingerprint"]["token"] = "previous-lifetime"
+            metadata.write_text(json.dumps(report))
+            saved = load_saved_diagnostic_session(root, session.session_id)
+            self.assertIsNotNone(saved)
+            self.assertEqual(saved.report["status"], "interrupted")
+            delete_saved_diagnostic_session(root, session.session_id)
+            self.assertFalse(session.directory.exists())
+
+    def test_process_lifetime_checks_do_not_use_wall_clock_dates(self):
+        original = {"scheme": "test", "token": "original"}
+        with (
+            patch("vntts.reading_diagnostics.psutil.Process") as process,
+            patch(
+                "vntts.reading_diagnostics.process_fingerprint", return_value=original
+            ) as fingerprint,
+        ):
+            self.assertTrue(_process_is_running(42, 999, original))
+            process.return_value.create_time.assert_not_called()
+            fingerprint.return_value = {**original, "token": "reused"}
+            self.assertFalse(_process_is_running(42, 999, original))
+            fingerprint.return_value = {**original, "scheme": "other-runtime"}
+            self.assertTrue(_process_is_running(42, 999, original))
+            self.assertTrue(_process_is_running(42, 999))
+            process.return_value.status.return_value = psutil.STATUS_ZOMBIE
+            self.assertFalse(_process_is_running(42, 999, original))
+            process.side_effect = psutil.NoSuchProcess(42)
+            self.assertFalse(_process_is_running(42, 999, original))
+            process.side_effect = psutil.AccessDenied(42)
+            self.assertTrue(_process_is_running(42, 999, original))
 
     def test_dead_owner_allows_native_watchdog_to_finish_without_real_wait(self):
         with TemporaryDirectory() as directory:

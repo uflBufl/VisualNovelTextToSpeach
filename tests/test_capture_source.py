@@ -99,8 +99,13 @@ class NativeSourceOwnershipTest(unittest.TestCase):
         backend.list_windows.return_value = [WindowInfo(100, "Game", 42)]
         target = WindowCaptureTarget("Game", backend)
         self.addCleanup(target.close)
-        with patch("vntts.window_capture.psutil.Process") as process:
-            process.return_value.create_time.return_value = 1.0
+        with (
+            patch("vntts.window_capture.psutil.Process"),
+            patch(
+                "vntts.window_capture.process_fingerprint",
+                return_value={"scheme": "test", "token": "original-process"},
+            ),
+        ):
             target.capture_native()
             backend.get_window.return_value = None
             backend.list_windows.return_value = [WindowInfo(101, "Game", 42)]
@@ -125,10 +130,15 @@ class NativeSourceOwnershipTest(unittest.TestCase):
         backend.get_window.return_value = window
         target = WindowCaptureTarget("Game", backend)
         self.addCleanup(target.close)
-        with patch("vntts.window_capture.psutil.Process") as process:
-            process.return_value.create_time.return_value = 1.0
+        with (
+            patch("vntts.window_capture.psutil.Process"),
+            patch(
+                "vntts.window_capture.process_fingerprint",
+                return_value={"scheme": "test", "token": "original-process"},
+            ) as fingerprint,
+        ):
             target.capture_native()
-            process.return_value.create_time.return_value = 2.0
+            fingerprint.return_value = {"scheme": "test", "token": "new-process"}
             with self.assertRaisesRegex(WindowNotFoundError, "process changed"):
                 target.capture_native()
         self.create.assert_called_once()

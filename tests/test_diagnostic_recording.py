@@ -18,6 +18,7 @@ from vntts.diagnostic_recording import (
     NativeDiagnosticRecording,
     _run_checked,
 )
+from vntts.process_identity import process_fingerprint
 
 
 class NativeDiagnosticRecordingTest(unittest.TestCase):
@@ -113,6 +114,10 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             self.assertEqual(capture["helper_pid"], process.pid)
             self.assertEqual(
                 capture["helper_created"], psutil.Process(process.pid).create_time()
+            )
+            self.assertEqual(
+                capture["helper_fingerprint"],
+                process_fingerprint(psutil.Process(process.pid)),
             )
             self.assertIsNone(capture["returncode"])
         finally:

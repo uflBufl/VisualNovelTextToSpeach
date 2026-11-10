@@ -317,20 +317,6 @@ Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
 `9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
 recovery separate from product defects.
 
-- [ ] **Fix false process replacement after a clock adjustment before the next live retry.**
-      Proven in diagnostic `4cda5996f1fb4238be9ff45ab0375852`: selected PID/window
-      stayed unchanged, but psutil 7.2.2 adjusted public `create_time()` by one
-      second while its raw process start stayed equal to the saved value.
-      `WindowCaptureTarget._native_target` then rejected the still-running game.
-      Agree implementation before editing: retain a public `psutil.Process`
-      handle and use its stable `is_running()` identity for the live target;
-      preserve lifetime across source close/reopen and reject actual PID reuse.
-      Audit the same adjusted-float comparison in persisted diagnostic owner/helper
-      checks: a newly constructed `Process(pid).is_running()` cannot validate the
-      original persisted lifetime. Use a stable ownership protocol, without a
-      timestamp tolerance or disabled guard. Regress clock changes, real reuse,
-      vanished processes and active-session export/delete protection. Evidence:
-      `.codex/investigations/story-region-20261110/live-issues.md`.
 - [ ] **RUN-09-05 - Finish remaining caption qualification before extending layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
       Use native session `e4125dfcb5b7433aa35c0bde8bba3206` as the prepared-audio
@@ -1747,7 +1733,9 @@ M1 owns concurrent chapter-generation acceptance, including deferred activation,
 restart and completed-line reuse, on Mac. Windows platform acceptance remains a
 separate future gate.
 
-## Investigate subprocess cancellation state publication
+## Repair failing regression tests
+
+- [ ] Investigate `test_macos_setup_save_keeps_reading_handoff_after_deferred_hotkey_refresh`: accepting the setup leaves `Restoring the saved Reading setup...` instead of `Reading setup saved`. The changed-test selector and isolated runs on both the working tree and unchanged `01712c05` reproduce the failure. Trace the preview acceptance/save/restore flow. Gate: the test passes with durable settings and the start-reading handoff preserved.
 
 - [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and an isolated run against untouched HEAD06699fc3 fail identically. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
 

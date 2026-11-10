@@ -23,6 +23,7 @@ from uuid import uuid4
 import psutil
 
 from vntts.path_safety import open_regular_binary
+from vntts.process_identity import process_fingerprint
 from vntts.windows_recording_process import RecorderJob, request_stop
 
 MAX_DIAGNOSTIC_SECONDS = 3600
@@ -295,6 +296,7 @@ class NativeDiagnosticRecording:
         self.ready_monotonic: float | None = None
         self._launched_at: dict[str, float] = {}
         self._helper_created: dict[str, float] = {}
+        self._helper_fingerprints: dict[str, dict[str, str]] = {}
         self._sample_observed_at: dict[str, float] = {}
         self._failed_stop_started: dict[str, float] = {}
         self._identities: dict[str, dict[str, object]] = {}
@@ -372,9 +374,9 @@ class NativeDiagnosticRecording:
             ownership.pop_all()
         self._launched_at[output.name] = monotonic()
         try:
-            self._helper_created[output.name] = psutil.Process(
-                process.pid
-            ).create_time()
+            identity = psutil.Process(process.pid)
+            self._helper_created[output.name] = identity.create_time()
+            self._helper_fingerprints[output.name] = process_fingerprint(identity)
         except psutil.Error:
             pass
 
@@ -818,6 +820,7 @@ class NativeDiagnosticRecording:
                 "directory": output.name,
                 "helper_pid": process.pid if type(process.pid) is int else None,
                 "helper_created": self._helper_created.get(output.name),
+                "helper_fingerprint": self._helper_fingerprints.get(output.name),
                 "returncode": process.poll(),
                 "launched_monotonic": self._launched_at.get(output.name),
                 "first_sample_observed_monotonic": self._sample_observed_at.get(

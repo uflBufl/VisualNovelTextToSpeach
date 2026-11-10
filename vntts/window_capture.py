@@ -14,6 +14,7 @@ from vntts.native_capture import (
     NativeFrame,
     capture_cancelled,
 )
+from vntts.process_identity import process_fingerprint
 
 
 class WindowCaptureError(RuntimeError):
@@ -622,7 +623,7 @@ class WindowCaptureTarget(DisplayCaptureTarget):
         self, window_title: str | None, backend: _WindowBackend | None = None
     ) -> None:
         super().__init__()
-        self._process_start: float | None = None
+        self._process_identity: tuple[int, dict[str, str]] | None = None
         self.window_title = (window_title or "").strip()
         self._backend = backend
         self._handle: int | None = None
@@ -652,14 +653,17 @@ class WindowCaptureTarget(DisplayCaptureTarget):
                 f"Selected game window {window.title!r} is minimized"
             )
         try:
-            started = psutil.Process(window.process_id).create_time()
+            identity = (
+                window.process_id,
+                process_fingerprint(psutil.Process(window.process_id)),
+            )
         except psutil.Error as error:
             raise WindowNotFoundError("Selected game process is unavailable") from error
-        if self._process_start is not None and started != self._process_start:
+        if self._process_identity is not None and identity != self._process_identity:
             raise WindowNotFoundError(
                 "Selected game process changed; select its window again"
             )
-        self._process_start = started
+        self._process_identity = identity
         return {"kind": "window", "window_id": window.handle, "pid": window.process_id}
 
     def is_focused(self) -> bool:
