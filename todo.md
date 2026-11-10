@@ -397,14 +397,6 @@ recovery separate from product defects.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Finish awake native qualification of shared-memory capture.**
-      With a confirmed awake, unlocked display and available game window, measure
-      full-window captures under the same CPU load, resize/reopen the source and
-      verify previous owned snapshots survive buffer reuse and close. Preserve
-      the current deadlines and exact pixel/layout checks. The latest attempt
-      cannot qualify first-frame acquisition because the display was asleep and
-      locked. Reading/chapter progression is unnecessary for this short check.
-      Reuse `.codex/investigations/capture-timeouts-20261111/` for evidence.
 - [ ] **Reproduce the separate native first-frame deadline during calibration.**
       Historical capture/cancel then Setup > Set story area failed with
       `Native capture deadline expired`; foreground retry succeeded, which does
