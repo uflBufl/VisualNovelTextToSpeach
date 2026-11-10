@@ -479,11 +479,12 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
     };
     let id = "00000000-0000-0000-0000-000000000001";
     let request = |op: &str, target| Request {
-        version: 1,
+        version: 2,
         id: 1,
         op: op.into(),
         session_id: id.into(),
         target,
+        frame_buffer: None,
         max_fps: if op == "open" { Some(30) } else { None },
         timeout_ms: if op == "capture" { Some(500) } else { None },
     };

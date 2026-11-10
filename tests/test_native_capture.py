@@ -7,7 +7,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
+from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
@@ -20,6 +22,8 @@ from vntts.native_capture import (
 
 PEER = r"""
 import json, sys, time
+from multiprocessing.shared_memory import SharedMemory
+shared = None
 mode = sys.argv[1]
 count = 0
 for line in sys.stdin.buffer:
@@ -27,6 +31,8 @@ for line in sys.stdin.buffer:
     if mode == "hang-open" or (mode == "hang" and q["op"] == "capture"):
         time.sleep(30)
     if q["op"] == "open":
+        assert q["version"] == 2
+        shared = SharedMemory(name=q["frame_buffer"]["name"], track=False)
         result = dict(backend="macos_screencapturekit", session_id=q["session_id"], clock_now=500.)
         if mode == "wrong-session-open": result["session_id"] = "unrelated"
         data = b""
@@ -47,16 +53,20 @@ for line in sys.stdin.buffer:
         if mode == "exit": sys.exit(3)
         if mode == "oversized-header":
             sys.stdout.buffer.write(b"x" * 65537); sys.stdout.buffer.flush(); continue
-    h = dict(version=1, id=q["id"], ok=True, payload_bytes=len(data), result=result)
+    h = dict(version=2, id=q["id"], ok=True, frame_bytes=len(data), result=result)
     if q["op"] == "capture":
         if mode == "wrong-id": h["id"] += 1
-        if mode == "wrong-version": h["version"] = 2
-        if mode == "bool-size": h["payload_bytes"] = True
-        if mode == "oversized-payload": h["payload_bytes"] = 128*1024*1024+1
-        if mode == "error": h.update(ok=False, payload_bytes=0, error=dict(code="target_closed", message="Target closed")); data=b""
-        if mode == "truncated": data = data[:1]
-    sys.stdout.buffer.write(json.dumps(h).encode()+b"\n"+data); sys.stdout.buffer.flush()
-    if mode == "truncated" and q["op"] == "capture": sys.exit()
+        if mode == "wrong-version": h["version"] = 1
+        if mode == "bool-size": h["frame_bytes"] = True
+        if mode == "oversized-payload": h["frame_bytes"] = 128*1024*1024+1
+        if mode == "error": h.update(ok=False, frame_bytes=0, error=dict(code="target_closed", message="Target closed")); data=b""
+        if mode == "changing-pixels" and count > 1: data = b"\x00"*8
+    if data: shared.buf[:len(data)] = data
+    encoded = json.dumps(h).encode()+b"\n"
+    if mode == "truncated" and q["op"] == "capture":
+        sys.stdout.buffer.write(encoded[:10]); sys.stdout.buffer.flush(); sys.exit()
+    sys.stdout.buffer.write(encoded); sys.stdout.buffer.flush()
+if shared is not None: shared.close()
 """
 
 
@@ -76,6 +86,62 @@ class NativeCaptureTest(unittest.TestCase):
         self.assertFalse(owner.reader.is_alive())
         self.assertTrue(owner.process.stdout.closed)
         self.assertTrue(owner.process.stdin.closed)
+        self.assertIsNone(owner._frame_buffer)
+
+    def test_next_frame_cannot_overwrite_an_owned_frame_or_another_session(self):
+        with session("changing-pixels") as first, session() as second:
+            first_name = first._frame_buffer.name
+            second_name = second._frame_buffer.name
+            self.assertNotEqual(first_name, second_name)
+            original = first.capture()
+            changed = first.capture()
+            independent = second.capture()
+            self.assertEqual(changed.pixels, b"\x00" * 8)
+            self.assertEqual(original.pixels, independent.pixels)
+            self.assertNotEqual(original.pixels, changed.pixels)
+        self.assertNotEqual(original.pixels, changed.pixels)
+        for name in (first_name, second_name):
+            with self.assertRaises(FileNotFoundError):
+                SharedMemory(name=name, track=False)
+
+    def test_initialization_failure_releases_shared_buffer_and_started_process(self):
+        real_shared = SharedMemory
+        allocations = []
+        children = []
+        real_popen = subprocess.Popen
+
+        def allocate(*args, **kwargs):
+            block = real_shared(*args, **kwargs)
+            allocations.append(block.name)
+            return block
+
+        def popen(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        for stage in ("spawn", "reader", "open"):
+            with (
+                self.subTest(stage=stage),
+                patch("vntts.native_capture.SharedMemory", side_effect=allocate),
+                patch(
+                    "vntts.native_capture.subprocess.Popen",
+                    side_effect=OSError("spawn failed") if stage == "spawn" else popen,
+                ),
+                patch(
+                    "vntts.native_capture.Thread.start",
+                    side_effect=RuntimeError("thread failed"),
+                )
+                if stage == "reader"
+                else nullcontext(),
+            ):
+                with self.assertRaises((OSError, RuntimeError)):
+                    session("wrong-session-open" if stage == "open" else "normal")
+            with self.assertRaises(FileNotFoundError):
+                real_shared(name=allocations[-1], track=False)
+        for child in children:
+            self.assertIsNotNone(child.poll())
+            self.assertTrue(child.stdout.closed)
 
     def test_session_identity_is_a_canonical_uuid_on_the_wire(self):
         with session() as owner:

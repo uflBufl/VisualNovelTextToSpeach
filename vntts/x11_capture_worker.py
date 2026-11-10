@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
 from threading import Thread
 from time import monotonic, sleep
@@ -35,7 +37,7 @@ def request(line: bytes) -> dict[str, Any]:
         value = json.loads(line)
         if not isinstance(value, dict):
             raise ValueError()
-        if type(value.get("version")) is not int or value["version"] != 1:
+        if type(value.get("version")) is not int or value["version"] != 2:
             raise Failure("protocol_version", "Unsupported capture protocol version")
         integer(value.get("id"), 1)
         session = value.get("session_id")
@@ -43,7 +45,16 @@ def request(line: bytes) -> dict[str, Any]:
             raise ValueError()
         allowed = {"version", "id", "op", "session_id"}
         if value.get("op") == "open":
-            allowed |= {"target", "max_fps"}
+            allowed |= {"target", "max_fps", "frame_buffer"}
+            buffer = value.get("frame_buffer")
+            if not isinstance(buffer, dict) or set(buffer) != {"name", "capacity"}:
+                raise ValueError()
+            name = buffer["name"]
+            if not isinstance(name, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,128}", name
+            ):
+                raise ValueError()
+            integer(buffer["capacity"], 1, MAX_PIXELS * 4)
             integer(value.get("max_fps", 10), 1, 60)
             target = value.get("target")
             if not isinstance(target, dict):
@@ -393,6 +404,8 @@ def run(
     input_stream: BinaryIO, output_stream: BinaryIO, source_type: type[Source] = Source
 ) -> None:
     source: Source | None = None
+    frame_buffer: SharedMemory | None = None
+    capacity = 0
     try:
         while True:
             line = input_stream.readline(MAX_LINE + 1)
@@ -410,7 +423,24 @@ def run(
                 if value["op"] == "open":
                     if source:
                         raise Failure("already_open", "Capture session is already open")
-                    source = source_type(value["target"], value["session_id"])
+                    spec = value["frame_buffer"]
+                    try:
+                        candidate = SharedMemory(name=spec["name"], track=False)
+                    except OSError as error:
+                        raise Failure(
+                            "frame_buffer_error", "Unable to open shared frame buffer"
+                        ) from error
+                    try:
+                        if candidate.size < spec["capacity"]:
+                            raise Failure(
+                                "frame_buffer_error",
+                                "Shared frame buffer is smaller than its capacity",
+                            )
+                        source = source_type(value["target"], value["session_id"])
+                    except BaseException:
+                        candidate.close()
+                        raise
+                    frame_buffer, capacity = candidate, spec["capacity"]
                     result = {
                         "backend": BACKEND,
                         "session_id": value["session_id"],
@@ -421,16 +451,27 @@ def run(
                         raise Failure("session_mismatch", "No matching capture session")
                     if value["op"] == "capture":
                         result, pixels = source.capture(value.get("timeout_ms", 2000))
+                        if frame_buffer is None or len(pixels) > capacity:
+                            raise Failure(
+                                "frame_buffer_error",
+                                "Frame exceeds shared buffer capacity",
+                            )
+                        buffer = frame_buffer.buf
+                        assert buffer is not None
+                        buffer[: len(pixels)] = pixels
                     else:
                         source.close()
                         source = None
+                        if frame_buffer is not None:
+                            frame_buffer.close()
+                            frame_buffer = None
                         result = {}
                 header = {
-                    "version": 1,
+                    "version": 2,
                     "id": identifier,
                     "ok": True,
                     "result": result,
-                    "payload_bytes": len(pixels),
+                    "frame_bytes": len(pixels),
                 }
             except Exception as error:
                 code = error.code if isinstance(error, Failure) else "native_error"
@@ -441,23 +482,26 @@ def run(
                     else f"X11 capture failed ({type(error).__name__})"
                 )
                 header = {
-                    "version": 1,
+                    "version": 2,
                     "id": identifier,
                     "ok": False,
-                    "payload_bytes": 0,
+                    "frame_bytes": 0,
                     "error": {"code": code, "message": message},
                 }
                 pixels = b""
             output_stream.write(
                 json.dumps(header, separators=(",", ":")).encode() + b"\n"
             )
-            output_stream.write(pixels)
             output_stream.flush()
             if source is None and header["ok"] and value["op"] == "close":
                 return
     finally:
-        if source:
-            source.close()
+        try:
+            if source:
+                source.close()
+        finally:
+            if frame_buffer is not None:
+                frame_buffer.close()
 
 
 def main() -> int:

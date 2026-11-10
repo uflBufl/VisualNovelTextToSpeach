@@ -921,7 +921,7 @@ mod tests {
             session: Some(stopped_source()),
             must_exit: false,
         };
-        let request = Request::parse(br#"{"version":1,"id":1,"op":"close","session_id":"00000000-0000-0000-0000-000000000000"}"#).unwrap();
+        let request = Request::parse(br#"{"version":2,"id":1,"op":"close","session_id":"00000000-0000-0000-0000-000000000000"}"#).unwrap();
         assert_eq!(worker.execute(request).unwrap_err().code, "invalid_session");
         assert!(worker.session.is_some());
         worker.close();

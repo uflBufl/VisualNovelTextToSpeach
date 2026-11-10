@@ -23,14 +23,18 @@ cargo test --locked --manifest-path native/capture-worker/windows/Cargo.toml
 ## Transport
 
 Stdin carries UTF-8 JSON lines, including the newline at most 64 KiB each.
-A request has `version: 1`, a positive integer `id`, UUID `session_id` and `op`.
+A request has `version: 2`, a positive integer `id`, UUID `session_id` and `op`.
 An oversized or unterminated line ends the helper with no partial response.
 Other invalid requests get a bounded error response, with `id: 0` if no numeric
 request ID can be recovered. There is no unsolicited startup message.
 
 - `open` requires `target: {kind: "window", window_id: HWND, pid: PID}` or
   `target: {kind: "display", display_id: HMONITOR}`. Display ID 0 selects the
-  primary monitor. Optional `max_fps` defaults to 10, must be an integer between 1 and
+  primary monitor. It also requires `frame_buffer: {name, capacity}` identifying
+  a parent-owned `multiprocessing.shared_memory.SharedMemory` mapping. The name
+  contains only ASCII letters, digits, `_` or `-` and has length 1 through 128;
+  capacity is an integer from 1 through 128 MiB. These fields are accepted only
+  on `open`. Optional `max_fps` defaults to 10, must be an integer between 1 and
   60. Opening a new session closes the previous one first.
 - `capture` accepts `timeout_ms` (1 through 10000, default 2000).
 - `close` invalidates pixels immediately and waits at most two seconds for the
@@ -39,10 +43,16 @@ request ID can be recovered. There is no unsolicited startup message.
   helper. A parent must still impose its own process deadline and kill a
   nonresponsive helper; GPU/COM calls themselves cannot safely be cancelled.
 
-Each response consists of exactly one JSON header plus a newline followed by
-exactly `payload_bytes` raw bytes, with no delimiter after the bytes. Headers
-have `version`, matching `id`, `ok`, `payload_bytes` and either `result` or
-`error: {code, message}`. Never parse the raw pixel payload as a line.
+Each response consists of exactly one JSON header plus a newline. Headers
+have `version: 2`, matching `id`, `ok`, `frame_bytes` and either `result` or
+`error: {code, message}`. Pixels are never written to stdout. Before acknowledging
+`capture`, the helper copies the complete BGRA8 frame to the attached mapping;
+`frame_bytes` reports its length. `open`, `close` and errors report zero bytes.
+A frame larger than capacity fails without writing or acknowledging a partial
+frame. The helper attaches with `OpenFileMappingW` and `MapViewOfFile`, and closes
+its view and handle on reopen, error or shutdown. The parent owns mapping deletion
+and must keep it alive until the helper stops. The native recording mode keeps
+its direct owned-pixel path to the encoder.
 
 `open` returns `backend`, `session_id` and QPC `clock_now` seconds. `close`
 returns an empty result. `capture` returns full native window/display BGRA8

@@ -1,19 +1,24 @@
-# Native capture worker protocol v1
+# Native capture worker protocol v2
 
 A worker owns one selected native source. It reads UTF-8 JSON lines on stdin,
 maximum 65,536 bytes including newline. It writes no unsolicited startup message.
-Each response is one bounded UTF-8 JSON header line followed immediately by the
-stated number of raw payload bytes, with no delimiter after the payload.
+Each response is one bounded UTF-8 JSON header line. Pixels never travel on stdout;
+`frame_bytes` describes the acknowledged bytes in the session-owned shared buffer.
 Diagnostics belong on stderr. Requests are serialized, with one outstanding request.
 
-Every request has `version: 1`, a positive integer `id`, `op`, and a parent-created
+Every request has `version: 2`, a positive integer `id`, `op`, and a parent-created
 `session_id` in canonical UUID form (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
 A worker rejects incompatible versions and session identities.
 
 - `open`: `target` is either `{"kind":"window","window_id":123,"pid":456}`
   or `{"kind":"display","display_id":0}`. Display ID 0 means primary display.
   `max_fps` is an integer from 1 through 60, default 10. A window request must capture only that window;
-  failure must not substitute a display or other window.
+  failure must not substitute a display or other window. `frame_buffer` is required:
+  `{"name":"psm_example","capacity":134217728}`. The parent creates this OS shared-memory
+  object before opening the worker. Its name contains 1..128 ASCII letters, digits,
+  underscores or hyphens; capacity is an integer from 1 through 128 MiB. The backing
+  object must be at least that large. macOS/X11 attach the POSIX object; Windows
+  attaches the named file mapping. Only `open` accepts this descriptor.
 - `capture`: `timeout_ms` is a positive integer, maximum 10,000, default 2,000.
   Return the latest valid native buffer, including an unchanged frame. An old
   source timestamp alone does not prove failure or stale capture.
@@ -24,13 +29,13 @@ A worker rejects incompatible versions and session identities.
 Success header:
 
 ```json
-{"version":1,"id":1,"ok":true,"payload_bytes":0,"result":{}}
+{"version":2,"id":1,"ok":true,"frame_bytes":0,"result":{}}
 ```
 
 Error header (no payload):
 
 ```json
-{"version":1,"id":1,"ok":false,"payload_bytes":0,"error":{"code":"target_closed","message":"Target closed"}}
+{"version":2,"id":1,"ok":false,"frame_bytes":0,"error":{"code":"target_closed","message":"Target closed"}}
 ```
 
 `open` result contains `backend` (`macos_screencapturekit`,
@@ -54,9 +59,15 @@ monotonic seconds. No permission request or capture occurs in a protocol self-te
 | `acquired_at` | Acquisition time in worker monotonic seconds |
 | `layout_epoch` | Positive, nondecreasing; changes when output size or content rectangle changes |
 
-The binary payload is exactly `width * height * 4` bytes and at most 128 MiB.
-The native worker retains at most one latest frame. The Python owner copies bytes
-into an immutable frame before handing it to a consumer. Worker clock values are
+A successful capture writes exactly `width * height * 4` bytes (at most 128 MiB)
+into the shared buffer before acknowledging them in `frame_bytes`. Other responses
+use `frame_bytes: 0`. The parent owns the mapping lifetime. The worker keeps it
+across stream recovery and releases it on session teardown. Requests are serialized:
+the Python receiver makes one immutable byte copy before another capture can reuse
+the slot. This copy remains valid after the slot changes or the session closes.
+Cancellation/timeout kills the worker, joins the receiver, then closes and unlinks
+the parent buffer; no abandoned writer can target a replacement session.
+The native worker retains at most one latest frame. Worker clock values are
 not Python clock values: a probe records Python request/response times separately.
 No part of this protocol establishes that protected, hidden, minimized, or offscreen
 content is capturable; native results and live qualification determine that.

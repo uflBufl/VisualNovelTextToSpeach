@@ -115,9 +115,9 @@ def probe_bundled_capture_worker(
     response = _json_object(completed.stdout, "Capture worker protocol response")
     error = response.get("error")
     if (
-        response.get("version") != 1
+        response.get("version") != 2
         or response.get("ok") is not False
-        or response.get("payload_bytes") != 0
+        or response.get("frame_bytes") != 0
         or not isinstance(error, dict)
         or error.get("code") not in {"protocol_version", "unsupported_version"}
     ):

@@ -638,9 +638,9 @@ class RuntimePathsTest(unittest.TestCase):
                     patch("vntts.package_self_test.sys.platform", "darwin"),
                 ):
                     response = {
-                        "version": 1,
+                        "version": 2,
                         "ok": False,
-                        "payload_bytes": 0,
+                        "frame_bytes": 0,
                         "error": {"code": code},
                     }
                     runner = Mock(
@@ -664,9 +664,9 @@ class RuntimePathsTest(unittest.TestCase):
             return_value=SimpleNamespace(
                 stdout=json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "ok": False,
-                        "payload_bytes": 0,
+                        "frame_bytes": 0,
                         "error": {"code": "protocol_version"},
                     }
                 )

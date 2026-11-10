@@ -3,6 +3,8 @@ mod caf;
 #[cfg(windows)]
 mod capture;
 #[cfg(windows)]
+mod frame_buffer;
+#[cfg(windows)]
 mod media_writer;
 mod pixels;
 #[cfg(windows)]
@@ -35,7 +37,7 @@ fn run() -> io::Result<()> {
     let stdout = io::stdout();
     let mut output = stdout.lock();
     #[cfg(windows)]
-    let mut worker = capture::Worker::default();
+    let mut worker = frame_buffer::CaptureTransport::default();
     loop {
         let line = match protocol::read_line(&mut input)? {
             None => break,
@@ -56,19 +58,20 @@ fn run() -> io::Result<()> {
             ))
         });
         let response = match result {
-            Ok((metadata, pixels)) => Response::success(id, metadata, pixels),
-            Err(error) => Response::failure(id, error),
+            Ok((metadata, frame_bytes)) => Response::success(id, metadata, frame_bytes),
+            Err(error) => {
+                #[cfg(windows)]
+                worker.close();
+                Response::failure(id, error)
+            }
         };
         serde_json::to_writer(&mut output, &response.header)?;
         output.write_all(b"\n")?;
-        output.write_all(&response.pixels)?;
         output.flush()?;
         #[cfg(windows)]
-        if worker.must_exit {
+        if worker.must_exit() {
             break;
         }
     }
-    #[cfg(windows)]
-    worker.close();
     Ok(())
 }

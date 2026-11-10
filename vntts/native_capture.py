@@ -12,8 +12,10 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from math import isfinite
+from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
@@ -25,6 +27,7 @@ from PIL import Image
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PIXELS = 32 * 1024 * 1024
 MAX_PAYLOAD_BYTES = MAX_PIXELS * 4
+PROTOCOL_VERSION = 2
 BACKENDS = {"macos_screencapturekit", "windows_graphics_capture", "linux_x11_composite"}
 
 
@@ -178,26 +181,37 @@ class NativeCaptureSession:
         )
         self._next_id = 0
         self._previous: NativeFrame | None = None
-        self._stderr = tempfile.TemporaryFile()
-        try:
+        with ExitStack() as resources:
+            self._frame_buffer: SharedMemory | None = SharedMemory(
+                create=True, size=MAX_PAYLOAD_BYTES
+            )
+            resources.callback(self._frame_buffer.unlink)
+            resources.callback(self._frame_buffer.close)
+            self._stderr = resources.enter_context(tempfile.TemporaryFile())
             self.process = subprocess.Popen(
                 command or worker_command(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr,
-                bufsize=0,
+                bufsize=-1,
             )
-        except BaseException:
-            self._stderr.close()
-            raise
+            resources.pop_all()
         self.reader = Thread(
             target=self._read, name="vntts-capture-reader", daemon=True
         )
-        self.reader.start()
         try:
+            self.reader.start()
             opened_at = monotonic()
             result, payload = self._request(
-                "open", startup_timeout, cancel, target=target, max_fps=max_fps
+                "open",
+                startup_timeout,
+                cancel,
+                target=target,
+                max_fps=max_fps,
+                frame_buffer={
+                    "name": self._frame_buffer.name,
+                    "capacity": MAX_PAYLOAD_BYTES,
+                },
             )
             if (
                 payload
@@ -219,6 +233,10 @@ class NativeCaptureSession:
 
     def _read(self) -> None:
         assert self.process.stdout is not None
+        frame_buffer = self._frame_buffer
+        assert frame_buffer is not None
+        buffer = frame_buffer.buf
+        assert buffer is not None
         try:
             while not self._closed.is_set():
                 line = self.process.stdout.readline(MAX_HEADER_BYTES + 1)
@@ -228,27 +246,29 @@ class NativeCaptureSession:
                     raise CaptureError("Native capture response header exceeds limit")
                 header = json.loads(line)
                 if (
+                    isinstance(header, dict)
+                    and header.get("version") != PROTOCOL_VERSION
+                ):
+                    raise CaptureError(
+                        "Incompatible native capture protocol; rebuild the capture worker",
+                        code="protocol_version",
+                    )
+                if (
                     not isinstance(header, dict)
-                    or header.get("version") != 1
+                    or header.get("version") != PROTOCOL_VERSION
                     or type(header.get("version")) is not int
                     or not _integer(header.get("id"), 1)
                     or type(header.get("ok")) is not bool
-                    or not _integer(header.get("payload_bytes"))
-                    or header["payload_bytes"] > MAX_PAYLOAD_BYTES
+                    or not _integer(header.get("frame_bytes"))
+                    or header["frame_bytes"] > MAX_PAYLOAD_BYTES
                 ):
                     raise CaptureError("Invalid native capture response envelope")
-                size = header["payload_bytes"]
+                size = header["frame_bytes"]
                 if not header["ok"] and size:
                     raise CaptureError("Native capture error included pixel payload")
-                chunks = bytearray()
-                while len(chunks) < size:
-                    chunk = self.process.stdout.read(
-                        min(size - len(chunks), 1024 * 1024)
-                    )
-                    if not chunk:
-                        raise CaptureError("Truncated native capture pixel payload")
-                    chunks.extend(chunk)
-                self._responses.put_nowait((header, bytes(chunks)))
+                # The worker acknowledges a complete buffer; the next request waits for this copy.
+                pixels = bytes(buffer[:size])
+                self._responses.put_nowait((header, pixels))
         except Exception as error:
             if not self._closed.is_set():
                 try:
@@ -272,7 +292,7 @@ class NativeCaptureSession:
                 raise CaptureError("Native capture cancelled", code="cancelled")
             self._next_id += 1
             request = {
-                "version": 1,
+                "version": PROTOCOL_VERSION,
                 "id": self._next_id,
                 "op": op,
                 "session_id": self.session_id,
@@ -310,6 +330,8 @@ class NativeCaptureSession:
                 if capture_cancelled(cancel):
                     raise CaptureError("Native capture cancelled", code="cancelled")
                 if isinstance(response, BaseException):
+                    if isinstance(response, CaptureError):
+                        raise response
                     raise CaptureError(str(response)) from response
                 header, payload = response
                 if header["id"] != self._next_id:
@@ -436,7 +458,7 @@ class NativeCaptureSession:
             if self.process.poll() is None:
                 self.process.kill()
             self.process.wait(timeout=2)
-            if self.reader is not current_thread():
+            if self.reader is not current_thread() and self.reader.ident is not None:
                 self.reader.join(timeout=2)
                 if self.reader.is_alive():
                     raise CaptureError("Native capture reader did not stop")
@@ -444,6 +466,10 @@ class NativeCaptureSession:
                 if stream is not None:
                     stream.close()
             self._stderr.close()
+            frame_buffer, self._frame_buffer = self._frame_buffer, None
+            if frame_buffer is not None:
+                frame_buffer.close()
+                frame_buffer.unlink()
 
     def __enter__(self) -> NativeCaptureSession:
         return self

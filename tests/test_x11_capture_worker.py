@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+from multiprocessing.shared_memory import SharedMemory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -61,7 +62,7 @@ class X11CaptureWorkerTests(unittest.TestCase):
                 decode_pixels(*args)
 
     def test_request_rejects_unknown_fields_and_noninteger_identity(self):
-        base = {"version": 1, "id": 1, "op": "capture", "session_id": SESSION}
+        base = {"version": 2, "id": 1, "op": "capture", "session_id": SESSION}
         self.assertEqual(request(json.dumps(base).encode()), base)
         for field, value in [
             ("id", True),
@@ -90,6 +91,10 @@ class X11CaptureWorkerTests(unittest.TestCase):
             self.assertEqual(process_identity(42), "12345")
 
     def test_protocol_payload_and_session_ownership(self):
+        shared = SharedMemory(create=True, size=32)
+        self.addCleanup(shared.unlink)
+        self.addCleanup(shared.close)
+
         class FakeSource:
             def __init__(self, target, session):
                 self.session = session
@@ -101,14 +106,18 @@ class X11CaptureWorkerTests(unittest.TestCase):
 
         sources = []
         values = [
-            {"op": "open", "target": {"kind": "display", "display_id": 0}},
+            {
+                "op": "open",
+                "target": {"kind": "display", "display_id": 0},
+                "frame_buffer": {"name": shared.name, "capacity": 32},
+            },
             {"op": "close", "session_id": "00000000-0000-0000-0000-000000000000"},
             {"op": "capture"},
             {"op": "close"},
         ]
         wire = b"".join(
             json.dumps(
-                {"version": 1, "id": index, "session_id": SESSION, **value}
+                {"version": 2, "id": index, "session_id": SESSION, **value}
             ).encode()
             + b"\n"
             for index, value in enumerate(values, 1)
@@ -121,10 +130,29 @@ class X11CaptureWorkerTests(unittest.TestCase):
             json.loads(response.readline())["error"]["code"], "session_mismatch"
         )
         header = json.loads(response.readline())
-        self.assertEqual(header["payload_bytes"], 4)
-        self.assertEqual(response.read(4), b"\x00\n\xff\x00")
+        self.assertEqual(header["frame_bytes"], 4)
+        self.assertEqual(bytes(shared.buf[:4]), b"\x00\n\xff\x00")
         self.assertTrue(json.loads(response.readline())["ok"])
+        self.assertEqual(response.read(), b"")
         sources[0].close.assert_called_once()
+
+    def test_open_rejects_invalid_shared_buffer_descriptor(self):
+        base = {
+            "version": 2,
+            "id": 1,
+            "op": "open",
+            "session_id": SESSION,
+            "target": {"kind": "display", "display_id": 0},
+        }
+        for descriptor in (
+            None,
+            {},
+            {"name": "../other", "capacity": 4},
+            {"name": "valid", "capacity": True},
+            {"name": "valid", "capacity": 128 * 1024 * 1024 + 1},
+        ):
+            with self.subTest(descriptor=descriptor), self.assertRaises(Failure):
+                request(json.dumps({**base, "frame_buffer": descriptor}).encode())
 
     def test_framing_limit_terminates_without_unbounded_read(self):
         with self.assertRaises(Failure):

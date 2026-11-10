@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{self, BufRead};
-use std::sync::Arc;
 
 pub const MAX_LINE: usize = 64 * 1024;
 pub const MAX_PIXELS: usize = 32 * 1024 * 1024;
@@ -27,8 +26,21 @@ pub struct Request {
     pub op: String,
     pub session_id: String,
     pub target: Option<Target>,
+    #[serde(default, deserialize_with = "deserialize_frame_buffer")]
+    pub frame_buffer: Option<FrameBuffer>,
     pub max_fps: Option<u32>,
     pub timeout_ms: Option<u64>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameBuffer {
+    pub name: String,
+    pub capacity: usize,
+}
+fn deserialize_frame_buffer<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<FrameBuffer>, D::Error> {
+    FrameBuffer::deserialize(deserializer).map(Some)
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -41,10 +53,10 @@ impl Request {
         let invalid = |message| Failure::new("invalid_request", message);
         let request: Self =
             serde_json::from_slice(line).map_err(|error| invalid(error.to_string()))?;
-        if request.version != 1 {
+        if request.version != 2 {
             return Err(Failure::new(
                 "unsupported_version",
-                "Protocol version must be 1",
+                "Protocol version must be 2",
             ));
         }
         if request.id == 0 || !valid_session(&request.session_id) {
@@ -61,12 +73,31 @@ impl Request {
         {
             return Err(invalid("timeout_ms must be between 1 and 10000".into()));
         }
+        if let Some(buffer) = &request.frame_buffer {
+            if buffer.name.is_empty()
+                || buffer.name.len() > 128
+                || !buffer
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                || !(1..=MAX_PIXELS * 4).contains(&buffer.capacity)
+            {
+                return Err(invalid("Invalid frame_buffer name or capacity".into()));
+            }
+        }
         match request.op.as_str() {
-            "open" if request.target.is_some() && request.timeout_ms.is_none() => {}
-            "capture" if request.target.is_none() && request.max_fps.is_none() => {}
+            "open"
+                if request.target.is_some()
+                    && request.frame_buffer.is_some()
+                    && request.timeout_ms.is_none() => {}
+            "capture"
+                if request.target.is_none()
+                    && request.frame_buffer.is_none()
+                    && request.max_fps.is_none() => {}
             "close"
                 if request.target.is_none()
                     && request.max_fps.is_none()
+                    && request.frame_buffer.is_none()
                     && request.timeout_ms.is_none() => {}
             _ => {
                 return Err(invalid(
@@ -99,19 +130,16 @@ fn valid_session(id: &str) -> bool {
 
 pub struct Response {
     pub header: Value,
-    pub pixels: Arc<Vec<u8>>,
 }
 impl Response {
-    pub fn success(id: u64, result: Value, pixels: Arc<Vec<u8>>) -> Self {
+    pub fn success(id: u64, result: Value, frame_bytes: usize) -> Self {
         Self {
-            header: json!({"version":1,"id":id,"ok":true,"payload_bytes":pixels.len(),"result":result}),
-            pixels,
+            header: json!({"version":2,"id":id,"ok":true,"frame_bytes":frame_bytes,"result":result}),
         }
     }
     pub fn failure(id: u64, error: Failure) -> Self {
         Self {
-            header: json!({"version":1,"id":id,"ok":false,"payload_bytes":0,"error":{"code":error.code,"message":error.message}}),
-            pixels: Arc::new(Vec::new()),
+            header: json!({"version":2,"id":id,"ok":false,"frame_bytes":0,"error":{"code":error.code,"message":error.message}}),
         }
     }
 }
@@ -157,10 +185,10 @@ mod tests {
     fn rejects_unbounded_lines_and_invalid_contracts() {
         assert!(read_line(&mut &vec![b'x'; MAX_LINE + 1][..]).is_err());
         assert!(read_line(&mut &b"{}"[..]).is_err());
-        let base = json!({"version":1,"id":1,"session_id":"12345678-1234-1234-1234-123456789abc","op":"capture"});
+        let base = json!({"version":2,"id":1,"session_id":"12345678-1234-1234-1234-123456789abc","op":"capture"});
         assert!(Request::parse(base.to_string().as_bytes()).is_ok());
         for (field, value) in [
-            ("version", json!(2)),
+            ("version", json!(1)),
             ("id", json!(0)),
             ("timeout_ms", json!(10001)),
             ("session_id", json!("other")),
@@ -173,7 +201,7 @@ mod tests {
     }
     #[test]
     fn frame_rate_requires_an_integer_between_one_and_sixty() {
-        let base = json!({"version":1,"id":1,"session_id":"12345678-1234-1234-1234-123456789abc","op":"open","target":{"kind":"display","display_id":0}});
+        let base = json!({"version":2,"id":1,"session_id":"12345678-1234-1234-1234-123456789abc","op":"open","target":{"kind":"display","display_id":0},"frame_buffer":{"name":"psm_test","capacity":4096}});
         for fps in [json!(1), json!(10), json!(60)] {
             let mut request = base.clone();
             request["max_fps"] = fps;
@@ -193,10 +221,60 @@ mod tests {
         }
     }
     #[test]
+    fn frame_buffer_is_required_only_for_open_and_has_bounded_exact_fields() {
+        let base = json!({"version":2,"id":1,"session_id":"12345678-1234-1234-1234-123456789abc","op":"open","target":{"kind":"display","display_id":0},"frame_buffer":{"name":"psm_Test-0","capacity":1}});
+        for (name, capacity) in [("x".to_string(), 1), ("x".repeat(128), MAX_PIXELS * 4)] {
+            let mut request = base.clone();
+            request["frame_buffer"] = json!({"name":name,"capacity":capacity});
+            assert!(Request::parse(request.to_string().as_bytes()).is_ok());
+        }
+        for buffer in [
+            json!(null),
+            json!({}),
+            json!({"name":"x"}),
+            json!({"capacity":1}),
+            json!({"name":"", "capacity":1}),
+            json!({"name":"x".repeat(129),"capacity":1}),
+            json!({"name":"/psm_name","capacity":1}),
+            json!({"name":"Local\\psm_name","capacity":1}),
+            json!({"name":"psm_é","capacity":1}),
+            json!({"name":"psm_\0","capacity":1}),
+            json!({"name":"x","capacity":0}),
+            json!({"name":"x","capacity":MAX_PIXELS * 4 + 1}),
+            json!({"name":"x","capacity":-1}),
+            json!({"name":"x","capacity":1.0}),
+            json!({"name":"x","capacity":true}),
+            json!({"name":"x","capacity":1,"extra":true}),
+        ] {
+            let mut request = base.clone();
+            request["frame_buffer"] = buffer;
+            assert!(
+                Request::parse(request.to_string().as_bytes()).is_err(),
+                "{request}"
+            );
+        }
+        let mut request = base.clone();
+        request.as_object_mut().unwrap().remove("frame_buffer");
+        assert!(Request::parse(request.to_string().as_bytes()).is_err());
+        for op in ["capture", "close"] {
+            let mut request = base.clone();
+            request["op"] = json!(op);
+            request.as_object_mut().unwrap().remove("target");
+            assert!(Request::parse(request.to_string().as_bytes()).is_err());
+            request["frame_buffer"] = json!(null);
+            assert!(Request::parse(request.to_string().as_bytes()).is_err());
+        }
+    }
+    #[test]
     fn framing_has_exact_byte_count() {
-        let result = Response::success(7, json!({}), Arc::new(vec![0, 10, 255]));
-        assert_eq!(result.header["payload_bytes"], 3);
+        let result = Response::success(7, json!({}), 3);
+        assert_eq!(result.header["frame_bytes"], 3);
         assert_eq!(result.header["id"], 7);
-        assert_eq!(result.pixels.as_slice(), &[0, 10, 255]);
+        assert_eq!(result.header["version"], 2);
+        assert!(result.header.get("payload_bytes").is_none());
+        assert_eq!(
+            Response::failure(7, Failure::new("test", "failure")).header["frame_bytes"],
+            0
+        );
     }
 }

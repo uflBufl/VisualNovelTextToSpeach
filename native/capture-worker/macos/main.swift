@@ -109,6 +109,53 @@ func packedPixels(_ base: UnsafeRawPointer, width: Int, height: Int, stride: Int
     return result
 }
 
+struct FrameBufferSpecification {
+    let name: String
+    let capacity: Int
+
+    init(_ value: Any?) throws {
+        guard let values = value as? [String: Any],
+              Set(values.keys) == ["name", "capacity"],
+              let name = values["name"] as? String,
+              !name.isEmpty, name.utf8.count <= 128,
+              name.utf8.allSatisfy({
+                  (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 95 || $0 == 45
+              }) else { throw fail("invalid_request", "Invalid shared frame buffer name") }
+        self.name = name
+        capacity = try integer(values["capacity"], "frame_buffer.capacity", minimum: 1, maximum: maximumPixels * 4)
+    }
+}
+
+final class SharedFrameBuffer {
+    let capacity: Int
+    private let mapping: UnsafeMutableRawPointer
+
+    init(_ specification: FrameBufferSpecification) throws {
+        let descriptor = vntts_shm_open("/" + specification.name, O_RDWR, mode_t(0))
+        guard descriptor >= 0 else { throw fail("frame_buffer_error", "Unable to attach shared frame buffer") }
+        defer { _ = Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_size >= off_t(specification.capacity) else {
+            throw fail("frame_buffer_error", "Shared frame buffer backing is smaller than its capacity")
+        }
+        guard let mapping = mmap(nil, specification.capacity, PROT_WRITE, MAP_SHARED, descriptor, 0), mapping != MAP_FAILED else {
+            throw fail("frame_buffer_error", "Unable to map shared frame buffer")
+        }
+        capacity = specification.capacity
+        self.mapping = mapping
+    }
+
+    deinit { _ = munmap(mapping, capacity) }
+
+    func write(_ pixels: Data) throws {
+        guard pixels.count <= capacity else { throw fail("frame_buffer_error", "Captured pixels exceed shared frame buffer capacity") }
+        guard !pixels.isEmpty else { return }
+        pixels.withUnsafeBytes { source in
+            mapping.copyMemory(from: source.baseAddress!, byteCount: pixels.count)
+        }
+    }
+}
+
 struct Request {
     let id: Int
     let operation: String
@@ -120,7 +167,7 @@ struct Request {
               let values = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw fail("invalid_request", "Expected a bounded JSON object")
         }
-        guard try integer(values["version"], "version") == 1 else {
+        guard try integer(values["version"], "version") == 2 else {
             throw fail("protocol_version", "Unsupported capture protocol version")
         }
         id = try integer(values["id"], "id", minimum: 1, maximum: 9_007_199_254_740_991)
@@ -131,13 +178,16 @@ struct Request {
               UUID(uuidString: sessionID)?.uuidString.lowercased() == sessionID.lowercased() else {
             throw fail("invalid_request", "Invalid capture operation or session identity")
         }
+        guard operation == "open" || values["frame_buffer"] == nil else {
+            throw fail("invalid_request", "Shared frame buffer is only valid for open")
+        }
         self.operation = operation
         self.sessionID = sessionID
         self.values = values
     }
 }
 
-// Read one bounded line without buffering a second request behind raw pixels.
+// Read one bounded request line without consuming the next request.
 func readRequest() throws -> Data? {
     var result = Data()
     var byte: UInt8 = 0
@@ -159,8 +209,8 @@ func readRequest() throws -> Data? {
     }
 }
 
-func reply(_ id: Int, result: [String: Any] = [:], pixels: Data = Data(), error: CaptureFailure? = nil) throws {
-    var value: [String: Any] = ["version": 1, "id": id, "ok": error == nil, "payload_bytes": pixels.count]
+func reply(_ id: Int, result: [String: Any] = [:], frameBytes: Int = 0, error: CaptureFailure? = nil) throws {
+    var value: [String: Any] = ["version": 2, "id": id, "ok": error == nil, "frame_bytes": frameBytes]
     if let error {
         var details: [String: Any] = ["code": error.code, "message": error.message]
         if let domain = error.nativeDomain { details["native_domain"] = domain }
@@ -173,7 +223,6 @@ func reply(_ id: Int, result: [String: Any] = [:], pixels: Data = Data(), error:
     guard header.count < maximumRequestBytes else { throw fail("transport_error", "Response metadata is too large") }
     header.append(10)
     try FileHandle.standardOutput.write(contentsOf: header)
-    if !pixels.isEmpty { try FileHandle.standardOutput.write(contentsOf: pixels) }
 }
 
 struct Target {
@@ -425,6 +474,7 @@ final class CaptureSession {
     let target: Target
     let sessionID: String
     let maxFPS: Double
+    let frameBuffer: SharedFrameBuffer
     let store = FrameStore()
     private var stream: SCStream?
     private var output: Output?
@@ -433,8 +483,9 @@ final class CaptureSession {
     private var processLaunch: ProcessIdentity?
     private let queue = DispatchQueue(label: "vntts.window-capture.frames", qos: .userInitiated)
 
-    init(target: Target, sessionID: String, maxFPS: Double) {
+    init(target: Target, sessionID: String, maxFPS: Double, frameBuffer: FrameBufferSpecification) throws {
         self.target = target; self.sessionID = sessionID; self.maxFPS = maxFPS
+        self.frameBuffer = try SharedFrameBuffer(frameBuffer)
     }
 
     private func validateProcess() throws {
@@ -550,11 +601,79 @@ func displayScale(_ display: CGDirectDisplayID) -> Double? {
     return Double(mode.pixelWidth) / Double(mode.width)
 }
 
-func selfTest() async throws {
-    let request = try Request(Data(#"{"version":1,"id":1,"op":"capture","session_id":"12345678-1234-1234-1234-123456789abc"}"#.utf8))
-    guard request.id == 1 else { throw fail("self_test", "Request identity failed") }
+func sharedFrameBufferSelfTest() throws {
+    for name in ["", "/frame", "frame/name", "frame name", "кадр", String(repeating: "a", count: 129)] {
+        do {
+            _ = try FrameBufferSpecification(["name": name, "capacity": 32])
+            throw fail("self_test", "Invalid shared frame buffer name accepted")
+        } catch let error as CaptureFailure where error.code == "invalid_request" {}
+    }
+    for capacity in [true, 0, 1.5, maximumPixels * 4 + 1] as [Any] {
+        do {
+            _ = try FrameBufferSpecification(["name": "frame", "capacity": capacity])
+            throw fail("self_test", "Invalid shared frame buffer capacity accepted")
+        } catch let error as CaptureFailure where error.code == "invalid_request" {}
+    }
+    for descriptor in [NSNull(), ["name": "frame", "capacity": 32, "extra": true]] as [Any] {
+        do {
+            _ = try FrameBufferSpecification(descriptor)
+            throw fail("self_test", "Invalid shared frame buffer descriptor accepted")
+        } catch let error as CaptureFailure where error.code == "invalid_request" {}
+    }
+
+    let name = "vntts_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16)
+    let descriptor = vntts_shm_open("/" + name, O_RDWR | O_CREAT | O_EXCL, mode_t(0o600))
+    guard descriptor >= 0 else { throw fail("self_test", "Unable to create self-test shared frame buffer") }
+    defer { _ = Darwin.close(descriptor); _ = shm_unlink("/" + name) }
+    guard ftruncate(descriptor, 32) == 0,
+          let parentView = mmap(nil, 32, PROT_READ, MAP_SHARED, descriptor, 0), parentView != MAP_FAILED else {
+        throw fail("self_test", "Unable to map self-test shared frame buffer")
+    }
+    defer { _ = munmap(parentView, 32) }
+    let buffer = try SharedFrameBuffer(FrameBufferSpecification(["name": name, "capacity": 32]))
+    try buffer.write(Data(repeating: 0xAA, count: 32))
+    let pixels = Data([1, 2, 3, 4, 5, 6, 7, 8])
+    try buffer.write(pixels)
+    let expected = pixels + Data(repeating: 0xAA, count: 24)
+    guard Data(bytes: parentView, count: 32) == expected else {
+        throw fail("self_test", "Shared frame pixels differ or extend beyond the frame")
+    }
     do {
-        _ = try Request(Data(#"{"version":1,"id":1,"op":"capture","session_id":"12345678123412341234123456789abc"}"#.utf8))
+        try buffer.write(Data(count: 33))
+        throw fail("self_test", "Oversized shared frame write accepted")
+    } catch let error as CaptureFailure where error.code == "frame_buffer_error" {}
+    guard Data(bytes: parentView, count: 32) == expected else { throw fail("self_test", "Rejected frame changed shared pixels") }
+    var backing = stat()
+    guard fstat(descriptor, &backing) == 0 else { throw fail("self_test", "Unable to inspect shared frame backing") }
+    do {
+        _ = try SharedFrameBuffer(FrameBufferSpecification(["name": name, "capacity": Int(backing.st_size) + 1]))
+        throw fail("self_test", "Undersized shared frame backing accepted")
+    } catch let error as CaptureFailure where error.code == "frame_buffer_error" {}
+    do {
+        _ = try SharedFrameBuffer(FrameBufferSpecification(["name": "missing_" + name, "capacity": 32]))
+        throw fail("self_test", "Missing shared frame backing accepted")
+    } catch let error as CaptureFailure where error.code == "frame_buffer_error" {}
+}
+
+func selfTest() async throws {
+    try sharedFrameBufferSelfTest()
+    let request = try Request(Data(#"{"version":2,"id":1,"op":"capture","session_id":"12345678-1234-1234-1234-123456789abc"}"#.utf8))
+    guard request.id == 1 else { throw fail("self_test", "Request identity failed") }
+    for operation in ["capture", "close"] {
+        let values: [String: Any] = ["version": 2, "id": 1, "op": operation,
+                                     "session_id": "12345678-1234-1234-1234-123456789abc",
+                                     "frame_buffer": ["name": "frame", "capacity": 32]]
+        do {
+            _ = try Request(JSONSerialization.data(withJSONObject: values))
+            throw fail("self_test", "Shared frame buffer accepted outside open")
+        } catch let error as CaptureFailure where error.code == "invalid_request" {}
+    }
+    do {
+        _ = try Request(Data(#"{"version":1,"id":1,"op":"capture","session_id":"12345678-1234-1234-1234-123456789abc"}"#.utf8))
+        throw fail("self_test", "Legacy capture protocol accepted")
+    } catch let error as CaptureFailure where error.code == "protocol_version" {}
+    do {
+        _ = try Request(Data(#"{"version":2,"id":1,"op":"capture","session_id":"12345678123412341234123456789abc"}"#.utf8))
         throw fail("self_test", "Noncanonical session identity accepted")
     } catch let error as CaptureFailure where error.code == "invalid_request" {}
     for value in [true, -1, 1.5] as [Any] {
@@ -652,7 +771,7 @@ func selfTest() async throws {
             throw fail("self_test", "Rescaled frame accepted as canonical")
         } catch let error as CaptureFailure where error.code == "layout_changed" {}
     }
-    print("macOS capture protocol, stride, frame ownership and layout recovery self-tests passed")
+    print("macOS capture protocol, shared memory, stride, frame ownership and layout recovery self-tests passed")
 }
 
 @main
@@ -681,7 +800,8 @@ struct Main {
                         guard session == nil else { throw fail("already_open", "Capture session is already open") }
                         let target = try Target(request.values["target"])
                         let fps = try integer(request.values["max_fps"] ?? 10, "max_fps", minimum: 1, maximum: 60)
-                        let opened = CaptureSession(target: target, sessionID: request.sessionID, maxFPS: Double(fps))
+                        let frameBuffer = try FrameBufferSpecification(request.values["frame_buffer"])
+                        let opened = try CaptureSession(target: target, sessionID: request.sessionID, maxFPS: Double(fps), frameBuffer: frameBuffer)
                         try await opened.open()
                         session = opened
                         try reply(identifier, result: ["backend": "macos_screencapturekit", "session_id": opened.sessionID, "clock_now": clockNow()])
@@ -695,7 +815,8 @@ struct Main {
                         }
                         let timeout = try integer(request.values["timeout_ms"] ?? 2000, "timeout_ms", minimum: 1, maximum: 10_000)
                         let (frame, metadata) = try await active.capture(timeout: Double(timeout) / 1000)
-                        try reply(identifier, result: metadata, pixels: frame.pixels)
+                        try active.frameBuffer.write(frame.pixels)
+                        try reply(identifier, result: metadata, frameBytes: frame.pixels.count)
                     }
                 } catch {
                     let failure = nativeFailure(error)
