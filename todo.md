@@ -314,6 +314,20 @@ recovery separate from product defects.
 
 - [ ] **RUN-09-05 - Verify centered captions before extending text layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
+      Live acceptance is blocked by a confirmed admission defect: on the first
+      narrator line the full-frame detector admits game controls `SKIP EXIT`
+      as caption speech, repeatedly switches back to the same lower dialogue
+      and revokes its advance readiness. Exact OCR evidence is in diagnostic
+      session `4fcac5d0804b4c2e82886796662f3d84`; local audit and proposed repair:
+      `.codex/investigations/caption-acceptance-20261110/`.
+      Agree the repair before another run: separate allowed story-content bounds
+      from the ordinary dialogue crop, offer/confirm that area in calibration,
+      persist it per game and apply it consistently to live/bootstrap/one-shot/
+      diagnostics/replay. Detecting a singleton multiword block with high OCR
+      confidence is not story permission. Do not blacklist game-specific labels,
+      hardcode a top/center band, widen the old dialogue crop or weaken key guards.
+      Retest merged/split UI-label OCR, real captions and return to unchanged
+      dialogue at native resolution; record the discovery cost separately.
       First delivery gate: verify the missed centered timed text in the recorded
       chapter and normal dialogue -> caption -> normal dialogue on the live game.
       Exercise prepared audio and source-free TTS, queued speech surviving timed
