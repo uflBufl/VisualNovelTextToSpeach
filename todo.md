@@ -326,6 +326,28 @@ recovery separate from product defects.
       diagnostics/replay. Detecting a singleton multiword block with high OCR
       confidence is not story permission. Do not blacklist game-specific labels,
       hardcode a top/center band, widen the old dialogue crop or weaken key guards.
+      Concrete implementation plan for approval:
+      - add optional normalized story_region using DialogRegion in the game
+        profile and shared global capture configuration; retain it on ordinary
+        settings/calibration saves, reset its permission when the game binding
+        changes, and preserve coordinate-space validation;
+      - missing story_region grants only the existing dialogue crop, never the
+        full window. Existing ordinary reading stays usable; extra text discovery
+        needs confirmed content bounds and exposes the setup action;
+      - reuse the calibration capture/overlay/review for a Story area action:
+        show the narrow dialogue crop and permitted broad area separately,
+        validate that the selected bounds do not cut the configured dialogue,
+        and persist only after confirmation. Cancel/error keeps previous bounds;
+      - pass the confirmed region through the detector worker request; filter
+        localized line boxes by full containment before expensive text recognition
+        and grouping, preserving canonical coordinates/provenance. Remove the
+        superseded multiword-count permission heuristic;
+      - use one permission resolver across live, initial scope, one-shot,
+        diagnostics, replay capture and profile switches; preserve queue/identity
+        and navigation ownership rather than add a second speech route;
+      - run changed tests first, then edge/merged-label/short-caption, save/cancel,
+        migration/binding, FIFO and dispatch regressions. Repeat the native
+        original-quote transition with latency/media evidence and close the app.
       Retest merged/split UI-label OCR, real captions and return to unchanged
       dialogue at native resolution; record the discovery cost separately.
       First delivery gate: verify the missed centered timed text in the recorded
