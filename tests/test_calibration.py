@@ -183,6 +183,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.addCleanup(overlay.deleteLater)
         self.addCleanup(overlay.close)
         overlay.resize(800, 600)
+        self.assertIsNone(overlay.saved_region)
         overlay._review_rectangle(QRect(80, 60, 640, 360))
         self.assertIn("include the entire dialogue", overlay.save_error)
         self.assertIsNone(overlay._review)
@@ -193,6 +194,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay._review_rectangle(QRect(0, 60, 800, 540))
         overlay._review.accept()
         self.assertEqual(saved, [DialogRegion(0, 0.1, 1, 0.9)])
+        self.assertEqual(overlay.saved_region, saved[0])
 
     def test_cancelling_story_review_keeps_existing_permission(self):
         save = Mock()
@@ -208,6 +210,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay._review_rectangle(QRect(0, 60, 800, 540))
         overlay._review.reject()
         save.assert_not_called()
+        self.assertIsNone(overlay.saved_region)
 
     def test_suggested_story_bounds_round_outwards_to_keep_the_dialogue(self):
         dialogue = DialogRegion(0.01, 0.68, 0.98, 0.32)
@@ -462,6 +465,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         save.assert_not_called()
         self.assertFalse(overlay.isVisible())
+        self.assertIsNone(overlay.saved_region)
 
     def test_old_review_completion_cannot_save_or_retire_current_review(self):
         saved = []
@@ -483,9 +487,11 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertTrue(current.isVisible())
         self.assertFalse(overlay._closed)
         self.assertEqual(saved, [])
+        self.assertIsNone(overlay.saved_region)
         current.accept()
         self.assertEqual(saved, [DialogRegion(0.2, 0.4, 0.5, 200 / 450)])
         self.assertTrue(overlay._closed)
+        self.assertEqual(overlay.saved_region, saved[0])
 
     def test_async_review_returns_immediately_and_keeps_owner_on_save_error(self):
         save = Mock(side_effect=OSError("disk full"))
@@ -967,6 +973,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
             self.assertEqual(selected, [])
             self.assertEqual(closed, [True])
             self.assertFalse(overlay.isVisible())
+            self.assertIsNone(overlay.saved_region)
             overlay.deleteLater()
 
     def test_region_save_failure_keeps_selection_visible_and_retryable(self):
@@ -981,8 +988,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
         )
         selected = []
         failures = []
+        results_at_close = []
         overlay.selected.connect(selected.append)
         overlay.save_failed.connect(failures.append)
+        overlay.closed.connect(
+            lambda: results_at_close.append((overlay.saved_region, overlay.save_error))
+        )
         overlay.resize(800, 450)
         overlay.origin = QPoint(80, 270)
         overlay.current = QPoint(720, 414)
@@ -992,6 +1003,8 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         self.assertTrue(overlay.isVisible())
         self.assertEqual(selected, [])
+        self.assertIsNone(overlay.saved_region)
+        self.assertEqual(results_at_close, [])
         self.assertIn("disk full", overlay.save_error)
         self.assertIn("disk full", failures[0])
         self.assertIsNotNone(overlay.origin)
@@ -1000,6 +1013,8 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(len(selected), 1)
         self.assertFalse(overlay.isVisible())
+        self.assertEqual(overlay.saved_region, selected[0])
+        self.assertEqual(results_at_close, [(selected[0], None)])
         overlay.deleteLater()
 
     def test_offscreen_window_preview_fits_visible_screen_and_keeps_scaled_region(self):

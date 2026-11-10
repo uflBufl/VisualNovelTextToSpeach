@@ -18,6 +18,7 @@ from PySide6.QtCore import (  # noqa: E402
     QCoreApplication,
     QEvent,
     QObject,
+    QRect,
     QRunnable,
     Qt,
     QThreadPool,
@@ -50,6 +51,7 @@ from vntts.app import (  # noqa: E402
     main,
 )
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
+from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.controller_components import LiveSessionComponent  # noqa: E402
@@ -8486,7 +8488,9 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_settings_remain_available_when_story_coordinates_need_calibration(self):
         controller = Mock()
-        controller._story_region.side_effect = CaptureRegionNeedsCalibration("Recalibrate")
+        controller._story_region.side_effect = CaptureRegionNeedsCalibration(
+            "Recalibrate"
+        )
         tray = TrayApplication(
             self.application,
             AppSettings(),
@@ -8532,13 +8536,158 @@ class TrayApplicationTest(unittest.TestCase):
             )
         tray_application.shutdown()
 
+    def test_calibration_completion_reports_outcome_after_capture(self):
+        for story_area in (False, True):
+            for outcome in ("save", "cancel", "retry", "error-cancel"):
+                with (
+                    self.subTest(story_area=story_area, outcome=outcome),
+                    TemporaryDirectory() as directory,
+                ):
+                    dialogue = DialogRegion(0.1, 0.7, 0.8, 0.25)
+                    selected = DialogRegion(0.1, 0.1, 0.8, 0.9)
+                    settings = AppSettings(
+                        capture_mode="window",
+                        discover_text_layouts=not (story_area and outcome == "save"),
+                    )
+                    store = GameProfileStore(Path(directory) / "profiles.json")
+                    profile = store.create("Game", settings, region=dialogue)
+                    controller = Mock(is_live_running=False)
+                    controller._capture_region.return_value = dialogue
+                    controller._story_region.return_value = None
+                    tray = TrayApplication(
+                        self.application,
+                        settings.updated(active_profile_id=profile.id),
+                        controller_factory=Mock(return_value=controller),
+                        profile_store=store,
+                    )
+                    pool = ManualThreadPool()
+                    tray.calibration_capture_runner.thread_pool = pool
+                    with (
+                        patch("vntts.app.QTimer.singleShot") as schedule,
+                        patch(
+                            "vntts.app.capture_calibration_preview",
+                            return_value=(None, Image.new("RGB", (800, 600))),
+                        ),
+                        patch(
+                            "vntts.app.show_calibration_overlay",
+                            side_effect=lambda _geometry, **kwargs: DialogRegionOverlay(
+                                reviewer=lambda _image: QDialog(), **kwargs
+                            ),
+                        ),
+                    ):
+                        tray.calibrate(story_area=story_area)
+                        self.assertEqual(
+                            tray.dashboard.status.text(),
+                            "Capturing game window for calibration...",
+                        )
+                        schedule.call_args.args[-1]()
+                        pool.run_next()
+                        self.application.processEvents()
+                        overlay = tray.calibration_overlay
+                        self.assertIsNotNone(overlay)
+                        self.assertFalse(tray._calibration_capture_pending)
+                        area = "story" if story_area else "dialogue"
+                        self.assertEqual(
+                            tray.dashboard.status.text(),
+                            f"Select the {area} area, then save or cancel calibration.",
+                        )
+                        overlay.resize(800, 600)
+                        overlay.show()
+                        overlay._review_rectangle(QRect(80, 60, 640, 540))
+                        if outcome in ("retry", "error-cancel"):
+                            with patch.object(
+                                store,
+                                "_save_profiles",
+                                side_effect=OSError("disk full"),
+                            ):
+                                overlay._review.accept()
+                            self.assertIs(tray.calibration_overlay, overlay)
+                            self.assertTrue(overlay.isVisible())
+                            self.assertIsNone(overlay.saved_region)
+                            self.assertIn("disk full", tray.dashboard.status.text())
+                            self.assertEqual(store.get(profile.id), profile)
+                            self.assertEqual(
+                                GameProfileStore.load(store.path).get(profile.id),
+                                profile,
+                            )
+                        if outcome == "cancel":
+                            overlay._review.reject()
+                            expected = "Calibration cancelled"
+                        elif outcome == "error-cancel":
+                            expected = overlay.save_error
+                            QTest.keyClick(overlay, Qt.Key.Key_Escape)
+                        else:
+                            if outcome == "retry":
+                                overlay._review_rectangle(QRect(80, 60, 640, 540))
+                            overlay._review.accept()
+                            expected = (
+                                "Story area saved"
+                                if story_area
+                                else "Dialogue area saved"
+                            )
+                            if story_area and not settings.discover_text_layouts:
+                                expected += (
+                                    "; enable text discovery in Settings to use it"
+                                )
+                        self.assertIsNone(tray.calibration_overlay)
+                        self.assertFalse(tray._calibration_capture_pending)
+                        self.assertEqual(tray.dashboard.status.text(), expected)
+                        self.assertEqual(tray.status_action.text(), expected)
+                        self.assertEqual(
+                            tray.compact_controller.status.toPlainText(), expected
+                        )
+                        saved = GameProfileStore.load(store.path).get(profile.id)
+                        if outcome in ("save", "retry"):
+                            self.assertEqual(overlay.saved_region, selected)
+                            self.assertEqual(
+                                saved.story_region
+                                if story_area
+                                else saved.dialog_region,
+                                selected,
+                            )
+                        else:
+                            self.assertEqual(saved, profile)
+                    tray.shutdown()
+
+    def test_calibration_capture_and_overlay_errors_replace_pending_status(self):
+        for stage in ("capture", "overlay"):
+            with self.subTest(stage=stage):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(capture_mode="window"),
+                    controller_factory=Mock(return_value=Mock(is_live_running=False)),
+                )
+                pool = ManualThreadPool()
+                tray.calibration_capture_runner.thread_pool = pool
+                failure = RuntimeError(f"{stage} unavailable")
+                with (
+                    patch("vntts.app.QTimer.singleShot") as schedule,
+                    patch(
+                        "vntts.app.capture_calibration_preview",
+                        side_effect=failure if stage == "capture" else None,
+                        return_value=(None, Image.new("RGB", (800, 600))),
+                    ),
+                    patch("vntts.app.show_calibration_overlay", side_effect=failure),
+                ):
+                    tray.calibrate()
+                    schedule.call_args.args[-1]()
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertIsNone(tray.calibration_overlay)
+                self.assertFalse(tray._calibration_capture_pending)
+                self.assertEqual(
+                    tray.dashboard.status.text(),
+                    f"Unable to capture a calibration preview: {failure}",
+                )
+                tray.shutdown()
+
     def test_calibration_overlay_blocks_reentry_until_it_closes(self):
         tray = TrayApplication(
             self.application,
             AppSettings(),
             controller_factory=Mock(return_value=Mock(is_live_running=False)),
         )
-        overlay = Mock()
+        overlay = Mock(saved_region=None, save_error=None, story_dialogue_region=None)
         try:
             with (
                 patch("vntts.app.show_calibration_overlay", return_value=overlay),
@@ -8559,6 +8708,10 @@ class TrayApplicationTest(unittest.TestCase):
                 tray.calibrate()
                 schedule_capture.assert_called_once()
                 self.assertEqual(schedule_capture.call_args.args[:2], (200, tray))
+                status = tray.dashboard.status.text()
+                close_overlay()
+                self.assertEqual(tray.dashboard.status.text(), status)
+                restore.assert_called_once_with()
         finally:
             tray.shutdown()
 
@@ -8642,7 +8795,9 @@ class TrayApplicationTest(unittest.TestCase):
                 tray.dashboard.show()
                 visible.show()
                 closed.show()
-                overlay = Mock()
+                overlay = Mock(
+                    saved_region=None, save_error=None, story_dialogue_region=None
+                )
                 background = object()
 
                 def capture(_target):
@@ -8741,7 +8896,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=Mock()),
         )
-        overlay = Mock()
+        overlay = Mock(saved_region=None, save_error=None, story_dialogue_region=None)
         try:
             with (
                 patch("vntts.app.show_calibration_overlay", return_value=overlay),
@@ -8750,6 +8905,7 @@ class TrayApplicationTest(unittest.TestCase):
                 tray._open_calibration_overlay(None, Mock())
                 close_overlay = overlay.closed.connect.call_args.args[0]
                 overlay.close.side_effect = close_overlay
+                status = tray.dashboard.status.text()
 
                 tray.shutdown()
 
@@ -8757,6 +8913,7 @@ class TrayApplicationTest(unittest.TestCase):
                 overlay.deleteLater.assert_called_once_with()
                 self.assertIsNone(tray.calibration_overlay)
                 restore.assert_not_called()
+                self.assertEqual(tray.dashboard.status.text(), status)
         finally:
             tray.shutdown()
 
@@ -8895,7 +9052,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.calibrate_button.accessibleName(),
             "Change the capture area containing speaker and dialogue",
         )
-        overlay = Mock()
+        overlay = Mock(saved_region=None, save_error=None, story_dialogue_region=None)
         background = object()
 
         with (

@@ -439,6 +439,7 @@ class DialogRegionOverlay(QWidget):
         )
         self._review: QDialog | None = None
         self._closed = False
+        self.saved_region: DialogRegion | None = None
         self.save_region = save_region or self.persist
         try:
             self.capture_region = capture_region or get_dialog_region()
@@ -691,6 +692,7 @@ class DialogRegionOverlay(QWidget):
         if self._closed:
             return
         self.save_error = None
+        self.saved_region = region
         self.selected.emit(region)
         self.close()
 

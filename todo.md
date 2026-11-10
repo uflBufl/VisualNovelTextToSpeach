@@ -397,10 +397,6 @@ recovery separate from product defects.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **RUN-09-06 - Clear completed calibration status.**
-      Successful review/Save left the dashboard saying it was capturing for
-      calibration through subsequent actions. Restore the actual idle/reading
-      status after completion and cancellation; test both success and failure.
 - [ ] **Investigate native capture deadlines during calibration and live reading.**
       During Story area live acceptance, first capture/cancel succeeded but the
       next Setup > Set story area failed with `Native capture deadline expired`.

@@ -3703,6 +3703,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         )
         overlay.save_failed.connect(self.set_status)
+        area = "story" if overlay.story_dialogue_region is not None else "dialogue"
+        self.set_status(f"Select the {area} area, then save or cancel calibration.")
 
     def _calibration_overlay_closed(self, overlay: DialogRegionOverlay) -> None:
         is_current = self.calibration_overlay is overlay
@@ -3710,6 +3712,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.calibration_overlay = None
         overlay.deleteLater()
         if is_current and not self._shutting_down:
+            if overlay.saved_region is None:
+                message = overlay.save_error or "Calibration cancelled"
+            elif overlay.story_dialogue_region is None:
+                message = "Dialogue area saved"
+            elif self.settings.discover_text_layouts:
+                message = "Story area saved"
+            else:
+                message = "Story area saved; enable text discovery in Settings to use it"
+            self.set_status(message)
             self.restore_control_window()
 
     def _cancel_calibration(self) -> None:
@@ -3759,11 +3770,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 capture_mode=self.settings.capture_mode,
                 game_window_title=self.settings.game_window_title,
             )
-        self.set_status(
-            "Story area saved"
-            if self.settings.discover_text_layouts
-            else "Story area saved; enable text discovery in Settings to use it"
-        )
 
     def restore_control_window(self) -> None:
         visibility = self._calibration_visibility
