@@ -18,7 +18,7 @@ def _inside(box: DialogRegion, region: DialogRegion) -> bool:
 def select_caption(
     frame: CapturedDialogFrame, blocks: tuple[TextBlock, ...], minimum_confidence: float
 ) -> CapturedDialogFrame:
-    """Ambiguous independent blocks never become a concatenated screen transcript."""
+    """Select among already permitted blocks; never concatenate ambiguous groups."""
     image = frame.canonical_image
     if image is None:
         return frame
@@ -29,10 +29,6 @@ def select_caption(
             frame.capture_region is None or not _inside(line.box, frame.capture_region)
             for line in block.lines
         )
-        # Isolated labels are not sufficient evidence for automatic discovery.
-        # A manually calibrated dialogue region remains available for short text.
-        and len([word for word in block.text.split() if any(c.isalpha() for c in word)])
-        >= 2
     ]
     if not candidates:
         return frame

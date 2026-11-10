@@ -27,6 +27,7 @@ from vntts.live_replay_capture import (
     capture_replay_session,
 )
 from vntts.ocr import DialogRegion, OCRRegions, OCRResult
+from vntts.profiles import GameProfile
 from vntts.settings import AppSettings
 
 
@@ -94,11 +95,14 @@ class LiveReplayCaptureTest(unittest.TestCase):
             draw.rectangle((left, 60, left + 1, 61), fill="white")
         captured = CapturedDialogFrame(image, 0.0, regions)
         self.assertTrue(detect_standalone_ellipsis_frame(image))
-        profile = SimpleNamespace(
-            dialog_region=region,
-            coordinate_space="normalized_capture_content_v1",
+        settings = AppSettings()
+        profile = GameProfile.from_settings(
+            "Test game",
+            settings,
+            region=region,
             ocr_regions=regions,
         )
+        settings = profile.apply(settings)
         with TemporaryDirectory() as directory:
             output = Path(directory) / "capture"
             result = SimpleNamespace(
@@ -129,7 +133,7 @@ class LiveReplayCaptureTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    live_replay_capture, "load_app_settings", return_value=AppSettings()
+                    live_replay_capture, "load_app_settings", return_value=settings
                 ),
                 patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
                 patch.object(

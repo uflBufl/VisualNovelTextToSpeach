@@ -113,7 +113,7 @@ from vntts.playback import (
     outcome_for_prepared,
     prepare_silent_playback,
 )
-from vntts.profiles import GameProfileStore
+from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.reading_diagnostics import record_diagnostic_event, retain_ocr_resolution
 from vntts.runtime_config import (
     LiveConfiguration,
@@ -1150,6 +1150,9 @@ class AppController:
             or self.caption_discovery_unavailable
         ):
             return frame
+        story_region = self._story_region()
+        if story_region is None:
+            return frame
         with self.caption_discovery_lock:
             if cancellation.is_set() or self.shutdown_requested.is_set():
                 raise OCRPreviewCancelled("Screen text preparation cancelled")
@@ -1181,6 +1184,7 @@ class AppController:
         started = monotonic()
         lines = discovery.detect(
             frame.canonical_image,
+            allowed_region=story_region,
             cancel_event=cancellation,
         )
         return replace(
@@ -1213,6 +1217,9 @@ class AppController:
             provenance.completed_monotonic,
             **details,
         )
+
+    def _story_region(self) -> DialogRegion | None:
+        return resolve_story_region(self.settings, self.profile_store)
 
     def _capture_region(self) -> DialogRegion:
         profile = self.profile_store.get(self.settings.active_profile_id)

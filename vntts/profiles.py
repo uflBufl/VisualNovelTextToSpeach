@@ -9,6 +9,7 @@ from vntts.ocr import (
     DialogRegion,
     OCRRegions,
     get_dialog_region,
+    get_story_region,
 )
 from vntts.settings import (
     AppSettings,
@@ -26,7 +27,7 @@ from vntts.versioned_json import (
     write_versioned_json_if_unchanged,
 )
 
-profiles_schema_version = 11
+profiles_schema_version = 12
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -55,6 +56,7 @@ class GameProfile:
     ocr_regions: OCRRegions | None = None
     coordinate_space: str = CAPTURE_COORDINATE_SPACE
     discover_text_layouts: bool = False
+    story_region: DialogRegion | None = None
 
     @property
     def needs_recalibration(self) -> bool:
@@ -99,6 +101,12 @@ class GameProfile:
     ) -> Self:
         values = preference_values(values)
         region = DialogRegion.from_mapping(values.get("dialog_region"))
+        raw_story_region = values.get("story_region")
+        story_region = (
+            None
+            if raw_story_region is None
+            else DialogRegion.from_mapping(raw_story_region)
+        )
         raw_ocr_regions = values.get("ocr_regions")
         ocr_regions = (
             None
@@ -138,6 +146,7 @@ class GameProfile:
             capture_mode=capture_mode,
             game_window_title=_optional_text(values.get("game_window_title")),
             dialog_region=region,
+            story_region=story_region,
             ocr_language=ocr_language.strip(),
             game_pack=_optional_text(values.get("game_pack")),
             voice_manifest=_optional_text(values.get("voice_manifest")),
@@ -203,6 +212,11 @@ class GameProfile:
             profile_id=self.id,
             ocr_regions=selected_layout,
         )
+        if (updated.capture_mode, updated.game_window_title) == (
+            self.capture_mode,
+            self.game_window_title,
+        ) and not (region is not None and self.needs_recalibration):
+            updated = replace(updated, story_region=self.story_region)
         return (
             updated
             if region is not None
@@ -351,11 +365,15 @@ class GameProfileStore:
         return profile
 
     def update_region(self, profile_id: str, region: DialogRegion) -> GameProfile:
+        previous = self._required(profile_id)
         profile = replace(
-            self._required(profile_id),
+            previous,
             dialog_region=region,
             ocr_regions=None,
             coordinate_space=CAPTURE_COORDINATE_SPACE,
+            story_region=None
+            if previous.needs_recalibration
+            else previous.story_region,
         )
         self._commit_profiles(self._replaced(profile))
         return profile
@@ -366,12 +384,23 @@ class GameProfileStore:
         region: DialogRegion,
         ocr_regions: OCRRegions,
     ) -> GameProfile:
+        previous = self._required(profile_id)
         profile = replace(
-            self._required(profile_id),
+            previous,
             dialog_region=region,
             ocr_regions=ocr_regions,
             coordinate_space=CAPTURE_COORDINATE_SPACE,
+            story_region=None
+            if previous.needs_recalibration
+            else previous.story_region,
         )
+        self._commit_profiles(self._replaced(profile))
+        return profile
+
+    def update_story_region(
+        self, profile_id: str, region: DialogRegion | None
+    ) -> GameProfile:
+        profile = replace(self._required(profile_id), story_region=region)
         self._commit_profiles(self._replaced(profile))
         return profile
 
@@ -407,6 +436,31 @@ class GameProfileStore:
             for profile in self.profiles
         ):
             raise ValueError(f"A profile named {name!r} already exists")
+
+
+def resolve_story_region(
+    settings: AppSettings, profile_store: GameProfileStore
+) -> DialogRegion | None:
+    profile = profile_store.get(settings.active_profile_id)
+    if profile is not None and (
+        profile.capture_mode != settings.capture_mode
+        or profile.game_window_title != settings.game_window_title
+    ):
+        return None
+    story_region = get_story_region(
+        profile_region=profile.story_region if profile is not None else None,
+        coordinate_space=profile.coordinate_space if profile is not None else None,
+        capture_mode=settings.capture_mode,
+        game_window_title=settings.game_window_title,
+        use_profile=settings.active_profile_id is not None,
+    )
+    if story_region is None:
+        return None
+    dialog_region = get_dialog_region(
+        profile.dialog_region if profile is not None else None,
+        coordinate_space=profile.coordinate_space if profile is not None else None,
+    )
+    return story_region if story_region.contains(dialog_region) else None
 
 
 def _validated_name(name: object) -> str:

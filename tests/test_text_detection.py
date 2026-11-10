@@ -139,6 +139,42 @@ class ScreenTextDetectorTest(unittest.TestCase):
             self.assertEqual(detector.detect(Image.new("RGB", (10, 10))), ())
             detector._recognizer.assert_not_called()
 
+    def test_only_fully_contained_lines_are_cropped_and_recognized(self):
+        detector = self.detector(
+            [
+                [[20, 30], [40, 30], [40, 40], [20, 40]],
+                [[0, 0], [10, 0], [10, 10], [0, 10]],
+                [[10, 30], [40, 30], [40, 40], [10, 40]],
+                [[60, 30], [90, 30], [90, 40], [60, 40]],
+                [[30, 10], [40, 10], [40, 40], [30, 40]],
+                [[30, 60], [40, 60], [40, 90], [30, 90]],
+            ],
+            texts=("Hi",),
+        )
+        lines = detector.detect(
+            Image.new("RGB", (100, 100)),
+            allowed_region=DialogRegion(0.2, 0.2, 0.6, 0.6),
+        )
+        self.assertEqual([line.text for line in lines], ["Hi"])
+        self.assertAlmostEqual(lines[0].box.left, 0.2)
+        self.assertAlmostEqual(lines[0].box.top, 0.3)
+        self.assertAlmostEqual(lines[0].box.width, 0.2)
+        self.assertAlmostEqual(lines[0].box.height, 0.1)
+        self.assertEqual(detector._crop_line.call_count, 1)
+        self.assertEqual(len(detector._recognizer.call_args.args[0]), 1)
+
+    def test_all_excluded_lines_skip_crops_and_recognition(self):
+        detector = self.detector([[[0, 0], [10, 0], [10, 10], [0, 10]]])
+        self.assertEqual(
+            detector.detect(
+                Image.new("RGB", (100, 100)),
+                allowed_region=DialogRegion(0.2, 0.2, 0.6, 0.6),
+            ),
+            (),
+        )
+        detector._crop_line.assert_not_called()
+        detector._recognizer.assert_not_called()
+
     def test_sorts_lines_and_preserves_low_confidence_candidates(self):
         detector = self.detector(
             [

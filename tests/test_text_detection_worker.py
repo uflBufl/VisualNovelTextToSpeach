@@ -2,14 +2,15 @@ import json
 import os
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic, sleep
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
 from vntts import text_detection_worker as worker
-from vntts.ocr import OCRPreviewCancelled
+from vntts.ocr import DialogRegion, OCRPreviewCancelled
 
 
 def successful_worker(connection, directory, *_paths):
@@ -85,6 +86,40 @@ class TextDetectionWorkerTest(unittest.TestCase):
         self.assertEqual(first[0].box.left, 0.1)
         self.assertEqual(self.owner.pid, pid)
         self.assertTrue(self.owner._process.is_alive())
+
+    def test_serializes_allowed_region_in_request(self):
+        region = DialogRegion(0.1, 0.2, 0.7, 0.5)
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image, allowed_region=region)
+            request = json.loads(
+                (Path(self.owner._directory.name) / "request.json").read_text()
+            )
+        self.assertEqual(request["allowed_region"], region.to_json())
+
+    def test_child_validates_and_passes_allowed_region(self):
+        region = DialogRegion(0.1, 0.2, 0.7, 0.5)
+        for value in (region.to_json(), None, {"left": -1}):
+            with self.subTest(value=value), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "request.json").write_text(
+                    json.dumps({"size": [1, 1], "allowed_region": value})
+                )
+                (root / "image.raw").write_bytes(b"\0\0\0")
+                connection = Mock()
+                connection.recv_bytes.side_effect = [b"run", b"stop"]
+                with patch("vntts.text_detection.ScreenTextDetector") as detector:
+                    detector.return_value.detect.return_value = ()
+                    worker._worker_main(connection, directory, "det", "rec")
+                result = json.loads((root / "result.json").read_text())
+                if value == {"left": -1}:
+                    self.assertFalse(result["ok"])
+                    detector.return_value.detect.assert_not_called()
+                else:
+                    self.assertTrue(result["ok"])
+                    self.assertEqual(
+                        detector.return_value.detect.call_args.kwargs["allowed_region"],
+                        region if value is not None else None,
+                    )
 
     def test_inference_timeout_reaps_process_and_next_request_recovers(self):
         with patch.object(worker, "_worker_main", hanging_worker):

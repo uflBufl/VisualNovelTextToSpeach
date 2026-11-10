@@ -280,6 +280,10 @@ class GameProfileStoreTest(unittest.TestCase):
                 profile.id,
                 DialogRegion(0.2, 0.2, 0.5, 0.5),
             ),
+            lambda store, profile: store.update_story_region(
+                profile.id,
+                DialogRegion(0.1, 0.1, 0.9, 0.9),
+            ),
         )
         for operation in operations:
             with self.subTest(operation=operation), TemporaryDirectory() as directory:

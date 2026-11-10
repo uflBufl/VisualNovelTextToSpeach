@@ -151,6 +151,14 @@ class DialogRegion:
     def crop(self, image: Image.Image) -> Image.Image:
         return image.crop(self._pixel_box(*image.size))
 
+    def contains(self, other: "DialogRegion") -> bool:
+        return (
+            self.left <= other.left
+            and self.top <= other.top
+            and other.left + other.width <= self.left + self.width
+            and other.top + other.height <= self.top + self.height
+        )
+
     def capture_box(self, monitor: Mapping[str, int]) -> dict[str, int]:
         monitor_left = monitor.get("left", 0)
         monitor_top = monitor.get("top", 0)
@@ -678,9 +686,93 @@ def save_dialog_region(
     path = Path(path).expanduser()
     value: dict[str, object] = dict(region.to_json())
     value["coordinate_space"] = CAPTURE_COORDINATE_SPACE
+    if path.is_file():
+        try:
+            previous = decode_json(read_regular_text(path, encoding="utf-8"))
+        except ValueError:
+            previous = None
+        if isinstance(previous, Mapping) and previous.get("coordinate_space") in (
+            None,
+            CAPTURE_COORDINATE_SPACE,
+        ):
+            for key in ("story_region", "story_binding"):
+                if key in previous:
+                    value[key] = previous[key]
     if ocr_regions is not None:
         value["ocr_regions"] = ocr_regions.to_json()
     atomic_write_json(path, value)
+
+
+def save_story_region(
+    region: DialogRegion | None,
+    path: str | Path,
+    *,
+    capture_mode: str,
+    game_window_title: str | None,
+) -> None:
+    path = Path(path).expanduser()
+    if path.is_file():
+        try:
+            value = decode_json(read_regular_text(path, encoding="utf-8"))
+        except ValueError:
+            if region is None:
+                return
+            raise
+        if not isinstance(value, dict):
+            if region is None:
+                return
+            raise ValueError("Dialog region configuration must be an object")
+    elif region is None:
+        return
+    else:
+        value = {
+            **default_dialog_region.to_json(),
+            "coordinate_space": CAPTURE_COORDINATE_SPACE,
+        }
+    if region is None:
+        if "story_region" not in value and "story_binding" not in value:
+            return
+        value.pop("story_region", None)
+        value.pop("story_binding", None)
+    else:
+        validate_capture_coordinate_space(value.get("coordinate_space"))
+        value["story_region"] = region.to_json()
+        value["story_binding"] = {
+            "capture_mode": capture_mode,
+            "game_window_title": game_window_title,
+        }
+    atomic_write_json(path, value)
+
+
+def get_story_region(
+    *,
+    profile_region: DialogRegion | None = None,
+    coordinate_space: str | None = None,
+    capture_mode: str,
+    game_window_title: str | None,
+    use_profile: bool = False,
+) -> DialogRegion | None:
+    if use_profile:
+        if profile_region is not None:
+            validate_capture_coordinate_space(coordinate_space)
+        return profile_region
+    try:
+        value = decode_json(
+            read_regular_text(get_dialog_region_file(), encoding="utf-8")
+        )
+        if not isinstance(value, dict) or value.get("story_region") is None:
+            return None
+        if value.get("story_binding") != {
+            "capture_mode": capture_mode,
+            "game_window_title": game_window_title,
+        }:
+            return None
+        validate_capture_coordinate_space(value.get("coordinate_space"))
+        return DialogRegion.from_mapping(value["story_region"])
+    except CaptureRegionNeedsCalibration:
+        raise
+    except OSError, TypeError, ValueError:
+        return None
 
 
 def load_ocr_regions(path: str | Path) -> OCRRegions | None:

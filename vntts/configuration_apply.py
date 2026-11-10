@@ -127,6 +127,8 @@ class ConfigurationApplyMixin:
 
         def _create_settings_dialog(self) -> _SettingsDialog: ...
 
+        def calibrate_story_area(self) -> None: ...
+
         def _create_asset_manager_dialog(self) -> _ConfigurationDialog: ...
 
         def _configure_macos_launch_at_login(self, enabled: bool) -> None: ...
@@ -392,6 +394,11 @@ class ConfigurationApplyMixin:
             success_status=success_status,
             refresh_hotkeys=True,
             restart=bool(restart_changes and self._controller_ready),
+            after_apply=(
+                self.calibrate_story_area
+                if getattr(dialog, "story_area_requested", False) is True
+                else None
+            ),
         )
 
     def open_assets(self) -> None:

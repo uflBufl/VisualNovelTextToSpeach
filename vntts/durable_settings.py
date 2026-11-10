@@ -11,6 +11,7 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
+from vntts.ocr import get_dialog_region_file, save_story_region
 from vntts.profiles import GameProfileStore
 from vntts.settings import (
     AppSettings,
@@ -93,6 +94,18 @@ class DurableSettingsMixin:
                     if current[name] != saved_value and values[name] == current[name]:
                         values[name] = saved_value
             values = preference_values(values)
+            previous = self._last_saved_settings or self.settings
+            if (values["capture_mode"], values["game_window_title"]) != (
+                previous.capture_mode,
+                previous.game_window_title,
+            ):
+                # Revoke first so a failed settings write cannot keep stale permission.
+                save_story_region(
+                    None,
+                    get_dialog_region_file(),
+                    capture_mode=candidate.capture_mode,
+                    game_window_title=candidate.game_window_title,
+                )
             self._settings_revision = write_versioned_json_if_unchanged(
                 self._settings_path,
                 settings_schema_version,

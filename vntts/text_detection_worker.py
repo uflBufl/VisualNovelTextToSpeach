@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image
 
-from vntts.ocr import OCRPreviewCancelled
+from vntts.ocr import DialogRegion, OCRPreviewCancelled
 
 if TYPE_CHECKING:
     from vntts.text_detection import TextLine
@@ -40,6 +40,9 @@ def _worker_main(
         while connection.recv_bytes(16) == b"run":
             try:
                 request = json.loads((root / "request.json").read_text())
+                region = request["allowed_region"]
+                if region is not None:
+                    region = DialogRegion.from_mapping(region)
                 width, height = request["size"]
                 if (
                     type(width) is not int
@@ -53,7 +56,9 @@ def _worker_main(
                     pixels = source.read(width * height * 3 + 1)
                 if len(pixels) != width * height * 3:
                     raise ValueError("Invalid screen text image payload")
-                lines = detector.detect(Image.frombytes("RGB", (width, height), pixels))
+                lines = detector.detect(
+                    Image.frombytes("RGB", (width, height), pixels), allowed_region=region
+                )
                 result = {
                     "ok": True,
                     "lines": [
@@ -211,9 +216,12 @@ class TextDetectionWorker:
         self._wait(b"ready", check_startup)
 
     def detect(
-        self, image: Image.Image, *, cancel_event: Event | None = None
+        self,
+        image: Image.Image,
+        *,
+        cancel_event: Event | None = None,
+        allowed_region: DialogRegion | None = None,
     ) -> tuple[TextLine, ...]:
-        from vntts.ocr import DialogRegion
         from vntts.text_detection import TextLine
 
         if (
@@ -256,7 +264,16 @@ class TextDetectionWorker:
             assert self._directory is not None and self._connection is not None
             root = Path(self._directory.name)
             (root / "image.raw").write_bytes(image.convert("RGB").tobytes())
-            (root / "request.json").write_text(json.dumps({"size": image.size}))
+            (root / "request.json").write_text(
+                json.dumps(
+                    {
+                        "size": image.size,
+                        "allowed_region": (
+                            allowed_region.to_json() if allowed_region is not None else None
+                        ),
+                    }
+                )
+            )
             check()
             self._connection.send_bytes(b"run")
             self._wait(b"done", check)

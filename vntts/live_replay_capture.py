@@ -37,7 +37,7 @@ from vntts.numeric_values import optional_finite_scalar, optional_milliseconds_s
 from vntts.ocr import OCRRegions, get_dialog_region, get_ocr_regions
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
-from vntts.profiles import GameProfileStore
+from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.settings import load_app_settings
 from vntts.text_detection import group_text_lines, prepare_text_detection_models
 from vntts.text_detection_worker import TextDetectionWorker
@@ -798,7 +798,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except LiveReplayCaptureError as error:
         return cli_error(error)
-    profile = GameProfileStore.load().get(settings.active_profile_id)
+    profile_store = GameProfileStore.load()
+    profile = profile_store.get(settings.active_profile_id)
+    story_region = (
+        resolve_story_region(settings, profile_store)
+        if settings.discover_text_layouts
+        else None
+    )
     region = get_dialog_region(
         profile.dialog_region if profile is not None else None,
         coordinate_space=profile.coordinate_space if profile is not None else None,
@@ -887,13 +893,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ocr_regions=ocr_regions,
                 layout_session=layout_session,
             )
-            if settings.discover_text_layouts and frame.canonical_image is not None:
+            if (
+                settings.discover_text_layouts
+                and story_region is not None
+                and frame.canonical_image is not None
+            ):
                 if text_worker is None:
                     paths = prepare_text_detection_models()
                     text_worker = TextDetectionWorker(*paths)
                 return select_caption(
                     frame,
-                    group_text_lines(text_worker.detect(frame.canonical_image)),
+                    group_text_lines(
+                        text_worker.detect(
+                            frame.canonical_image, allowed_region=story_region
+                        )
+                    ),
                     settings.ocr_minimum_confidence,
                 )
             return frame

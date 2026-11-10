@@ -69,10 +69,27 @@ class CaptionLayoutTest(unittest.TestCase):
         self.assertEqual(caption.layout_kind, "caption")
         self.assertNotIn("ordinary", caption.recognized_result.text)
 
-    def test_blank_and_isolated_labels_keep_the_calibrated_reader(self):
+    def test_blank_and_lower_dialogue_keep_the_calibrated_reader(self):
         original = self.frame()
-        for blocks in ((), (self.block("AUTO"),), (self.block(top=0.8),)):
+        for blocks in ((), (self.block(top=0.8),)):
             self.assertIs(select_caption(original, blocks, 60), original)
+
+    def test_confirmed_story_text_can_be_a_single_word_or_symbol(self):
+        for text in ("No!", "?", "...", "Elma"):
+            with self.subTest(text=text):
+                selected = select_caption(self.frame(), (self.block(text),), 60)
+                self.assertEqual(selected.layout_kind, "caption")
+                self.assertEqual(selected.recognized_result.text, text)
+
+    def test_unconfirmed_area_never_starts_discovery_or_changes_dialogue(self):
+        controller = AppController(AppSettings(discover_text_layouts=True))
+        with (
+            patch.object(controller, "_story_region", return_value=None),
+            patch("vntts.controller.prepare_text_detection_models") as prepare,
+        ):
+            original = self.frame()
+            self.assertIs(controller._select_text_layout(original), original)
+            prepare.assert_not_called()
 
     def test_multiple_blocks_and_uncertain_text_hold_speech_and_keys(self):
         original = self.frame()
@@ -196,6 +213,9 @@ class CaptionLayoutTest(unittest.TestCase):
                 errors.append(error)
 
         with (
+            patch.object(
+                controller, "_story_region", return_value=DialogRegion(0, 0.1, 1, 0.9)
+            ),
             patch(
                 "vntts.controller.prepare_text_detection_models", side_effect=prepare
             ) as preparation,
@@ -219,6 +239,12 @@ class CaptionLayoutTest(unittest.TestCase):
             factory.assert_called_once()
             controller._close_text_layouts()
             worker.close.assert_called_once()
+            self.assertTrue(
+                all(
+                    call.kwargs["allowed_region"] == DialogRegion(0, 0.1, 1, 0.9)
+                    for call in worker.detect.call_args_list
+                )
+            )
 
     def test_captured_caption_replay_preserves_layout_and_declares_recorded_ocr(self):
         caption = select_caption(self.frame(), (self.block(),), 60)

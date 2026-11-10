@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Sequence
+from math import ceil, floor
 from pathlib import Path
 from threading import Event
 
@@ -173,6 +174,7 @@ class CalibrationReviewDialog(QDialog):
         *,
         recognizer: Callable[[Image.Image], OCRResult] = recognize_dialog_image_result,
         thread_pool: QThreadPool | None = None,
+        story_area: bool = False,
     ) -> None:
         super().__init__(parent)
         self._ocr_cancelled = Event()
@@ -237,7 +239,22 @@ class CalibrationReviewDialog(QDialog):
         self.setTabOrder(self.result_text, self.save_button)
         self.setTabOrder(self.save_button, self.retry_button)
         self.setTabOrder(self.retry_button, self.cancel_button)
-        self._start_recognition(image.copy(), recognizer)
+        if story_area:
+            self.setWindowTitle("Confirm story area")
+            self.preview.setAccessibleName("Allowed story area preview")
+            note.setText(
+                "Only text fully inside this area may be discovered outside the dialogue box. "
+                "Keep menus, buttons and chapter labels outside it. "
+                'Use "Draw again" to adjust the area.'
+            )
+            self.result_text.hide()
+            self.progress.hide()
+            self.save_button.setText("Confirm story area")
+            self.save_button.setAccessibleName("Confirm story area")
+            self.save_button.setToolTip("Save the allowed story text area")
+            self.save_button.setEnabled(True)
+        else:
+            self._start_recognition(image.copy(), recognizer)
 
     def show_enlarged_capture(self) -> None:
         if self.capture_preview is None:
@@ -403,6 +420,7 @@ class DialogRegionOverlay(QWidget):
         reviewer: ReviewerFactory | None = None,
         save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
+        story_dialogue_region: DialogRegion | None = None,
     ) -> None:
         super().__init__()
         platform = sys.platform if platform is None else platform
@@ -413,7 +431,12 @@ class DialogRegionOverlay(QWidget):
         self.background_pixmap = (
             pixmap_from_pil(background) if background is not None else None
         )
-        self.reviewer = reviewer or CalibrationReviewDialog
+        self.story_dialogue_region = story_dialogue_region
+        self.reviewer = reviewer or (
+            (lambda image: CalibrationReviewDialog(image, story_area=True))
+            if story_dialogue_region is not None
+            else CalibrationReviewDialog
+        )
         self._review: QDialog | None = None
         self._closed = False
         self.save_region = save_region or self.persist
@@ -442,6 +465,14 @@ class DialogRegionOverlay(QWidget):
             "F2 opens exact pixel coordinates."
         )
         self._create_bounds_editor()
+        if story_dialogue_region is not None:
+            self.setWindowTitle("Select the allowed story area")
+            self.setAccessibleName("Story area calibration overlay")
+            self.setAccessibleDescription(self._instruction_text())
+            self.bounds_editor.setWindowTitle("Story area coordinates")
+            self.bounds_editor.setAccessibleName("Exact story area bounds")
+            for name, control in self.bounds_inputs.items():
+                control.setAccessibleName(f"Story area {name.lower()} in pixels")
 
     def _create_bounds_editor(self) -> None:
         self.bounds_editor = QWidget(
@@ -593,6 +624,12 @@ class DialogRegionOverlay(QWidget):
             return
         try:
             region = self._region_from_rectangle(rectangle)
+            if self.story_dialogue_region is not None and not region.contains(
+                self.story_dialogue_region
+            ):
+                raise ValueError(
+                    "The story area must include the entire dialogue region"
+                )
             if self.background is None:
                 self._save_selection(region)
                 return
@@ -612,7 +649,12 @@ class DialogRegionOverlay(QWidget):
             self._review = None
             if failed_review is not None:
                 failed_review.reject()
-            self._selection_failed(f"Unable to review the dialogue area: {error}")
+            area = (
+                "story area"
+                if self.story_dialogue_region is not None
+                else "dialogue area"
+            )
+            self._selection_failed(f"Unable to review the {area}: {error}")
 
     def _complete_review(
         self, source: QDialog, region: DialogRegion, result: int
@@ -638,8 +680,13 @@ class DialogRegionOverlay(QWidget):
             return
         try:
             self.save_region(region)
-        except OSError as error:
-            self._selection_failed(f"Unable to save the dialogue area: {error}")
+        except (OSError, ValueError) as error:
+            area = (
+                "story area"
+                if self.story_dialogue_region is not None
+                else "dialogue area"
+            )
+            self._selection_failed(f"Unable to save the {area}: {error}")
             return
         if self._closed:
             return
@@ -659,12 +706,24 @@ class DialogRegionOverlay(QWidget):
 
     def _set_suggested_keyboard_region(self) -> None:
         capture = self.capture_region
-        rectangle = QRect(
-            round(capture.left * self.width()),
-            round(capture.top * self.height()),
-            max(20, round(capture.width * self.width())),
-            max(20, round(capture.height * self.height())),
-        ).intersected(self.rect())
+        if self.story_dialogue_region is not None:
+            left, top = (
+                floor(capture.left * self.width()),
+                floor(capture.top * self.height()),
+            )
+            rectangle = QRect(
+                left,
+                top,
+                max(20, ceil((capture.left + capture.width) * self.width()) - left),
+                max(20, ceil((capture.top + capture.height) * self.height()) - top),
+            ).intersected(self.rect())
+        else:
+            rectangle = QRect(
+                round(capture.left * self.width()),
+                round(capture.top * self.height()),
+                max(20, round(capture.width * self.width())),
+                max(20, round(capture.height * self.height())),
+            ).intersected(self.rect())
         self.origin = rectangle.topLeft()
         self.current = rectangle.bottomRight()
         self._sync_bounds_editor()
@@ -778,6 +837,22 @@ class DialogRegionOverlay(QWidget):
             painter.setPen(QPen(QColor(0, 220, 255), 3))
             painter.drawRect(rectangle)
 
+        dialogue = self.story_dialogue_region
+        if dialogue is not None:
+            rectangle = QRect(
+                round(dialogue.left * self.width()),
+                round(dialogue.top * self.height()),
+                round(dialogue.width * self.width()),
+                round(dialogue.height * self.height()),
+            )
+            painter.setPen(QPen(QColor(255, 215, 0), 2, Qt.PenStyle.DashLine))
+            painter.drawRect(rectangle)
+            painter.drawText(
+                rectangle.adjusted(6, 6, -6, -6),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                "Dialogue area (keep inside)",
+            )
+
         font = painter.font()
         font.setBold(True)
         painter.setFont(font)
@@ -805,8 +880,13 @@ class DialogRegionOverlay(QWidget):
             return f"{self.save_error}. Enter reviews and retries; R starts again; Esc cancels."
         selected = self.origin is not None and self.current is not None
         return (
-            "Select the whole dialogue box, including the name and continue indicator. "
-            + DIALOG_REGION_GUIDANCE
+            (
+                "Select the allowed story area, including the yellow dialogue box and "
+                "where temporary story text can appear. Exclude menus, buttons and chapter labels."
+                if self.story_dialogue_region is not None
+                else "Select the whole dialogue box, including the name and continue indicator. "
+                + DIALOG_REGION_GUIDANCE
+            )
             + " "
             + (
                 "Enter reviews the area. "
@@ -838,6 +918,7 @@ def show_calibration_overlay(
     background: Image.Image | None = None,
     save_region: Callable[[DialogRegion], None] | None = None,
     capture_region: DialogRegion | None = None,
+    story_dialogue_region: DialogRegion | None = None,
 ) -> DialogRegionOverlay:
     if background is None:
         if geometry is not None:
@@ -849,6 +930,7 @@ def show_calibration_overlay(
         background=background,
         save_region=save_region,
         capture_region=capture_region,
+        story_dialogue_region=story_dialogue_region,
     )
     if geometry is None:
         overlay.showFullScreen()

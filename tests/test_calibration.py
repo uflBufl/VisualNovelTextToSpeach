@@ -159,6 +159,68 @@ class DialogRegionOverlayTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for calibration OCR")
 
+    def test_story_review_confirms_bounds_without_recognizing_a_large_crop(self):
+        recognizer = Mock()
+        review = CalibrationReviewDialog(
+            Image.new("RGB", (800, 450)), recognizer=recognizer, story_area=True
+        )
+        self.addCleanup(review.deleteLater)
+        self.addCleanup(review.close)
+        recognizer.assert_not_called()
+        self.assertTrue(review.save_button.isEnabled())
+        self.assertTrue(review.result_text.isHidden())
+        self.assertEqual(review.save_button.text(), "Confirm story area")
+
+    def test_story_selection_must_keep_dialogue_and_only_save_after_confirmation(self):
+        saved = []
+        dialogue = DialogRegion(0.1, 0.7, 0.8, 0.25)
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 600)),
+            story_dialogue_region=dialogue,
+            reviewer=lambda _image: QDialog(),
+            save_region=saved.append,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 600)
+        overlay._review_rectangle(QRect(80, 60, 640, 360))
+        self.assertIn("include the entire dialogue", overlay.save_error)
+        self.assertIsNone(overlay._review)
+        self.assertEqual(saved, [])
+        overlay._review_rectangle(QRect(0, 60, 800, 540))
+        overlay._review.done(CalibrationReviewDialog.DrawAgain)
+        self.assertEqual(saved, [])
+        overlay._review_rectangle(QRect(0, 60, 800, 540))
+        overlay._review.accept()
+        self.assertEqual(saved, [DialogRegion(0, 0.1, 1, 0.9)])
+
+    def test_cancelling_story_review_keeps_existing_permission(self):
+        save = Mock()
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (800, 600)),
+            story_dialogue_region=DialogRegion(0, 0.7, 1, 0.3),
+            reviewer=lambda _image: QDialog(),
+            save_region=save,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 600)
+        overlay._review_rectangle(QRect(0, 60, 800, 540))
+        overlay._review.reject()
+        save.assert_not_called()
+
+    def test_suggested_story_bounds_round_outwards_to_keep_the_dialogue(self):
+        dialogue = DialogRegion(0.01, 0.68, 0.98, 0.32)
+        overlay = DialogRegionOverlay(
+            capture_region=dialogue, story_dialogue_region=dialogue
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(853, 1079)
+        overlay._set_suggested_keyboard_region()
+        region = overlay._region_from_rectangle(QRect(overlay.origin, overlay.current))
+        self.assertTrue(region.contains(dialogue))
+
     def test_capture_visibility_restores_only_surviving_owned_windows_without_activation(
         self,
     ):

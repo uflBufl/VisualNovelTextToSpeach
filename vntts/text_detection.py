@@ -238,7 +238,9 @@ class ScreenTextDetector:
         self._crop_line = get_rotate_crop_image
         self._detector = detector
 
-    def detect(self, image: Image.Image) -> tuple[TextLine, ...]:
+    def detect(
+        self, image: Image.Image, *, allowed_region: DialogRegion | None = None
+    ) -> tuple[TextLine, ...]:
         if image.width <= 0 or image.height <= 0:
             raise ValueError("Screen text detection requires a nonempty image")
         self._load_models()
@@ -265,12 +267,15 @@ class ScreenTextDetector:
             right, bottom = box.max(axis=0) / original.size
             if right <= left or bottom <= top:
                 raise ValueError("Screen text detector returned an empty line box")
-            normalized.append(
-                DialogRegion(
-                    float(left), float(top), float(right - left), float(bottom - top)
-                )
+            region = DialogRegion(
+                float(left), float(top), float(right - left), float(bottom - top)
             )
+            if allowed_region is not None and not allowed_region.contains(region):
+                continue
+            normalized.append(region)
             valid_boxes.append(box.astype(np.float32))
+        if not valid_boxes:
+            return ()
         full_pixels = np.ascontiguousarray(np.asarray(original)[:, :, ::-1])
         recognized = self._recognizer(
             [self._crop_line(full_pixels, box) for box in valid_boxes]

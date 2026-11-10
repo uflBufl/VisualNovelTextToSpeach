@@ -58,6 +58,7 @@ from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import (  # noqa: E402
+    CaptureRegionNeedsCalibration,
     DialogRegion,
     OCRRegions,
     OCRResult,
@@ -2115,8 +2116,8 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_required_preparation_without_runtime_never_reuses_previous_progress(self):
         with TemporaryDirectory() as directory:
-            tray, controller, preparation, previous = self._progressive_pack_reading_tray(
-                Path(directory)
+            tray, controller, preparation, previous = (
+                self._progressive_pack_reading_tray(Path(directory))
             )
             preparation.runtime_playback_settings.return_value = None
             self.assertEqual(tray._reading_source_choice(), (previous, True))
@@ -2288,7 +2289,9 @@ class TrayApplicationTest(unittest.TestCase):
                     self.assertIs(backend.progress_wait_request, wait_callback)
                     backend.progress_wait_request("line", "digest")
                     self.application.processEvents()
-                    preparation.prioritize_line.assert_called_once_with("line", "digest")
+                    preparation.prioritize_line.assert_called_once_with(
+                        "line", "digest"
+                    )
                     self.assertEqual(
                         tray._reading_pack_identity(controller.settings),
                         tray._reading_pack_identity(progress),
@@ -8396,6 +8399,103 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 tray_application.shutdown()
 
+    def test_story_area_setup_is_exposed_and_requires_confirmation_for_same_game(self):
+        controller = Mock()
+        dialogue = DialogRegion(0, 0.7, 1, 0.3)
+        controller._capture_region.return_value = dialogue
+        controller._story_region.return_value = None
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title="Selected game"),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.assertIn(tray.story_area_action, tray.setup_menu.actions())
+        tray._calibrating_story_area = True
+        tray._calibration_story_binding = tray._story_area_binding()
+        with patch("vntts.app.show_calibration_overlay") as show:
+            tray._open_calibration_overlay(None, Image.new("RGB", (800, 600)))
+            self.assertEqual(show.call_args.kwargs["story_dialogue_region"], dialogue)
+            self.assertEqual(show.call_args.kwargs["capture_region"], dialogue)
+            save = show.call_args.kwargs["save_region"]
+            with patch("vntts.app.save_story_region") as persist:
+                persist.assert_not_called()
+                story = DialogRegion(0, 0.1, 1, 0.9)
+                save(story)
+                self.assertEqual(persist.call_args.args[0], story)
+                tray.settings = tray.settings.updated(game_window_title="Another game")
+                with self.assertRaisesRegex(ValueError, "selected game changed"):
+                    save(story)
+                self.assertEqual(persist.call_count, 1)
+
+    def test_settings_story_area_button_saves_and_requests_setup(self):
+        dialog = SettingsDialog(AppSettings(discover_text_layouts=False))
+        self.assertEqual(dialog.story_area_button.text(), "Set story area...")
+        dialog.story_area_button.click()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertTrue(dialog.story_area_requested)
+        self.assertTrue(dialog.settings().discover_text_layouts)
+
+    def test_story_setup_keeps_settings_validation_and_does_not_linger_after_error(
+        self,
+    ):
+        dialog = SettingsDialog(AppSettings())
+        dialog.screenshot_directory.clear()
+        dialog.story_area_button.click()
+        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertFalse(dialog.story_area_requested)
+        self.assertIn("Screenshot directory", dialog.validation_summary.toPlainText())
+        with TemporaryDirectory() as directory:
+            dialog.screenshot_directory.setText(directory)
+            dialog.validate_and_accept()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertFalse(dialog.story_area_requested)
+
+    def test_story_setup_waits_for_normal_asynchronous_game_pack_validation(self):
+        with TemporaryDirectory() as directory:
+            pack = Path(directory) / "pack.json"
+            pack.touch()
+            dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
+            dialog.game_pack.setText(str(pack))
+            pool = ManualThreadPool()
+            dialog.game_pack_runner.thread_pool = pool
+            with patch(
+                "vntts.app.apply_game_pack", side_effect=lambda settings, *_: settings
+            ):
+                dialog.story_area_button.click()
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertFalse(dialog.story_area_button.isEnabled())
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertTrue(dialog.story_area_requested)
+
+    def test_story_area_missing_profile_reports_error_without_global_fallback(self):
+        controller = Mock()
+        controller._capture_region.return_value = DialogRegion(0, 0.7, 1, 0.3)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(active_profile_id="removed"),
+            controller_factory=Mock(return_value=controller),
+        )
+        with patch("vntts.app.save_story_region") as global_save:
+            with self.assertRaisesRegex(ValueError, "profile is no longer available"):
+                tray._save_story_area(
+                    DialogRegion(0, 0, 1, 1), tray._story_area_binding()
+                )
+            global_save.assert_not_called()
+
+    def test_settings_remain_available_when_story_coordinates_need_calibration(self):
+        controller = Mock()
+        controller._story_region.side_effect = CaptureRegionNeedsCalibration("Recalibrate")
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        with patch("vntts.app.SettingsDialog") as factory:
+            tray._create_settings_dialog()
+            self.assertFalse(factory.call_args.kwargs["story_area_confirmed"])
+
     def test_window_calibration_uses_selected_client_geometry(self):
         controller = Mock()
         geometry = WindowGeometry(100, 200, 1600, 900)
@@ -10093,7 +10193,9 @@ class TrayApplicationTest(unittest.TestCase):
                     tray._runtime_settings(),
                 )
                 self.assertEqual(
-                    preparation.call_args.kwargs["playback_settings"].audio_source_policy,
+                    preparation.call_args.kwargs[
+                        "playback_settings"
+                    ].audio_source_policy,
                     "prefer-generated",
                 )
                 self.assertEqual(

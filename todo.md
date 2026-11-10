@@ -314,40 +314,16 @@ recovery separate from product defects.
 
 - [ ] **RUN-09-05 - Verify centered captions before extending text layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
-      Live acceptance is blocked by a confirmed admission defect: on the first
-      narrator line the full-frame detector admits game controls `SKIP EXIT`
-      as caption speech, repeatedly switches back to the same lower dialogue
-      and revokes its advance readiness. Exact OCR evidence is in diagnostic
-      session `4fcac5d0804b4c2e82886796662f3d84`; local audit and proposed repair:
-      `.codex/investigations/caption-acceptance-20261110/`.
-      Agree the repair before another run: separate allowed story-content bounds
-      from the ordinary dialogue crop, offer/confirm that area in calibration,
-      persist it per game and apply it consistently to live/bootstrap/one-shot/
-      diagnostics/replay. Detecting a singleton multiword block with high OCR
-      confidence is not story permission. Do not blacklist game-specific labels,
-      hardcode a top/center band, widen the old dialogue crop or weaken key guards.
-      Concrete implementation plan for approval:
-      - add optional normalized story_region using DialogRegion in the game
-        profile and shared global capture configuration; retain it on ordinary
-        settings/calibration saves, reset its permission when the game binding
-        changes, and preserve coordinate-space validation;
-      - missing story_region grants only the existing dialogue crop, never the
-        full window. Existing ordinary reading stays usable; extra text discovery
-        needs confirmed content bounds and exposes the setup action;
-      - reuse the calibration capture/overlay/review for a Story area action:
-        show the narrow dialogue crop and permitted broad area separately,
-        validate that the selected bounds do not cut the configured dialogue,
-        and persist only after confirmation. Cancel/error keeps previous bounds;
-      - pass the confirmed region through the detector worker request; filter
-        localized line boxes by full containment before expensive text recognition
-        and grouping, preserving canonical coordinates/provenance. Remove the
-        superseded multiword-count permission heuristic;
-      - use one permission resolver across live, initial scope, one-shot,
-        diagnostics, replay capture and profile switches; preserve queue/identity
-        and navigation ownership rather than add a second speech route;
-      - run changed tests first, then edge/merged-label/short-caption, save/cancel,
-        migration/binding, FIFO and dispatch regressions. Repeat the native
-        original-quote transition with latency/media evidence and close the app.
+      Repeat native acceptance with a confirmed Story area containing the dialogue
+      and central quotes but excluding controls. Verify that `SKIP EXIT` remains
+      silent and does not revoke ordinary advance readiness. Original failure
+      evidence: `.codex/investigations/caption-acceptance-20261110/`; bounded
+      saved-frame checks: `.codex/investigations/story-region-20261110/`.
+      Exercise Story area setup/save/cancel through the running app with the real
+      game; static frames and offscreen UI tests do not close this live gate.
+      Keep one shared permission across live/bootstrap/one-shot/diagnostics/replay;
+      do not blacklist game-specific labels, hardcode a top/center band, widen
+      the ordinary dialogue crop or weaken key guards.
       Retest merged/split UI-label OCR, real captions and return to unchanged
       dialogue at native resolution; record the discovery cost separately.
       First delivery gate: verify the missed centered timed text in the recorded
@@ -362,10 +338,10 @@ recovery separate from product defects.
       - validate new-game discovery without catalog/resources, different text
         styling, short captions and similar-looking menus; single-block geometry
         is not a universal story/menu classifier;
-      - provide explicit preview/area confirmation for ambiguous discovery and
-        migrate persisted calibration/profile/preview/replay consumers to one
-        layout format together. Existing dialog_region/OCRRegions remain the
-        ordinary calibration input until this UI can replace them completely;
+      - plan the shared layout-format migration for dialog_region/OCRRegions,
+        story_region and future document areas before adding more readers;
+        migrate persisted calibration/profile/preview/replay consumers together,
+        retaining current ordinary calibration until that migration is complete;
       - extend the replacement-reading owner with per-document position, then
         implement the document reader, ordering and source-free overlap;
       - verify optional source/prepared-audio integration and strict sequence
