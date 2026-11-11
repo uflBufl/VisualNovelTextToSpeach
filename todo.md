@@ -437,12 +437,27 @@ recovery separate from product defects.
       `.codex/investigations/text-detector-timeout-20261111/results.md`.
 - [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
       Preparation and pack staging discard errors as None, so genuinely
-      unsupported plans are shown only as Disabled. Agree a reason-preservation
-      and UI change for real manual choices, unknown visible text, publisher
-      errors and missing coverage; distinguish pending/cancelled preparation.
-      Preserve working OCR reading and real manual boundaries. Do not introduce
-      per-chapter routing or auto-skip unknown events to hide a rejection.
-      Evidence: `.codex/investigations/sequence-preparation-20261111/results.md`.
+      unsupported plans are shown only as Disabled. Proposed implementation,
+      awaiting approval:
+      - Return a typed optional plan/reason result from preparation and sequence
+        staging instead of swallowing errors. Keep cancellation distinct and
+        use trusted explanations rather than raw exceptions or machine paths.
+      - Preserve the effective reason in the existing self-service pack
+        extension, including its outcome in identity before cache reuse.
+        Determine staging compatibility from the same input snapshot used for
+        writing; do not add repeated audio/pack scans to status rendering.
+      - Show the actual OCR reading method and reason in the existing Reading
+        notice and preparation handoff. Restore the notice with the selected
+        pack; no new preference, recovery action or chapter-routing mode.
+      - Preserve nonblocking optional preparation. An early Read/save snapshots
+        "not finished at handoff" rather than a failure or permanently pending
+        task; late results must not misdescribe an already published pack.
+      - Verify worker/staging reasons, cache reuse, activation/restart/profile
+        changes, pending/cancelled/late results and visibility while mode is off.
+        Legacy or user-disabled sequences must not acquire a fabricated error.
+      Preserve working OCR audio/advance and real manual boundaries; unknown
+      events remain manual. Evidence and code map:
+      `.codex/investigations/sequence-unavailability-20261111/results.md`.
 
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from the agreed visible dialogue to the actual terminal scene, with
