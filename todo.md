@@ -398,13 +398,23 @@ recovery separate from product defects.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
 - [ ] **Investigate the unconfirmed Space on source `315601:10`.**
-      Hedone `Phew! What refreshment!` completed; native input reported success
-      and game focus before/after, but the same exact line remained. The later
-      capture errors started after this stall. Stop, one separately logged manual
-      Space and restart recovered progression. Inspect recorded pixels and key
-      timing before changing dispatch/admission; never blindly send another key.
+      Historical pixels/timing audited: Hedone `Phew! What refreshment!` remained
+      through the key and confirmation timeout while the background animated.
+      Key-down followed completed speech by1.75s, held51ms; both PID focus probes
+      matched. The50ms hold was already installed; later capture errors do not
+      explain this stall. Raw source has no interpreted wait/choice before11,
+      but unnamed fields do not establish game input readiness. At the combined
+      run, qualify a temporary passive process-scoped Space observer against
+      actual test-window key events, then correlate game-destined down/up,
+      modifiers, key-window state and video with existing dispatch timestamps.
+      Preserve observer health; no callback is not proof of loss. A destination
+      tap proves routing, not game consumption; sample the stalled game thread
+      if needed. No permanent tracing, blind repeat, longer hold or destination
+      change without a proven failed boundary. Stop plus one separately marked
+      manual Space recovered; differing timing/readiness is not a repair proof.
       Use diagnostic `4cda5996f1fb4238be9ff45ab0375852` and the manual-input marker
       in `.codex/investigations/story-region-20261110/` to separate operator actions.
+      Audited evidence: `.codex/investigations/space-stall-20261111/results.md`.
 - [ ] **Investigate text-detector inference timeout under background generation.**
       During confirmed fresh MOSS renders, discovery hit `Screen text detection
       timed out`; its worker was replaced and reading resumed without manual input.
