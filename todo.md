@@ -405,8 +405,11 @@ recovery separate from product defects.
       explain this stall. Raw source has no interpreted wait/choice before11,
       but unnamed fields do not establish game input readiness. The temporary
       passive process-scoped Space observer is qualified against spontaneous
-      native Qt key events, including ordered down/up, destination and cleanup.
-      At the combined run, use the local `space_observer.py` beside the audited
+      native Qt key events and a real game315601:3 ->4 transition with one key,
+      matching down/up, destination and continuous video; source10 did not recur.
+      Full Reading was not qualified: fix/verify isolated prepared configuration
+      before the combined run, with a multiprocessing-guarded test entry.
+      At that run, use the local `space_observer.py` beside the audited
       evidence to correlate game-destined down/up, modifiers, key-window state
       and video with existing dispatch timestamps.
       Preserve observer health; no callback is not proof of loss. A destination
