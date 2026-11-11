@@ -436,14 +436,26 @@ recovery separate from product defects.
       boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
       `.codex/investigations/text-detector-timeout-20261111/results.md`.
 - [ ] **Explain and fix failed quiescence when reopening preparation during reading.**
-      After closing a completed background job without activation, Choose stories
-      and prepare audio requested a live Stop but showed `Unable to stop live
-      capture: ` with an empty cause. Capture stopped, the current clip finished,
-      and no later old-run key was sent; preparation did not open. Trace the
-      failed wait/cancellation boundary before changing budgets, and preserve a
-      useful error message. Evidence: diagnostic
-      `4cda5996f1fb4238be9ff45ab0375852`, around source `315601:80`, plus
-      `.codex/investigations/story-region-20261110/live-issues.md`.
+      Reproduced: modal launch stops capture only, then waits for natural speech
+      within5s. A pending Future raises empty TimeoutError; the continuation is
+      cleared and later clip completion cannot open preparation. Historical80
+      reader completion is5.30s after Stop, consistent with this path; its exact
+      exception type was not retained. Proposed repair awaits approval:
+      - In the shared `_wait_for_live_reader`, use existing full Stop
+        (`controller.emergency_stop`) for speech-quiescing launches, then retain
+        bounded drain including one-shot work. This interrupts the current clip
+        and cancels its queue. Preserve capture-only stop for calibration.
+      - Cover Settings, History, preparation, explicit preview/failure playback
+        and speaker-mapping callers; preserve existing resume/lifecycle behavior.
+        Do not change global `stop_live`, increase budgets or add stop states.
+      - Show a useful timeout message and nonempty other-error cause; real stop
+        failure must still suppress the continuation and permit explicit retry.
+      - Gate on controlled running speech interrupted before one opener call,
+        stopped-capture retry, one-shot, blocked OCR, calibration speech, Qt
+        responsiveness and stale lifecycle/no-late-key cases. Native acceptance
+        remains in the combined run. Evidence: diagnostic
+        `4cda5996f1fb4238be9ff45ab0375852` and
+        `.codex/investigations/preparation-stop-20261111/results.md`.
 - [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
       A manual wait in the other selected chapter rejects the combined plan;
       the UI silently falls back to OCR mode. Review per-chapter validation or a
