@@ -311,11 +311,31 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review and approve the repairs below, one item at a time. The native
-run reached the chapter's terminal scene but did not pass uninterrupted reading.
-Evidence: `.codex/investigations/native-campaign-20261109/`, diagnostic session
-`9a66093d0b48473cb6c245ec14f19b5f`. Keep calibration mistakes and explicit manual
-recovery separate from product defects.
+Next action: agree and implement the confirmed calibration/UI repairs below,
+then investigate the reproduced detector timeout. The combined chapter reached
+its terminal scene; ordinary dialogue played in order without manual recovery.
+Terminal quotes were excluded by the operator's too-narrow story area, so their
+live rerun with corrected bounds remains open. Evidence:
+`.codex/investigations/combined-campaign-20261111/`. Keep calibration mistakes and
+separate control episodes distinct from product failures.
+
+- [ ] **RUN-11-CAL - Accept an exactly enclosing story-area boundary.**
+      Numeric calibration with a shared right edge is rejected because normalized
+      floating-point sums differ at machine precision. Fix the geometry contract
+      consistently across validation and persisted/cropped regions, preserving
+      rejection of genuinely clipped areas. Also verify review failure is visible
+      beside the coordinate editor. The wider valid area was saved through the UI;
+      terminal quotes still need a live rerun with corrected bounds.
+- [ ] **RUN-11-UI-01 - Correct the prepared-audio activation guidance.**
+      Activation already opens Reading, whose action is Read, but the banner
+      still tells the user to open Reading and click Prepare reading. Align the
+      instruction with the current action/navigation. Evidence:
+      `.codex/investigations/combined-campaign-20261111/activation-guidance.png`.
+- [ ] **RUN-11-UI-02 - Clarify reuse-only preparation's confirmation action.**
+      Step2 reports no lines to generate but still requires Generate with these
+      voices to save/activate the reused audio. Review the action wording for
+      this path without skipping voice confirmation or changing cached audio.
+      Evidence: `.codex/investigations/combined-campaign-20261111/step2-reuse.png`.
 
 - [ ] **RUN-09-05 - Finish remaining caption qualification before extending layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
@@ -397,44 +417,16 @@ recovery separate from product defects.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Investigate the unconfirmed Space on source `315601:10`.**
-      Historical pixels/timing audited: Hedone `Phew! What refreshment!` remained
-      through the key and confirmation timeout while the background animated.
-      Key-down followed completed speech by1.75s, held51ms; both PID focus probes
-      matched. The50ms hold was already installed; later capture errors do not
-      explain this stall. Raw source has no interpreted wait/choice before11,
-      but unnamed fields do not establish game input readiness. The temporary
-      passive process-scoped Space observer is qualified against spontaneous
-      native Qt key events and a real game315601:3 ->4 transition with one key,
-      matching down/up, destination and continuous video; source10 did not recur.
-      Full Reading was not qualified: fix/verify isolated prepared configuration
-      before the combined run, with a multiprocessing-guarded test entry.
-      At that run, use the local `space_observer.py` beside the audited
-      evidence to correlate game-destined down/up, modifiers, key-window state
-      and video with existing dispatch timestamps.
-      Preserve observer health; no callback is not proof of loss. A destination
-      tap proves routing, not game consumption; sample the stalled game thread
-      if needed. No permanent tracing, blind repeat, longer hold or destination
-      change without a proven failed boundary. Stop plus one separately marked
-      manual Space recovered; differing timing/readiness is not a repair proof.
-      Use diagnostic `4cda5996f1fb4238be9ff45ab0375852` and the manual-input marker
-      in `.codex/investigations/story-region-20261110/` to separate operator actions.
-      Audited evidence: `.codex/investigations/space-stall-20261111/results.md`.
-- [ ] **Validate the text-detector timeout during the combined native run.**
-      Offline retained short-frame and reconstructed source21 movie-frame probes
-      under genuine MOSS generation did not reproduce the5s deadline; the loaded
-      long frame took up to2.27s, parent serialization up to61ms. Current models
-      reuse CPU sessions with one thread. The historical generation11 candidate
-      preserves source21 speech/key and successor22 order, but typed journals do
-      not identify the timeout stage or prove a detector PID replacement.
-      In the combined run, use temporary phase tracing for queue/startup, parent
-      serialization, child detector/recognizer and response delivery, with child
-      PID and CPU/wall timing on the actual failed frame. Sample a slow native
-      stage while alive if needed; CPU/wall difference alone proves neither
-      scheduler nor memory cause. Verify recovery order and one speech/key.
-      Do not change budgets/recognition or add permanent metrics without a proven
-      boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
-      `.codex/investigations/text-detector-timeout-20261111/results.md`.
+- [ ] **Diagnose the reproduced text-detector timeout under generation load.**
+      The combined run exceeded the unchanged5s deadline after detector completed
+      and recognizer began; the child was replaced and Reading recovered without
+      missing the ordinary dialogue. Resolve the remaining recognizer/native
+      resource cause using retained failure pixels and phase CPU/wall evidence
+      before choosing a repair. Concurrent MOSS also slowed, but the resource
+      cause is unproven. Temporary synchronous failure-PNG writing added recovery
+      latency; exclude that overhead from product timing claims. Do not change
+      budgets/recognition or add permanent tracing without a proven boundary.
+      Evidence: `.codex/investigations/combined-campaign-20261111/`.
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from the agreed visible dialogue to the actual terminal scene, with
       prepared voices and genuine background generation. Verify full low-confidence
