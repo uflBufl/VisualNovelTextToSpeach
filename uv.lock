@@ -3370,7 +3370,7 @@ wheels = [
 [[package]]
 name = "reverse1999-extractor"
 version = "0.1.0"
-source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=a1261ae937095c2d945a5bce7ded8a3b894b1bf4#a1261ae937095c2d945a5bce7ded8a3b894b1bf4" }
+source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=94fa6ab37e043bf6fe825a0d41151a76c1108941#94fa6ab37e043bf6fe825a0d41151a76c1108941" }
 dependencies = [
     { name = "cryptography" },
     { name = "numpy" },
@@ -4379,7 +4379,7 @@ requires-dist = [
     { name = "pytesseract", specifier = ">=0.3.13" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "rapidocr", specifier = ">=3.9.2,<4" },
-    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=a1261ae937095c2d945a5bce7ded8a3b894b1bf4" },
+    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=94fa6ab37e043bf6fe825a0d41151a76c1108941" },
     { name = "sounddevice", specifier = ">=0.5.6,<0.6" },
     { name = "soundfile", specifier = ">=0.14,<0.15" },
     { name = "soxr", specifier = ">=1.1,<2" },

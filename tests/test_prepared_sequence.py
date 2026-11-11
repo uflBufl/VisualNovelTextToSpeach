@@ -8,6 +8,12 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from r1999extractor.live_sequence import (
+    build_live_sequence_document,
+)
+from r1999extractor.live_sequence import (
+    write_live_sequence_plan as write_reverse1999_live_sequence_plan,
+)
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 from vntts_artifacts.story_index import write_story_index
@@ -167,6 +173,126 @@ class PreparedSequenceTest(unittest.TestCase):
         self.output = self.root / "live-sequence.json"
         self.bundle.write_bytes(b"source bundle")
         write_story(self.story)
+
+    def _write_export_story(self):
+        documents = {}
+        records = []
+        for chapter, texts in (
+            ("315601", ("First chapter.",)),
+            ("315602", ("Before.", "...?!", "...!", "…？！ — 「」 ♪", "After.")),
+        ):
+            steps = []
+            for sequence, text in enumerate(texts, 1):
+                payload = [None] * 18
+                payload[11] = ["", "", "Ada"]
+                payload[15] = ["", "", text]
+                steps.append(
+                    [sequence, f"step-{sequence}", payload, *[[] for _ in range(8)]]
+                )
+                if sequence in (1, len(texts)):
+                    records.append(
+                        {
+                            "record_type": "line",
+                            "line_id": f"reverse1999:{chapter}:{sequence}",
+                            "chapter": chapter,
+                            "sequence": sequence,
+                            "speaker": "Ada",
+                            "text": text,
+                            "kind": "dialogue",
+                        }
+                    )
+            documents[f"json_story_step_{chapter}"] = ["title", "", steps]
+            documents[f"json_story_group_{chapter}"] = [
+                [[sequence, sequence + 1, ""]] for sequence in range(1, len(texts))
+            ]
+        write_story_index(
+            self.story,
+            {
+                "game": "Reverse: 1999",
+                "language": "en",
+                "source_bundle": str(self.bundle),
+            },
+            records,
+        )
+        return documents
+
+    def _prepare_exported_story(self, documents, output):
+        def publish(arguments):
+            document = build_live_sequence_document(
+                documents, self.story, self.bundle, producer_version="test"
+            )
+            write_reverse1999_live_sequence_plan(
+                document,
+                Path(arguments[arguments.index("--output") + 1]),
+                self.story,
+            )
+
+        return prepare_sequence_for_prepared_story(
+            self.story,
+            output,
+            command=("publisher",),
+            popen_factory=lambda arguments, **_kwargs: FinishedPublisher(
+                arguments, publish
+            ),
+        )
+
+    def test_exported_combined_chapters_prepare_with_mixed_silent_punctuation(self):
+        documents = self._write_export_story()
+
+        plan = self._prepare_exported_story(documents, self.output)
+
+        self.assertEqual(
+            tuple(chapter.chapter for chapter in plan.chapters), ("315601", "315602")
+        )
+        self.assertEqual(plan.source_extract_sha256, sha256_file(self.bundle))
+        self.assertEqual(
+            tuple(plan.event_id_by_line_id),
+            (
+                "reverse1999:315601:1",
+                "reverse1999:315602:1",
+                "reverse1999:315602:5",
+            ),
+        )
+        for sequence in (2, 3, 4):
+            with self.subTest(sequence=sequence):
+                event = plan.events[f"reverse1999:315602:event:{sequence}"]
+                self.assertEqual(event.kind, "silent")
+                self.assertEqual(event.control, "automatic")
+                self.assertIsNone(event.line_id)
+                self.assertEqual(
+                    event.successors,
+                    (f"reverse1999:315602:event:{sequence + 1}",),
+                )
+
+    def test_exported_choice_or_unindexed_words_still_reject_combined_chapters(self):
+        for boundary in ("choice", "unindexed-speech"):
+            with self.subTest(boundary=boundary):
+                documents = self._write_export_story()
+                step = documents["json_story_step_315602"][2][1]
+                if boundary == "choice":
+                    step[10] = [
+                        [
+                            False,
+                            0,
+                            "",
+                            ["", "", ""],
+                            ["", "", "Continue"],
+                            0,
+                            0,
+                            "0",
+                            False,
+                            0,
+                            3,
+                        ]
+                    ]
+                else:
+                    step[2][15][2] = "Wait...?!"
+                output = self.root / f"{boundary}.json"
+
+                with self.assertRaisesRegex(PreparedSequenceError, "manual boundary"):
+                    self._prepare_exported_story(documents, output)
+
+                self.assertFalse(output.exists())
 
     def test_reuses_exact_checksum_bound_plan_without_starting_publisher(self):
         write_plan(self.output, self.story, self.bundle)
