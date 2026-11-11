@@ -4726,7 +4726,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._job = dialog.job_store.create_or_resume(
                 content, dialog.selected_story_ids()
             )
-            dialog._pack_result = Mock(spec=OfflinePackResult)
+            dialog._pack_result = Mock(
+                spec=OfflinePackResult, imported=Mock(pack=Mock(extensions={}))
+            )
             dialog._show_final_handoff(
                 original=1, approved=2, live_fallbacks=0, story_lines=3, omissions=0
             )

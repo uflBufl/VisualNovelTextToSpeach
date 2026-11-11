@@ -23,6 +23,7 @@ from vntts.cleanup import cleanup_on_exit
 from vntts.document_identity import sha256_file
 from vntts.live_sequence import load_live_sequence_plan
 from vntts.path_safety import read_regular_bytes
+from vntts.prepared_sequence_status import SequenceUnavailableReason
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.subprocess_utils import last_output_line, terminate_running_process
 
@@ -37,9 +38,21 @@ class Cancellation(Protocol):
 class PreparedSequenceError(RuntimeError):
     """The selected story chapters cannot safely use sequence-led playback."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: SequenceUnavailableReason = SequenceUnavailableReason.PREPARATION_FAILED,
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 class PreparedSequenceCancelled(PreparedSequenceError):
     """Sequence preparation was cancelled before publishing a replacement."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, reason=SequenceUnavailableReason.CANCELLED)
 
 
 def reverse1999_live_sequence_command() -> tuple[str, ...] | None:
@@ -87,7 +100,8 @@ def prepare_reverse1999_sequence(
     )
     if not publisher:
         raise PreparedSequenceError(
-            "Reverse: 1999 live-sequence publisher is not installed."
+            "Reverse: 1999 live-sequence publisher is not installed.",
+            reason=SequenceUnavailableReason.PUBLISHER_UNAVAILABLE,
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}-") as directory:
@@ -107,7 +121,8 @@ def prepare_reverse1999_sequence(
         _raise_if_cancelled(cancellation)
         if _checksum(source_bundle, "Story source bundle") != source_sha256:
             raise PreparedSequenceError(
-                "Story source bundle changed while sequence was prepared."
+                "Story source bundle changed while sequence was prepared.",
+                reason=SequenceUnavailableReason.INCOMPATIBLE_SOURCE,
             )
         _validated_plan(candidate, story_index, source_sha256, selected)
         _raise_if_cancelled(cancellation)
@@ -124,6 +139,7 @@ def prepare_sequence_for_prepared_story(
     popen_factory: PopenFactory = subprocess.Popen,
 ) -> LiveSequencePlan:
     """Prepare an exact Reverse: 1999 plan using only prepared-story inputs."""
+    _raise_if_cancelled(cancellation)
     story_index = _required_file(story_index, "Story index")
     try:
         story = load_story_index_snapshot(story_index, read_regular_bytes(story_index))
@@ -133,9 +149,15 @@ def prepare_sequence_for_prepared_story(
         ) from error
     source_bundle = story.metadata.get("source_bundle")
     if not isinstance(source_bundle, str) or not source_bundle.strip():
-        raise PreparedSequenceError("Prepared story has no installed source bundle.")
+        raise PreparedSequenceError(
+            "Prepared story has no installed source bundle.",
+            reason=SequenceUnavailableReason.SOURCE_UNAVAILABLE,
+        )
     if story.game != "Reverse: 1999":
-        raise PreparedSequenceError("Prepared story is not for Reverse: 1999.")
+        raise PreparedSequenceError(
+            "Prepared story is not for Reverse: 1999.",
+            reason=SequenceUnavailableReason.UNSUPPORTED_SOURCE,
+        )
     chapters = tuple(
         sorted({record.chapter for record in story.records if record.chapter})
     )
@@ -159,25 +181,35 @@ def _validated_plan(
     try:
         plan = load_live_sequence_plan(path, story_index)
     except (OSError, LiveSequencePlanError) as error:
-        raise PreparedSequenceError(f"Invalid live-sequence plan: {error}") from error
+        raise PreparedSequenceError(
+            f"Invalid live-sequence plan: {error}",
+            reason=SequenceUnavailableReason.INVALID_PLAN,
+        ) from error
     if plan.game_id != "reverse1999":
-        raise PreparedSequenceError("Live-sequence plan is not for Reverse: 1999.")
+        raise PreparedSequenceError(
+            "Live-sequence plan is not for Reverse: 1999.",
+            reason=SequenceUnavailableReason.INVALID_PLAN,
+        )
     if plan.source_extract_sha256 != source_sha256:
         raise PreparedSequenceError(
-            "Live-sequence plan belongs to different story source bytes."
+            "Live-sequence plan belongs to different story source bytes.",
+            reason=SequenceUnavailableReason.INCOMPATIBLE_SOURCE,
         )
     if tuple(chapter.chapter for chapter in plan.chapters) != selected:
         raise PreparedSequenceError(
-            "Live-sequence plan does not cover exactly the selected chapters."
+            "Live-sequence plan does not cover exactly the selected chapters.",
+            reason=SequenceUnavailableReason.INCOMPLETE_COVERAGE,
         )
     for event in plan.events.values():
         if event.control == "manual":
             raise PreparedSequenceError(
-                f"Live-sequence plan has a manual boundary at {event.event_id!r}."
+                f"Live-sequence plan has a manual boundary at {event.event_id!r}.",
+                reason=SequenceUnavailableReason.MANUAL_BOUNDARY,
             )
         if event.control != "terminal" and len(event.successors) != 1:
             raise PreparedSequenceError(
-                f"Live-sequence plan has no unique successor at {event.event_id!r}."
+                f"Live-sequence plan has no unique successor at {event.event_id!r}.",
+                reason=SequenceUnavailableReason.NONLINEAR,
             )
     return plan
 
@@ -194,7 +226,8 @@ def _run(
         )
     except OSError as error:
         raise PreparedSequenceError(
-            f"Unable to start live-sequence publisher: {error}"
+            f"Unable to start live-sequence publisher: {error}",
+            reason=SequenceUnavailableReason.PUBLISHER_UNAVAILABLE,
         ) from error
     with cleanup_on_exit(
         lambda: terminate_running_process(process),
@@ -221,7 +254,10 @@ def _run(
 def _required_file(value: PathInput, label: str) -> Path:
     path = Path(value).expanduser().resolve()
     if not path.is_file():
-        raise PreparedSequenceError(f"{label} is not a regular file: {path}")
+        raise PreparedSequenceError(
+            f"{label} is not a regular file: {path}",
+            reason=SequenceUnavailableReason.SOURCE_UNAVAILABLE,
+        )
     return path
 
 
@@ -238,7 +274,8 @@ def _checksum(path: Path, label: str) -> str:
         return sha256_file(path)
     except OSError as error:
         raise PreparedSequenceError(
-            f"Unable to checksum {label.casefold()}: {error}"
+            f"Unable to checksum {label.casefold()}: {error}",
+            reason=SequenceUnavailableReason.SOURCE_UNAVAILABLE,
         ) from error
 
 

@@ -146,6 +146,7 @@ from vntts.pregeneration_setup import GameContent, PregenerationJob
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.pregeneration_voices import VoicePlan, resolve_pregeneration_settings
 from vntts.prepared_playback import PreparedPlaybackStore
+from vntts.prepared_sequence_status import SequenceUnavailableReason
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -1997,6 +1998,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             PreparedPlaybackStore() if uses_saved_settings else None
         )
         self._prepared_settings: AppSettings | None = None
+        self._prepared_sequence_reason: SequenceUnavailableReason | None = None
         self._prepared_base_settings: AppSettings | None = None
         runtime_settings = self._runtime_settings()
         self.profile_store = profile_store or GameProfileStore.load()
@@ -2154,6 +2156,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._controller_busy = False
         self._start_live_after_initial_start = False
         self._initial_start_settings: AppSettings | None = None
+        self._initial_start_sequence_reason: SequenceUnavailableReason | None = None
         self._shutting_down = False
         self._quit_requested = False
         self._reported_live = False
@@ -2741,9 +2744,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             else None
         )
 
-    def _retain_preparation_reading(self, settings: AppSettings) -> None:
+    def _retain_preparation_reading(
+        self,
+        settings: AppSettings,
+        *,
+        sequence_reason: SequenceUnavailableReason | None = None,
+    ) -> None:
         self._prepared_base_settings = self.settings
         self._prepared_settings = settings
+        self._prepared_sequence_reason = (
+            sequence_reason if settings.live_sequence_plan is None else None
+        )
         candidate = self._preparation_runtime_settings()
         self._progress_preparation_active = bool(
             candidate is not None
@@ -2752,6 +2763,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
         )
+
+    def _preparation_sequence_reason(self) -> SequenceUnavailableReason | None:
+        getter = getattr(
+            self.pregeneration_dialog, "runtime_sequence_unavailable_reason", None
+        )
+        reason = getter() if callable(getter) else None
+        return reason if isinstance(reason, SequenceUnavailableReason) else None
 
     def _bind_preparation_callbacks(self) -> None:
         settings = self._progressive_runtime_settings()
@@ -2765,6 +2783,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or backend is None
         ):
             return
+        setter = getattr(self.controller, "set_sequence_unavailable_reason", None)
+        if callable(setter):
+            setter(self._prepared_sequence_reason)
         source = self._reading_pack_identity(settings)
         backend.progress_wait_request = partial(
             self.signals.preparation_line.emit, source, True
@@ -2951,6 +2972,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.show_stories()
             return
         self.voice_auditions.suspend()
+        sequence_reason = None
+        if runtime_settings is not None:
+            retained = self._prepared_settings
+            sequence_reason = (
+                self._prepared_sequence_reason
+                if not require_preparation
+                and retained is not None
+                and self._reading_pack_identity(retained)
+                == self._reading_pack_identity(runtime_settings)
+                else self._preparation_sequence_reason()
+            )
         self._show_preparation_reading(runtime_settings)
         if not self.settings.onboarding_completed:
             self.run_onboarding()
@@ -2966,7 +2998,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             generation = self._begin_controller_lifecycle()
             applied = self.session_owner.attach(generation, runtime_settings)
             if applied is not False:
-                self._retain_preparation_reading(runtime_settings)
+                self._retain_preparation_reading(
+                    runtime_settings, sequence_reason=sequence_reason
+                )
             self._finish_controller_lifecycle()
             if applied is False:
                 self.show_error("Unable to connect in-progress prepared audio")
@@ -2984,6 +3018,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         generation = self._begin_controller_lifecycle()
         self._start_live_after_initial_start = bool(start_live)
         self._initial_start_settings = runtime_settings
+        self._initial_start_sequence_reason = sequence_reason
         self.set_status(
             "Preparing reading; it will start automatically when ready."
             if start_live
@@ -3022,8 +3057,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._start_live_after_initial_start = False
         settings = self._initial_start_settings
         self._initial_start_settings = None
+        sequence_reason = self._initial_start_sequence_reason
+        self._initial_start_sequence_reason = None
         if ready and error is None and settings is not None:
-            self._retain_preparation_reading(settings)
+            self._retain_preparation_reading(settings, sequence_reason=sequence_reason)
         self._finish_controller_lifecycle()
         if error is not None:
             self.last_controller_error = f"Unable to initialize controller: {error}"

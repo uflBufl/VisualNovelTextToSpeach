@@ -118,8 +118,15 @@ from vntts.pregeneration_voices import (
     resolve_pregeneration_settings,
 )
 from vntts.prepared_sequence import (
+    PreparedSequenceCancelled,
     PreparedSequenceError,
     prepare_sequence_for_prepared_story,
+)
+from vntts.prepared_sequence_status import (
+    PreparedSequenceResult,
+    SequenceUnavailableReason,
+    reason_from_extension,
+    sequence_unavailable_notice,
 )
 from vntts.preview_content_advisor import PreviewContentAdvisor
 from vntts.qt_audio import QtPcmPlayer
@@ -179,7 +186,7 @@ class _SemanticVoicePlan:
 
 def _prepare_runtime_sequence(
     generation_input: PregenerationInput, cancellation: Event
-) -> Path | None:
+) -> PreparedSequenceResult:
     """Worker-safe optional playback setup; never makes preparation fail."""
     try:
         plan = prepare_sequence_for_prepared_story(
@@ -187,9 +194,12 @@ def _prepare_runtime_sequence(
             generation_input.directory / "live-sequence.json",
             cancellation=cancellation,
         )
-    except PreparedSequenceError:
-        return None
-    return Path(plan.path)
+    except PreparedSequenceCancelled:
+        return PreparedSequenceResult(reason=SequenceUnavailableReason.CANCELLED)
+    except PreparedSequenceError as error:
+        logging.getLogger(__name__).info("Story order is unavailable: %s", error)
+        return PreparedSequenceResult(reason=error.reason)
+    return PreparedSequenceResult(plan=Path(plan.path))
 
 
 class _StoryTree(QTreeWidget):
@@ -509,7 +519,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_voice_job: str | None = None
         self._generation_input: PregenerationInput | None = None
         self._prepared_original_audio_lines = 0
-        self._prepared_sequence_plan: Path | None = None
+        self._prepared_sequence_result: PreparedSequenceResult | None = None
         self._generation_result: OfflineGenerationResult | None = None
         self._recovery_result: OfflineRecoveryResult | None = None
         self._pack_result: OfflinePackResult | None = None
@@ -3180,19 +3190,17 @@ class OfflineAudioPreparationDialog(QDialog):
         manifest = runtime_progress_manifest_path(generation_input)
         if not manifest.is_file():
             return None
+        sequence = self._sequence_handoff_result()
         return self.settings.updated(
             game_pack=None,
             story_index=str(generation_input.story_index),
             voice_manifest=str(generation_input.voice_manifest),
             live_sequence_plan=(
-                str(self._prepared_sequence_plan)
-                if self._prepared_sequence_plan is not None
-                else None
+                str(sequence.plan) if sequence.plan is not None else None
             ),
             live_sequence_mode=(
                 "audio-auto"
-                if self._prepared_sequence_plan is not None
-                and self.settings.auto_advance_enabled
+                if sequence.plan is not None and self.settings.auto_advance_enabled
                 else "off"
             ),
             live_speaker_corpus=None,
@@ -3201,6 +3209,20 @@ class OfflineAudioPreparationDialog(QDialog):
             speech_rate_percent=100,
             force_live_narrator=False,
         )
+
+    def _sequence_handoff_result(self) -> PreparedSequenceResult:
+        if self._prepared_sequence_result is not None:
+            return self._prepared_sequence_result
+        return PreparedSequenceResult(
+            reason=(
+                SequenceUnavailableReason.NOT_READY
+                if self.sequence_runner.active
+                else None
+            )
+        )
+
+    def runtime_sequence_unavailable_reason(self) -> SequenceUnavailableReason | None:
+        return self._sequence_handoff_result().reason
 
     def prioritize_line(self, line_id: str, text_sha256: str) -> bool:
         return self.recovery.prioritize_line(line_id, text_sha256)
@@ -3637,6 +3659,15 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
 
+    def _saved_sequence_notice(self) -> str:
+        if self._pack_result is None:
+            return ""
+        return sequence_unavailable_notice(
+            reason_from_extension(
+                self._pack_result.imported.pack.extensions.get("vntts.self-service")
+            )
+        )
+
     def _show_final_handoff(
         self,
         *,
@@ -3675,6 +3706,9 @@ class OfflineAudioPreparationDialog(QDialog):
             "Close leaves the current audio setup unchanged; the saved pack can be "
             "activated by reopening this preparation later.",
         )
+        notice = self._saved_sequence_notice()
+        if notice:
+            self._set_phase_detail(self.resume_status.text() + " " + notice)
         self.progress_bar.hide()
         self._render_completed_story_readiness(live=live_fallbacks)
         coverage_rows = [
@@ -3707,10 +3741,12 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def defer_activation(self, reason: str) -> None:
         self.progress_phase.setText("Audio saved; not active")
+        notice = self._saved_sequence_notice()
         self._set_phase_detail(
             reason + " The saved pack stays inactive until you click Use prepared "
             "audio. This replaces "
             "live voice overrides for these story roles. Playback will not start automatically."
+            + (" " + notice if notice else "")
         )
         self.continue_button.show()
         self.continue_button.setEnabled(True)
@@ -5394,7 +5430,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.preparing_inputs = True
         self._generation_input = None
         self.failures_panel.set_input(None)
-        self._prepared_sequence_plan = None
+        self.sequence_runner.cancel()
+        self._prepared_sequence_result = None
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel preparation")
         self._show_waiting_phase(
@@ -5592,12 +5629,23 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._close_after_voice_cancel and not self.has_pending_work():
             self._finish_preparation_ui()
             return
-        if error is not None or not isinstance(result, Path):
-            return
         generation_input = self._generation_input
-        if generation_input is None or result.parent != generation_input.directory:
+        if generation_input is None:
             return
-        self._prepared_sequence_plan = result
+        if error is None and not isinstance(result, PreparedSequenceResult):
+            error = TypeError("Story-order preparation returned an invalid result")
+        if error is not None:
+            logging.getLogger(__name__).error(
+                "Unable to prepare story order",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            result = PreparedSequenceResult(
+                reason=SequenceUnavailableReason.PREPARATION_FAILED
+            )
+        assert isinstance(result, PreparedSequenceResult)
+        if result.plan is not None and result.plan.parent != generation_input.directory:
+            return
+        self._prepared_sequence_result = result
 
     def _generation_finished(self, result: object, error: Exception | None) -> None:
         self._stop_generation_progress()
@@ -5710,6 +5758,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._start_publication(result.generation)
 
     def _start_publication(self, generation_result: OfflineGenerationResult) -> None:
+        sequence = self._sequence_handoff_result()
         self.publishing_pack = True
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel final save")
@@ -5726,7 +5775,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self._generation_input,
             generation_result,
             self.voice_cancel_event,
-            self._prepared_sequence_plan,
+            sequence.plan,
+            sequence.reason,
         )
 
     def _publication_finished(self, result: object, error: Exception | None) -> None:
@@ -5766,9 +5816,10 @@ class OfflineAudioPreparationDialog(QDialog):
             omissions=result.omissions,
         )
         if status_error is not None:
+            notice = self._saved_sequence_notice()
             self._set_phase_detail(
                 "Offline audio was saved, but its story status could not be updated: "
-                f"{status_error}"
+                f"{status_error}" + (" " + notice if notice else "")
             )
 
     def _import_finished(self, content: object, error: Exception | None) -> None:

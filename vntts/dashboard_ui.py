@@ -565,7 +565,7 @@ class ControlDashboard(QMainWindow):
         self.story_context.hide()
         self.sequence_notice = QLabel()
         self.sequence_notice.setWordWrap(True)
-        self.sequence_notice.setAccessibleName("Story position recovery")
+        self.sequence_notice.setAccessibleName("Reading notice")
         self.sequence_notice.hide()
         card_layout.addWidget(self.sequence_notice)
         self.story_actions = QWidget()
@@ -983,7 +983,7 @@ class ControlDashboard(QMainWindow):
         )
         self.capture_target.setText(f"Capture: {capture}")
         sequence = {
-            "off": "Disabled",
+            "off": "Matched from the screen",
             "shadow": "Shadow diagnostics",
             "audio-manual": "Canonical audio; manual advance",
             "audio-auto": "Canonical audio; guarded automatic advance",
@@ -1009,7 +1009,7 @@ class ControlDashboard(QMainWindow):
         )
         self.configuration.setText(
             f"Prepared recordings: {generated_audio}\n"
-            f"Sequence: {sequence}\n"
+            f"Story order: {sequence}\n"
             f"OCR: {settings.ocr_language}"
         )
 
@@ -1024,10 +1024,11 @@ class ControlDashboard(QMainWindow):
             self._ready and self._sequence_controls_available
         )
         if not sequence_audio:
-            self.sequence_notice.hide()
+            self.sequence_notice.setText(status.guidance if status.reason else "")
+            self.sequence_notice.setVisible(bool(status.reason and status.guidance))
+            self._sequence_expected_candidate_count = 0
             self.sequence_expected_button.setEnabled(False)
             self.sequence_expected_button.hide()
-            self.sequence_notice.clear()
             self.story_title.setText("No story position yet")
             self.sequence_position.setText("Not located")
             self.story_context.hide()
@@ -1075,7 +1076,9 @@ class ControlDashboard(QMainWindow):
                 else ""
             )
         )
-        self.sequence_notice.setVisible(recovery)
+        self.sequence_notice.setVisible(
+            recovery or bool(state == "unavailable" and reason and guidance)
+        )
         candidate_count = status.expected_candidate_count
         self._sequence_expected_candidate_count = candidate_count
         self.sequence_expected_button.setVisible(
@@ -1364,7 +1367,7 @@ class CompactController(QWidget):
         )
         self.sequence_recovery = QLabel()
         self.sequence_recovery.setWordWrap(True)
-        self.sequence_recovery.setAccessibleName("Story position recovery")
+        self.sequence_recovery.setAccessibleName("Reading notice")
         self.sequence_recovery.hide()
         self.speaker_label = QLabel("Last speaker:")
         self.speaker_label.setContentsMargins(0, 4, 0, 0)
@@ -1464,16 +1467,22 @@ class CompactController(QWidget):
         self.setTabOrder(self.action_reason, self.speaker)
 
     def set_sequence_status(self, status: LiveSequenceStatus) -> None:
-        manual = is_live_sequence_audio_mode(status.mode)
+        manual = (
+            is_live_sequence_audio_mode(status.mode) and status.state != "unavailable"
+        )
         candidate_count = status.expected_candidate_count
         recovery = manual and status.recovery_required
         self.sequence_recovery.setText(
-            "Story position needs attention. Choose an expected line here or "
+            status.guidance
+            if not manual and status.reason
+            else "Story position needs attention. Choose an expected line here or "
             "open Full controls to resync."
             if candidate_count > 0
             else "Story position needs attention. Open Full controls to resync."
         )
-        self.sequence_recovery.setVisible(recovery)
+        self.sequence_recovery.setVisible(
+            recovery or bool(not manual and status.reason and status.guidance)
+        )
         self._sequence_expected_candidate_count = candidate_count
         self.sequence_expected_button.setVisible(manual and candidate_count > 0)
         self.sequence_expected_button.setEnabled(

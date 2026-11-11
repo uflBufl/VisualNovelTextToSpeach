@@ -435,36 +435,14 @@ recovery separate from product defects.
       Do not change budgets/recognition or add permanent metrics without a proven
       boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
       `.codex/investigations/text-detector-timeout-20261111/results.md`.
-- [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
-      Preparation and pack staging discard errors as None, so genuinely
-      unsupported plans are shown only as Disabled. Proposed implementation,
-      awaiting approval:
-      - Return a typed optional plan/reason result from preparation and sequence
-        staging instead of swallowing errors. Keep cancellation distinct and
-        use trusted explanations rather than raw exceptions or machine paths.
-      - Preserve the effective reason in the existing self-service pack
-        extension, including its outcome in identity before cache reuse.
-        Determine staging compatibility from the same input snapshot used for
-        writing; do not add repeated audio/pack scans to status rendering.
-      - Show the actual OCR reading method and reason in the existing Reading
-        notice and preparation handoff. Restore the notice with the selected
-        pack; no new preference, recovery action or chapter-routing mode.
-      - Preserve nonblocking optional preparation. An early Read/save snapshots
-        "not finished at handoff" rather than a failure or permanently pending
-        task; late results must not misdescribe an already published pack.
-      - Verify worker/staging reasons, cache reuse, activation/restart/profile
-        changes, pending/cancelled/late results and visibility while mode is off.
-        Legacy or user-disabled sequences must not acquire a fabricated error.
-      Preserve working OCR audio/advance and real manual boundaries; unknown
-      events remain manual. Evidence and code map:
-      `.codex/investigations/sequence-unavailability-20261111/results.md`.
-
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from the agreed visible dialogue to the actual terminal scene, with
       prepared voices and genuine background generation. Verify full low-confidence
       source dialogue after playback, one automatic transition and no replay.
       Use a newly prepared sequence plan to qualify mixed punctuation such as
       `...?!` and `...!`: silent handling, one transition and successor playback.
+      Confirm the displayed story-order method matches the activated pack and
+      stays correct when resuming an early Reading session.
       Preserve source/voice identity, recording readiness and3600s cap. Keep
       manual recovery and control
       episodes separate; unavailable failure/scene cases remain pending.

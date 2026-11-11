@@ -1061,7 +1061,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(dashboard.sequence_group.isHidden())
         self.assertIn(
-            "Sequence: Canonical audio; guarded automatic advance",
+            "Story order: Canonical audio; guarded automatic advance",
             dashboard.configuration.text(),
         )
         dashboard.deleteLater()
@@ -1132,6 +1132,40 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.story_context.isHidden())
         self.assertTrue(dashboard.story_actions.isHidden())
         self.assertFalse(dashboard.sequence_expected_button.isEnabled())
+        dashboard.deleteLater()
+
+    def test_sequence_unavailable_notice_remains_visible_with_sequence_off(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
+        dashboard.show()
+        dashboard.set_ready(True)
+        notice = "Reading matches lines from the screen. Sequence is not ready."
+        dashboard.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "locked", expected_candidate_count=1)
+        )
+        dashboard.set_sequence_status(
+            LiveSequenceStatus("off", "off", reason="not-ready", guidance=notice)
+        )
+        dashboard.set_ready(True)
+        self.assertTrue(dashboard.sequence_notice.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.sequence_notice.text(), notice)
+        self.assertTrue(dashboard.story_actions.isHidden())
+        self.assertTrue(dashboard.sequence_group.isHidden())
+        self.assertTrue(dashboard.sequence_expected_button.isHidden())
+        self.assertFalse(dashboard.sequence_expected_button.isEnabled())
+        self.assertFalse(dashboard.sequence_resync_button.isEnabled())
+        dashboard.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-auto", "unavailable", reason="not-ready", guidance=notice
+            )
+        )
+        self.assertTrue(dashboard.sequence_notice.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.story_actions.isHidden())
+        self.assertFalse(dashboard.sequence_resync_button.isEnabled())
+        dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
+        self.assertTrue(dashboard.sequence_notice.isHidden())
+        self.assertEqual(dashboard.sequence_notice.text(), "")
+        dashboard.close()
         dashboard.deleteLater()
 
     def test_story_position_recovery_actions_do_not_require_technical_details(self):
@@ -1265,6 +1299,35 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("Full controls", controller.action_reason.toPlainText())
         controller.close()
         controller.deleteLater()
+        controller.deleteLater()
+
+    def test_compact_sequence_unavailable_reason_does_not_offer_recovery(self):
+        controller = CompactController(platform="win32")
+        controller.set_ready(True)
+        notice = "Reading matches lines from the screen. Sequence is not ready."
+        controller.set_sequence_status(
+            LiveSequenceStatus("off", "off", reason="not-ready", guidance=notice)
+        )
+        controller.set_ready(True)
+        self.assertFalse(controller.sequence_recovery.isHidden())
+        self.assertEqual(controller.sequence_recovery.text(), notice)
+        self.assertTrue(controller.sequence_expected_button.isHidden())
+        self.assertFalse(controller.sequence_expected_button.isEnabled())
+        controller.set_sequence_status(
+            LiveSequenceStatus(
+                "audio-auto",
+                "unavailable",
+                reason="not-ready",
+                guidance=notice,
+                expected_candidate_count=1,
+            )
+        )
+        self.assertEqual(controller.sequence_recovery.text(), notice)
+        self.assertFalse(controller.sequence_recovery.isHidden())
+        self.assertTrue(controller.sequence_expected_button.isHidden())
+        self.assertFalse(controller.sequence_expected_button.isEnabled())
+        controller.set_sequence_status(LiveSequenceStatus("off", "off"))
+        self.assertTrue(controller.sequence_recovery.isHidden())
         controller.deleteLater()
 
     def test_compact_story_recovery_points_to_full_controls(self):

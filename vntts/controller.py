@@ -113,6 +113,11 @@ from vntts.playback import (
     outcome_for_prepared,
     prepare_silent_playback,
 )
+from vntts.prepared_sequence_status import (
+    SequenceUnavailableReason,
+    load_sequence_unavailable_reason,
+    sequence_unavailable_notice,
+)
 from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.reading_diagnostics import record_diagnostic_event, retain_ocr_resolution
 from vntts.runtime_config import (
@@ -643,6 +648,8 @@ class AppController:
         self.live_reader_session_id: str | None = None
         self.pipeline_event_handler = self._record_pipeline_event
         self.live_sequence_plan_factory = live_sequence_plan_factory
+        self.sequence_unavailable_reason: SequenceUnavailableReason | None = None
+        self._sequence_unavailable_context: tuple[object, ...] | None = None
         self.sequence_prefetch_lock = Lock()
         self.sequence_prefetch_keys: set[tuple[object, ...]] = set()
         self.sequence_event_terminal_routes: dict[SequenceEventLease, str] = {}
@@ -1794,6 +1801,20 @@ class AppController:
     def _load_live_sequence_plan_locked(self) -> bool:
         self.live_sequence_plan = None
         self.story_cursor = None
+        reason_context = (
+            self.settings.active_profile_id,
+            self.settings.game_pack,
+            self.settings.story_index,
+            self.settings.live_sequence_plan,
+            self.settings.generated_audio_manifest,
+        )
+        if reason_context != self._sequence_unavailable_context:
+            self.sequence_unavailable_reason = (
+                load_sequence_unavailable_reason(self.settings.game_pack)
+                if not self.settings.live_sequence_plan
+                else None
+            )
+            self._sequence_unavailable_context = reason_context
         self.explicit_sequence_anchor_pending = False
         self.sequence_prefix_confirmation_event_id = None
         self.sequence_prefix_dispatch_lease = None
@@ -1863,6 +1884,15 @@ class AppController:
         with self.story_cursor_lock:
             return self._get_live_sequence_status_locked()
 
+    def set_sequence_unavailable_reason(
+        self, reason: SequenceUnavailableReason | None
+    ) -> None:
+        with self.story_cursor_lock:
+            self.sequence_unavailable_reason = (
+                reason if not self.settings.live_sequence_plan else None
+            )
+            self._publish_live_sequence_status()
+
     def _sequence_ocr_activity(self, state: StoryCursorState) -> str:
         recognized_frames = 0
         live_reader = getattr(self, "live_reader", None)
@@ -1890,11 +1920,16 @@ class AppController:
         cursor = self.story_cursor
         mode = self.settings.live_sequence_mode
         if cursor is None:
+            reason = self.sequence_unavailable_reason
+            notice = sequence_unavailable_notice(reason)
             return LiveSequenceStatus(
                 mode,
                 "off" if mode == "off" else "unavailable",
+                reason=reason.value if reason is not None else None,
                 guidance=(
-                    "Sequence-first routing is off."
+                    notice
+                    if notice
+                    else "Sequence-first routing is off."
                     if mode == "off"
                     else "Configure a valid story index and live sequence plan."
                 ),

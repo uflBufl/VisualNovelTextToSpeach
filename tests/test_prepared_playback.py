@@ -6,18 +6,70 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.pregeneration_fixtures import fixture
 from tests.test_pregeneration_activation import published_pack
 from vntts.pregeneration_activation import (
     OfflinePackActivationError,
     OfflinePackActivator,
 )
+from vntts.pregeneration_pack import OfflinePackPublisher
 from vntts.prepared_playback import PreparedPlaybackStore
-from vntts.profiles import GameProfile
+from vntts.prepared_sequence_status import (
+    SequenceUnavailableReason,
+    load_sequence_unavailable_reason,
+)
+from vntts.profiles import GameProfile, GameProfileStore
 from vntts.settings import AppSettings, load_app_settings
 from vntts.versioned_json import write_versioned_json
 
 
 class PreparedPlaybackTest(unittest.TestCase):
+    def test_sequence_reason_survives_activation_and_restore_only_for_selected_profile(
+        self,
+    ):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            job, inputs, generated, _items = fixture(root / "generated")
+            reason = SequenceUnavailableReason.MANUAL_BOUNDARY
+            pack = OfflinePackPublisher().publish(
+                job, inputs, generated, sequence_unavailable_reason=reason
+            )
+            preferences = AppSettings(
+                active_profile_id="game-a", output_volume_percent=37
+            )
+            settings_path = preferences.save(root / "settings.json")
+            profile = GameProfile.from_settings(
+                "Game", preferences, profile_id=preferences.active_profile_id
+            )
+            profiles_path = GameProfileStore(root / "profiles.json", (profile,)).save()
+            original_settings = settings_path.read_bytes()
+            original_profiles = profiles_path.read_bytes()
+            store = PreparedPlaybackStore(root / "playback.json")
+            controller = Mock(is_ready=False)
+            controller.apply_settings.return_value = True
+            activated = OfflinePackActivator(save_state=store.save).activate(
+                preferences, pack, controller
+            )
+            self.assertIsNone(activated.settings.live_sequence_plan)
+            self.assertEqual(activated.settings.live_sequence_mode, "off")
+            self.assertEqual(
+                load_sequence_unavailable_reason(activated.settings.game_pack), reason
+            )
+            restarted = PreparedPlaybackStore(store.path).restore(
+                load_app_settings(settings_path, environment={})
+            )
+            self.assertEqual(restarted.game_pack, str(pack.manifest))
+            self.assertEqual(
+                load_sequence_unavailable_reason(restarted.game_pack), reason
+            )
+            other_profile = preferences.updated(active_profile_id="game-b")
+            unrelated = PreparedPlaybackStore(store.path).restore(other_profile)
+            self.assertIs(unrelated, other_profile)
+            self.assertIsNone(unrelated.game_pack)
+            self.assertIsNone(load_sequence_unavailable_reason(unrelated.game_pack))
+            self.assertEqual(settings_path.read_bytes(), original_settings)
+            self.assertEqual(profiles_path.read_bytes(), original_profiles)
+
     def test_activation_and_restart_preserve_preferences_and_profile(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

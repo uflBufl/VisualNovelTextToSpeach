@@ -83,6 +83,7 @@ from vntts.pregeneration_setup import ContentDiscovery, GameContent  # noqa: E40
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import resolve_pregeneration_settings  # noqa: E402
 from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
+from vntts.prepared_sequence_status import SequenceUnavailableReason  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.rust_audio import AudioRuntimeUnavailable  # noqa: E402
 from vntts.settings import (  # noqa: E402
@@ -2302,6 +2303,78 @@ class TrayApplicationTest(unittest.TestCase):
                     )
                     tray.pregeneration_dialog = None
                     tray.shutdown()
+
+    def test_progressive_handoff_keeps_reason_captured_before_slow_initialization(self):
+        with TemporaryDirectory() as directory:
+            tray, controller, preparation, complete = (
+                self._progressive_pack_reading_tray(Path(directory), selected=False)
+            )
+            pending = complete.updated(
+                live_sequence_plan=None, live_sequence_mode="off"
+            )
+            preparation.runtime_playback_settings.return_value = pending
+            preparation.runtime_sequence_unavailable_reason.return_value = (
+                SequenceUnavailableReason.NOT_READY
+            )
+
+            def apply_settings(requested, **_kwargs):
+                controller.settings = requested
+                return True
+
+            controller.apply_settings.side_effect = apply_settings
+            controller.shutdown.side_effect = lambda: setattr(
+                controller, "is_ready", False
+            )
+            controller.start.side_effect = lambda: (
+                setattr(controller, "is_ready", True) or True
+            )
+            pool = ManualThreadPool()
+            tray.initial_start_runner.thread_pool = pool
+            with patch.object(tray, "schedule_hotkeys"):
+                tray.prepare_reading(require_preparation=True)
+                self.assertTrue(pool.tasks)
+                self.assertEqual(
+                    tray._initial_start_sequence_reason,
+                    SequenceUnavailableReason.NOT_READY,
+                )
+                preparation.runtime_playback_settings.return_value = complete
+                preparation.runtime_sequence_unavailable_reason.return_value = None
+                preparation.has_pending_work.return_value = False
+                pool.run_next()
+                self.application.processEvents()
+            self.assertEqual(controller.settings.live_sequence_mode, "off")
+            self.assertIsNone(controller.settings.live_sequence_plan)
+            self.assertEqual(
+                tray._prepared_sequence_reason, SequenceUnavailableReason.NOT_READY
+            )
+            tray._bind_preparation_callbacks()
+            tray._apply_controller_action_state()
+            controller.set_sequence_unavailable_reason.assert_called_with(
+                SequenceUnavailableReason.NOT_READY
+            )
+            self.assertIsNone(tray._initial_start_sequence_reason)
+            with patch.object(tray, "schedule_hotkeys"):
+                tray.prepare_reading()
+            self.assertEqual(
+                tray._prepared_sequence_reason, SequenceUnavailableReason.NOT_READY
+            )
+            controller.set_sequence_unavailable_reason.assert_called_with(
+                SequenceUnavailableReason.NOT_READY
+            )
+            self.assertIsNone(controller.settings.live_sequence_plan)
+            self.assertEqual(pool.tasks, [])
+
+            other_audio = Path(directory) / "other-audio.json"
+            other_audio.touch()
+            other = pending.updated(generated_audio_manifest=str(other_audio))
+            preparation.runtime_playback_settings.return_value = other
+            controller.settings = other
+            tray._retain_preparation_reading(other)
+            tray._bind_preparation_callbacks()
+            controller.set_sequence_unavailable_reason.assert_called_with(None)
+            self.assertIsNone(tray._prepared_sequence_reason)
+            tray.pregeneration_dialog = None
+            tray.shutdown()
 
     def test_progressive_handoff_restarts_loaded_voice_manifest(self):
         with TemporaryDirectory() as directory:

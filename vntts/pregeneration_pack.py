@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -101,6 +100,10 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
     load_verified_story_records,
     story_game_id,
+)
+from vntts.prepared_sequence_status import (
+    SequenceUnavailableReason,
+    reason_from_extension,
 )
 from vntts.recording_index import RecordingIndex
 from vntts.source_audio_semantics import (
@@ -774,6 +777,7 @@ class OfflinePackPublisher:
         generation_result: OfflineGenerationResult,
         cancel_event: Cancellation | None = None,
         live_sequence_plan: Path | None = None,
+        sequence_unavailable_reason: SequenceUnavailableReason | None = None,
     ) -> OfflinePackResult:
         _validate_inputs(job, generation_input, generation_result, cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -788,14 +792,21 @@ class OfflinePackPublisher:
             if base is None
             else base.pack.extensions["vntts.self-service"]["identity"]
         )
-        sequence_sha256, sequence_payload = _optional_sequence_snapshot(
-            live_sequence_plan
+        sequence_document, sequence_reason = _prepare_live_sequence(
+            base,
+            live_sequence_plan,
+            generation_input.story_index,
+            source_story or story,
+            game_id=game_id,
+            unavailable_reason=sequence_unavailable_reason,
+            current_story_sha256=generation_input.story_index_sha256,
         )
         identity = _identity(
             generation_input,
             state_sha256,
             base_identity,
-            sequence_sha256,
+            sequence_document,
+            sequence_reason,
             game_id=game_id,
             game_version=game_version,
         )
@@ -883,15 +894,8 @@ class OfflinePackPublisher:
                         cancel_event=cancel_event,
                     )
                 _verify_prepared_inputs(generation_input)
-                staged_sequence = _stage_live_sequence(
-                    base,
-                    live_sequence_plan if sequence_payload is not None else None,
-                    generation_input.story_index,
-                    story_copy,
-                    published_story,
-                    sequence_copy,
-                    current_payload=sequence_payload,
-                    game_id=game_id,
+                staged_sequence = _write_prepared_sequence(
+                    sequence_document, story_copy, sequence_copy, game_id=game_id
                 )
                 _record_publication_phase(
                     "story-and-voices", phase_started, cpu_started
@@ -975,6 +979,10 @@ class OfflinePackPublisher:
                         "base_pack_identity": base_identity,
                     },
                 }
+                if sequence_reason is not None:
+                    cast(JsonObject, pack_metadata["vntts.self-service"])[
+                        "sequence_unavailable_reason"
+                    ] = sequence_reason.value
                 if semantic_copy is not None:
                     if semantic_document is None:
                         raise OfflinePackError(
@@ -1034,6 +1042,7 @@ class OfflinePackPublisher:
             BulkGenerationError,
             GamePackError,
             GeneratedAudioManifestError,
+            LiveSequencePlanError,
             OSError,
             SourceAudioSemanticEvidenceError,
             StoryIndexError,
@@ -1290,13 +1299,14 @@ def _identity(
     generation_input: PregenerationInput,
     state_sha256: str,
     base_pack_identity: str | None = None,
-    live_sequence_sha256: str | None = None,
+    sequence_document: JsonObject | None = None,
+    sequence_reason: SequenceUnavailableReason | None = None,
     *,
     game_id: str,
     game_version: str,
 ) -> str:
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "game_id": game_id,
         "game_version": game_version,
         "generation_input_identity": generation_input.identity,
@@ -1308,83 +1318,111 @@ def _identity(
     }
     if base_pack_identity is not None:
         payload["base_pack_identity"] = base_pack_identity
-    if live_sequence_sha256 is not None:
-        payload["live_sequence_sha256"] = live_sequence_sha256
+    if sequence_document is not None:
+        payload["live_sequence_sha256"] = canonical_document_sha256(sequence_document)
+    if sequence_reason is not None:
+        payload["sequence_unavailable_reason"] = sequence_reason.value
     return canonical_document_sha256(payload)
 
 
-def _optional_sequence_snapshot(path: Path | None) -> tuple[str | None, bytes | None]:
-    if path is None or not path.is_file():
-        return None, None
-    try:
-        payload = read_regular_bytes(path)
-    except OSError:
-        return None, None
-    return hashlib.sha256(payload).hexdigest(), payload
-
-
-def _stage_live_sequence(
+def _prepare_live_sequence(
     base: GamePackImport | None,
     current_path: Path | None,
     current_story: Path,
-    staged_story: Path,
     published_story: StoryIndexDocument,
+    *,
+    game_id: str | None = None,
+    unavailable_reason: SequenceUnavailableReason | None = None,
+    current_story_sha256: str | None = None,
+) -> tuple[JsonObject | None, SequenceUnavailableReason | None]:
+    """Resolve optional compatibility once, before the publication cache lookup."""
+    if current_path is None:
+        return None, unavailable_reason
+    documents: list[JsonObject] = []
+    plans: list[LiveSequencePlan] = []
+    sources = [(current_path, current_story, current_story_sha256)]
+    if base is not None and base.live_sequence_plan is not None:
+        sources.append(
+            (base.live_sequence_plan, base.story_index, base.pack.story_index.sha256)
+        )
+    for path, story_index, expected_story_sha256 in sources:
+        try:
+            document, plan = _safe_sequence_document(path, story_index, game_id=game_id)
+        except OSError:
+            return None, SequenceUnavailableReason.SOURCE_UNAVAILABLE
+        except ValueError, LiveSequencePlanError:
+            return None, SequenceUnavailableReason.INVALID_PLAN
+        if (
+            expected_story_sha256 is not None
+            and plan.story_index_sha256 != expected_story_sha256
+        ):
+            return None, SequenceUnavailableReason.INVALID_PLAN
+        if any(event.control == "manual" for event in plan.events.values()):
+            return None, SequenceUnavailableReason.MANUAL_BOUNDARY
+        if any(
+            event.control != "terminal" and len(event.successors) != 1
+            for event in plan.events.values()
+        ):
+            return None, SequenceUnavailableReason.NONLINEAR
+        documents.insert(0, document)
+        plans.insert(0, plan)
+    if base is not None and base.live_sequence_plan is None:
+        return None, (
+            reason_from_extension(base.pack.extensions.get("vntts.self-service"))
+            or SequenceUnavailableReason.INCOMPLETE_COVERAGE
+        )
+    if len(plans) > 1:
+        if plans[0].source_extract_sha256 != plans[1].source_extract_sha256:
+            return None, SequenceUnavailableReason.INCOMPATIBLE_SOURCE
+        if {chapter.chapter for chapter in plans[0].chapters} & {
+            chapter.chapter for chapter in plans[1].chapters
+        }:
+            return None, SequenceUnavailableReason.OVERLAPPING_CHAPTERS
+    if {chapter.chapter for plan in plans for chapter in plan.chapters} != {
+        record.chapter for record in published_story.records
+    }:
+        return None, SequenceUnavailableReason.INCOMPLETE_COVERAGE
+    events = [event for plan in plans for event in plan.events.values()]
+    chapters_by_line = {
+        record.line_id: record.chapter for record in published_story.records
+    }
+    if len({event.event_id for event in events}) != len(events) or any(
+        event.line_id is not None
+        and chapters_by_line.get(event.line_id) != event.chapter
+        for event in events
+    ):
+        return None, SequenceUnavailableReason.INVALID_PLAN
+    document = copy.deepcopy(documents[0])
+    document["chapters"] = [
+        chapter
+        for source in documents
+        for chapter in cast(list[object], source["chapters"])
+    ]
+    return document, None
+
+
+def _write_prepared_sequence(
+    document: JsonObject | None,
+    staged_story: Path,
     destination: Path,
     *,
-    current_payload: bytes | None = None,
     game_id: str | None = None,
 ) -> Path | None:
-    """Bind only a complete, linear sequence to the exact staged story bytes."""
-    if current_path is None:
+    if document is None:
         return None
-    try:
-        current_document, current_plan = _safe_sequence_document(
-            current_path, current_story, payload=current_payload, game_id=game_id
-        )
-        documents = [current_document]
-        plans = [current_plan]
-        if base is not None:
-            if base.live_sequence_plan is None:
-                return None
-            base_document, base_plan = _safe_sequence_document(
-                base.live_sequence_plan, base.story_index, game_id=game_id
-            )
-            if base_plan.source_extract_sha256 != current_plan.source_extract_sha256:
-                return None
-            if {chapter.chapter for chapter in base_plan.chapters} & {
-                chapter.chapter for chapter in current_plan.chapters
-            }:
-                return None
-            documents.insert(0, base_document)
-            plans.insert(0, base_plan)
-        chapters = [
-            chapter
-            for document in documents
-            for chapter in cast(list[object], document["chapters"])
-        ]
-        if {chapter.chapter for plan in plans for chapter in plan.chapters} != {
-            record.chapter for record in published_story.records
-        }:
-            return None
-        document = copy.deepcopy(documents[0])
-        document["chapters"] = chapters
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        write_live_sequence_plan(destination, document, staged_story)
-        _safe_sequence_document(destination, staged_story, game_id=game_id)
-        return destination
-    except OSError, ValueError, LiveSequencePlanError:
-        return None
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    write_live_sequence_plan(destination, document, staged_story)
+    _safe_sequence_document(destination, staged_story, game_id=game_id)
+    return destination
 
 
 def _safe_sequence_document(
     path: Path,
     story_index: Path,
     *,
-    payload: bytes | None = None,
     game_id: str | None = None,
 ) -> tuple[JsonObject, LiveSequencePlan]:
-    if payload is None:
-        payload = read_regular_bytes(path)
+    payload = read_regular_bytes(path)
     document = decode_json(payload)
     if not isinstance(document, dict) or not isinstance(document.get("chapters"), list):
         raise LiveSequencePlanError("Live sequence plan document is malformed")
@@ -1393,11 +1431,6 @@ def _safe_sequence_document(
     )
     if game_id is not None and plan.game_id != game_id:
         raise OfflinePackError("Live sequence plan belongs to a different game")
-    for event in plan.events.values():
-        if event.control == "manual" or (
-            event.control != "terminal" and len(event.successors) != 1
-        ):
-            raise LiveSequencePlanError("Live sequence is not uniquely automatic")
     return document, plan
 
 

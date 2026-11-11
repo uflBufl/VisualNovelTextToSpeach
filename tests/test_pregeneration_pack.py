@@ -14,6 +14,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.live_sequence import (
+    LiveSequencePlanError,
     load_live_sequence_plan,
     write_live_sequence_plan,
 )
@@ -49,13 +50,13 @@ from vntts.pregeneration_pack import (
     _link_verified_file,
     _load_incremental_base,
     _load_terminal_generation,
-    _optional_sequence_snapshot,
     _portable_generated_record,
     _portable_voice_entries,
-    _stage_live_sequence,
+    _prepare_live_sequence,
     _story_audio_pack,
     _validate_inputs,
     _write_cumulative_routes,
+    _write_prepared_sequence,
     inspect_story_audio,
     load_saved_pack,
 )
@@ -63,6 +64,10 @@ from vntts.pregeneration_setup import (
     PregenerationJobStore,
     _cached_story_index_document,
     inspect_story_index,
+)
+from vntts.prepared_sequence_status import (
+    SequenceUnavailableReason,
+    reason_from_extension,
 )
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
@@ -195,6 +200,177 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     ),
                     published,
                 )
+
+    def test_sequence_reason_roundtrips_and_changes_the_publication_cache(self):
+        with TemporaryDirectory() as directory:
+            job, prepared, generated, _ = game_fixture(Path(directory))
+            publisher = OfflinePackPublisher()
+            legacy = publisher.publish(job, prepared, generated)
+            self.assertNotIn(
+                "sequence_unavailable_reason",
+                legacy.imported.pack.extensions["vntts.self-service"],
+            )
+            identities = {legacy.identity}
+            for reason in SequenceUnavailableReason:
+                with self.subTest(reason=reason):
+                    published = publisher.publish(
+                        job, prepared, generated, sequence_unavailable_reason=reason
+                    )
+                    self.assertIsNone(published.imported.live_sequence_plan)
+                    self.assertEqual(
+                        reason_from_extension(
+                            load_saved_pack(
+                                published.manifest
+                            ).imported.pack.extensions["vntts.self-service"]
+                        ),
+                        reason,
+                    )
+                    self.assertNotIn(published.identity, identities)
+                    identities.add(published.identity)
+                    self.assertEqual(
+                        publisher.publish(
+                            job, prepared, generated, sequence_unavailable_reason=reason
+                        ),
+                        published,
+                    )
+            plan = linear_plan(prepared.story_index, "reverse1999")
+            published = publisher.publish(
+                job,
+                prepared,
+                generated,
+                live_sequence_plan=plan,
+                sequence_unavailable_reason=SequenceUnavailableReason.NOT_READY,
+            )
+            self.assertIsNotNone(published.imported.live_sequence_plan)
+            self.assertIsNone(
+                reason_from_extension(
+                    published.imported.pack.extensions["vntts.self-service"]
+                )
+            )
+
+    def test_sequence_input_failure_is_resolved_before_cache_reuse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, prepared, generated, _ = game_fixture(root)
+            path = root / "optional.json"
+            publisher = OfflinePackPublisher()
+            absent = publisher.publish(
+                job, prepared, generated, live_sequence_plan=path
+            )
+            self.assertEqual(
+                reason_from_extension(
+                    absent.imported.pack.extensions["vntts.self-service"]
+                ),
+                SequenceUnavailableReason.SOURCE_UNAVAILABLE,
+            )
+            path.write_text("invalid plan", encoding="utf-8")
+            invalid = publisher.publish(
+                job, prepared, generated, live_sequence_plan=path
+            )
+            self.assertEqual(
+                reason_from_extension(
+                    invalid.imported.pack.extensions["vntts.self-service"]
+                ),
+                SequenceUnavailableReason.INVALID_PLAN,
+            )
+            self.assertNotEqual(invalid.identity, absent.identity)
+            path.write_text("still invalid", encoding="utf-8")
+            self.assertEqual(
+                publisher.publish(job, prepared, generated, live_sequence_plan=path),
+                invalid,
+            )
+            path.unlink()
+            self.assertEqual(
+                publisher.publish(job, prepared, generated, live_sequence_plan=path),
+                absent,
+            )
+
+    def test_sequence_staging_failure_does_not_publish_a_different_outcome(self):
+        for error in (
+            OSError("write failed"),
+            LiveSequencePlanError("invalid staged plan"),
+        ):
+            with self.subTest(error=type(error)), TemporaryDirectory() as directory:
+                job, prepared, generated, _ = game_fixture(Path(directory))
+                plan = linear_plan(prepared.story_index, "reverse1999")
+                publisher = OfflinePackPublisher()
+                with (
+                    patch(
+                        "vntts.pregeneration_pack.write_live_sequence_plan",
+                        side_effect=error,
+                    ),
+                    self.assertRaises(OfflinePackError),
+                ):
+                    publisher.publish(job, prepared, generated, live_sequence_plan=plan)
+                self.assertEqual(
+                    list((prepared.directory.parent / "game-packs").iterdir()), []
+                )
+                recovered = publisher.publish(
+                    job, prepared, generated, live_sequence_plan=plan
+                )
+                self.assertIsNotNone(recovered.imported.live_sequence_plan)
+                self.assertEqual(
+                    publisher.publish(
+                        job, prepared, generated, live_sequence_plan=plan
+                    ),
+                    recovered,
+                )
+
+    def test_cumulative_sequence_retains_the_effective_missing_base_reason(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_job, base_input, base_result, _ = game_fixture(root / "base")
+            base = OfflinePackPublisher().publish(
+                base_job,
+                base_input,
+                base_result,
+                sequence_unavailable_reason=SequenceUnavailableReason.MANUAL_BOUNDARY,
+            )
+            job, prepared, generated, _ = game_fixture(
+                root / "current", chapter="2", names=("next", "last")
+            )
+            current_plan = linear_plan(prepared.story_index, "reverse1999")
+            story = load_story_index_document(prepared.story_index)
+            source = root / "source.jsonl"
+            write_story_index_document(
+                source,
+                story.metadata,
+                [
+                    record.to_record()
+                    for document in (
+                        load_story_index_document(base_input.story_index),
+                        story,
+                    )
+                    for record in document.records
+                ],
+            )
+            job = replace(
+                job, story_index=str(source), story_index_sha256=sha256_file(source)
+            )
+            publisher = OfflinePackPublisher(base_pack=base.manifest)
+            published = publisher.publish(
+                job, prepared, generated, live_sequence_plan=current_plan
+            )
+            self.assertIsNone(published.imported.live_sequence_plan)
+            self.assertEqual(
+                reason_from_extension(
+                    published.imported.pack.extensions["vntts.self-service"]
+                ),
+                SequenceUnavailableReason.MANUAL_BOUNDARY,
+            )
+            self.assertEqual(published.story_lines, 4)
+            self.assertEqual(
+                publisher.publish(
+                    job, prepared, generated, live_sequence_plan=current_plan
+                ),
+                published,
+            )
+            legacy = publisher.publish(job, prepared, generated)
+            self.assertIsNone(
+                reason_from_extension(
+                    legacy.imported.pack.extensions["vntts.self-service"]
+                )
+            )
 
     def test_foreign_graph_is_rejected_without_inference_from_the_display_title(self):
         for explicit_id in (None, "foreign-game"):
@@ -738,20 +914,26 @@ class OfflinePackPublisherTest(unittest.TestCase):
         self,
     ):
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "sequence.json"
-            payload = b"captured optional evidence"
-            path.write_bytes(payload)
+            root = Path(directory)
+            _job, prepared, _generated, _items = game_fixture(root)
+            path = linear_plan(prepared.story_index, "reverse1999")
+            story = load_story_index_document(prepared.story_index)
+            payload = path.read_bytes()
             path.chmod(0o444)
             mode = path.stat().st_mode
             gate: RegularFileGate = {"path": path, "armed": True}
             with swap_at_acquisition(self, gate):
-                self.assertEqual(_optional_sequence_snapshot(path), (None, None))
+                self.assertEqual(
+                    _prepare_live_sequence(None, path, prepared.story_index, story),
+                    (None, SequenceUnavailableReason.SOURCE_UNAVAILABLE),
+                )
             self.assertEqual(path.read_bytes(), payload)
             self.assertEqual(path.stat().st_mode, mode)
-            self.assertEqual(list(Path(directory).iterdir()), [path])
-            self.assertEqual(
-                _optional_sequence_snapshot(path), (sha256_file(path), payload)
+            document, reason = _prepare_live_sequence(
+                None, path, prepared.story_index, story
             )
+            self.assertEqual(document, json.loads(payload))
+            self.assertIsNone(reason)
 
     def _publication_copy_fixture(self, root, phase):
         job, prepared, generated, items = fixture(root / "current")
@@ -1038,16 +1220,44 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 story,
             )
 
-            staged = _stage_live_sequence(
-                None,
-                plan_path,
-                story,
-                story,
-                load_story_index_document(story),
-                root / "staged.json",
+            document, reason = _prepare_live_sequence(
+                None, plan_path, story, load_story_index_document(story)
             )
 
-        self.assertIsNone(staged)
+        self.assertIsNone(document)
+        self.assertEqual(reason, SequenceUnavailableReason.MANUAL_BOUNDARY)
+
+    def test_multiple_entry_sequence_keeps_its_existing_publication_admission(self):
+        with TemporaryDirectory() as directory:
+            _job, prepared, _generated, _items = game_fixture(Path(directory))
+            path = linear_plan(prepared.story_index, "reverse1999")
+            document = json.loads(path.read_bytes())
+            chapter = document["chapters"][0]
+            chapter["entry_event_ids"] = [
+                event["event_id"] for event in chapter["events"]
+            ]
+            for event in chapter["events"]:
+                event["control"] = "terminal"
+                event["successors"] = []
+            write_live_sequence_plan(path, document, prepared.story_index)
+            sequence, reason = _prepare_live_sequence(
+                None,
+                path,
+                prepared.story_index,
+                load_story_index_document(prepared.story_index),
+            )
+            self.assertEqual(sequence, document)
+            self.assertIsNone(reason)
+            staged = _write_prepared_sequence(
+                sequence, prepared.story_index, Path(directory) / "staged.json"
+            )
+            self.assertIsNotNone(staged)
+            self.assertEqual(
+                load_live_sequence_plan(staged, prepared.story_index)
+                .chapters[0]
+                .entry_event_ids,
+                tuple(chapter["entry_event_ids"]),
+            )
 
     def test_cumulative_sequence_is_rebound_to_final_story_bytes(self):
         with TemporaryDirectory() as directory:
@@ -1117,17 +1327,20 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     story,
                 )
                 plans.append(path)
-            base = type(
-                "Base", (), {"live_sequence_plan": plans[0], "story_index": base_story}
-            )()
+            base = SimpleNamespace(
+                live_sequence_plan=plans[0],
+                story_index=base_story,
+                pack=SimpleNamespace(
+                    story_index=SimpleNamespace(sha256=sha256_file(base_story))
+                ),
+            )
 
-            staged = _stage_live_sequence(
-                base,
-                plans[1],
-                current_story,
-                final_story,
-                load_story_index_document(final_story),
-                root / "staged.json",
+            document, reason = _prepare_live_sequence(
+                base, plans[1], current_story, load_story_index_document(final_story)
+            )
+            self.assertIsNone(reason)
+            staged = _write_prepared_sequence(
+                document, final_story, root / "staged.json"
             )
 
             self.assertIsNotNone(staged)
@@ -1136,8 +1349,6 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 tuple(chapter.chapter for chapter in plan.chapters), ("1", "2")
             )
 
-            source_digest, source_payload = _optional_sequence_snapshot(plans[1])
-            self.assertEqual(source_digest, sha256_file(plans[1]))
             replacement_document = json.loads(plans[1].read_text(encoding="utf-8"))
             replacement_document["source_extract_sha256"] = "b" * 64
             replacement_chapter = replacement_document["chapters"][0]
@@ -1162,14 +1373,15 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 "vntts.pregeneration_pack.load_live_sequence_snapshot",
                 side_effect=replace_source_after_validation,
             ):
-                staged = _stage_live_sequence(
+                document, reason = _prepare_live_sequence(
                     base,
                     plans[1],
                     current_story,
-                    final_story,
                     load_story_index_document(final_story),
-                    root / "staged-race.json",
-                    current_payload=source_payload,
+                )
+                self.assertIsNone(reason)
+                staged = _write_prepared_sequence(
+                    document, final_story, root / "staged-race.json"
                 )
 
             self.assertIsNotNone(staged)
@@ -1183,6 +1395,80 @@ class OfflinePackPublisherTest(unittest.TestCase):
             self.assertEqual(
                 load_live_sequence_plan(plans[1], current_story).source_extract_sha256,
                 "b" * 64,
+            )
+
+            final_document = load_story_index_document(final_story)
+            self.assertEqual(
+                _prepare_live_sequence(base, plans[1], current_story, final_document),
+                (None, SequenceUnavailableReason.INCOMPATIBLE_SOURCE),
+            )
+            self.assertEqual(
+                _prepare_live_sequence(None, plans[1], current_story, final_document),
+                (None, SequenceUnavailableReason.INCOMPLETE_COVERAGE),
+            )
+            overlapping = SimpleNamespace(
+                live_sequence_plan=plans[1],
+                story_index=current_story,
+                pack=SimpleNamespace(
+                    story_index=SimpleNamespace(sha256=sha256_file(current_story))
+                ),
+            )
+            self.assertEqual(
+                _prepare_live_sequence(
+                    overlapping, plans[1], current_story, final_document
+                ),
+                (None, SequenceUnavailableReason.OVERLAPPING_CHAPTERS),
+            )
+            missing = SimpleNamespace(
+                live_sequence_plan=root / "missing-base.json",
+                story_index=base_story,
+                pack=base.pack,
+            )
+            self.assertEqual(
+                _prepare_live_sequence(
+                    missing, plans[1], current_story, final_document
+                ),
+                (None, SequenceUnavailableReason.SOURCE_UNAVAILABLE),
+            )
+            missing.live_sequence_plan.write_text("invalid", encoding="utf-8")
+            self.assertEqual(
+                _prepare_live_sequence(
+                    missing, plans[1], current_story, final_document
+                ),
+                (None, SequenceUnavailableReason.INVALID_PLAN),
+            )
+            self.assertEqual(
+                _prepare_live_sequence(None, plans[1], final_story, final_document),
+                (None, SequenceUnavailableReason.INVALID_PLAN),
+            )
+            self.assertEqual(
+                _prepare_live_sequence(
+                    None,
+                    plans[1],
+                    current_story,
+                    final_document,
+                    current_story_sha256="b" * 64,
+                ),
+                (None, SequenceUnavailableReason.INVALID_PLAN),
+            )
+            no_plan = SimpleNamespace(
+                live_sequence_plan=None, pack=SimpleNamespace(extensions={})
+            )
+            self.assertEqual(
+                _prepare_live_sequence(
+                    no_plan, plans[1], current_story, final_document
+                ),
+                (None, SequenceUnavailableReason.INCOMPLETE_COVERAGE),
+            )
+            conflicting_document = json.loads(plans[1].read_bytes())
+            conflicting_document["source_extract_sha256"] = "a" * 64
+            conflicting_chapter = conflicting_document["chapters"][0]
+            conflicting_chapter["entry_event_ids"] = ["1-one"]
+            conflicting_chapter["events"][0]["event_id"] = "1-one"
+            write_live_sequence_plan(plans[1], conflicting_document, current_story)
+            self.assertEqual(
+                _prepare_live_sequence(base, plans[1], current_story, final_document),
+                (None, SequenceUnavailableReason.INVALID_PLAN),
             )
 
     def test_copy_rejects_symlinked_source(self):

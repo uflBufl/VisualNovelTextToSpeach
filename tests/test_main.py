@@ -81,6 +81,10 @@ from vntts.main import (
 from vntts.native_capture import CaptureError
 from vntts.ocr import DialogRegion, OCRResult, detect_standalone_ellipsis_frame
 from vntts.playback import PreparedPlayback, SilentPlayback
+from vntts.prepared_sequence_status import (
+    SequenceUnavailableReason,
+    sequence_unavailable_notice,
+)
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -3005,6 +3009,86 @@ class MainTest(unittest.TestCase):
             controller.history.snapshot()[0].text,
             "A line visible in the tray",
         )
+
+    def test_sequence_unavailable_reason_is_cached_for_off_mode_status(self):
+        reason = SequenceUnavailableReason.NOT_READY
+        with patch(
+            "vntts.controller.load_sequence_unavailable_reason", return_value=reason
+        ) as load_reason:
+            controller = AppController(
+                AppSettings(game_pack="prepared-pack.json", live_sequence_mode="off"),
+                tts_factory=Mock(),
+            )
+            load_reason.assert_called_once_with("prepared-pack.json")
+            with patch.object(Path, "open", side_effect=AssertionError("status I/O")):
+                for _ in range(2):
+                    status = controller.get_live_sequence_status()
+                    self.assertEqual(status.mode, "off")
+                    self.assertEqual(status.state, "off")
+                    self.assertEqual(status.reason, reason.value)
+                    self.assertEqual(
+                        status.guidance, sequence_unavailable_notice(reason)
+                    )
+                    self.assertEqual(status.actual_audio_route, "-")
+                    self.assertFalse(status.recovery_required)
+                    self.assertEqual(status.expected_candidate_count, 0)
+            load_reason.assert_called_once()
+
+    def test_progressive_sequence_reason_clears_on_profile_and_content_changes(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        for changes in (
+            {"active_profile_id": "other-game"},
+            {"game_pack": "other-pack.json"},
+            {"generated_audio_manifest": "other-audio.json"},
+        ):
+            with self.subTest(changes=changes):
+                controller.set_sequence_unavailable_reason(
+                    SequenceUnavailableReason.NOT_READY
+                )
+                self.assertEqual(
+                    controller.get_live_sequence_status().reason,
+                    SequenceUnavailableReason.NOT_READY.value,
+                )
+                controller.apply_settings(
+                    controller.settings.updated(output_volume_percent=75)
+                )
+                self.assertEqual(
+                    controller.get_live_sequence_status().reason,
+                    SequenceUnavailableReason.NOT_READY.value,
+                )
+                with patch(
+                    "vntts.controller.load_sequence_unavailable_reason",
+                    return_value=None,
+                ):
+                    controller.apply_settings(controller.settings.updated(**changes))
+                self.assertIsNone(controller.get_live_sequence_status().reason)
+
+    def test_disabled_sequence_and_legacy_pack_have_no_fake_unavailable_reason(self):
+        for settings in (
+            AppSettings(live_sequence_mode="off"),
+            AppSettings(game_pack="legacy-pack.json", live_sequence_mode="off"),
+            AppSettings(
+                game_pack="prepared-pack.json",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="off",
+            ),
+        ):
+            with (
+                self.subTest(settings=settings),
+                patch(
+                    "vntts.controller.load_sequence_unavailable_reason",
+                    return_value=None,
+                ) as load_reason,
+            ):
+                controller = AppController(settings, tts_factory=Mock())
+                if settings.live_sequence_plan:
+                    load_reason.assert_not_called()
+                    controller.set_sequence_unavailable_reason(
+                        SequenceUnavailableReason.NOT_READY
+                    )
+                status = controller.get_live_sequence_status()
+                self.assertIsNone(status.reason)
+                self.assertEqual(status.guidance, "Sequence-first routing is off.")
 
     def test_sequence_shadow_observes_canonical_line_without_changing_speech(self):
         preloader = ChapterVoicePreloader.from_document(

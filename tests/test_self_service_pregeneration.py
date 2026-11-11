@@ -3,6 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -46,12 +47,21 @@ from vntts.pregeneration_setup import (  # noqa: E402
     PregenerationJobStore,
     inspect_story_index,
 )
-from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
+from vntts.pregeneration_ui import (  # noqa: E402
+    OfflineAudioPreparationDialog,
+    _prepare_runtime_sequence,
+)
 from vntts.pregeneration_voices import (  # noqa: E402
     VoiceDecisionStore,
     VoicePlanStore,
 )
 from vntts.prepared_playback import PreparedPlaybackStore  # noqa: E402
+from vntts.prepared_sequence_status import (  # noqa: E402
+    PreparedSequenceResult,
+    SequenceUnavailableReason,
+    reason_from_extension,
+    sequence_unavailable_notice,
+)
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.source_audio_progress import SourceAudioProgress  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
@@ -204,6 +214,118 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(dialog.sequence_runner.active)
             self.assertFalse(dialog.has_pending_work())
             dialog.sequence_runner.cancel()
+            dialog.reject()
+
+    def test_sequence_worker_preserves_missing_source_and_cancellation(self):
+        with TemporaryDirectory() as directory:
+            _job, inputs, _generated, _items = fixture(Path(directory))
+            result = _prepare_runtime_sequence(inputs, Event())
+            self.assertIsNone(result.plan)
+            self.assertIs(result.reason, SequenceUnavailableReason.SOURCE_UNAVAILABLE)
+            cancellation = Event()
+            cancellation.set()
+            result = _prepare_runtime_sequence(inputs, cancellation)
+            self.assertIsNone(result.plan)
+            self.assertIs(result.reason, SequenceUnavailableReason.CANCELLED)
+
+    def test_early_publication_keeps_its_reason_after_late_sequence_success(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, generated, _items = fixture(root)
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog._job = job
+            dialog._generation_input = inputs
+            plan = inputs.directory / "live-sequence.json"
+            dialog.sequence_runner.start(lambda: PreparedSequenceResult(plan=plan))
+            self.assertFalse(dialog.has_pending_work())
+            with patch.object(dialog.publication_runner, "start") as start:
+                dialog._start_publication(generated)
+            arguments = start.call_args.args[1:]
+            self.assertIsNone(arguments[-2])
+            self.assertIs(arguments[-1], SequenceUnavailableReason.NOT_READY)
+            self._run_tasks(pool, 1)
+            self.assertIsNone(dialog.runtime_sequence_unavailable_reason())
+            self.assertEqual(dialog._sequence_handoff_result().plan, plan)
+
+            pack = dialog.publisher.publish(*arguments)
+            self.assertIs(
+                reason_from_extension(
+                    pack.imported.pack.extensions["vntts.self-service"]
+                ),
+                SequenceUnavailableReason.NOT_READY,
+            )
+            dialog._pack_result = pack
+            dialog.publishing_pack = False
+            dialog._show_final_handoff(
+                original=0,
+                approved=pack.approved,
+                live_fallbacks=pack.live_fallbacks,
+                story_lines=pack.story_lines,
+                omissions=pack.omissions,
+            )
+            self.assertIn(
+                sequence_unavailable_notice(SequenceUnavailableReason.NOT_READY),
+                dialog.resume_status.text(),
+            )
+            dialog.defer_activation("Reading settings changed.")
+            self.assertIn(
+                sequence_unavailable_notice(SequenceUnavailableReason.NOT_READY),
+                dialog.resume_status.text(),
+            )
+            dialog.reject()
+
+    def test_previous_input_failure_cannot_replace_the_new_sequence_outcome(self):
+        with TemporaryDirectory() as directory:
+            _job, inputs, _generated, _items = fixture(Path(directory))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog._generation_input = inputs
+            dialog.sequence_runner.start(
+                lambda: PreparedSequenceResult(
+                    reason=SequenceUnavailableReason.MANUAL_BOUNDARY
+                )
+            )
+            with patch.object(dialog.input_runner, "start"):
+                dialog._start_generation_input(Mock())
+            dialog._generation_input = inputs
+            current = PreparedSequenceResult(
+                reason=SequenceUnavailableReason.SOURCE_UNAVAILABLE
+            )
+            dialog._prepared_sequence_result = current
+            self._run_tasks(pool, 1)
+            self.assertIs(dialog._sequence_handoff_result(), current)
+            dialog.preparing_inputs = False
+            dialog.reject()
+
+    def test_unexpected_sequence_failure_has_safe_reason_without_path_details(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _job, inputs, _generated, _items = fixture(root)
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                thread_pool=pool,
+            )
+            self._run_tasks(pool, len(pool.tasks))
+            dialog._generation_input = inputs
+            with self.assertLogs("vntts.pregeneration_ui", level="ERROR"):
+                dialog._prepared_sequence_finished(None, RuntimeError("private/path"))
+            reason = dialog.runtime_sequence_unavailable_reason()
+            self.assertIs(reason, SequenceUnavailableReason.PREPARATION_FAILED)
+            self.assertNotIn("private/path", sequence_unavailable_notice(reason))
             dialog.reject()
 
     def test_sequence_only_native_close_finishes_after_any_terminal_result(self):

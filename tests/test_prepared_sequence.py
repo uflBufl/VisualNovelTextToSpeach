@@ -26,6 +26,7 @@ from vntts.prepared_sequence import (
     prepare_sequence_for_prepared_story,
     reverse1999_live_sequence_command,
 )
+from vntts.prepared_sequence_status import SequenceUnavailableReason
 
 
 def write_story(path, *, source_bundle=None):
@@ -289,9 +290,14 @@ class PreparedSequenceTest(unittest.TestCase):
                     step[2][15][2] = "Wait...?!"
                 output = self.root / f"{boundary}.json"
 
-                with self.assertRaisesRegex(PreparedSequenceError, "manual boundary"):
+                with self.assertRaisesRegex(
+                    PreparedSequenceError, "manual boundary"
+                ) as caught:
                     self._prepare_exported_story(documents, output)
 
+                self.assertIs(
+                    caught.exception.reason, SequenceUnavailableReason.MANUAL_BOUNDARY
+                )
                 self.assertFalse(output.exists())
 
     def test_reuses_exact_checksum_bound_plan_without_starting_publisher(self):
@@ -461,7 +467,7 @@ class PreparedSequenceTest(unittest.TestCase):
         cancellation = Event()
         process = CancellingPublisher(cancellation)
 
-        with self.assertRaises(PreparedSequenceCancelled):
+        with self.assertRaises(PreparedSequenceCancelled) as caught:
             prepare_reverse1999_sequence(
                 self.story,
                 self.bundle,
@@ -472,8 +478,26 @@ class PreparedSequenceTest(unittest.TestCase):
                 popen_factory=lambda *_arguments, **_kwargs: process,
             )
 
+        self.assertIs(caught.exception.reason, SequenceUnavailableReason.CANCELLED)
         self.assertTrue(process.terminated)
         self.assertFalse(self.output.exists())
+
+    def test_missing_source_and_missing_publisher_have_distinct_reasons(self):
+        with self.assertRaises(PreparedSequenceError) as caught:
+            prepare_reverse1999_sequence(
+                self.story, self.bundle, ("314501",), self.output, command=()
+            )
+        self.assertIs(
+            caught.exception.reason, SequenceUnavailableReason.PUBLISHER_UNAVAILABLE
+        )
+        self.bundle.unlink()
+        with self.assertRaises(PreparedSequenceError) as caught:
+            prepare_reverse1999_sequence(
+                self.story, self.bundle, ("314501",), self.output, command=()
+            )
+        self.assertIs(
+            caught.exception.reason, SequenceUnavailableReason.SOURCE_UNAVAILABLE
+        )
 
     def test_frozen_build_uses_planned_worker_flag(self):
         with (
