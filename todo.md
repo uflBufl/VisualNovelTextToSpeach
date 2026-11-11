@@ -436,10 +436,25 @@ recovery separate from product defects.
       boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
       `.codex/investigations/text-detector-timeout-20261111/results.md`.
 - [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
-      A manual wait in the other selected chapter rejects the combined plan;
-      the UI silently falls back to OCR mode. Review per-chapter validation or a
-      clear unavailable reason before choosing an implementation. Preserve
-      game-owned waits and existing OCR reading; do not auto-skip unknown events.
+      Investigation confirmed that source315602 events52/70 contain `...?!`
+      and `...!`, with no choices. The extractor recognizes only dots as silent
+      text, so it misclassifies these events as manual waits and rejects the
+      combined315601/315602 plan. A classifier-only document experiment passes
+      the unchanged product validator; this is not native playback acceptance.
+      Proposed implementation, awaiting approval:
+      - Fix symbol-only classification in the extractor using the same Unicode
+        punctuation/symbol rule as Reading, retaining real choices, missing
+        successors and unindexed spoken text as manual boundaries.
+      - Test mixed punctuation, Unicode symbols, ordinary/unknown text and
+        choices; update the pinned extractor dependency and lockfile here.
+      - Validate combined-plan preparation/publication and the existing silent
+        cursor path. Qualify punctuation and successor playback in the combined
+        native run. Do not introduce per-chapter routing for this defect.
+      - Separately retain the unavailable-reason issue: preparation and pack
+        staging discard errors as None, so genuine rejection is shown only as
+        Disabled. Agree a reason-preservation/UI change after the classifier
+        fix; preserve working OCR reading and never auto-skip unknown events.
+      Evidence: `.codex/investigations/sequence-preparation-20261111/results.md`.
 
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from the agreed visible dialogue to the actual terminal scene, with
