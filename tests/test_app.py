@@ -1297,7 +1297,7 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=Mock(is_live_running=False)),
         )
-        message = "Prepared audio is active for 32 dialogue lines."
+        message = "Prepared audio is active."
 
         tray.set_status(message)
 
@@ -1663,7 +1663,7 @@ class TrayApplicationTest(unittest.TestCase):
         start_activation.assert_called_once()
         self.assertIs(start_activation.call_args.args[0], pack_result)
         status = start_activation.call_args.args[1]
-        self.assertEqual(status, "Prepared audio is active for 42 dialogue lines.")
+        self.assertEqual(status, "Prepared audio is active.")
         tray_application.shutdown()
 
     def test_continue_warms_selected_offline_model_before_voice_matching(self):
@@ -1731,7 +1731,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(start_activation.call_args.args[0], pack_result)
         self.assertEqual(
             start_activation.call_args.args[1],
-            "Prepared audio is active for 12 dialogue lines.",
+            "Prepared audio is active.",
         )
         dialog.generation_input.assert_not_called()
         dialog.generation_result.assert_not_called()
@@ -10862,7 +10862,7 @@ class TrayApplicationTest(unittest.TestCase):
                 with patch.object(tray.pregeneration_activation_runner, "start"):
                     tray._start_pregeneration_activation(
                         Mock(spec=OfflinePackResult),
-                        "Prepared audio is active for 32 dialogue lines.",
+                        "Prepared audio is active.",
                     )
                 self.assertTrue(tray.dashboard.isVisible())
                 self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
@@ -10884,8 +10884,7 @@ class TrayApplicationTest(unittest.TestCase):
                 status = tray.dashboard.status.text()
                 self.assertEqual(
                     status,
-                    "Prepared audio is active for 32 dialogue lines. "
-                    "Next: click Set up reading with the story open in the game.",
+                    "Prepared audio is active.",
                 )
                 self.assertEqual(tray.compact_controller.status.toPlainText(), status)
                 for controls in (tray.dashboard, tray.compact_controller):
@@ -10923,7 +10922,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
 
                 self.assertIs(tray.dashboard.focusWidget(), tray.dashboard.live_button)
-                self.assertIn("click Read", tray.status_action.text())
+                self.assertEqual("Prepared audio is active.", tray.status_action.text())
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
@@ -10966,9 +10965,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(
                     tray._runtime_settings().audio_source_policy, "prefer-generated"
                 )
-                self.assertIn(
-                    "Next: open Reading and click Read", tray.status_action.text()
-                )
+                self.assertEqual("Prepared audio is active.", tray.status_action.text())
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 

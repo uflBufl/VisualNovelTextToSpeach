@@ -319,11 +319,6 @@ live rerun with corrected bounds remains open. Evidence:
 `.codex/investigations/combined-campaign-20261111/`. Keep calibration mistakes and
 separate control episodes distinct from product failures.
 
-- [ ] **RUN-11-UI-01 - Correct the prepared-audio activation guidance.**
-      Activation already opens Reading, whose action is Read, but the banner
-      still tells the user to open Reading and click Prepare reading. Align the
-      instruction with the current action/navigation. Evidence:
-      `.codex/investigations/combined-campaign-20261111/activation-guidance.png`.
 - [ ] **RUN-11-UI-02 - Clarify reuse-only preparation's confirmation action.**
       Step2 reports no lines to generate but still requires Generate with these
       voices to save/activate the reused audio. Review the action wording for
@@ -1786,3 +1781,14 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       and catalog-loss refusal in Windows and packaged builds. Keep current
       immutable authoring proof files and portable manifests intact; those are
       supported contracts, not working-state fallbacks.
+
+## Deferred - Optional status-message design review
+
+- [ ] Consider replacing the global last-message strip with context-appropriate
+      feedback: reading state beside reading controls, generation progress in
+      preparation, local errors beside the affected action, and technical events
+      in diagnostics. Reserve a top banner for important application-wide problems
+      that remain relevant until resolved; ordinary updates must not overwrite
+      them. Avoid confirmations when the interface already makes the result clear.
+      This is an optional design idea, outside the chapter-run defect queue and
+      acceptance gates. Agree a concrete scope before implementation.

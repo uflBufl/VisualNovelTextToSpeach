@@ -4493,10 +4493,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Offline preparation finished without a validated game pack"
             )
             return None
-        status = (
-            f"Prepared audio is active for {pack_result.story_lines} dialogue lines."
-        )
-        self._start_pregeneration_activation(pack_result, status)
+        self._start_pregeneration_activation(pack_result, "Prepared audio is active.")
         return job
 
     def _reload_game_narrator(
@@ -4595,11 +4592,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if self._controller_ready
             else self.dashboard.prepare_reading_button
         )
-        next_step = "click" if next_action.isVisible() else "open Reading and click"
-        self.set_status(
-            f"{status or 'Prepared audio is active.'} "
-            f"Next: {next_step} {next_action.text()} with the story open in the game."
-        )
+        self.set_status(status or "Prepared audio is active.")
         if next_action.isVisible():
             next_action.setFocus()
 
