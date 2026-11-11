@@ -397,18 +397,6 @@ recovery separate from product defects.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Reproduce the separate native first-frame deadline during calibration.**
-      Historical capture/cancel then Setup > Set story area failed with
-      `Native capture deadline expired`; foreground retry succeeded, which does
-      not prove a focus dependency. Current repeated fresh captures passed.
-      Confirm awake/unlocked display state before treating a new first-frame
-      timeout as a product recurrence.
-      Use the prepared temporary native stage trace to distinguish first-frame
-      wait, content enumeration, start/stop and recovery on recurrence. Old logs
-      lack these phases. Do not close this from the pixel-transport repair or
-      change timeout values on a hypothesis. Evidence: diagnostic
-      `4cda5996f1fb4238be9ff45ab0375852`, the earlier live-issues note and
-      `.codex/investigations/capture-timeouts-20261111/results.md`.
 - [ ] **Investigate the unconfirmed Space on source `315601:10`.**
       Hedone `Phew! What refreshment!` completed; native input reported success
       and game focus before/after, but the same exact line remained. The later
@@ -446,6 +434,15 @@ recovery separate from product defects.
       Preserve source/voice identity, recording readiness and3600s cap. Keep
       manual recovery and control
       episodes separate; unavailable failure/scene cases remain pending.
+      Before reading, recheck actual-game Story area open/cancel/reopen with the
+      prepared temporary native v2 stage trace and confirmed awake/unlocked
+      display. Historical `Native capture deadline expired` remains unconfirmed;
+      controlled ordinary/story UI repeats passed and closed each native source
+      before showing the overlay. On recurrence distinguish no first frame,
+      enumeration/start/stop/recovery and a budget spent after valid acquisition;
+      do not change budgets or classify this as repaired by shared memory.
+      Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
+      `.codex/investigations/first-frame-calibration-20261111/results.md`.
 - [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
       import in isolated settings, long errors/copy/keyboard) and native physical
       scrolling. With intentionally different generation preferences and active
