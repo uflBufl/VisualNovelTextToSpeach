@@ -4723,7 +4723,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _wait_for_live_reader(
         self, reader: LiveDialogReader | None, wait_for_speech: bool = True
     ) -> bool:
-        self.controller.stop_live()
+        if wait_for_speech:
+            self.controller.emergency_stop()
+        else:
+            self.controller.stop_live()
         if callable(getattr(type(self.controller), "wait_for_reading", None)):
             self.controller.wait_for_reading(
                 timeout_seconds=5.0, include_speech=wait_for_speech
@@ -4751,7 +4754,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog.set_calibration_pending(False)
         self._set_modal_launchers_enabled(self._controller_ready)
         if error is not None:
-            message = f"Unable to stop live capture: {error}"
+            detail = str(error).strip()
+            if not detail:
+                detail = (
+                    "Timed out while waiting for reading to stop. Please try again."
+                    if isinstance(error, TimeoutError)
+                    else type(error).__name__
+                )
+            message = f"Unable to stop reading: {detail}"
             self.set_status(message)
             if continuation == self.calibrate and self.diagnostics_dialog is not None:
                 self.diagnostics_dialog.set_warning(message)
@@ -5304,7 +5314,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._needs_modal_stop():
             self._stop_live_then(
                 lambda: self._open_pending_speaker_mapping(speaker),
-                "Stopping live capture before speaker mapping...",
+                "Stopping reading before speaker mapping...",
             )
             return
         self.pending_unknown_speaker = speaker
@@ -5542,9 +5552,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
 
     def open_history(self) -> None:
-        # Region capture has no focus probe. A modal over the calibrated region
-        # makes OCR append the history list repeatedly. Stop
-        # capture for the modal session, then restore the previous live state.
+        # Stop reading while history owns playback, then restore the prior live state.
         if getattr(self.controller, "is_one_shot_read_running", False) is True:
             self.set_status("Finish the current dialog read before opening history")
             return
@@ -5552,7 +5560,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._needs_modal_stop():
             self._stop_live_then(
                 lambda: self._open_history_dialog(resume_live),
-                "Stopping live capture before dialogue history...",
+                "Stopping reading before dialogue history...",
             )
             return
         self._open_history_dialog(False)

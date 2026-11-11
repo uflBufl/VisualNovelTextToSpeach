@@ -435,27 +435,6 @@ recovery separate from product defects.
       Do not change budgets/recognition or add permanent metrics without a proven
       boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
       `.codex/investigations/text-detector-timeout-20261111/results.md`.
-- [ ] **Explain and fix failed quiescence when reopening preparation during reading.**
-      Reproduced: modal launch stops capture only, then waits for natural speech
-      within5s. A pending Future raises empty TimeoutError; the continuation is
-      cleared and later clip completion cannot open preparation. Historical80
-      reader completion is5.30s after Stop, consistent with this path; its exact
-      exception type was not retained. Proposed repair awaits approval:
-      - In the shared `_wait_for_live_reader`, use existing full Stop
-        (`controller.emergency_stop`) for speech-quiescing launches, then retain
-        bounded drain including one-shot work. This interrupts the current clip
-        and cancels its queue. Preserve capture-only stop for calibration.
-      - Cover Settings, History, preparation, explicit preview/failure playback
-        and speaker-mapping callers; preserve existing resume/lifecycle behavior.
-        Do not change global `stop_live`, increase budgets or add stop states.
-      - Show a useful timeout message and nonempty other-error cause; real stop
-        failure must still suppress the continuation and permit explicit retry.
-      - Gate on controlled running speech interrupted before one opener call,
-        stopped-capture retry, one-shot, blocked OCR, calibration speech, Qt
-        responsiveness and stale lifecycle/no-late-key cases. Native acceptance
-        remains in the combined run. Evidence: diagnostic
-        `4cda5996f1fb4238be9ff45ab0375852` and
-        `.codex/investigations/preparation-stop-20261111/results.md`.
 - [ ] **RUN-09-07 - Explain unavailable automatic sequence preparation.**
       A manual wait in the other selected chapter rejects the combined plan;
       the UI silently falls back to OCR mode. Review per-chapter validation or a
@@ -469,6 +448,11 @@ recovery separate from product defects.
       Preserve source/voice identity, recording readiness and3600s cap. Keep
       manual recovery and control
       episodes separate; unavailable failure/scene cases remain pending.
+      During prepared speech, open Choose stories and prepare audio: require
+      full Stop to interrupt the clip/queue, drain capture and open preparation
+      once, with no old-run key. Also qualify Settings/History/preview resume
+      and calibration retaining current speech. Shared stop and offscreen
+      regressions are implemented; this is the remaining native acceptance.
       Before reading, recheck actual-game Story area open/cancel/reopen with the
       prepared temporary native v2 stage trace and confirmed awake/unlocked
       display. Historical `Native capture deadline expired` remains unconfirmed;

@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -59,6 +59,8 @@ from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
+from vntts.live import LiveDialogReader  # noqa: E402
+from vntts.live_tracking import SpeechChunk  # noqa: E402
 from vntts.ocr import (  # noqa: E402
     CaptureRegionNeedsCalibration,
     DialogRegion,
@@ -2677,7 +2679,12 @@ class TrayApplicationTest(unittest.TestCase):
                     controller.is_live_running = False
                     return False
 
-                controller.stop_live.side_effect = stop_live
+                stop = (
+                    controller.stop_live
+                    if action == "calibrate"
+                    else controller.emergency_stop
+                )
+                stop.side_effect = stop_live
                 controller.live_reader.wait.side_effect = lambda **_kwargs: (
                     release.wait(2)
                 )
@@ -2713,8 +2720,9 @@ class TrayApplicationTest(unittest.TestCase):
                         self.wait_until(lambda: overlay.called)
                     else:
                         self.wait_until(lambda: settings_dialog.called)
-                controller.stop_live.assert_called_once_with()
+                stop.assert_called_once_with()
                 if action == "calibrate":
+                    controller.emergency_stop.assert_not_called()
                     controller.live_reader.wait.assert_called_once_with(
                         timeout_seconds=5.0, include_speech=False
                     )
@@ -4027,7 +4035,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIsNone(tray._live_stop_generation)
         self.assertIsNone(tray._live_stop_continuation)
         self.assertIn(
-            "Unable to stop live capture: pool unavailable",
+            "Unable to stop reading: pool unavailable",
             tray.dashboard.status.text(),
         )
         self.assertTrue(tray.dashboard.live_button.isEnabled())
@@ -4136,7 +4144,7 @@ class TrayApplicationTest(unittest.TestCase):
         pool.run_next()
         self.wait_until(lambda: play.called)
         play.assert_called_once_with()
-        controller.stop_live.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         self.assertFalse(controller.is_live_running)
         controller.toggle_live.assert_not_called()
@@ -4261,7 +4269,7 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
-        controller.stop_live.side_effect = lambda: setattr(
+        controller.emergency_stop.side_effect = lambda: setattr(
             controller, "is_live_running", False
         )
         tray_application = TrayApplication(
@@ -4294,7 +4302,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        controller.stop_live.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
@@ -6548,7 +6556,7 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
-        controller.stop_live.side_effect = lambda: setattr(
+        controller.emergency_stop.side_effect = lambda: setattr(
             controller, "is_live_running", False
         )
         tray_application = TrayApplication(
@@ -6576,7 +6584,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        controller.stop_live.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
@@ -6644,7 +6652,7 @@ class TrayApplicationTest(unittest.TestCase):
             return controller.is_live_running
 
         controller.toggle_live.side_effect = toggle_live
-        controller.stop_live.side_effect = lambda: setattr(
+        controller.emergency_stop.side_effect = lambda: setattr(
             controller, "is_live_running", False
         )
         tray_application = TrayApplication(
@@ -6661,7 +6669,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(lambda: dialog.exec.called and controller.is_live_running)
 
         self.assertTrue(controller.is_live_running)
-        controller.stop_live.assert_called_once_with()
+        controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
@@ -9032,7 +9040,10 @@ class TrayApplicationTest(unittest.TestCase):
         self.wait_until(lambda: not tray.live_stop_runner.active)
 
         self.assertTrue(dialog.calibrate_button.isEnabled())
-        self.assertIn("reader stuck", dialog.warning.toPlainText())
+        self.assertEqual(
+            dialog.warning.toPlainText(),
+            "Unable to stop reading: reader stuck",
+        )
         tray.shutdown()
 
     def test_diagnostics_can_change_region_and_refresh_after_calibration(self):
@@ -9336,6 +9347,229 @@ class TrayApplicationTest(unittest.TestCase):
             )
             tray.shutdown()
 
+    def reading_stop_with_running_speech(self, *, live=True, interrupt=True):
+        speech, queued = Future(), Future()
+        speech.set_running_or_notify_cancel()
+        self.addCleanup(lambda: speech.set_result(None) if not speech.done() else None)
+        reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=Mock(),
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            report_error=Mock(),
+            interrupt_speech=Mock(
+                side_effect=lambda: (
+                    speech.set_result(None) if interrupt and not speech.done() else None
+                )
+            ),
+        )
+        reader.current_chunk = SpeechChunk(0, "Alice", "Current speech")
+        reader.speech_futures[speech] = reader.current_chunk
+        reader.speech_futures[queued] = SpeechChunk(0, "Alice", "Queued speech")
+
+        def speech_finished(future):
+            reader.speech_futures.pop(future, None)
+            if future is speech:
+                reader.current_chunk = None
+
+        speech.add_done_callback(speech_finished)
+        queued.add_done_callback(speech_finished)
+        for attribute in ("capture_future", "ocr_future"):
+            future = Future()
+            if live:
+                future.set_running_or_notify_cancel()
+            else:
+                future.set_result(None)
+            setattr(reader, attribute, future)
+
+        class ReadingController(Mock):
+            def wait_for_reading(self, timeout_seconds=5.0, *, include_speech=True):
+                self.wait_requested(
+                    timeout_seconds=timeout_seconds, include_speech=include_speech
+                )
+                self.live_reader.wait(timeout_seconds=0.02, include_speech=include_speech)
+
+        controller = ReadingController(
+            is_ready=True,
+            is_live_running=live,
+            is_one_shot_read_running=False,
+            live_reader=reader,
+        )
+        controller.runtime_control_snapshot.side_effect = reader.runtime_control_snapshot
+
+        def stop_capture():
+            reader.stop()
+            controller.is_live_running = False
+            for future in (reader.capture_future, reader.ocr_future):
+                if not future.done():
+                    future.set_result(None)
+
+        controller.stop_live.side_effect = stop_capture
+
+        def stop_reading():
+            reader.emergency_stop()
+            stop_capture()
+
+        controller.emergency_stop.side_effect = stop_reading
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        return tray, controller, reader, speech, queued, pool
+
+    def test_preparation_interrupts_running_speech_and_queue_before_opening_once(self):
+        for live in (True, False):
+            with self.subTest(live=live):
+                tray, controller, reader, speech, queued, pool = (
+                    self.reading_stop_with_running_speech(live=live)
+                )
+                self.assertFalse(speech.cancel())
+                with patch.object(tray, "open_pregeneration") as opened:
+                    TrayApplication.open_pregeneration(tray)
+                    TrayApplication.open_pregeneration(tray)
+                    opened.assert_not_called()
+                    self.assertTrue(tray.live_stop_runner.active)
+                    pool.run_next()
+                    self.wait_until(lambda: opened.called)
+                    self.application.processEvents()
+                    opened.assert_called_once_with()
+                controller.emergency_stop.assert_called_once_with()
+                controller.stop_live.assert_not_called()
+                controller.wait_requested.assert_called_once_with(
+                    timeout_seconds=5.0, include_speech=True
+                )
+                reader.interrupt_speech.assert_called_once_with()
+                self.assertTrue(speech.done())
+                self.assertFalse(speech.cancelled())
+                self.assertTrue(queued.cancelled())
+                self.assertTrue(reader.capture_future.done())
+                self.assertTrue(reader.ocr_future.done())
+                self.assertFalse(tray._needs_modal_stop())
+                self.assertIsNone(tray._live_stop_continuation)
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_settings_and_history_interrupt_speech_before_opening(self):
+        for target in ("settings", "history"):
+            with self.subTest(target=target):
+                tray, controller, reader, speech, queued, pool = (
+                    self.reading_stop_with_running_speech()
+                )
+                controller.unresolved_live_speakers.return_value = ()
+                controller.toggle_live.side_effect = lambda: (
+                    setattr(controller, "is_live_running", True) or True
+                )
+                dialog = Mock()
+
+                def inspect_dialog():
+                    self.assertFalse(controller.is_live_running)
+                    self.assertTrue(speech.done())
+                    return QDialog.DialogCode.Rejected
+
+                dialog.exec.side_effect = inspect_dialog
+                with (
+                    patch.object(tray, "_create_settings_dialog", return_value=dialog),
+                    patch("vntts.app.DialogueHistoryDialog", return_value=dialog),
+                ):
+                    getattr(tray, f"open_{target}")()
+                    dialog.exec.assert_not_called()
+                    pool.run_next()
+                    self.wait_until(lambda: dialog.exec.called)
+                    dialog.exec.assert_called_once_with()
+                controller.emergency_stop.assert_called_once_with()
+                controller.stop_live.assert_not_called()
+                reader.interrupt_speech.assert_called_once_with()
+                self.assertTrue(queued.cancelled())
+                if target == "history":
+                    controller.toggle_live.assert_called_once_with()
+                    self.assertTrue(controller.is_live_running)
+                else:
+                    controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_preparation_real_speech_timeout_discards_continuation_without_retry(self):
+        tray, controller, reader, speech, queued, pool = (
+            self.reading_stop_with_running_speech(interrupt=False)
+        )
+        with patch.object(tray, "open_pregeneration") as opened:
+            TrayApplication.open_pregeneration(tray)
+            pool.run_next()
+            self.wait_until(lambda: not tray.live_stop_runner.active)
+            self.assertEqual(
+                tray.dashboard.status.text(),
+                "Unable to stop reading: Timed out while waiting for reading to stop. "
+                "Please try again.",
+            )
+            self.assertFalse(speech.done())
+            self.assertTrue(queued.cancelled())
+            self.assertTrue(reader.capture_future.done())
+            self.assertTrue(reader.ocr_future.done())
+            self.assertTrue(tray._modal_stop_pending)
+            self.assertIsNone(tray._live_stop_continuation)
+            opened.assert_not_called()
+            speech.set_result(None)
+            self.application.processEvents()
+            self.assertEqual(pool.tasks, [])
+            opened.assert_not_called()
+        controller.emergency_stop.assert_called_once_with()
+        controller.wait_requested.assert_called_once_with(
+            timeout_seconds=5.0, include_speech=True
+        )
+        controller.toggle_live.assert_not_called()
+
+    def test_capture_only_stop_preserves_running_speech_and_queue(self):
+        tray, controller, reader, speech, queued, _pool = (
+            self.reading_stop_with_running_speech()
+        )
+        self.assertTrue(tray._wait_for_live_reader(reader, wait_for_speech=False))
+        controller.stop_live.assert_called_once_with()
+        controller.emergency_stop.assert_not_called()
+        controller.wait_requested.assert_called_once_with(
+            timeout_seconds=5.0, include_speech=False
+        )
+        reader.interrupt_speech.assert_not_called()
+        self.assertFalse(speech.done())
+        self.assertFalse(queued.done())
+        self.assertTrue(reader.capture_future.done())
+        self.assertTrue(reader.ocr_future.done())
+
+    def test_live_stop_errors_preserve_details_and_explain_empty_exceptions(self):
+        for error, detail in (
+            (
+                TimeoutError(),
+                "Timed out while waiting for reading to stop. Please try again.",
+            ),
+            (TimeoutError("reader stuck"), "reader stuck"),
+            (RuntimeError(), "RuntimeError"),
+            (RuntimeError("backend unavailable"), "backend unavailable"),
+        ):
+            with self.subTest(error=repr(error)):
+                controller = Mock(is_ready=True, is_live_running=True)
+                controller.live_reader.wait.side_effect = error
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.live_stop_runner.thread_pool = ImmediateTaskPool()
+                opened = Mock()
+                tray._stop_live_then(opened, "Stopping reading...")
+                self.wait_until(lambda: not tray.live_stop_runner.active)
+                self.assertEqual(
+                    tray.dashboard.status.text(), f"Unable to stop reading: {detail}"
+                )
+                self.assertIsNone(tray._live_stop_continuation)
+                opened.assert_not_called()
+                tray.shutdown()
+
     def test_live_modal_stop_wait_does_not_block_qt_events(self):
         controller = Mock()
         controller.is_live_running = True
@@ -9345,7 +9579,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.stop_live.side_effect = toggle_live
+        controller.emergency_stop.side_effect = toggle_live
         controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,
@@ -9379,7 +9613,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.stop_live.side_effect = toggle_live
+        controller.emergency_stop.side_effect = toggle_live
         controller.live_reader.wait.side_effect = TimeoutError("reader stuck")
         tray_application = TrayApplication(
             self.application,
@@ -9399,13 +9633,14 @@ class TrayApplicationTest(unittest.TestCase):
         opened.assert_not_called()
         self.assertTrue(tray_application.history_action.isEnabled())
         self.assertIn(
-            "Unable to stop live capture", tray_application.status_action.text()
+            "Unable to stop reading: reader stuck",
+            tray_application.status_action.text(),
         )
         controller.live_reader.wait.side_effect = None
         resumed = Mock()
         tray_application._stop_live_then(resumed, "Retrying stop...")
         self.wait_until(lambda: resumed.called)
-        self.assertEqual(controller.stop_live.call_count, 2)
+        self.assertEqual(controller.emergency_stop.call_count, 2)
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 
@@ -9414,7 +9649,7 @@ class TrayApplicationTest(unittest.TestCase):
             with self.subTest(target=target):
                 controller = Mock(is_ready=True, is_live_running=True)
                 controller.live_reader.runtime_control_snapshot.return_value = {}
-                controller.stop_live.side_effect = lambda: setattr(
+                controller.emergency_stop.side_effect = lambda: setattr(
                     controller, "is_live_running", False
                 )
                 controller.live_reader.wait.side_effect = TimeoutError("speech busy")
@@ -9505,6 +9740,8 @@ class TrayApplicationTest(unittest.TestCase):
         controller.drain.assert_called_once_with(
             timeout_seconds=5.0, include_speech=True
         )
+        controller.emergency_stop.assert_called_once_with()
+        controller.stop_live.assert_not_called()
         controller.live_reader.wait.assert_not_called()
         controller.toggle_live.assert_not_called()
 
@@ -9571,7 +9808,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return True
 
-        controller.stop_live.side_effect = stop_live
+        controller.emergency_stop.side_effect = stop_live
         tray = TrayApplication(
             self.application,
             AppSettings(),
@@ -9609,6 +9846,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.application.processEvents()
 
         controller.stop_live.assert_not_called()
+        controller.emergency_stop.assert_not_called()
         controller.live_reader.wait.assert_not_called()
         opened.assert_not_called()
 
@@ -9874,7 +10112,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.is_live_running = False
             return False
 
-        controller.stop_live.side_effect = toggle_live
+        controller.emergency_stop.side_effect = toggle_live
         controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,
