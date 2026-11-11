@@ -403,10 +403,12 @@ recovery separate from product defects.
       Key-down followed completed speech by1.75s, held51ms; both PID focus probes
       matched. The50ms hold was already installed; later capture errors do not
       explain this stall. Raw source has no interpreted wait/choice before11,
-      but unnamed fields do not establish game input readiness. At the combined
-      run, qualify a temporary passive process-scoped Space observer against
-      actual test-window key events, then correlate game-destined down/up,
-      modifiers, key-window state and video with existing dispatch timestamps.
+      but unnamed fields do not establish game input readiness. The temporary
+      passive process-scoped Space observer is qualified against spontaneous
+      native Qt key events, including ordered down/up, destination and cleanup.
+      At the combined run, use the local `space_observer.py` beside the audited
+      evidence to correlate game-destined down/up, modifiers, key-window state
+      and video with existing dispatch timestamps.
       Preserve observer health; no callback is not proof of loss. A destination
       tap proves routing, not game consumption; sample the stalled game thread
       if needed. No permanent tracing, blind repeat, longer hold or destination
