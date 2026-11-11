@@ -420,13 +420,21 @@ recovery separate from product defects.
       Use diagnostic `4cda5996f1fb4238be9ff45ab0375852` and the manual-input marker
       in `.codex/investigations/story-region-20261110/` to separate operator actions.
       Audited evidence: `.codex/investigations/space-stall-20261111/results.md`.
-- [ ] **Investigate text-detector inference timeout under background generation.**
-      During confirmed fresh MOSS renders, discovery hit `Screen text detection
-      timed out`; its worker was replaced and reading resumed without manual input.
-      Measure child inference versus startup/transport/scheduling on the same
-      loaded frame before changing worker budgets or recognition behavior. Check
-      queue/order across recovery. Evidence: diagnostic
-      `4cda5996f1fb4238be9ff45ab0375852` and the current live issue notes.
+- [ ] **Validate the text-detector timeout during the combined native run.**
+      Offline retained short-frame and reconstructed source21 movie-frame probes
+      under genuine MOSS generation did not reproduce the5s deadline; the loaded
+      long frame took up to2.27s, parent serialization up to61ms. Current models
+      reuse CPU sessions with one thread. The historical generation11 candidate
+      preserves source21 speech/key and successor22 order, but typed journals do
+      not identify the timeout stage or prove a detector PID replacement.
+      In the combined run, use temporary phase tracing for queue/startup, parent
+      serialization, child detector/recognizer and response delivery, with child
+      PID and CPU/wall timing on the actual failed frame. Sample a slow native
+      stage while alive if needed; CPU/wall difference alone proves neither
+      scheduler nor memory cause. Verify recovery order and one speech/key.
+      Do not change budgets/recognition or add permanent metrics without a proven
+      boundary. Evidence: diagnostic `4cda5996f1fb4238be9ff45ab0375852` and
+      `.codex/investigations/text-detector-timeout-20261111/results.md`.
 - [ ] **Explain and fix failed quiescence when reopening preparation during reading.**
       After closing a completed background job without activation, Choose stories
       and prepare audio requested a live Stop but showed `Unable to stop live
