@@ -359,6 +359,91 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.assertFalse(overlay.bounds_editor.isVisible())
         save.assert_not_called()
 
+    def test_exact_bounds_error_is_visible_until_bounds_change_or_reset(self):
+        save = Mock(
+            side_effect=OSError(
+                "disk <full>: The story area must include the entire dialogue region"
+            )
+        )
+        failed = Mock()
+        overlay = DialogRegionOverlay(
+            save_region=save, capture_region=DialogRegion(0.1, 0.5, 0.8, 0.4)
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.save_failed.connect(failed)
+        overlay.resize(800, 450)
+        overlay.show()
+        font = overlay.bounds_error.font()
+        font.setPointSize(20)
+        overlay.bounds_error.setFont(font)
+
+        overlay._review_bounds()
+        self.application.processEvents()
+        self.assertTrue(overlay.bounds_error.isVisible())
+        self.assertEqual(overlay.bounds_error.text(), overlay.save_error)
+        self.assertIn("disk <full>", overlay.bounds_error.text())
+        self.assertEqual(overlay.bounds_error.textFormat(), Qt.TextFormat.PlainText)
+        self.assertTrue(overlay.bounds_error.wordWrap())
+        self.assertGreater(
+            overlay.bounds_error.height(), overlay.bounds_error.fontMetrics().height()
+        )
+        self.assertGreaterEqual(
+            overlay.bounds_error.height(),
+            overlay.bounds_error.heightForWidth(overlay.bounds_error.width()),
+        )
+        self.assertTrue(overlay.bounds_error.accessibleName())
+        failed.assert_called_once_with(overlay.save_error)
+
+        overlay._review_bounds()
+        self.assertTrue(overlay.bounds_error.isVisible())
+        self.assertEqual(failed.call_count, 2)
+        overlay.bounds_inputs["Left"].setValue(0)
+        self.assertIsNone(overlay.save_error)
+        self.assertTrue(overlay.bounds_error.isHidden())
+
+        overlay._review_bounds()
+        self.assertTrue(overlay.bounds_error.isVisible())
+        overlay._reset_selection()
+        self.assertIsNone(overlay.save_error)
+        self.assertTrue(overlay.bounds_error.isHidden())
+
+        overlay._review_bounds()
+        save.side_effect = None
+        overlay._review_bounds()
+        self.assertIsNone(overlay.save_error)
+        self.assertTrue(overlay.bounds_error.isHidden())
+        self.assertIsNotNone(overlay.saved_region)
+
+    def test_story_numeric_bounds_allow_exact_dialogue_edge_after_correction(self):
+        saved = []
+        overlay = DialogRegionOverlay(
+            background=Image.new("RGB", (1051, 816)),
+            capture_region=DialogRegion(0, 0, 1, 1),
+            story_dialogue_region=DialogRegion(200 / 1051, 555 / 816, 750 / 1051, 160 / 816),
+            reviewer=lambda _image: QDialog(),
+            save_region=saved.append,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(1051, 816)
+        overlay.show()
+        for name, value in (("Left", 80), ("Top", 220), ("Width", 869), ("Height", 500)):
+            overlay.bounds_inputs[name].setValue(value)
+
+        overlay._review_bounds()
+        self.assertIn("include the entire dialogue", overlay.bounds_error.text())
+        self.assertTrue(overlay.bounds_error.isVisible())
+        self.assertEqual(saved, [])
+
+        overlay.bounds_inputs["Width"].setValue(870)
+        self.assertIsNone(overlay.save_error)
+        self.assertTrue(overlay.bounds_error.isHidden())
+        overlay._review_bounds()
+        self.assertIsNotNone(overlay._review)
+        overlay._review.accept()
+        self.assertEqual(saved, [DialogRegion(80 / 1051, 220 / 816, 870 / 1051, 500 / 816)])
+
     def test_one_selection_reviews_and_saves_the_whole_capture(self):
         save = Mock()
         reviewer = Mock(return_value=_ReviewDecision(QDialog.DialogCode.Accepted))

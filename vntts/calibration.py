@@ -487,6 +487,7 @@ class DialogRegionOverlay(QWidget):
             self.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow),
         )
         layout = QFormLayout(self.bounds_editor)
+        self._bounds_rectangle: QRect | None = None
         self.bounds_inputs: dict[str, QSpinBox] = {}
         for name in ("Left", "Top", "Width", "Height"):
             control = QSpinBox()
@@ -495,6 +496,13 @@ class DialogRegionOverlay(QWidget):
             control.valueChanged.connect(self._bounds_changed)
             self.bounds_inputs[name] = control
             layout.addRow(f"{name} (pixels)", control)
+        self.bounds_error = QLabel()
+        self.bounds_error.setTextFormat(Qt.TextFormat.PlainText)
+        self.bounds_error.setWordWrap(True)
+        self.bounds_error.setFixedWidth(300)
+        self.bounds_error.setAccessibleName("Calibration error")
+        self.bounds_error.hide()
+        layout.addRow(self.bounds_error)
         review = QPushButton("Review region")
         set_action_icon(review, "scan")
         review.clicked.connect(self._review_bounds)
@@ -525,6 +533,11 @@ class DialogRegionOverlay(QWidget):
             rectangle = (
                 QRect(self.origin, self.current).normalized().intersected(self.rect())
             )
+        if self._bounds_rectangle is not None and rectangle != self._bounds_rectangle:
+            self.save_error = None
+        self._bounds_rectangle = rectangle
+        self.bounds_error.setText(self.save_error or "")
+        self.bounds_error.setVisible(bool(self.save_error))
         values = (
             rectangle.left(),
             rectangle.top(),
@@ -692,6 +705,7 @@ class DialogRegionOverlay(QWidget):
         if self._closed:
             return
         self.save_error = None
+        self._sync_bounds_editor()
         self.saved_region = region
         self.selected.emit(region)
         self.close()
@@ -699,7 +713,11 @@ class DialogRegionOverlay(QWidget):
     def _selection_failed(self, message: str) -> None:
         if self._closed:
             return
+        self._sync_bounds_editor()
         self.save_error = message
+        self.bounds_error.setText(self.save_error)
+        self.bounds_error.show()
+        self.bounds_editor.adjustSize()
         self.save_failed.emit(message)
         self.show()
         self.raise_()

@@ -152,11 +152,13 @@ class DialogRegion:
         return image.crop(self._pixel_box(*image.size))
 
     def contains(self, other: "DialogRegion") -> bool:
+        # Normalized edge sums can differ by roundoff even at the same pixel.
+        tolerance = 1e-12
         return (
-            self.left <= other.left
-            and self.top <= other.top
-            and other.left + other.width <= self.left + self.width
-            and other.top + other.height <= self.top + self.height
+            self.left <= other.left + tolerance
+            and self.top <= other.top + tolerance
+            and other.left + other.width <= self.left + self.width + tolerance
+            and other.top + other.height <= self.top + self.height + tolerance
         )
 
     def capture_box(self, monitor: Mapping[str, int]) -> dict[str, int]:

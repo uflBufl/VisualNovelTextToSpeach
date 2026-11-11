@@ -175,6 +175,21 @@ class ScreenTextDetectorTest(unittest.TestCase):
         detector._crop_line.assert_not_called()
         detector._recognizer.assert_not_called()
 
+    def test_exact_edge_line_is_recognized_but_one_pixel_overrun_is_excluded(self):
+        detector = self.detector(
+            [
+                [[10, 20], [30, 20], [30, 30], [10, 30]],
+                [[10, 40], [31, 40], [31, 50], [10, 50]],
+            ]
+        )
+        lines = detector.detect(
+            Image.new("RGB", (100, 100)),
+            allowed_region=DialogRegion(0, 0, 0.3, 1),
+        )
+        self.assertEqual([line.text for line in lines], ["Text"])
+        self.assertEqual(detector._crop_line.call_count, 1)
+        self.assertEqual(len(detector._recognizer.call_args.args[0]), 1)
+
     def test_sorts_lines_and_preserves_low_confidence_candidates(self):
         detector = self.detector(
             [

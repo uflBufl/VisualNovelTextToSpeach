@@ -1,7 +1,9 @@
 import json
+import math
 import os
 import shutil
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
@@ -103,6 +105,44 @@ class OCRPreprocessingTest(unittest.TestCase):
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_exact_pixel_edge_contains_dialogue_despite_normalized_roundoff(self):
+        story = DialogRegion(80 / 1051, 220 / 816, 870 / 1051, 500 / 816)
+        dialogue = DialogRegion(200 / 1051, 555 / 816, 750 / 1051, 160 / 816)
+        self.assertTrue(story.contains(dialogue))
+        for scale in (1, 2):
+            with self.subTest(scale=scale):
+                monitor = {"width": 1051 * scale, "height": 816 * scale}
+                outer = story.capture_box(monitor)
+                inner = dialogue.capture_box(monitor)
+                self.assertEqual(
+                    outer["left"] + outer["width"],
+                    inner["left"] + inner["width"],
+                )
+                self.assertEqual(inner["width"], 750 * scale)
+
+    def test_containment_absorbs_roundoff_at_each_edge(self):
+        outer = DialogRegion(0.2, 0.2, 0.4, 0.4)
+        for inner in (
+            replace(outer, left=math.nextafter(outer.left, -math.inf)),
+            replace(outer, top=math.nextafter(outer.top, -math.inf)),
+            replace(outer, width=math.nextafter(outer.width, math.inf)),
+            replace(outer, height=math.nextafter(outer.height, math.inf)),
+        ):
+            with self.subTest(inner=inner):
+                self.assertTrue(outer.contains(inner))
+
+    def test_containment_still_rejects_real_overruns_at_each_edge(self):
+        outer = DialogRegion(0.2, 0.2, 0.4, 0.4)
+        for delta in (1 / 8192, 1e-9):
+            for inner in (
+                replace(outer, left=outer.left - delta),
+                replace(outer, top=outer.top - delta),
+                replace(outer, width=outer.width + delta),
+                replace(outer, height=outer.height + delta),
+            ):
+                with self.subTest(delta=delta, inner=inner):
+                    self.assertFalse(outer.contains(inner))
+
     def test_unknown_saved_space_blocks_reading_instead_of_silently_using_default(self):
         from vntts.ocr import CaptureRegionNeedsCalibration, get_dialog_region
 

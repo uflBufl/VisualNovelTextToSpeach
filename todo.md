@@ -311,7 +311,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree and implement the confirmed calibration/UI repairs below,
+Next action: agree and implement the remaining UI repairs below,
 then investigate the reproduced detector timeout. The combined chapter reached
 its terminal scene; ordinary dialogue played in order without manual recovery.
 Terminal quotes were excluded by the operator's too-narrow story area, so their
@@ -319,13 +319,6 @@ live rerun with corrected bounds remains open. Evidence:
 `.codex/investigations/combined-campaign-20261111/`. Keep calibration mistakes and
 separate control episodes distinct from product failures.
 
-- [ ] **RUN-11-CAL - Accept an exactly enclosing story-area boundary.**
-      Numeric calibration with a shared right edge is rejected because normalized
-      floating-point sums differ at machine precision. Fix the geometry contract
-      consistently across validation and persisted/cropped regions, preserving
-      rejection of genuinely clipped areas. Also verify review failure is visible
-      beside the coordinate editor. The wider valid area was saved through the UI;
-      terminal quotes still need a live rerun with corrected bounds.
 - [ ] **RUN-11-UI-01 - Correct the prepared-audio activation guidance.**
       Activation already opens Reading, whose action is Read, but the banner
       still tells the user to open Reading and click Prepare reading. Align the
@@ -343,6 +336,8 @@ separate control episodes distinct from product failures.
       terminal-caption baseline; exact media and evidence limits are in
       `.codex/investigations/story-region-20261110/terminal-check-e4125.md`.
       Remaining live gates:
+      - repeat the terminal quotes with corrected story bounds that contain each
+        full line; the previous combined run's narrow calibration excluded them;
       - source-free TTS without catalog/resources, using an available narrator;
       - multiple captions admitted while earlier accepted speech is still queued,
         then return to unchanged lower dialogue without repetition. The current

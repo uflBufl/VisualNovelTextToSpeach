@@ -35,6 +35,28 @@ class StoryRegionPersistenceTest(unittest.TestCase):
         self.assertFalse(self.dialogue.contains(self.story))
         self.assertFalse(self.story.contains(DialogRegion(0, 0.7, 0.8, 0.2)))
 
+    def test_exact_edge_permission_survives_profile_and_global_reload(self):
+        story = DialogRegion(80 / 1051, 220 / 816, 870 / 1051, 500 / 816)
+        dialogue = DialogRegion(200 / 1051, 555 / 816, 750 / 1051, 160 / 816)
+        for use_profile in (False, True):
+            with self.subTest(profile=use_profile), TemporaryDirectory() as directory:
+                root = Path(directory)
+                capture = root / "capture.json"
+                store = GameProfileStore(root / "profiles.json")
+                if use_profile:
+                    profile = store.create("Game", self.settings, region=dialogue)
+                    store.update_story_region(profile.id, story)
+                    settings = profile.apply(self.settings)
+                    store = GameProfileStore.load(store.path)
+                else:
+                    settings = self.settings
+                    save_dialog_region(dialogue, capture)
+                    save_story_region(
+                        story, capture, capture_mode="window", game_window_title="Game"
+                    )
+                with patch.dict(os.environ, {"VNTTS_DIALOG_REGION_FILE": str(capture)}):
+                    self.assertEqual(resolve_story_region(settings, store), story)
+
     def test_profile_permission_round_trips_and_does_not_leak_to_new_profiles(self):
         with TemporaryDirectory() as directory:
             store = GameProfileStore(Path(directory) / "profiles.json")
