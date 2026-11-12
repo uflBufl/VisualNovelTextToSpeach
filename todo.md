@@ -311,16 +311,30 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: qualify speaker-aware short-dialogue matching in the next agreed run.
+Next action: agree the ordinary-reading exact-source authority repair below.
 Keep native acceptance to the remaining scenarios; do not repeat the completed
 ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
 
-- [ ] **RUN-12-01 - Native verification of speaker-aware short-dialogue matching.**
-      In the next agreed run, confirm Hedone / `Eurus.` keeps its canonical
-      identity and uses the current prepared recording despite Elma's later
-      `Eurus ... Eurus ...`. Require no unnecessary live synthesis, repeated speech
-      or duplicate keys. Include an unfinished same-speaker phrase and absent/noisy
-      nameplate; automated matching/admission checks do not replace native playback.
+- [ ] **RUN-12-03 - Repair ordinary-reading authority for a complete low-confidence source line.**
+      In the native speaker rerun, full Elma / `Eurus ... Eurus ...` remained
+      blocked at dialogue confidence52.5 with independently recognized speaker95.
+      With sequence off, low-confidence authority is restricted to current
+      canonical59, so exact successor60 cannot be considered; the dialogue gate
+      also discards the confident name. Agree the shared exact/completeness scope
+      change before implementation. Preserve raw confidence, ordinary automatic
+      transitions/skips, source-free behavior and strict sequence authority;
+      do not lower the global threshold or permit a global fuzzy bypass.
+      Replay the retained evidence, check wrong/noisy/missing speaker and incomplete
+      prefixes, then qualify real playback of60 in the next agreed combined run.
+- [ ] **RUN-12-02 - Locate the processing pause after a successful dialogue transition.**
+      In sessionb5bcc76ab99946deaee52f7c9e33e893, the single successful Space after17
+      reached the selected game and the movie showed18, while the reading timeline
+      had a34.218s processing gap before auto-advance-timeout. Video/animation
+      continued; later admission recovered without missing or repeated speech.
+      The blocking operation is not established. Correlate existing native/runtime
+      evidence and obtain a contemporaneous stack if it recurs before choosing
+      a repair. Post-Stop sampler traces are not evidence of this active-read gap.
+      Evidence: `.codex/investigations/speaker-rerun-20261112/timeout17-audit.md`.
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh
