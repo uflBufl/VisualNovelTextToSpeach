@@ -68,6 +68,50 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         )
         return result, resolution.get("line")
 
+    def test_named_complete_line_keeps_prepared_route_despite_other_speaker_continuation(
+        self,
+    ):
+        source = self.snapshot.sources[0]
+        continuation = self.text[:-1] + " And we should leave now."
+        other = ChapterDialogue(
+            "other-speaker",
+            "other-chapter",
+            1,
+            "Bea",
+            continuation,
+            text_sha256(continuation),
+        )
+        self.snapshot = PreparedAudioSnapshot(
+            (
+                replace(
+                    source,
+                    preloader=ChapterVoicePreloader(
+                        (*source.preloader.dialogue, other)
+                    ),
+                ),
+            )
+        )
+        self.controller._refresh_prepared_audio(force=True)
+        for previous_line in (None, other.line_id):
+            with self.subTest(previous_line=previous_line):
+                preloader = self.controller.chapter_voice_preloader
+                preloader.current_match = None
+                if previous_line:
+                    preloader.select_line_id(previous_line)
+                admitted, line = self.resolve(self.text)
+                self.assertEqual(line.line_id, self.line_id)
+                route = self.controller._prepare_live_chunk(
+                    SpeechChunk(
+                        1,
+                        admitted.character,
+                        admitted.text,
+                        line_id=line.line_id,
+                    )
+                )
+                self.assertIsInstance(route, GeneratedAudioRoute)
+                self.assertEqual(route.trace.line_id, self.line_id)
+                self.live.prepare_playback.assert_not_called()
+
     def test_ambiguous_phrase_stays_live_after_next_phrase_identifies_story(self):
         source = self.snapshot.sources[0]
         duplicate = "We should leave this place."

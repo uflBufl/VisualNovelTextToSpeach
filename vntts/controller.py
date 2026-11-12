@@ -1545,6 +1545,19 @@ class AppController:
                 resolution["match_result"] = "empty"
             return result
         confident = confidence >= self.settings.ocr_minimum_confidence
+        speaker_confidence = (
+            result.confidence
+            if result.speaker_confidence is None
+            else result.speaker_confidence
+        )
+        speaker = (
+            result.character
+            if confident
+            and speaker_confidence >= self.settings.ocr_minimum_confidence
+            and not is_narrator(result.character)
+            and not result.speaker_note
+            else ""
+        )
         self._refresh_prepared_audio()
         with self.story_cursor_lock:
             preloader = self.chapter_voice_preloader
@@ -1623,7 +1636,7 @@ class AppController:
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
             line, match = preloader.resolve_complete_among(
-                "", result.text, line_ids, update_context=False
+                speaker, result.text, line_ids, update_context=False
             )
             if (
                 line is None
@@ -1633,7 +1646,7 @@ class AppController:
                 and preloader.current_match is not None
             ):
                 line, match = preloader.resolve_complete_among(
-                    "",
+                    speaker,
                     result.text,
                     (row.line_id for row in preloader.dialogue if row.line_id),
                     update_context=False,
@@ -1643,7 +1656,7 @@ class AppController:
                 match = "ocr-uncertain"
             if line is None and confident:
                 chapter_line, chapter_match = (
-                    self._resolve_chapter_exact_sequence_line_locked("", result.text)
+                    self._resolve_chapter_exact_sequence_line_locked(speaker, result.text)
                 )
                 if chapter_line is not None:
                     line, match = chapter_line, chapter_match

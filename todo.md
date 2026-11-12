@@ -311,20 +311,16 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the short-dialogue matching repair below before implementation.
+Next action: agree selected-window recording resize support below.
 Keep native acceptance to the remaining scenarios; do not repeat the completed
 ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
 
-- [ ] **RUN-12-01 - Exact short dialogue loses its prepared identity.**
-      In The Histories, Hedone / `Eurus.` is recognized correctly with high
-      confidence and has a current compatible recording. The completeness
-      resolver nevertheless returns `expected-incomplete` because Elma's later
-      `Eurus ... Eurus ...` is a possible continuation. The short-text recovery
-      threshold then leaves the line unresolved, causing unnecessary live synthesis.
-      Agree a repair to candidate selection/completeness that respects reliable
-      speaker evidence and preserves genuine unfinished-text handling. Verify exact
-      short lines, longer continuations, absent/noisy speakers and real ambiguity;
-      then confirm prepared playback without duplicate speech or keys.
+- [ ] **RUN-12-01 - Native verification of speaker-aware short-dialogue matching.**
+      In the next agreed run, confirm Hedone / `Eurus.` keeps its canonical
+      identity and uses the current prepared recording despite Elma's later
+      `Eurus ... Eurus ...`. Require no unnecessary live synthesis, repeated speech
+      or duplicate keys. Include an unfinished same-speaker phrase and absent/noisy
+      nameplate; automated matching/admission checks do not replace native playback.
 - [ ] **REC-12-01 - Agree selected-window recording resize support.**
       The video recorder intentionally aborts when the same selected window changes
       size; process audio and live capture are independent. Preserve PID/window

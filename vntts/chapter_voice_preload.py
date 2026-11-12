@@ -652,10 +652,17 @@ class ChapterVoicePreloader:
             full.sort(key=priority)
             best = full[0]
             peers = {item.line for item in full if priority(item) == priority(best)}
-            if priority(best)[1] < 2 and speaker:
-                named = {row for row in peers if _normalize(row.speaker) == speaker}
+            if speaker:
+                speaker_rows = {
+                    row for row in valid if _normalize(row.speaker) == speaker
+                }
+                named = peers & speaker_rows
                 if named:
                     peers = named
+                    valid = tuple(row for row in valid if row in speaker_rows)
+                    comparisons = [
+                        item for item in comparisons if item.line in speaker_rows
+                    ]
             if len(peers) != 1:
                 return finish(StoryObservationMatch(None, "expected-ambiguous"))
             row = next(iter(peers))
@@ -664,7 +671,7 @@ class ChapterVoicePreloader:
                 for item in full
                 if item.line == row and priority(item) == priority(best)
             )
-            # Every competitor counts, including one whose own guards fail.
+            # Within the supported speaker scope, failed guards still compete.
             if best.evidence.distance and any(
                 other != row
                 and compare(best.observed, other).distance < best.evidence.distance + 2
@@ -746,6 +753,18 @@ class ChapterVoicePreloader:
                     key=lambda item: (item.evidence.prefix_distance, item.noise)
                 )
                 best = prefixes[0]
+                if speaker and any(
+                    _normalize(item.line.speaker) == speaker
+                    and (item.evidence.prefix_distance, item.noise)
+                    == (best.evidence.prefix_distance, best.noise)
+                    for item in prefixes
+                ):
+                    prefixes = [
+                        item
+                        for item in prefixes
+                        if _normalize(item.line.speaker) == speaker
+                    ]
+                    best = prefixes[0]
                 best_distance = best.evidence.prefix_distance
                 peers = {
                     item.line

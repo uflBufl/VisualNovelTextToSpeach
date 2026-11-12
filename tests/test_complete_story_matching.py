@@ -187,18 +187,106 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 self.assert_resolves(canonical, observed)
         self.assert_rejects("Café.", "Buxe.")
 
-    def test_folded_candidates_are_ambiguous_despite_speaker_and_position(self):
+    def test_speaker_disambiguates_folded_candidates_without_using_position(self):
         first = dialogue("Café.", "first")
         second = dialogue("Cafè.", "second", speaker="Bea", sequence=100)
         preloader = ChapterVoicePreloader([first, second])
         previous = ChapterMatch(first.chapter, first.sequence, 1.0)
         preloader.current_match = previous
-        selected, result = preloader.resolve_complete_among(
-            "Ada", "Cafe.", [first.line_id, second.line_id]
+        for speaker, expected in (
+            ("Ada", first),
+            ("Bea", second),
+            ("", None),
+            ("?", None),
+        ):
+            with self.subTest(speaker=speaker):
+                selected, result = preloader.resolve_complete_among(
+                    speaker,
+                    "Cafe.",
+                    [first.line_id, second.line_id],
+                    update_context=False,
+                )
+                self.assertIs(selected, expected)
+                self.assertEqual(
+                    result,
+                    "expected-complete-diacritic-fold"
+                    if expected
+                    else "expected-ambiguous",
+                )
+                self.assertIs(preloader.current_match, previous)
+
+    def test_other_speaker_continuation_does_not_block_exact_short_dialogue(self):
+        short = dialogue("Eurus.", "short", speaker="Hedone")
+        long = dialogue("Eurus ... Eurus ...", "long", speaker="Elma")
+        preloader = ChapterVoicePreloader([short, long])
+        for method in (
+            preloader.resolve_complete_among,
+            preloader.resolve_bounded_among,
+        ):
+            for speaker in ("Hedone", "hedone"):
+                with self.subTest(method=method.__name__, speaker=speaker):
+                    selected, _ = method(
+                        speaker, short.text, [short.line_id, long.line_id]
+                    )
+                    self.assertIs(selected, short)
+        for speaker in ("", "Unknown", "Elma"):
+            with self.subTest(speaker=speaker):
+                selected, result = preloader.resolve_complete_among(
+                    speaker, short.text, [short.line_id, long.line_id]
+                )
+                self.assertIsNone(selected)
+                self.assertEqual(result, "expected-incomplete")
+        same_speaker = replace(long, speaker=short.speaker)
+        self.assertIsNone(
+            ChapterVoicePreloader([short, same_speaker]).resolve_complete_among(
+                short.speaker, short.text, [short.line_id, long.line_id]
+            )[0]
         )
-        self.assertIsNone(selected)
-        self.assertEqual(result, "expected-ambiguous")
-        self.assertIs(preloader.current_match, previous)
+        self.assertIsNone(
+            preloader.resolve_bounded_among(
+                short.speaker,
+                short.text,
+                [short.line_id, long.line_id],
+                allow_speaker_evidence=False,
+            )[0]
+        )
+
+    def test_speaker_scopes_fuzzy_margin_without_relaxing_same_speaker_competitors(
+        self,
+    ):
+        first = dialogue("Cat.", "first")
+        second = dialogue("Hat.", "second", speaker="Bea")
+        for speaker, expected in (("Ada", first), ("Bea", second), ("", None)):
+            with self.subTest(speaker=speaker):
+                selected, _ = ChapterVoicePreloader(
+                    [first, second]
+                ).resolve_complete_among(
+                    speaker, "Bat.", [first.line_id, second.line_id]
+                )
+                self.assertIs(selected, expected)
+        same_speaker = replace(second, speaker=first.speaker)
+        self.assertIsNone(
+            ChapterVoicePreloader([first, same_speaker]).resolve_complete_among(
+                first.speaker, "Bat.", [first.line_id, second.line_id]
+            )[0]
+        )
+
+    def test_speaker_scopes_prefix_candidates_and_returns_the_named_row(self):
+        first = dialogue("The lantern illuminated the path.", "first")
+        second = dialogue(
+            "The lantern illuminated the bridge.", "second", speaker="Bea"
+        )
+        preloader = ChapterVoicePreloader([first, second])
+        for speaker, expected in (("Ada", first), ("Bea", second), ("", None)):
+            with self.subTest(speaker=speaker):
+                match = preloader.resolve_observation_among(
+                    speaker,
+                    "The lantern illuminated",
+                    [first.line_id, second.line_id],
+                    allow_prefix=True,
+                )
+                self.assertIs(match.line, expected)
+                self.assertEqual(match.prefix, expected is not None)
 
     def test_strict_match_has_priority_over_folded_equal_candidates(self):
         first = dialogue("Café.", "first")

@@ -56,6 +56,60 @@ def observed(text, speaker="a ae Ce", dialogue_confidence=94.9):
 
 
 class StoryOCRAuthorityTest(unittest.TestCase):
+    def test_named_short_dialogue_reaches_prepared_audio_despite_other_speaker_prefix(
+        self,
+    ):
+        short = story_line("Eurus.", "Hedone", "short")
+        long = story_line("Eurus ... Eurus ...", "Elma", "long")
+        for sequence in (False, True):
+            with self.subTest(sequence=sequence):
+                controller = self.controller((short, long))
+                if sequence:
+                    self.anchor(controller, short, (long,))
+                raw = replace(
+                    observed(short.text, short.speaker), speaker_confidence=91
+                )
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    actual = controller._recognize_live_frame(
+                        CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                    )
+                self.assertIsInstance(actual, RecognizedDialog)
+                self.assertEqual(
+                    (actual.character, actual.text, actual.line_id),
+                    (short.speaker, short.text, short.line_id),
+                )
+                self.assert_generated_route(controller, short, actual)
+
+    def test_unreliable_name_does_not_hide_possible_short_text_continuation(self):
+        for raw in (
+            observed("Eurus.", "Hedone"),
+            replace(
+                observed("Eurus.", "Hedone"),
+                speaker_confidence=91,
+                speaker_note="Name OCR noise ignored",
+            ),
+            replace(observed("Eurus.", "Narrator"), speaker_confidence=None),
+            replace(observed("Eurus.", "Narrator"), speaker_confidence=91),
+        ):
+            with self.subTest(
+                character=raw.character,
+                confidence=raw.speaker_confidence,
+                note=raw.speaker_note,
+            ):
+                short = story_line("Eurus.", raw.character, "short")
+                long = story_line("Eurus ... Eurus ...", "Elma", "long")
+                controller = self.controller((short, long))
+                resolution = {}
+                self.assertIs(
+                    controller._resolve_story_ocr_result(raw, resolution=resolution),
+                    raw,
+                )
+                self.assertEqual(resolution["match_result"], "expected-incomplete")
+                self.assertIsNone(resolution["line"])
+
     def controller(self, rows):
         controller = AppController(
             AppSettings(audio_source_policy="prefer-generated"),
