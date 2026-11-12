@@ -1,4 +1,4 @@
-"""Run the generated nonactivating window for an explicitly scoped 65-second capture."""
+"""Record only an owned fixture: RGB phases, or a shorter resize/fullscreen check."""
 
 from __future__ import annotations
 
@@ -9,9 +9,13 @@ import subprocess
 from pathlib import Path
 
 
-def run(recorder: Path, fixture: Path, output: Path) -> None:
+def run(recorder: Path, fixture: Path, output: Path, *, resize: bool = False) -> None:
     subprocess.run([str(recorder), "--preflight"], check=True, timeout=5)
-    process = subprocess.Popen([str(fixture)], stdout=subprocess.PIPE, text=True)
+    process = subprocess.Popen(
+        [str(fixture), *(["--resize"] if resize else [])],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
     try:
         assert process.stdout is not None
         if not select.select([process.stdout], [], [], 5)[0]:
@@ -29,7 +33,7 @@ def run(recorder: Path, fixture: Path, output: Path) -> None:
                 "--video-only",
                 str(target["pid"]),
                 str(target["window_id"]),
-                "65",
+                "33" if resize else "65",
                 str(output),
             ],
             check=True,
@@ -43,6 +47,8 @@ def run(recorder: Path, fixture: Path, output: Path) -> None:
             process.kill()
             process.wait(timeout=3)
         if process.stdout is not None:
+            if resize and output.is_dir():
+                (output / "fixture.jsonl").write_text(process.stdout.read())
             process.stdout.close()
 
 
@@ -51,8 +57,14 @@ def main() -> None:
     parser.add_argument("recorder", type=Path)
     parser.add_argument("fixture", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--resize", action="store_true")
     args = parser.parse_args()
-    run(args.recorder.resolve(), args.fixture.resolve(), args.output.resolve())
+    run(
+        args.recorder.resolve(),
+        args.fixture.resolve(),
+        args.output.resolve(),
+        resize=args.resize,
+    )
 
 
 if __name__ == "__main__":

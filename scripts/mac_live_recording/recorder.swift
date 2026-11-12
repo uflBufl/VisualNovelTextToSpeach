@@ -165,6 +165,10 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     as? [[SCStreamFrameInfo: Any]])?.first
                 let status = (attachments?[.status] as? NSNumber)?.intValue ?? -1
                 values["frame_status"] = status
+                if let image = buffer.imageBuffer {
+                    values["width"] = CVPixelBufferGetWidth(image)
+                    values["height"] = CVPixelBufferGetHeight(image)
+                }
                 if let ticks = attachments?[.displayTime] as? NSNumber {
                     values["display_mach_ticks"] = ticks.uint64Value
                     values["display_monotonic_s"] = monotonicSeconds(ticks.uint64Value)

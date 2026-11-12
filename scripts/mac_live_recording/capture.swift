@@ -9,11 +9,20 @@ func windowBoundsMetadata(_ frame: CGRect) -> [String: Double] {
     ["x": frame.origin.x, "y": frame.origin.y, "width": frame.size.width, "height": frame.size.height]
 }
 
+func recordingDestination(_ frame: CGRect, width: Int, height: Int) -> CGRect {
+    let scale = min(CGFloat(width) / frame.width, CGFloat(height) / frame.height)
+    let fitted = CGSize(width: frame.width * scale, height: frame.height * scale)
+    return CGRect(x: (CGFloat(width) - fitted.width) / 2, y: (CGFloat(height) - fitted.height) / 2,
+                  width: fitted.width, height: fitted.height)
+}
+
 struct SelectedWindowCheck {
     let reason: String
     let evidence: [String: Any]
     let observedFrame: CGRect?
-    var accepted: Bool { reason == "unchanged" || reason == "bounds-origin-changed" }
+    var accepted: Bool {
+        ["unchanged", "bounds-origin-changed", "bounds-size-changed", "bounds-origin-and-size-changed"].contains(reason)
+    }
 }
 
 private func windowIdentityNumber(_ value: Any?, maximum: Double) -> NSNumber? {
@@ -127,6 +136,11 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
     let tts = try ttsPID.map { _ in try Recorder(label: "vntts", root: root, queue: queue) }
     let config = SCStreamConfiguration()
     config.width = width; config.height = height
+    config.destinationRect = recordingDestination(window.frame, width: width, height: height)
+    config.scalesToFit = true; config.preservesAspectRatio = true
+    let blackBackground = CGColor(gray: 0, alpha: 1)
+    config.backgroundColor = blackBackground
+    defer { withExtendedLifetime(blackBackground) {} }
     config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
     config.queueDepth = 3; config.showsCursor = false
     config.capturesAudio = !videoOnly; config.captureMicrophone = false
@@ -147,7 +161,7 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
     }
     var metadata = targetMetadata(window)
     metadata.merge(["game_pid": pid, "game_window_id": wid, "vntts_pid": ttsPID as Any? ?? NSNull(),
-        "requested_seconds": seconds, "video_size": [width, height], "clock_anchor": clockAnchor(),
+        "requested_seconds": seconds, "video_size": [width, height], "video_resize_policy": "aspect-fit-black", "clock_anchor": clockAnchor(),
         "microphone": false, "video_only": videoOnly,
         "controlling_parent_pid": safety.parentPID, "movie_fragment_interval_seconds": 10,
         "audio_scope": videoOnly ? "none" : "selected game owning application and explicit VNTTS application in separate CAF streams",
@@ -159,7 +173,7 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
     let begin = monotonicSeconds()
     var recordingBegin = begin
     var lastObservedFrame = window.frame
-    var positionChangeCount = 0
+    var geometryChangeCount = 0
     do {
         if stopRequested { throw CaptureError("Capture stopped before acquisition") }
         if let reason = safety.reason { throw CaptureError("Native safety stop: \(reason)") }
@@ -174,7 +188,11 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
         while !stopRequested && monotonicSeconds() - begin < seconds {
             try await Task.sleep(nanoseconds: 250_000_000)
             if let failure = queue.sync(execute: { game.failure ?? tts?.failure }) { throw CaptureError(failure) }
-            let checked = checkSelectedWindow(CGWindowListCopyWindowInfo(.optionIncludingWindow, wid), windowID: wid, pid: pid, frame: lastObservedFrame)
+            // Relative window ordering can omit a live window during fullscreen Space transitions.
+            let entries = (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]])?.filter {
+                ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == wid
+            }
+            let checked = checkSelectedWindow(entries, windowID: wid, pid: pid, frame: lastObservedFrame)
             if !checked.accepted {
                 var evidence = checked.evidence
                 evidence["monotonic_s"] = monotonicSeconds()
@@ -182,15 +200,19 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
                 try save()
                 throw CaptureError("Selected window target guard failed: \(checked.reason); capture aborted")
             }
-            // The stream owns a window ID, so an origin-only move cannot widen its scope.
-            if checked.reason == "bounds-origin-changed" {
+            // The desktop-independent filter follows this window; geometry never selects screen pixels.
+            if checked.reason != "unchanged" {
+                if checked.observedFrame!.size != lastObservedFrame.size {
+                    config.destinationRect = recordingDestination(checked.observedFrame!, width: width, height: height)
+                    try await gameStream.updateConfiguration(config)
+                }
                 var evidence = checked.evidence
                 evidence["monotonic_s"] = monotonicSeconds()
-                positionChangeCount += 1
-                metadata["target_position_change_count"] = positionChangeCount
-                if positionChangeCount == 1 { metadata["first_target_position_change"] = evidence }
-                metadata["last_target_position_change"] = evidence
-                metadata["target_position_changes_not_retained"] = max(0, positionChangeCount - 2)
+                geometryChangeCount += 1
+                metadata["target_geometry_change_count"] = geometryChangeCount
+                if geometryChangeCount == 1 { metadata["first_target_geometry_change"] = evidence }
+                metadata["last_target_geometry_change"] = evidence
+                metadata["target_geometry_changes_not_retained"] = max(0, geometryChangeCount - 2)
                 lastObservedFrame = checked.observedFrame!
                 try save()
             }

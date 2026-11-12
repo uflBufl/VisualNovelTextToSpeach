@@ -1,6 +1,9 @@
 import copy
+import io
+import json
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from scripts.mac_live_recording.run_fixture import run
@@ -105,3 +108,29 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no permission"):
                 run(Path("/recorder"), Path("/fixture"), Path("/output"))
         spawn.assert_not_called()
+
+    def test_resize_fixture_uses_short_capture_and_retains_geometry_after_cleanup(self):
+        fixture = Mock()
+        change = '{"second":4,"width":320,"height":222,"fullscreen":false}\n'
+        fixture.stdout = io.StringIO('{"pid":42,"window_id":88}\n' + change)
+        with (
+            TemporaryDirectory() as directory,
+            patch(
+                "scripts.mac_live_recording.run_fixture.select.select",
+                return_value=([fixture.stdout], [], []),
+            ),
+            patch(
+                "scripts.mac_live_recording.run_fixture.subprocess.Popen",
+                return_value=fixture,
+            ) as spawn,
+            patch("scripts.mac_live_recording.run_fixture.subprocess.run") as command,
+        ):
+            output = Path(directory)
+            run(Path("/recorder"), Path("/fixture"), output, resize=True)
+            self.assertEqual(spawn.call_args.args[0], ["/fixture", "--resize"])
+            self.assertEqual(command.call_args.args[0][-2:], ["33", directory])
+            self.assertEqual(
+                json.loads((output / "fixture.jsonl").read_text())["width"], 320
+            )
+        fixture.terminate.assert_called_once()
+        fixture.wait.assert_called_once_with(timeout=3)

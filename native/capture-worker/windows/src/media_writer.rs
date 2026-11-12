@@ -19,8 +19,6 @@ pub struct VideoWriter {
     sink: Option<IMFSinkWriter>,
     foundation: MediaFoundation,
     stream: u32,
-    source_width: u32,
-    source_height: u32,
     width: u32,
     height: u32,
     first_time: Option<f64>,
@@ -80,8 +78,6 @@ impl VideoWriter {
             sink: Some(sink),
             foundation,
             stream,
-            source_width,
-            source_height,
             width,
             height,
             first_time: None,
@@ -96,9 +92,11 @@ impl VideoWriter {
         pixels: &[u8],
         source_time: f64,
     ) -> Result<(), String> {
-        if (width, height) != (self.source_width, self.source_height) {
-            return Err("Selected window resized; MP4 dimensions cannot change".into());
-        }
+        crate::pixels::dimensions(
+            i32::try_from(width).unwrap_or(-1),
+            i32::try_from(height).unwrap_or(-1),
+        )
+        .map_err(|e| e.message)?;
         let expected = (width as usize)
             .checked_mul(height as usize)
             .and_then(|v| v.checked_mul(4))
@@ -117,14 +115,18 @@ impl VideoWriter {
                     created(|output| (self.foundation.create_buffer)(length, output))?;
                 let mut destination = std::ptr::null_mut();
                 buffer.Lock(&mut destination, None, None)?;
-                for row in 0..self.height as usize {
-                    std::ptr::copy_nonoverlapping(
-                        pixels.as_ptr().add(row * width as usize * 4),
-                        destination.add(row * self.width as usize * 4),
-                        self.width as usize * 4,
-                    );
-                }
+                let fitted = crate::pixels::fit_bgra(
+                    pixels,
+                    width,
+                    height,
+                    std::slice::from_raw_parts_mut(destination, length as usize),
+                    self.width,
+                    self.height,
+                );
                 buffer.Unlock()?;
+                fitted.map_err(|_| {
+                    windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG)
+                })?;
                 buffer.SetCurrentLength(length)?;
                 let sample: IMFSample = created(|output| (self.foundation.create_sample)(output))?;
                 sample.AddBuffer(&buffer)?;

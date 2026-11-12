@@ -5,6 +5,16 @@ import CoreGraphics
 import Darwin
 
 func targetGuardSelfcheck() throws {
+    for (source, expected) in [
+        (CGRect(x: 0, y: 0, width: 320, height: 200), CGRect(x: 0, y: 0, width: 640, height: 400)),
+        (CGRect(x: 0, y: 0, width: 1280, height: 800), CGRect(x: 0, y: 0, width: 640, height: 400)),
+        (CGRect(x: 0, y: 0, width: 200, height: 400), CGRect(x: 220, y: 0, width: 200, height: 400)),
+        (CGRect(x: 0, y: 0, width: 1280, height: 400), CGRect(x: 0, y: 100, width: 640, height: 200))
+    ] {
+        guard recordingDestination(source, width: 640, height: 400) == expected else {
+            throw CaptureError("Recording aspect-fit destination failed")
+        }
+    }
     guard captureSafetyFailure(parentAlive: true, freeBytes: 512 * 1024 * 1024) == nil,
           captureSafetyFailure(parentAlive: false, freeBytes: UInt64.max) == "controlling_parent_exited",
           captureSafetyFailure(parentAlive: true, freeBytes: 512 * 1024 * 1024 - 1) == "low_free_space",
@@ -23,7 +33,8 @@ func targetGuardSelfcheck() throws {
     var checks = 0
     func check(_ lookup: Any?, _ reason: String) throws {
         let result = checkSelectedWindow(lookup, windowID: windowID, pid: pid, frame: frame)
-        guard result.reason == reason, result.accepted == (reason == "unchanged" || reason == "bounds-origin-changed") else {
+        let accepted = ["unchanged", "bounds-origin-changed", "bounds-size-changed", "bounds-origin-and-size-changed"].contains(reason)
+        guard result.reason == reason, result.accepted == accepted else {
             throw CaptureError("Target selfcheck expected \(reason), received \(result.reason)")
         }
         let encoded = try JSONSerialization.data(withJSONObject: result.evidence, options: [.sortedKeys])

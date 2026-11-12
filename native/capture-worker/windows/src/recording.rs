@@ -506,6 +506,8 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
         // Initialize the encoder before acquisition so its startup cannot discard WGC frames.
         let mut writer = VideoWriter::new(&options.output_dir.join("game.mp4"), width, height)?;
         session.metadata["video_size"] = json!([width & !1, height & !1]);
+        session.metadata["video_resize_policy"] = json!("aspect-fit-black");
+        let (video_width, video_height) = (width & !1, height & !1);
         session.save()?;
         let mut timeline = BufWriter::new(
             OpenOptions::new()
@@ -557,7 +559,7 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
             last_sequence = sequence;
             last_time = time;
             session.metadata["video_frames"] = json!(count);
-            writeln!(timeline,"{}",json!({"kind":"video","source":"game","pts_s":time,"pts_value":(time*10_000_000.0).round() as i64,"pts_timescale":10_000_000,"host_clock_s":metadata["acquired_at"],"callback_monotonic_s":clock()?,"frame_sequence":sequence,"frame_status":0,"written":true,"dropped_since_previous":skipped,"width":width&!1,"height":height&!1})).map_err(|e|e.to_string())?;
+            writeln!(timeline,"{}",json!({"kind":"video","source":"game","pts_s":time,"pts_value":(time*10_000_000.0).round() as i64,"pts_timescale":10_000_000,"host_clock_s":metadata["acquired_at"],"callback_monotonic_s":clock()?,"frame_sequence":sequence,"frame_status":0,"written":true,"dropped_since_previous":skipped,"width":video_width,"height":video_height,"source_width":width,"source_height":height})).map_err(|e|e.to_string())?;
         }
         session.stopped()?;
         writer.finish()?;

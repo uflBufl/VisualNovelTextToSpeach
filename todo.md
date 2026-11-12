@@ -311,7 +311,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree selected-window recording resize support below.
+Next action: qualify speaker-aware short-dialogue matching in the next agreed run.
 Keep native acceptance to the remaining scenarios; do not repeat the completed
 ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
 
@@ -321,12 +321,12 @@ ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
       `Eurus ... Eurus ...`. Require no unnecessary live synthesis, repeated speech
       or duplicate keys. Include an unfinished same-speaker phrase and absent/noisy
       nameplate; automated matching/admission checks do not replace native playback.
-- [ ] **REC-12-01 - Agree selected-window recording resize support.**
-      The video recorder intentionally aborts when the same selected window changes
-      size; process audio and live capture are independent. Preserve PID/window
-      identity checks and choose fixed-canvas scaling or verified segment rotation
-      before changing that documented limitation. Verify resize/fullscreen, output
-      continuity and bounded Stop; do not merely delete the geometry guard.
+- [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
+      shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
+      Decode the fixed-resolution MP4: require the entire selected window, fresh
+      black borders and no desktop/covering-window pixels. Verify timestamps,
+      Stop and cleanup. Cross-compilation and pixel tests do not qualify native
+      WGC/Media Foundation behavior.
 
 - [ ] **RUN-11-UI-02 - Qualify automatic prepared Read in the combined live run.**
       Remaining scenarios: a genuinely ambiguous phrase uses live

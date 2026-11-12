@@ -4,10 +4,14 @@ This is the tracked replacement for the ignored live-session `capture_helper.swi
 Requires macOS 15+ SDK, Swift, and existing Screen Recording permission. All capture
 commands require an explicit PID and window ID. Missing permission fails at preflight;
 there is no prompt, window search heuristic, or desktop fallback. Window removal,
-owner/size changes, stream errors, missing video/audio, and encoder/finalization
-errors fail the command. Origin-only moves keep the same exact-window filter;
-metadata records their count, first/last change and number of omitted intermediate
-changes. No wider capture is selected when a window moves. `session.json` remains
+owner changes, stream errors, missing video/audio, and encoder/finalization
+errors fail the command. Moves and resizes keep the same exact-window filter;
+ScreenCaptureKit fits the entire window into the initial video resolution,
+preserving aspect ratio, centering it and filling unused pixels with opaque black. A larger
+window is scaled down and a smaller window is scaled up. Metadata records the
+count and first/last geometry change, omitted intermediate changes, and actual
+output frame dimensions. No desktop rectangle or wider capture is selected.
+`session.json` remains
 `in_progress` after a crash/watchdog and cannot be counted as success.
 
 Compile from the repository root (the fixture has its own entry point):
@@ -55,6 +59,19 @@ beginning/middle/end RGB phases and saves `verified-begin.png`,
 `verified-middle.png`, `verified-end.png`. Inspect those images to confirm visible
 text changes (`BEGIN`, `MIDDLE`, `END` and advancing seconds). No success may be
 inferred from file existence, cleanup, or fabricated frame counts.
+
+For the separate resize/privacy check, the fixture creates a green target with
+a yellow border over a magenta background and covering window. It shrinks,
+grows, changes aspect ratio, moves, enters fullscreen and returns. This mode
+temporarily activates the fixture and changes Spaces; its windows are closed by
+the runner. It records only the explicitly selected window into one fixed-size
+MOV, then checks decoded pixels for all target borders, black bars and absence
+of magenta background/covering-window pixels:
+
+```sh
+uv run python -m scripts.mac_live_recording.run_fixture /private/tmp/vntts-native-recorder /private/tmp/vntts-recording-fixture /private/tmp/new-resize-fixture --resize
+uv run python -m scripts.mac_live_recording.verify_resize /private/tmp/new-resize-fixture
+```
 
 For an authorized game recording:
 
