@@ -1552,7 +1552,7 @@ class AppController:
         )
         speaker = (
             result.character
-            if confident
+            if (confident or result.speaker_confidence is not None)
             and speaker_confidence >= self.settings.ocr_minimum_confidence
             and not is_narrator(result.character)
             and not result.speaker_note
@@ -1598,6 +1598,39 @@ class AppController:
                         resolution["match_result"] = "ocr-uncertain"
                     return result
                 confirmation_line_id = current_line.line_id
+                if (
+                    self.automatic_prepared_reading
+                    and speaker
+                    and (speaker, result.text)
+                    != (current_line.speaker, current_line.text)
+                ):
+                    candidate, candidate_match = (
+                        self._resolve_complete_exact_line_locked(
+                            speaker,
+                            result.text,
+                            tuple(
+                                row.line_id
+                                for row in preloader.by_chapter.get(
+                                    current_line.chapter, ()
+                                )
+                                if row.line_id
+                            ),
+                        )
+                    )
+                    backend = self.speech_backend
+                    if (
+                        candidate is not None
+                        and candidate_match == "expected-exact"
+                        and isinstance(backend, GeneratedAudioFallbackBackend)
+                        and backend.library is not None
+                        and backend.speed == 1.0
+                        and candidate.line_id
+                        and candidate.text_sha256
+                        and backend.library.has_entry(
+                            candidate.line_id, candidate.text_sha256
+                        )
+                    ):
+                        confirmation_line_id = candidate.line_id
             expected_prefix = self._expected_sequence_prefix_line_locked()
             if expected_prefix is not None:
                 evidence = compare_text(
@@ -1651,12 +1684,21 @@ class AppController:
                     (row.line_id for row in preloader.dialogue if row.line_id),
                     update_context=False,
                 )
-            if not confident and match not in {"expected-exact", "expected-text-only"}:
+            if not confident and (
+                match not in {"expected-exact", "expected-text-only"}
+                or (
+                    confirmation_line_id is not None
+                    and speaker
+                    and match != "expected-exact"
+                )
+            ):
                 line = None
                 match = "ocr-uncertain"
             if line is None and confident:
                 chapter_line, chapter_match = (
-                    self._resolve_chapter_exact_sequence_line_locked(speaker, result.text)
+                    self._resolve_chapter_exact_sequence_line_locked(
+                        speaker, result.text
+                    )
                 )
                 if chapter_line is not None:
                     line, match = chapter_line, chapter_match
@@ -2264,8 +2306,13 @@ class AppController:
         line_ids = tuple(
             event.line_id
             for event in plan.events.values()
-            if event.is_speech and event.chapter == current.chapter
+            if event.is_speech and event.chapter == current.chapter and event.line_id
         )
+        return self._resolve_complete_exact_line_locked(character, text, line_ids)
+
+    def _resolve_complete_exact_line_locked(
+        self, character: str, text: str, line_ids: Sequence[str]
+    ) -> tuple[ChapterDialogue | None, str]:
         line, match = self.chapter_voice_preloader.resolve_exact_among(
             character,
             text,

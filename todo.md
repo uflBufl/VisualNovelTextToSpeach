@@ -311,21 +311,18 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the ordinary-reading exact-source authority repair below.
+Next action: locate the recorded processing pause after a successful transition.
 Keep native acceptance to the remaining scenarios; do not repeat the completed
 ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
 
-- [ ] **RUN-12-03 - Repair ordinary-reading authority for a complete low-confidence source line.**
-      In the native speaker rerun, full Elma / `Eurus ... Eurus ...` remained
-      blocked at dialogue confidence52.5 with independently recognized speaker95.
-      With sequence off, low-confidence authority is restricted to current
-      canonical59, so exact successor60 cannot be considered; the dialogue gate
-      also discards the confident name. Agree the shared exact/completeness scope
-      change before implementation. Preserve raw confidence, ordinary automatic
-      transitions/skips, source-free behavior and strict sequence authority;
-      do not lower the global threshold or permit a global fuzzy bypass.
-      Replay the retained evidence, check wrong/noisy/missing speaker and incomplete
-      prefixes, then qualify real playback of60 in the next agreed combined run.
+- [ ] **RUN-12-03 - Qualify first low-confidence prepared admission in the next native run.**
+      With ordinary sequence-off Read, transition from the previous canonical
+      line to complete Elma / `Eurus ... Eurus ...` at dialogue confidence52.5
+      and independent speaker95. Require canonical60/current prepared playback,
+      no unnecessary synthesis or repeated PCM/keys, and continuation to61.
+      Exercise automatic changes/skipped frames and retain truthful raw confidence.
+      Keep this real-game gate separate from the recorded-OCR replay and automated
+      previous -> first low-confidence line -> prepared playback -> next checks.
 - [ ] **RUN-12-02 - Locate the processing pause after a successful dialogue transition.**
       In sessionb5bcc76ab99946deaee52f7c9e33e893, the single successful Space after17
       reached the selected game and the movie showed18, while the reading timeline
