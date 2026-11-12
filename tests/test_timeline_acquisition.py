@@ -229,29 +229,37 @@ class TimelineAcquisitionTest(unittest.TestCase):
     def test_stop_does_not_wait_for_existing_timeline_persistence(self):
         entered, release = Event(), Event()
         with TemporaryDirectory() as directory:
-            log = GenerationTimelineLog()
+            log = GenerationTimelineLog(path=Path(directory) / "timelines.json")
+            self.addCleanup(log.close)
             log.start_acquisition(Path(directory) / "journal.jsonl")
+            original_write = log._write_snapshot
 
-            def blocked():
+            def blocked(report):
                 entered.set()
                 self.assertTrue(release.wait(5))
+                original_write(report)
 
-            producer = Thread(target=lambda: log.record("capture", 1, 1.0))
+            producer = Thread(target=lambda: log.record("capture", 1, 2.0))
             try:
-                with patch.object(log, "_persist_locked", side_effect=blocked):
-                    producer.start()
+                with patch.object(log, "_write_snapshot", side_effect=blocked):
+                    log.record("capture", 1, 1.0)
                     self.assertTrue(entered.wait(1))
+                    producer.start()
+                    producer.join(1)
+                    self.assertFalse(producer.is_alive())
+                    self.assertTrue(log.persistence_status()["writer_running"])
                     before = time.monotonic()
                     log.stop_acquisition(timeout=0.01)
                     self.assertLess(time.monotonic() - before, 0.5)
-                    self.assertTrue(producer.is_alive())
+                    self.assertTrue(log.persistence_status()["writer_running"])
                     release.set()
-                    producer.join(1)
-                    self.assertFalse(producer.is_alive())
+                    self.assertFalse(log.close()["pending"])
             finally:
                 release.set()
-                producer.join(1)
+                if producer.ident is not None:
+                    producer.join(1)
                 log.stop_acquisition()
+                log.close()
 
     def test_write_failure_stays_incomplete_and_does_not_abort_timeline(self):
         with TemporaryDirectory() as directory:

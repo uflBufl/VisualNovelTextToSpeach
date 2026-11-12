@@ -311,7 +311,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree removing blocking timeline persistence from live processing.
+Next action: qualify corrected admission and processing continuity in the next agreed native run.
 Keep native acceptance to the remaining scenarios; do not repeat the completed
 ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
 
@@ -323,27 +323,20 @@ ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
       Exercise automatic changes/skipped frames and retain truthful raw confidence.
       Keep this real-game gate separate from the recorded-OCR replay and automated
       previous -> first low-confidence line -> prepared playback -> next checks.
-- [ ] **RUN-12-02 - Locate the processing pause after a successful dialogue transition.**
+- [ ] **RUN-12-02 - Qualify processing continuity after nonblocking diagnostics.**
       In sessionb5bcc76ab99946deaee52f7c9e33e893, the single successful Space after17
       reached the selected game and the movie showed18, while the reading timeline
       had a34.218s processing gap before auto-advance-timeout. Video/animation
       continued; later admission recovered without missing or repeated speech.
-      The historical blocking operation is not established. Code audit found a
-      concrete independent risk: GenerationTimelineLog.record synchronously
-      rebuilds/saves the report through atomic_write_json/fsync under its RLock;
-      live callers wait, and capture waits for OCR/admission acknowledgement.
-      The existing blocked-persistence test confirms producer blocking.
-      Proposed repair, awaiting agreement:
-      - Keep event admission bounded and in memory; move snapshot persistence
-        to one owned background writer with a coalesced latest pending snapshot.
-        Release the timeline lock before serialization and all filesystem I/O.
-      - Preserve persisted-report format, live support/export and the existing
-        asynchronous diagnostic-session journal; migrate shutdown/flush owners
-        with bounded waiting and truthful incomplete-save status.
-      - Verify that a blocked/failed snapshot write cannot delay new capture/OCR
-        events, report access or Stop; verify latest snapshot and writer cleanup.
-      Keep historical attribution separate: obtain a short active-read all-thread
-      stack if the pause recurs. Post-Stop samples do not establish its cause.
+      Verify uninterrupted capture/OCR/admission while background diagnostic
+      snapshots and the session journal are written; include Stop and final
+      snapshot/worker cleanup in the shared native pass. The historical blocking
+      operation remains unproved. If the pause recurs, retain a short active-read
+      all-thread stack with worker stage/current and processed frame versions
+      alongside native journal timing before selecting another repair.
+      Post-Stop samples do not establish its cause. Old raw recordings were
+      removed at the user's request; use retained selected events, frames and
+      summaries, and collect fresh media only for the remaining native gate.
       Evidence: `.codex/investigations/speaker-rerun-20261112/timeout17-audit.md`.
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.

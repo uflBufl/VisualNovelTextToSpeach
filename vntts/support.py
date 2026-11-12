@@ -23,6 +23,7 @@ from functools import lru_cache
 from pathlib import Path
 from statistics import mean
 from threading import RLock
+from time import monotonic
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Mapping, TypedDict
 from uuid import UUID
@@ -557,6 +558,13 @@ class GenerationTimelineLog:
         self.evicted_events = 0
         self.lock = RLock()
         self.acquisition: TimelineAcquisition | None = None
+        self._persistence_condition = threading.Condition(self.lock)
+        self._persistence_thread: threading.Thread | None = None
+        self._persistence_closed = False
+        self._persistence_requested = False
+        self._requested_sequence = self._persisted_sequence = 0
+        self._writing_sequence: int | None = None
+        self._persistence_error: str | None = None
 
     def record(
         self,
@@ -643,7 +651,11 @@ class GenerationTimelineLog:
                 _, evicted = self.timelines.popitem(last=False)
                 self.evicted_timelines += 1
                 self.evicted_events += len(evicted["events"])
-            self._persist_locked()
+            if self.path is not None and not self._persistence_closed:
+                self._requested_sequence = self.event_sequence
+                self._persistence_requested = True
+                self._start_persistence_locked()
+                self._persistence_condition.notify_all()
         return True
 
     def start_acquisition(
@@ -671,48 +683,79 @@ class GenerationTimelineLog:
             acquisition.stop(timeout) if acquisition is not None else {"enabled": False}
         )
 
-    def snapshot(self) -> list[SupportDocument]:
+    def _snapshot_state(
+        self,
+    ) -> tuple[list[_Timeline], SupportDocument, TimelineAcquisition | None]:
         with self.lock:
-            return [
-                self._serialize_timeline(value) for value in self.timelines.values()
-            ]
-
-    def retention_summary(self) -> SupportDocument:
-        with self.lock:
-            sequences = [
-                int(sequence)
+            timelines: list[_Timeline] = [
+                {
+                    **timeline,
+                    "events": OrderedDict(
+                        (key, dict(event)) for key, event in timeline["events"].items()
+                    ),
+                }
                 for timeline in self.timelines.values()
-                for sequence in timeline["events"]
             ]
-            return {
+            retention: SupportDocument = {
                 "recorded_events": self.event_sequence,
-                "retained_events": len(sequences),
                 "evicted_events": self.evicted_events,
                 "created_timeline_instances": self.timeline_instances,
-                "retained_timelines": len(self.timelines),
                 "evicted_timelines": self.evicted_timelines,
-                "first_retained_event_sequence": min(sequences, default=None),
-                "last_retained_event_sequence": max(sequences, default=None),
                 "clock_origin": self.clock_origin,
-                "bounds_note": timeline_retention_bounds_note,
             }
+            return timelines, retention, self.acquisition
+
+    def snapshot(self) -> list[SupportDocument]:
+        timelines, _, _ = self._snapshot_state()
+        return [self._serialize_timeline(value) for value in timelines]
+
+    @staticmethod
+    def _retention_summary(
+        timelines: Sequence[_Timeline], retention: SupportDocument
+    ) -> SupportDocument:
+        sequences = [
+            int(sequence) for timeline in timelines for sequence in timeline["events"]
+        ]
+        return {
+            **retention,
+            "retained_events": len(sequences),
+            "retained_timelines": len(timelines),
+            "first_retained_event_sequence": min(sequences, default=None),
+            "last_retained_event_sequence": max(sequences, default=None),
+            "bounds_note": timeline_retention_bounds_note,
+        }
+
+    def retention_summary(self) -> SupportDocument:
+        timelines, retention, _ = self._snapshot_state()
+        return self._retention_summary(timelines, retention)
+
+    @classmethod
+    def _format_report(
+        cls,
+        timelines: Sequence[_Timeline],
+        retention: SupportDocument,
+        acquisition: TimelineAcquisition | None,
+    ) -> SupportDocument:
+        return {
+            "version": 1,
+            "timelines": [cls._serialize_timeline(value) for value in timelines],
+            "latency_summary": cls._latency_summary(timelines),
+            "retention": cls._retention_summary(timelines, retention),
+            **(
+                {"acquisition": acquisition.status()} if acquisition is not None else {}
+            ),
+        }
 
     def report(self) -> SupportDocument:
-        with self.lock:
-            return {
-                "version": 1,
-                "timelines": self.snapshot(),
-                "latency_summary": self.latency_summary(),
-                "retention": self.retention_summary(),
-                **(
-                    {"acquisition": self.acquisition.status()}
-                    if self.acquisition is not None
-                    else {}
-                ),
-            }
+        return self._format_report(*self._snapshot_state())
 
     def latency_summary(self) -> SupportDocument:
         """Aggregate privacy-safe live latency components across retained lines."""
+        timelines, _, _ = self._snapshot_state()
+        return self._latency_summary(timelines)
+
+    @staticmethod
+    def _latency_summary(timelines: Sequence[_Timeline]) -> SupportDocument:
         fields = {
             "visible_to_first_pcm_ms": ("first-pcm", "from_text_visible_ms"),
             "ocr_stable_to_first_pcm_ms": ("first-pcm", "from_ocr_stable_ms"),
@@ -744,49 +787,44 @@ class GenerationTimelineLog:
         }
         samples: dict[str, list[float]] = {name: [] for name in fields}
         cohorts: dict[tuple[str, str, str, bool], dict[str, list[float]]] = {}
-        with self.lock:
-            for timeline in self.timelines.values():
-                attempts: dict[object, SupportDocument] = {}
-                for event in timeline["events"].values():
-                    playback_id = event.get("playback_id")
-                    if playback_id is not None:
-                        attempts.setdefault(playback_id, {}).update(event)
-                for event in timeline["events"].values():
-                    attempt = attempts.get(event.get("playback_id"), {})
-                    source = str(
-                        attempt.get("effective_source")
-                        or event.get("effective_source")
-                        or "unobserved"
-                    )
-                    cache = str(
-                        attempt.get("cache_source")
-                        or event.get("cache_source")
-                        or "unobserved"
-                    )
-                    provenance = str(
-                        event.get("timing_provenance")
-                        or attempt.get("onset_provenance")
-                        or attempt.get("timing_provenance")
-                        or "unobserved"
-                    )
-                    lead = optional_finite_number(attempt.get("source_audio_lead_ms"))
-                    identity = (
-                        source,
-                        cache,
-                        provenance,
-                        bool(lead is not None and lead > 0),
-                    )
-                    for name, (stage, field) in fields.items():
-                        value = optional_finite_number(event.get(field))
-                        if (
-                            event.get("stage") == stage
-                            and value is not None
-                            and value >= 0
-                        ):
-                            samples[name].append(value)
-                            cohorts.setdefault(identity, {}).setdefault(
-                                name, []
-                            ).append(value)
+        for timeline in timelines:
+            attempts: dict[object, SupportDocument] = {}
+            for event in timeline["events"].values():
+                playback_id = event.get("playback_id")
+                if playback_id is not None:
+                    attempts.setdefault(playback_id, {}).update(event)
+            for event in timeline["events"].values():
+                attempt = attempts.get(event.get("playback_id"), {})
+                source = str(
+                    attempt.get("effective_source")
+                    or event.get("effective_source")
+                    or "unobserved"
+                )
+                cache = str(
+                    attempt.get("cache_source")
+                    or event.get("cache_source")
+                    or "unobserved"
+                )
+                provenance = str(
+                    event.get("timing_provenance")
+                    or attempt.get("onset_provenance")
+                    or attempt.get("timing_provenance")
+                    or "unobserved"
+                )
+                lead = optional_finite_number(attempt.get("source_audio_lead_ms"))
+                identity = (
+                    source,
+                    cache,
+                    provenance,
+                    bool(lead is not None and lead > 0),
+                )
+                for name, (stage, field) in fields.items():
+                    value = optional_finite_number(event.get(field))
+                    if event.get("stage") == stage and value is not None and value >= 0:
+                        samples[name].append(value)
+                        cohorts.setdefault(identity, {}).setdefault(name, []).append(
+                            value
+                        )
 
         def summarize(values: list[float]) -> SupportDocument:
             return {
@@ -816,16 +854,112 @@ class GenerationTimelineLog:
             ]
         return result
 
-    def _persist_locked(self) -> None:
-        if self.path is None:
-            return
-        try:
-            from durable_file import atomic_write_json
+    def _start_persistence_locked(self) -> None:
+        if self._persistence_thread is None:
+            self._persistence_thread = threading.Thread(
+                target=self._persist_snapshots, name="timeline-snapshot", daemon=True
+            )
+            try:
+                self._persistence_thread.start()
+            except Exception as error:
+                self._persistence_thread = None
+                self._persistence_requested = False
+                self._persistence_error = type(error).__name__
 
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(self.path, self.report())
-        except OSError:
-            pass
+    def _persist_snapshots(self) -> None:
+        while True:
+            with self._persistence_condition:
+                while not self._persistence_requested:
+                    if self._persistence_closed:
+                        return
+                    self._persistence_condition.wait()
+                self._persistence_requested = False
+                sequence = self._requested_sequence
+                self._writing_sequence = sequence
+                state = self._snapshot_state()
+            error_type = None
+            try:
+                self._write_snapshot(self._format_report(*state))
+            except Exception as error:
+                error_type = type(error).__name__
+            with self._persistence_condition:
+                self._writing_sequence = None
+                self._persistence_error = error_type
+                if error_type is None:
+                    self._persisted_sequence = sequence
+                self._persistence_condition.notify_all()
+
+    def _write_snapshot(self, report: SupportDocument) -> None:
+        from durable_file import atomic_write_json
+
+        assert self.path is not None
+        atomic_write_json(self.path, report)
+
+    def persistence_status(self) -> SupportDocument:
+        with self.lock:
+            return {
+                "enabled": self.path is not None,
+                "writer_running": bool(
+                    self._persistence_thread is not None
+                    and self._persistence_thread.is_alive()
+                ),
+                "pending": self._requested_sequence > self._persisted_sequence,
+                "error_type": self._persistence_error,
+                "closed": self._persistence_closed,
+            }
+
+    @staticmethod
+    def _persistence_timeout(timeout: float) -> float:
+        value = optional_finite_number(timeout)
+        if value is None or value < 0 or value > threading.TIMEOUT_MAX:
+            raise ValueError(
+                "Persistence timeout must be a finite supported nonnegative duration"
+            )
+        return value
+
+    def flush(self, timeout: float = 1.0) -> SupportDocument:
+        """Wait for records already accepted, retrying a failed snapshot once."""
+        deadline = monotonic() + self._persistence_timeout(timeout)
+        with self._persistence_condition:
+            target = self._requested_sequence
+            if not self._persistence_closed and target > self._persisted_sequence:
+                if self._writing_sequence is None or target > self._writing_sequence:
+                    self._persistence_requested = True
+                    self._start_persistence_locked()
+                    self._persistence_condition.notify_all()
+            while self._persisted_sequence < target:
+                if (
+                    self._writing_sequence is None
+                    and not self._persistence_requested
+                    and (
+                        self._persistence_error is not None or self._persistence_closed
+                    )
+                ):
+                    break
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                self._persistence_condition.wait(remaining)
+            return self.persistence_status()
+
+    def close(self, timeout: float = 1.0) -> SupportDocument:
+        """Drain persistence within the deadline; late records stay in memory only."""
+        timeout = self._persistence_timeout(timeout)
+        with self._persistence_condition:
+            was_closed = self._persistence_closed
+            self._persistence_closed = True
+            if (
+                not was_closed
+                and self._persistence_thread is not None
+                and self._requested_sequence > self._persisted_sequence
+                and self._writing_sequence is None
+            ):
+                self._persistence_requested = True
+            self._persistence_condition.notify_all()
+            writer = self._persistence_thread
+        if writer is not None:
+            writer.join(timeout)
+        return self.persistence_status()
 
     @staticmethod
     def _serialize_timeline(timeline: _Timeline) -> SupportDocument:

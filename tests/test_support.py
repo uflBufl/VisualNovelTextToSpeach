@@ -411,6 +411,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "generation-timelines.json"
             log = GenerationTimelineLog(path=path)
+            self.addCleanup(log.close)
             log.record("key-input", 1, 1.2, **details, window_title="PRIVATE title")
             diagnostic_id = str(uuid4())
             log.record(
@@ -437,6 +438,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
                     for event in events[2:]
                 )
             )
+            self.assertFalse(log.close()["pending"])
             self.assertNotIn("PRIVATE", path.read_text())
             self.assertEqual(
                 json.loads(path.read_text())["timelines"][0]["events"], events
@@ -536,6 +538,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
             log = GenerationTimelineLog(
                 maximum_entries=1, path=directory / "generation-timelines.json"
             )
+            self.addCleanup(log.close)
             log.record("capture", 1, 10.0, text="PRIVATE dialogue")
             log.record(
                 "capture",
@@ -547,6 +550,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
                 latest_frame_version=12,
                 worker_progress_age_ms=1000,
             )
+            self.assertFalse(log.close()["pending"])
             persisted = json.loads(log.path.read_text(encoding="utf-8"))
             previous = preserve_previous_session(directory)
             output = SupportBundleBuilder(
@@ -576,6 +580,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
             timelines = GenerationTimelineLog(path=path)
+            self.addCleanup(timelines.close)
             for generation, value in enumerate((10**400, -(10**400), True, 125), 1):
                 timelines.record(
                     "first-pcm",
@@ -583,6 +588,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
                     float(generation),
                     from_text_visible_ms=value,
                 )
+            self.assertFalse(timelines.close()["pending"])
             persisted = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(
             timelines.latency_summary()["visible_to_first_pcm_ms"],
@@ -595,10 +601,12 @@ class GenerationTimelineLogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
             timelines = GenerationTimelineLog(path=path)
+            self.addCleanup(timelines.close)
             timelines.record("capture", 1, 0.0)
             timelines.record("first-pcm", 1, sys.float_info.max)
             timelines.record("capture", 2, 1.0)
             timelines.record("ocr", 2, 1.25)
+            self.assertFalse(timelines.close()["pending"])
             persisted = json.loads(path.read_text(encoding="utf-8"))
         events = timelines.snapshot()
         self.assertIsNone(events[0]["events"][1]["elapsed_ms"])
@@ -610,12 +618,14 @@ class GenerationTimelineLogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
             timelines = GenerationTimelineLog(path=path)
+            self.addCleanup(timelines.close)
             with self.assertRaisesRegex(ValueError, "timestamp must be finite"):
                 timelines.record("capture", 1, float("nan"))
             with self.assertRaisesRegex(ValueError, "must be numeric"):
                 timelines.record("capture", float("inf"), 1.0)
             timelines.record("first-pcm", 1, 1.0, from_text_visible_ms=float("inf"))
 
+            self.assertFalse(timelines.close()["pending"])
             persisted = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(timelines.latency_summary(), {})
@@ -743,6 +753,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
             timelines = GenerationTimelineLog(path=path)
+            self.addCleanup(timelines.close)
 
             timelines.record("stable-text", 3, 10.2)
             timelines.record("capture", 3, 10.0)
@@ -759,6 +770,7 @@ class GenerationTimelineLogTest(unittest.TestCase):
             timelines.record("auto-advance-timeout", 3, 20.0, attempt=1)
 
             snapshot = timelines.snapshot()
+            self.assertFalse(timelines.close()["pending"])
             persisted = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertEqual(len(snapshot), 1)
@@ -1221,6 +1233,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
             timelines = GenerationTimelineLog(
                 path=directory / "generation-timelines.json"
             )
+            self.addCleanup(timelines.close)
             timelines.record("capture", 1, 1.0, session_id=uuid4().hex)
             native = NativeSpeechLog(path=directory / "native-speech.log")
             native.record(
@@ -1241,6 +1254,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
             )
             (directory / "server.log").write_text("PRIVATE DIALOGUE", encoding="utf-8")
 
+            self.assertFalse(timelines.close()["pending"])
             snapshot = preserve_previous_session(directory)
             persisted = json.loads(
                 (directory / "previous-session.json").read_text(encoding="utf-8")

@@ -762,21 +762,60 @@ class TrayApplicationTest(unittest.TestCase):
             moss_runtime=moss_runtime,
             pocket_runtime=pocket_runtime,
         )
+        timelines_closed = Event()
+        original_close = tray.generation_timelines.close
+
+        def close_timelines(**kwargs):
+            self.assertTrue(controller.shutdown_complete.is_set())
+            try:
+                return original_close(**kwargs)
+            finally:
+                timelines_closed.set()
+
+        tray.generation_timelines.close = Mock(side_effect=close_timelines)
         try:
             tray.shutdown()
             self.assertFalse(retained_closed.is_set())
+            self.assertFalse(timelines_closed.is_set())
             self.assertFalse(controller.shutdown_complete.is_set())
+            tray._finish_timeline_persistence()
+            tray.generation_timelines.close.assert_not_called()
+            self.assertFalse(tray.generation_timelines.persistence_status()["closed"])
         finally:
             release.set()
 
         self.assertTrue(controller.shutdown_complete.wait(1))
         self.assertTrue(retained_closed.wait(1))
+        self.assertTrue(timelines_closed.wait(1))
+        tray.generation_timelines.close.assert_called_once_with(timeout=1.0)
         self.assertFalse(used_closed_runtime.is_set())
         moss_runtime.shutdown.assert_called_once_with()
         pocket_runtime.shutdown.assert_called_once_with()
         backend.shutdown.assert_called_once_with()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
+
+    def test_shutdown_reports_incomplete_timeline_persistence(self):
+        tray = TrayApplication(self.application, AppSettings(), pocket_runtime=Mock())
+        self.addCleanup(tray.shutdown)
+        status = {
+            "enabled": True,
+            "writer_running": True,
+            "pending": True,
+            "error_type": None,
+            "closed": True,
+        }
+        with (
+            patch.object(
+                tray.generation_timelines, "close", return_value=status
+            ) as close,
+            self.assertLogs(level="WARNING") as logs,
+        ):
+            tray.shutdown()
+        close.assert_called_once_with(timeout=1.0)
+        self.assertTrue(
+            any("Timeline report save did not finish" in line for line in logs.output)
+        )
 
     def test_preparation_cancel_does_not_quit_and_quit_waits_for_dialog_completion(
         self,

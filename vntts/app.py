@@ -6065,9 +6065,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _close_retained_runtimes(self) -> None:
         self.controller.shutdown_complete.wait()
-        self.voice_auditions.close()
-        self.moss_runtime.shutdown()
-        self.pocket_runtime.shutdown()
+        try:
+            self.voice_auditions.close()
+            self.moss_runtime.shutdown()
+            self.pocket_runtime.shutdown()
+        finally:
+            self._finish_timeline_persistence()
+
+    def _finish_timeline_persistence(self) -> None:
+        if self.controller.shutdown_complete.is_set():
+            status = self.generation_timelines.close(timeout=1.0)
+        else:
+            # The retained-runtime owner will close after the last producer exits.
+            status = self.generation_timelines.flush(timeout=1.0)
+        if (
+            status["pending"]
+            or status["error_type"]
+            or status["closed"]
+            and status["writer_running"]
+        ):
+            logging.warning("Timeline report save did not finish: %s", status)
 
     def shutdown(self) -> None:
         if self._shutting_down:
@@ -6274,6 +6291,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         initialize_audio_device_monitor()
         tray_application = TrayApplication(application)
         with (
+            cleanup_on_exit(
+                tray_application._finish_timeline_persistence,
+                description="Timeline snapshot persistence flush",
+            ),
             cleanup_on_exit(
                 lambda: tray_application.generation_timelines.stop_acquisition(
                     timeout=0.25
