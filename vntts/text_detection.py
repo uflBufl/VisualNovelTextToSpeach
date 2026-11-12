@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from numbers import Real
@@ -119,25 +119,40 @@ class TextBlock:
 
 def group_text_lines(lines: Iterable[TextLine]) -> tuple[TextBlock, ...]:
     """Group neighboring, similarly sized lines without screen-position rules."""
-    ordered = sorted(lines, key=lambda line: (line.box.top, line.box.left))
-    groups: list[list[TextLine]] = []
-    for line in ordered:
+    rows = tuple(lines)
+    return tuple(
+        TextBlock(tuple(rows[index] for index in group))
+        for group in _group_box_indices(tuple(line.box for line in rows))
+    )
+
+
+def center_in_region(box: DialogRegion, region: DialogRegion) -> bool:
+    x, y = box.left + box.width / 2, box.top + box.height / 2
+    return (
+        region.left <= x <= region.left + region.width
+        and region.top <= y <= region.top + region.height
+    )
+
+
+def _group_box_indices(boxes: Sequence[DialogRegion]) -> tuple[tuple[int, ...], ...]:
+    def position(index: int) -> tuple[float, float]:
+        return boxes[index].top, boxes[index].left
+
+    groups: list[list[int]] = []
+    for index in sorted(range(len(boxes)), key=position):
         neighbors = [
             group
             for group in groups
-            if any(_neighbor(item.box, line.box) for item in group)
+            if any(_neighbor(boxes[item], boxes[index]) for item in group)
         ]
         if not neighbors:
-            groups.append([line])
+            groups.append([index])
             continue
-        neighbors[0].append(line)
+        neighbors[0].append(index)
         for group in neighbors[1:]:
             neighbors[0].extend(group)
             groups.remove(group)
-    return tuple(
-        TextBlock(tuple(sorted(group, key=lambda line: (line.box.top, line.box.left))))
-        for group in groups
-    )
+    return tuple(tuple(sorted(group, key=position)) for group in groups)
 
 
 def _neighbor(a: DialogRegion, b: DialogRegion) -> bool:
@@ -239,7 +254,11 @@ class ScreenTextDetector:
         self._detector = detector
 
     def detect(
-        self, image: Image.Image, *, allowed_region: DialogRegion | None = None
+        self,
+        image: Image.Image,
+        *,
+        allowed_region: DialogRegion | None = None,
+        covered_region: DialogRegion | None = None,
     ) -> tuple[TextLine, ...]:
         if image.width <= 0 or image.height <= 0:
             raise ValueError("Screen text detection requires a nonempty image")
@@ -274,6 +293,23 @@ class ScreenTextDetector:
                 continue
             normalized.append(region)
             valid_boxes.append(box.astype(np.float32))
+        if covered_region is not None:
+            # Keep mixed groups whole: an inside line can complete a caption.
+            retained = {
+                index
+                for group in _group_box_indices(normalized)
+                if any(
+                    not center_in_region(normalized[item], covered_region)
+                    for item in group
+                )
+                for index in group
+            }
+            valid_boxes = [
+                box for index, box in enumerate(valid_boxes) if index in retained
+            ]
+            normalized = [
+                region for index, region in enumerate(normalized) if index in retained
+            ]
         if not valid_boxes:
             return ()
         full_pixels = np.ascontiguousarray(np.asarray(original)[:, :, ::-1])

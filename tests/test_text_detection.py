@@ -11,6 +11,8 @@ import numpy as np
 from PIL import Image
 
 from vntts.asset_integrity import ModelIntegrityError
+from vntts.caption_layout import select_caption
+from vntts.dialog_capture import CapturedDialogFrame
 from vntts.model_assets import ModelDownloadCancelled
 from vntts.ocr import DialogRegion
 from vntts.text_detection import (
@@ -41,6 +43,14 @@ class TextGroupingTest(unittest.TestCase):
         lines = (line(top=0.1), line(top=0.5), line(top=0.55, height=0.09))
         self.assertEqual(len(group_text_lines(lines)), 3)
         self.assertEqual(group_text_lines(()), ())
+
+    def test_wide_bridge_merges_existing_groups_in_reading_order(self):
+        left = line(0, 0.1, 0.3, text="Left")
+        right = line(0.5, 0.1, 0.3, text="Right")
+        bridge = line(0, 0.15, 0.8, text="Bridge")
+        self.assertEqual(
+            group_text_lines((bridge, right, left)), (TextBlock((left, right, bridge)),)
+        )
 
     def test_records_are_immutable_and_reject_invalid_confidence(self):
         with self.assertRaises(FrozenInstanceError):
@@ -138,6 +148,114 @@ class ScreenTextDetectorTest(unittest.TestCase):
             detector = self.detector(boxes)
             self.assertEqual(detector.detect(Image.new("RGB", (10, 10))), ())
             detector._recognizer.assert_not_called()
+
+    def test_covered_dialogue_groups_skip_crops_and_recognition(self):
+        detector = self.detector(
+            [
+                [[20, 70], [80, 70], [80, 76], [20, 76]],
+                [[20, 82], [80, 82], [80, 88], [20, 88]],
+            ]
+        )
+        self.assertEqual(
+            detector.detect(
+                Image.new("RGB", (100, 100)),
+                covered_region=DialogRegion(0, 0.65, 1, 0.35),
+            ),
+            (),
+        )
+        detector._crop_line.assert_not_called()
+        detector._recognizer.assert_not_called()
+
+    def test_mixed_group_keeps_inside_bridge_and_low_confidence(self):
+        image = Image.new("RGB", (100, 100))
+        covered = DialogRegion(0.25, 0.25, 0.5, 0.5)
+        boxes = [
+            [[0, 30], [40, 30], [40, 40], [0, 40]],
+            [[20, 45], [60, 45], [60, 55], [20, 55]],
+            [[0, 60], [40, 60], [40, 70], [0, 70]],
+        ]
+        frame = CapturedDialogFrame(
+            covered.crop(image), 0, canonical_image=image, capture_region=covered
+        )
+        for bridge, confidence, kind in (
+            ("bridge", 0.95, "caption"),
+            ("bridge", 0.4, "pending"),
+            ("", 0.95, "pending"),
+        ):
+            with self.subTest(bridge=bridge, confidence=confidence):
+                detector = self.detector(
+                    boxes,
+                    texts=("First", bridge, "Last"),
+                    scores=(0.95, confidence, 0.95),
+                )
+                lines = detector.detect(image, covered_region=covered)
+                self.assertEqual(detector._crop_line.call_count, 3)
+                self.assertEqual(
+                    [line.text for line in lines],
+                    ["First", bridge, "Last"] if bridge else ["First", "Last"],
+                )
+                result = select_caption(frame, group_text_lines(lines), 60)
+                self.assertEqual(result.layout_kind, kind)
+                self.assertFalse(result.navigation_allowed)
+                if kind == "caption":
+                    self.assertEqual(result.recognized_result.text, "First bridge Last")
+                else:
+                    self.assertIsNone(result.recognized_result)
+
+    def test_covered_group_filter_keeps_detection_order_for_recognition(self):
+        boxes = [
+            [[10, 35], [80, 35], [80, 40], [10, 40]],
+            [[10, 80], [80, 80], [80, 85], [10, 85]],
+            [[10, 20], [80, 20], [80, 25], [10, 25]],
+        ]
+        detector = self.detector(boxes, texts=("Later", "Earlier"), scores=(0.9, 0.8))
+        lines = detector.detect(
+            Image.new("RGB", (100, 100)), covered_region=DialogRegion(0, 0.7, 1, 0.3)
+        )
+        self.assertEqual([line.text for line in lines], ["Earlier", "Later"])
+        self.assertEqual(
+            [float(call.args[1][0, 1]) for call in detector._crop_line.call_args_list],
+            [35, 20],
+        )
+
+    def test_covered_membership_uses_centers_including_exact_boundary(self):
+        covered = DialogRegion(0.25, 0.25, 0.5, 0.5)
+        for left, top, right, bottom, retained in (
+            (8, 48, 56, 56, False),
+            (7, 48, 55, 56, True),
+            (72, 48, 120, 56, False),
+            (73, 48, 121, 56, True),
+            (48, 8, 56, 56, False),
+            (48, 7, 56, 55, True),
+            (48, 72, 56, 120, False),
+            (48, 73, 56, 121, True),
+        ):
+            with self.subTest(box=(left, top, right, bottom)):
+                detector = self.detector(
+                    [[[left, top], [right, top], [right, bottom], [left, bottom]]]
+                )
+                lines = detector.detect(
+                    Image.new("RGB", (128, 128)), covered_region=covered
+                )
+                self.assertEqual(bool(lines), retained)
+                self.assertEqual(detector._crop_line.call_count, int(retained))
+
+    def test_story_permission_filters_before_covered_grouping(self):
+        detector = self.detector(
+            [
+                [[0, 30], [40, 30], [40, 40], [0, 40]],
+                [[20, 45], [60, 45], [60, 55], [20, 55]],
+            ]
+        )
+        covered = DialogRegion(0.25, 0.25, 0.5, 0.5)
+        result = detector.detect(
+            Image.new("RGB", (100, 100)),
+            allowed_region=DialogRegion(0.1, 0.4, 0.8, 0.4),
+            covered_region=covered,
+        )
+        self.assertEqual(result, ())
+        detector._crop_line.assert_not_called()
+        detector._recognizer.assert_not_called()
 
     def test_only_fully_contained_lines_are_cropped_and_recognized(self):
         detector = self.detector(

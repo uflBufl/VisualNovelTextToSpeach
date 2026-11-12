@@ -1321,6 +1321,7 @@ class AppController:
         lines = discovery.detect(
             frame.canonical_image,
             allowed_region=story_region,
+            covered_region=frame.capture_region,
             cancel_event=cancellation,
         )
         return replace(

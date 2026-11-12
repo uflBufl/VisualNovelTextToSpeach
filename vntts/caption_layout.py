@@ -3,16 +3,8 @@
 from dataclasses import replace
 
 from vntts.dialog_capture import CapturedDialogFrame
-from vntts.ocr import DialogRegion, OCRResult
-from vntts.text_detection import TextBlock
-
-
-def _inside(box: DialogRegion, region: DialogRegion) -> bool:
-    x, y = box.left + box.width / 2, box.top + box.height / 2
-    return (
-        region.left <= x <= region.left + region.width
-        and region.top <= y <= region.top + region.height
-    )
+from vntts.ocr import OCRResult
+from vntts.text_detection import TextBlock, center_in_region
 
 
 def select_caption(
@@ -26,7 +18,8 @@ def select_caption(
         block
         for block in blocks
         if any(
-            frame.capture_region is None or not _inside(line.box, frame.capture_region)
+            frame.capture_region is None
+            or not center_in_region(line.box, frame.capture_region)
             for line in block.lines
         )
     ]

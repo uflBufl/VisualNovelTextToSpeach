@@ -311,8 +311,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree and implement the remaining UI repairs below,
-then investigate the reproduced detector timeout. The combined chapter reached
+Next action: combine automatic prepared Read, caption-boundary and loaded
+detector qualification in the next native chapter run. The previous run reached
 its terminal scene; ordinary dialogue played in order without manual recovery.
 Terminal quotes were excluded by the operator's too-narrow story area, so their
 live rerun with corrected bounds remains open. Evidence:
@@ -413,31 +413,17 @@ separate control episodes distinct from product failures.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Remove redundant dialogue recognition and qualify the detector deadline.**
-      Proposed implementation, awaiting agreement:
-      - Reuse one geometric grouping implementation before recognition and in
-        group_text_lines. Skip only entire geometric groups whose line centers
-        lie inside the already calibrated dialogue region. Keep mixed groups
-        whole, including their inside lines and confidence; keep current final
-        grouping/selection after recognition removes empty results.
-      - Pass the optional covered dialogue region through TextDetectionWorker
-        and its request protocol from the common controller selector and replay
-        capture. Reuse the same center-membership predicate as select_caption;
-        retain full-line allowed-story containment separately. No covered region
-        means the existing general detector behavior, including future readers.
-      - Keep models, resolution, confidence, batch size, thread settings,
-        timeouts, cancellation/reaping, speech queues and key guards unchanged.
-        This shared Python path must behave identically on macOS and Windows.
-      - Verify normal-only groups skip crops/recognizer, mixed and bridging
-        groups preserve complete text/confidence, boundary centers, null region,
-        worker round-trip and controller/replay wiring. Repeat saved-frame
-        comparison for actual layout/text/confidence/navigation decisions.
-      - Include the live loaded acceptance in the combined run. The historical
-        marker includes crop creation as well as recognition; the native cause
-        of that one slowdown remains unproven. On recurrence sample that owned
-        process during separately marked crop/preprocess/inference/decode phases
-        in a temporary diagnostic copy. Do not add permanent tracing or enlarge
-        budgets. Exclude the old synchronous failure-PNG overhead from timing.
+- [ ] **Qualify the screen-text deadline after excluding covered dialogue.**
+      During the combined live run with fresh background generation, confirm
+      ordinary dialogue remains timely and centered/mixed captions preserve
+      complete text, confidence, queues and navigation. Include layout switches
+      and Stop/restart; saved-frame timings are not full-application latency.
+      The historical marker includes crop creation as well as recognition; the
+      native cause of that one slowdown remains unproven. On recurrence sample
+      the owned process during separately marked crop/preprocess/inference/decode
+      phases in a temporary diagnostic copy. Do not add permanent tracing or
+      enlarge budgets. Exclude the old synchronous failure-PNG overhead from
+      product timing claims.
       Evidence: `.codex/investigations/text-detector-cause-20261112/` and
       `.codex/investigations/combined-campaign-20261111/`.
 - [ ] After these findings are triaged/fixed, rerun an available current-season

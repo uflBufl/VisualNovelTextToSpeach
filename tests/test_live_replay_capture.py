@@ -29,6 +29,7 @@ from vntts.live_replay_capture import (
 from vntts.ocr import DialogRegion, OCRRegions, OCRResult
 from vntts.profiles import GameProfile
 from vntts.settings import AppSettings
+from vntts.text_detection import TextLine
 
 
 class FakeStoryResolver:
@@ -83,6 +84,77 @@ def frame(color):
 
 
 class LiveReplayCaptureTest(unittest.TestCase):
+    def test_cli_caption_discovery_passes_current_covered_dialogue_region(self):
+        image = Image.new("RGB", (200, 100), "white")
+        covered = DialogRegion(0, 0.7, 1, 0.3)
+        allowed = DialogRegion(0, 0.1, 1, 0.9)
+        captured = CapturedDialogFrame(
+            covered.crop(image), 0, canonical_image=image, capture_region=covered
+        )
+        worker, target = Mock(), Mock()
+        worker.detect.return_value = (
+            TextLine(DialogRegion(0.1, 0.3, 0.8, 0.1), "A caption.", 95),
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "capture"
+            result = SimpleNamespace(
+                dialogue_count=1,
+                frame_count=1,
+                boundary_review_count=0,
+                corpus=output / "corpus.json",
+                report=output / "report.json",
+            )
+
+            def capture_session(_session, **kwargs):
+                selected = kwargs["capture_frame"]()
+                self.assertEqual(selected.layout_kind, "caption")
+                self.assertEqual(selected.recognized_result.text, "A caption.")
+                self.assertFalse(selected.navigation_allowed)
+                return result
+
+            with (
+                patch.object(
+                    live_replay_capture,
+                    "load_app_settings",
+                    return_value=AppSettings(discover_text_layouts=True),
+                ),
+                patch.object(live_replay_capture.GameProfileStore, "load") as profiles,
+                patch.object(
+                    live_replay_capture, "resolve_story_region", return_value=allowed
+                ),
+                patch.object(
+                    live_replay_capture, "get_dialog_region", return_value=covered
+                ),
+                patch.object(live_replay_capture, "get_ocr_regions", return_value=None),
+                patch.object(live_replay_capture.OCRCorrectionStore, "load"),
+                patch.object(
+                    live_replay_capture, "DisplayCaptureTarget", return_value=target
+                ),
+                patch.object(
+                    live_replay_capture, "capture_live_frame", return_value=captured
+                ),
+                patch.object(
+                    live_replay_capture,
+                    "prepare_text_detection_models",
+                    return_value=("detector", "recognizer"),
+                ),
+                patch.object(
+                    live_replay_capture, "TextDetectionWorker", return_value=worker
+                ),
+                patch.object(
+                    live_replay_capture,
+                    "capture_replay_session",
+                    side_effect=capture_session,
+                ),
+            ):
+                profiles.return_value.get.return_value = None
+                self.assertEqual(live_replay_capture.main([str(output)]), 0)
+            worker.detect.assert_called_once_with(
+                image, allowed_region=allowed, covered_region=covered
+            )
+            worker.close.assert_called_once()
+            target.close.assert_called_once()
+
     def test_cli_preserves_split_regions_and_ignores_ellipsis_outside_dialogue(self):
         region = DialogRegion(0, 0.5, 1, 0.5)
         regions = OCRRegions(

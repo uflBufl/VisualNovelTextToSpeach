@@ -43,6 +43,9 @@ def _worker_main(
                 region = request["allowed_region"]
                 if region is not None:
                     region = DialogRegion.from_mapping(region)
+                covered_region = request.get("covered_region")
+                if covered_region is not None:
+                    covered_region = DialogRegion.from_mapping(covered_region)
                 width, height = request["size"]
                 if (
                     type(width) is not int
@@ -57,7 +60,9 @@ def _worker_main(
                 if len(pixels) != width * height * 3:
                     raise ValueError("Invalid screen text image payload")
                 lines = detector.detect(
-                    Image.frombytes("RGB", (width, height), pixels), allowed_region=region
+                    Image.frombytes("RGB", (width, height), pixels),
+                    allowed_region=region,
+                    covered_region=covered_region,
                 )
                 result = {
                     "ok": True,
@@ -221,6 +226,7 @@ class TextDetectionWorker:
         *,
         cancel_event: Event | None = None,
         allowed_region: DialogRegion | None = None,
+        covered_region: DialogRegion | None = None,
     ) -> tuple[TextLine, ...]:
         from vntts.text_detection import TextLine
 
@@ -270,6 +276,9 @@ class TextDetectionWorker:
                         "size": image.size,
                         "allowed_region": (
                             allowed_region.to_json() if allowed_region is not None else None
+                        ),
+                        "covered_region": (
+                            covered_region.to_json() if covered_region is not None else None
                         ),
                     }
                 )

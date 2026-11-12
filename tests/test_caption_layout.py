@@ -242,6 +242,7 @@ class CaptionLayoutTest(unittest.TestCase):
             self.assertTrue(
                 all(
                     call.kwargs["allowed_region"] == DialogRegion(0, 0.1, 1, 0.9)
+                    and call.kwargs["covered_region"] == self.frame().capture_region
                     for call in worker.detect.call_args_list
                 )
             )

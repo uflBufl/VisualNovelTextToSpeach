@@ -87,14 +87,27 @@ class TextDetectionWorkerTest(unittest.TestCase):
         self.assertEqual(self.owner.pid, pid)
         self.assertTrue(self.owner._process.is_alive())
 
-    def test_serializes_allowed_region_in_request(self):
+    def test_serializes_allowed_and_covered_regions_separately(self):
         region = DialogRegion(0.1, 0.2, 0.7, 0.5)
+        covered_region = DialogRegion(0.2, 0.3, 0.5, 0.2)
         with patch.object(worker, "_worker_main", successful_worker):
-            self.owner.detect(self.image, allowed_region=region)
+            self.owner.detect(
+                self.image, allowed_region=region, covered_region=covered_region
+            )
             request = json.loads(
                 (Path(self.owner._directory.name) / "request.json").read_text()
             )
         self.assertEqual(request["allowed_region"], region.to_json())
+        self.assertEqual(request["covered_region"], covered_region.to_json())
+
+    def test_serializes_absent_regions_as_null(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+            request = json.loads(
+                (Path(self.owner._directory.name) / "request.json").read_text()
+            )
+        self.assertIsNone(request["allowed_region"])
+        self.assertIsNone(request["covered_region"])
 
     def test_child_validates_and_passes_allowed_region(self):
         region = DialogRegion(0.1, 0.2, 0.7, 0.5)
@@ -119,6 +132,44 @@ class TextDetectionWorkerTest(unittest.TestCase):
                     self.assertEqual(
                         detector.return_value.detect.call_args.kwargs["allowed_region"],
                         region if value is not None else None,
+                    )
+                    self.assertIsNone(
+                        detector.return_value.detect.call_args.kwargs["covered_region"]
+                    )
+
+    def test_child_validates_and_passes_covered_region(self):
+        allowed_region = DialogRegion(0.1, 0.2, 0.7, 0.5)
+        covered_region = DialogRegion(0.2, 0.3, 0.5, 0.2)
+        for value in (covered_region.to_json(), None, {"left": -1}):
+            with self.subTest(value=value), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "request.json").write_text(
+                    json.dumps(
+                        {
+                            "size": [1, 1],
+                            "allowed_region": allowed_region.to_json(),
+                            "covered_region": value,
+                        }
+                    )
+                )
+                (root / "image.raw").write_bytes(b"\0\0\0")
+                connection = Mock()
+                connection.recv_bytes.side_effect = [b"run", b"stop"]
+                with patch("vntts.text_detection.ScreenTextDetector") as detector:
+                    detector.return_value.detect.return_value = ()
+                    worker._worker_main(connection, directory, "det", "rec")
+                result = json.loads((root / "result.json").read_text())
+                if value == {"left": -1}:
+                    self.assertFalse(result["ok"])
+                    detector.return_value.detect.assert_not_called()
+                else:
+                    self.assertTrue(result["ok"])
+                    self.assertEqual(
+                        detector.return_value.detect.call_args.kwargs,
+                        {
+                            "allowed_region": allowed_region,
+                            "covered_region": covered_region if value is not None else None,
+                        },
                     )
 
     def test_inference_timeout_reaps_process_and_next_request_recovers(self):

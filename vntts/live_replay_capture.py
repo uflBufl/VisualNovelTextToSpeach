@@ -905,7 +905,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     frame,
                     group_text_lines(
                         text_worker.detect(
-                            frame.canonical_image, allowed_region=story_region
+                            frame.canonical_image,
+                            allowed_region=story_region,
+                            covered_region=frame.capture_region,
                         )
                     ),
                     settings.ocr_minimum_confidence,
