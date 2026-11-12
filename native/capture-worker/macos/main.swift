@@ -281,8 +281,9 @@ func geometry(_ target: Target) throws -> Geometry {
         guard CGDisplayIsActive(displayID) != 0 else { throw fail("target_unavailable", "Selected display is unavailable") }
         return Geometry(bounds: CGDisplayBounds(displayID), displayID: displayID)
     }
+    // Relative-window lists can omit the same window during fullscreen Space changes.
     guard let windowID = target.windowID, let pid = target.pid,
-          let entries = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]],
+          let entries = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]],
           let entry = entries.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID }),
           (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid else {
         throw fail("target_lost", "Selected window or owning process is no longer available")

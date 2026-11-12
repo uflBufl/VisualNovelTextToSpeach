@@ -256,9 +256,10 @@ class MacOSWindowBackend:
 
     def get_window(self, handle: int) -> WindowInfo | None:
         quartz = self.quartz
+        # Relative-window lists can omit the same window during fullscreen Space changes.
         values = self._copy_windows(
-            getattr(quartz, "kCGWindowListOptionIncludingWindow"),
-            int(handle),
+            getattr(quartz, "kCGWindowListOptionAll"),
+            getattr(quartz, "kCGNullWindowID"),
         )
         for item in values:
             if int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1)) == int(
@@ -270,8 +271,8 @@ class MacOSWindowBackend:
     def get_client_geometry(self, handle: int) -> WindowGeometry:
         quartz = self.quartz
         values = self._copy_windows(
-            getattr(quartz, "kCGWindowListOptionIncludingWindow"),
-            int(handle),
+            getattr(quartz, "kCGWindowListOptionAll"),
+            getattr(quartz, "kCGNullWindowID"),
         )
         for item in values:
             if int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1)) != int(

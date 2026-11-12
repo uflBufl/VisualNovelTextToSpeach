@@ -29,6 +29,7 @@ class FakeQuartz:
     kCGWindowNumber = "number"
     kCGWindowOwnerPID = "pid"
     kCGWindowIsOnscreen = "onscreen"
+    kCGWindowListOptionAll = 0
     kCGWindowListOptionOnScreenOnly = 1
     kCGWindowListExcludeDesktopElements = 2
     kCGWindowListOptionIncludingWindow = 4
@@ -344,6 +345,34 @@ class MacOSWindowBackendTest(unittest.TestCase):
             backend.get_client_geometry(10),
             WindowGeometry(120, 80, 1600, 900),
         )
+
+    def test_exact_lookup_survives_fullscreen_space_changes_and_rejects_missing_target(
+        self,
+    ):
+        other = self.window(20, "Game")
+        selected = self.window(10, "Game")
+        selected["bounds"] = {"X": 0, "Y": 0, "Width": 1728, "Height": 1080}
+        quartz = FakeQuartz([other, selected])
+        quartz.CGWindowListCopyWindowInfo = Mock(
+            side_effect=lambda option, window_id: (
+                quartz.windows
+                if option == quartz.kCGWindowListOptionAll
+                and window_id == quartz.kCGNullWindowID
+                else []
+            )
+        )
+        backend = MacOSWindowBackend(quartz)
+
+        self.assertEqual(
+            backend.get_window(10), WindowInfo(10, "Game", selected["pid"])
+        )
+        self.assertEqual(
+            backend.get_client_geometry(10), WindowGeometry(0, 0, 1728, 1080)
+        )
+        quartz.windows = [other]
+        self.assertIsNone(backend.get_window(10))
+        with self.assertRaises(WindowNotFoundError):
+            backend.get_client_geometry(10)
 
     def test_accepts_fullscreen_window_coordinates_outside_primary_display(self):
         window = self.window(10, "Reverse: 1999")
