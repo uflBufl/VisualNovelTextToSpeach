@@ -413,16 +413,33 @@ separate control episodes distinct from product failures.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Diagnose the reproduced text-detector timeout under generation load.**
-      The combined run exceeded the unchanged5s deadline after detector completed
-      and recognizer began; the child was replaced and Reading recovered without
-      missing the ordinary dialogue. Resolve the remaining recognizer/native
-      resource cause using retained failure pixels and phase CPU/wall evidence
-      before choosing a repair. Concurrent MOSS also slowed, but the resource
-      cause is unproven. Temporary synchronous failure-PNG writing added recovery
-      latency; exclude that overhead from product timing claims. Do not change
-      budgets/recognition or add permanent tracing without a proven boundary.
-      Evidence: `.codex/investigations/combined-campaign-20261111/`.
+- [ ] **Remove redundant dialogue recognition and qualify the detector deadline.**
+      Proposed implementation, awaiting agreement:
+      - Reuse one geometric grouping implementation before recognition and in
+        group_text_lines. Skip only entire geometric groups whose line centers
+        lie inside the already calibrated dialogue region. Keep mixed groups
+        whole, including their inside lines and confidence; keep current final
+        grouping/selection after recognition removes empty results.
+      - Pass the optional covered dialogue region through TextDetectionWorker
+        and its request protocol from the common controller selector and replay
+        capture. Reuse the same center-membership predicate as select_caption;
+        retain full-line allowed-story containment separately. No covered region
+        means the existing general detector behavior, including future readers.
+      - Keep models, resolution, confidence, batch size, thread settings,
+        timeouts, cancellation/reaping, speech queues and key guards unchanged.
+        This shared Python path must behave identically on macOS and Windows.
+      - Verify normal-only groups skip crops/recognizer, mixed and bridging
+        groups preserve complete text/confidence, boundary centers, null region,
+        worker round-trip and controller/replay wiring. Repeat saved-frame
+        comparison for actual layout/text/confidence/navigation decisions.
+      - Include the live loaded acceptance in the combined run. The historical
+        marker includes crop creation as well as recognition; the native cause
+        of that one slowdown remains unproven. On recurrence sample that owned
+        process during separately marked crop/preprocess/inference/decode phases
+        in a temporary diagnostic copy. Do not add permanent tracing or enlarge
+        budgets. Exclude the old synchronous failure-PNG overhead from timing.
+      Evidence: `.codex/investigations/text-detector-cause-20261112/` and
+      `.codex/investigations/combined-campaign-20261111/`.
 - [ ] After these findings are triaged/fixed, rerun an available current-season
       chapter from the agreed visible dialogue to the actual terminal scene, with
       prepared voices and genuine background generation. Verify full low-confidence
