@@ -311,24 +311,36 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: combine automatic prepared Read, caption-boundary and loaded
-detector qualification in the next native chapter run. The previous run reached
-its terminal scene; ordinary dialogue played in order without manual recovery.
-Terminal quotes were excluded by the operator's too-narrow story area, so their
-live rerun with corrected bounds remains open. Evidence:
-`.codex/investigations/combined-campaign-20261111/`. Keep calibration mistakes and
-separate control episodes distinct from product failures.
+Next action: agree the short-dialogue matching repair below before implementation.
+Keep native acceptance to the remaining scenarios; do not repeat the completed
+ordinary-Read chapter and loaded terminal quotes as separate preparatory runs.
+
+- [ ] **RUN-12-01 - Exact short dialogue loses its prepared identity.**
+      In The Histories, Hedone / `Eurus.` is recognized correctly with high
+      confidence and has a current compatible recording. The completeness
+      resolver nevertheless returns `expected-incomplete` because Elma's later
+      `Eurus ... Eurus ...` is a possible continuation. The short-text recovery
+      threshold then leaves the line unresolved, causing unnecessary live synthesis.
+      Agree a repair to candidate selection/completeness that respects reliable
+      speaker evidence and preserves genuine unfinished-text handling. Verify exact
+      short lines, longer continuations, absent/noisy speakers and real ambiguity;
+      then confirm prepared playback without duplicate speech or keys.
+- [ ] **REC-12-01 - Agree selected-window recording resize support.**
+      The video recorder intentionally aborts when the same selected window changes
+      size; process audio and live capture are independent. Preserve PID/window
+      identity checks and choose fixed-canvas scaling or verified segment rotation
+      before changing that documented limitation. Verify resize/fullscreen, output
+      continuity and bounded Stop; do not merely delete the geometry guard.
 
 - [ ] **RUN-11-UI-02 - Qualify automatic prepared Read in the combined live run.**
-      Restart the app and use ordinary Read without activating a saved pack.
-      Confirm current compatible recordings play; an ambiguous phrase uses live
+      Remaining scenarios: a genuinely ambiguous phrase uses live
       TTS once and later unique text selects prepared audio without replaying it,
       dropping accepted speech, restarting capture or sending duplicate keys.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other
       roles remain playable, and returning to the previous voice reuses cache.
-      Include this qualification in the caption/chapter run below; do not rerun
+      Combine these remaining cases with the caption checks below; do not rerun
       the whole chapter separately for each case.
 
 - [ ] **RUN-09-05 - Finish remaining caption qualification before extending layouts.**
@@ -337,16 +349,13 @@ separate control episodes distinct from product failures.
       terminal-caption baseline; exact media and evidence limits are in
       `.codex/investigations/story-region-20261110/terminal-check-e4125.md`.
       Remaining live gates:
-      - repeat the terminal quotes with corrected story bounds that contain each
-        full line; the previous combined run's narrow calibration excluded them;
       - source-free TTS without catalog/resources, using an available narrator;
       - multiple captions admitted while earlier accepted speech is still queued,
         then return to unchanged lower dialogue without repetition. The current
         chapter ends after the quotes, so use a suitable scene for the return;
-      - actual caption detection/admission latency under fresh background
-        generation, comparing discovery enabled/disabled on the same content;
-      - an uninterrupted combined chapter after the separately recorded native
-        capture, process-identity, dispatch and recorder defects are fixed.
+      - compare discovery enabled/disabled on the same content under fresh
+        background generation; loaded prepared terminal playback alone does not
+        qualify every adaptive-caption path.
       Keep one shared permission across live/bootstrap/one-shot/diagnostics/replay;
       do not blacklist game-specific labels, hardcode a top/center band, widen
       the ordinary dialogue crop or weaken key guards.
@@ -413,13 +422,10 @@ separate control episodes distinct from product failures.
       Agree further slices separately after centered-caption delivery.
       Remaining temporal comparisons and real-load performance
       are gates for the corresponding slices, not assumed completed by design.
-- [ ] **Qualify the screen-text deadline after excluding covered dialogue.**
-      During the combined live run with fresh background generation, confirm
-      ordinary dialogue remains timely and centered/mixed captions preserve
-      complete text, confidence, queues and navigation. Include layout switches
-      and Stop/restart; saved-frame timings are not full-application latency.
+- [ ] **Investigate the screen-text deadline if it recurs.**
       The historical marker includes crop creation as well as recognition; the
-      native cause of that one slowdown remains unproven. On recurrence sample
+      native cause of that one slowdown remains unproven, and a successful loaded
+      chapter does not establish its repair. On recurrence sample
       the owned process during separately marked crop/preprocess/inference/decode
       phases in a temporary diagnostic copy. Do not add permanent tracing or
       enlarge budgets. Exclude the old synchronous failure-PNG overhead from
