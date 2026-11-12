@@ -19,7 +19,7 @@ from vntts.versioned_json import load_versioned_json, write_versioned_json
 if TYPE_CHECKING:
     from vntts.game_pack import GamePackImport
 
-settings_schema_version = 32
+settings_schema_version = 33
 main_sections = ("stories", "voices", "reading")
 content_path_setting_names = (
     "game_pack",
@@ -98,7 +98,7 @@ audio_source_policies = {
     "prefer-generated",
     "prefer-game-audio",
 }
-default_audio_source_policy = "live-tts-only"
+default_audio_source_policy = "prefer-generated"
 speech_backends = frozenset(
     {"coqui-xtts", "chatterbox-nano", "moss-tts", "qwen-tts", "pocket-tts"}
 )
@@ -308,7 +308,7 @@ class AppSettings:
         default=None,
         metadata={"support_sensitivity": "path"},
     )
-    live_sequence_mode: str = "audio-auto"
+    live_sequence_mode: str = "off"
     live_speaker_corpus: str | None = field(
         default=None,
         metadata={"support_sensitivity": "path"},
@@ -500,6 +500,19 @@ class AppSettings:
             if parsed[name] not in choices:
                 report(f"Invalid {name!r} setting; using its default")
                 parsed[name] = getattr(defaults, name)
+        if (
+            fallback is None
+            and source_schema < 33
+            and parsed["audio_source_policy"] == "live-tts-only"
+        ):
+            parsed["audio_source_policy"] = default_audio_source_policy
+        if (
+            fallback is None
+            and source_schema < 33
+            and not parsed["live_sequence_plan"]
+            and parsed["live_sequence_mode"] == "audio-auto"
+        ):
+            parsed["live_sequence_mode"] = "off"
         if parsed["live_sequence_mode"] not in live_sequence_modes:
             report(
                 "Invalid 'live_sequence_mode' setting; using saved/default value"

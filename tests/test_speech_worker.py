@@ -1084,6 +1084,92 @@ print("worker-import-ready")
             )
         )
 
+    def test_worker_updates_voice_caches_between_complete_render_requests(self):
+        registry = CharacterVoiceRegistry()
+        registry.set_assignment("Ada", "preset:alba")
+        backend = FakeWorkerBackend(registry)
+        cache_names = (
+            "audio_cache",
+            "voice_states",
+            "prompt_audio_codes",
+            "conditionals",
+        )
+        for name in cache_names:
+            setattr(backend, name, {"old": object()})
+        backend.clear_runtime_cache = MagicMock(
+            side_effect=AssertionError("Worker stopped")
+        )
+        observations = []
+        render = backend.render
+
+        def observe_render(request):
+            observations.append(
+                (
+                    backend.registry.resolve("Ada").speaker,
+                    all(bool(getattr(backend, name)) for name in cache_names),
+                )
+            )
+            for name in cache_names:
+                getattr(backend, name)["rendered"] = object()
+            return render(request)
+
+        backend.render = observe_render
+        incoming, outgoing = BytesIO(), BytesIO()
+        _write_frame(
+            incoming,
+            {
+                "type": "initialize",
+                "backend": "fake",
+                "runtime_site": "/isolated/site-packages",
+                "registry": _serialize_registry(registry),
+                "options": {},
+            },
+        )
+        for index, narrator in enumerate((None, None, None, "bella")):
+            if index == 2:
+                registry.set_assignment("Ada", "preset:marius")
+            _write_frame(
+                incoming,
+                {
+                    "type": "render",
+                    "request_id": str(index),
+                    "voice": "Ada",
+                    "text": "Same phrase.",
+                    "seed": None,
+                    "generation_profile": "stable",
+                    "cache_policy": "use",
+                    "registry": _serialize_registry(registry),
+                    "narrator_reference": narrator,
+                },
+            )
+        _write_frame(incoming, {"type": "shutdown"})
+        incoming.seek(0)
+        self.assertEqual(
+            worker_main(
+                input_stream=incoming,
+                output_stream=outgoing,
+                backend_classes={"fake": lambda _registry: backend},
+                required_modules={"fake": ()},
+            ),
+            0,
+        )
+        self.assertEqual(
+            observations,
+            [
+                ("alba", True),
+                ("alba", True),
+                ("marius", False),
+                ("marius", False),
+            ],
+        )
+        backend.clear_runtime_cache.assert_not_called()
+        outgoing.seek(0)
+        results = []
+        while (frame := _read_frame(outgoing)) is not None:
+            if frame[0]["type"] == "result":
+                results.append(frame[0]["request_id"])
+        self.assertEqual(results, ["0", "1", "2", "3"])
+
     def test_worker_protocol_streams_typed_pcm_and_results(self):
         registry = CharacterVoiceRegistry()
         input_stream = BytesIO()

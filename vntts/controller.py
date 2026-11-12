@@ -35,6 +35,7 @@ from vntts.controller_components import (
     create_live_toggle as create_live_toggle,
 )
 from vntts.controller_components import speak_live_chunk as speak_live_chunk
+from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.diagnostics import resolve_voice_label
 from vntts.dialog import is_symbol_only_text, speak_dialog
 from vntts.dialog_capture import (
@@ -112,6 +113,11 @@ from vntts.playback import (
     SilentPlayback,
     outcome_for_prepared,
     prepare_silent_playback,
+)
+from vntts.pregeneration_setup import PregenerationJobStore
+from vntts.prepared_audio_discovery import (
+    PreparedAudioSnapshot,
+    discover_prepared_audio,
 )
 from vntts.prepared_sequence_status import (
     SequenceUnavailableReason,
@@ -589,9 +595,6 @@ class AppController:
         correction_store: OCRCorrectionStore | None = None,
         history: DialogueHistory | None = None,
         chapter_voice_preloader: ChapterVoicePreloader | None = None,
-        generated_audio_library_factory: Callable[
-            ..., GeneratedAudioLibrary | None
-        ] = GeneratedAudioLibrary.load_optional,
         generated_audio_backend_factory: Callable[
             ..., GeneratedAudioFallbackBackend
         ] = GeneratedAudioFallbackBackend,
@@ -602,10 +605,22 @@ class AppController:
         ] = load_live_sequence_plan,
         voice_library: VoiceLibrary | None = None,
         profile_store: GameProfileStore | None = None,
+        prepared_audio_store: PregenerationJobStore | None = None,
+        prepared_audio_discovery_factory: Callable[
+            ..., PreparedAudioSnapshot
+        ] = discover_prepared_audio,
     ) -> None:
         self.settings = settings or AppSettings()
         self.profile_store = profile_store or GameProfileStore.load()
         self.voice_library = voice_library or application_voice_library()
+        self.prepared_audio_store = prepared_audio_store
+        self.prepared_audio_discovery_factory = prepared_audio_discovery_factory
+        self.prepared_audio_snapshot: PreparedAudioSnapshot | None = None
+        self.prepared_audio_inventory: PreparedAudioSnapshot | None = None
+        self.prepared_audio_library: GeneratedAudioLibrary | None = None
+        self.current_voice_snapshot: CurrentVoiceSnapshot | None = None
+        self.automatic_prepared_reading = False
+        self._prepared_audio_checked_at = 0.0
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
@@ -639,7 +654,6 @@ class AppController:
         self.live_speaker_corpus = None
         self.live_speaker_corpus_error = None
         self._load_live_speaker_corpus()
-        self.generated_audio_library_factory = generated_audio_library_factory
         self.generated_audio_backend_factory = generated_audio_backend_factory
         self.route_trace_handler = route_trace_handler or (lambda _trace: None)
         self._pipeline_event_sink = pipeline_event_handler or (
@@ -996,11 +1010,16 @@ class AppController:
             "complete_dialogue_only": (
                 self.settings.audio_source_policy != "live-tts-only"
                 or self._live_sequence_audio_active()
+                or self.automatic_prepared_reading
             ),
         }
-        if tracker_options["complete_dialogue_only"] and self.settings.story_index:
-            tracker_options["incomplete_dialogue_probe"] = (
-                self.chapter_voice_preloader.is_unique_incomplete_prefix
+        if tracker_options["complete_dialogue_only"] and (
+            self.chapter_voice_preloader.dialogue or self.automatic_prepared_reading
+        ):
+            tracker_options["incomplete_dialogue_probe"] = lambda character, text: (
+                self.chapter_voice_preloader.is_unique_incomplete_prefix(
+                    character, text
+                )
             )
         if (
             isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
@@ -1064,17 +1083,13 @@ class AppController:
         if policy == "live-tts-only":
             self.status_handler(f"Audio policy: live TTS only ({live_name})")
             return None
-        if not self.settings.story_index:
+        self._refresh_prepared_audio(force=True)
+        if not self.settings.story_index and not self.automatic_prepared_reading:
             self.status_handler(
                 "Audio fallback disabled: configure a story index for stable line IDs"
             )
             return None
-        library = None
-        if self.settings.generated_audio_manifest:
-            library = self.generated_audio_library_factory(
-                self.settings.generated_audio_manifest,
-                warn=self.status_handler,
-            )
+        library = self.prepared_audio_library
         if policy == "prefer-generated" and library is None:
             self.status_handler(
                 f"Generated audio unavailable; using live TTS ({live_name})"
@@ -1103,6 +1118,120 @@ class AppController:
                 "then live TTS"
             )
         return generated_backend
+
+    def _refresh_prepared_audio(self, *, force: bool = False) -> None:
+        """Refresh session metadata without replacing capture or accepted speech."""
+        if not force and self.prepared_audio_snapshot is None:
+            return
+        settings = self.settings
+        if not any(
+            (settings.game_window_title, settings.story_index, settings.game_pack)
+        ):
+            self.prepared_audio_snapshot = None
+            self.prepared_audio_inventory = None
+            self.prepared_audio_library = None
+            self.current_voice_snapshot = None
+            self.automatic_prepared_reading = False
+            self.chapter_voice_preloader = ChapterVoicePreloader()
+            backend = self.speech_backend
+            if isinstance(backend, GeneratedAudioFallbackBackend):
+                backend.library = None
+                backend.line_resolver = self.chapter_voice_preloader
+                backend.generated_reservations.clear()
+            return
+        previous = self.prepared_audio_snapshot
+        previous_voices = self.current_voice_snapshot
+        voices = CurrentVoiceSnapshot.capture(
+            self.voice_library, settings, previous_voices
+        )
+        voices_changed = voices is not previous_voices
+        now = monotonic()
+        check_archive = force or now - self._prepared_audio_checked_at >= 1.0
+        changed = force or previous is None or (check_archive and previous.changed())
+        if check_archive:
+            self._prepared_audio_checked_at = now
+        if not changed and not voices_changed:
+            return
+        reader = self.live_reader
+        epoch = (
+            reader.frame_route_epoch if isinstance(reader, LiveDialogReader) else None
+        )
+        inventory: PreparedAudioSnapshot | None
+        if changed:
+            inventory = self.prepared_audio_discovery_factory(
+                self.prepared_audio_store or PregenerationJobStore(),
+                game_pack=settings.game_pack,
+                story_index=settings.story_index,
+                generated_audio_manifest=settings.generated_audio_manifest,
+                warn=self.status_handler,
+                previous=self.prepared_audio_inventory,
+            )
+            snapshot = inventory.for_settings(settings)
+        else:
+            assert previous is not None
+            snapshot = previous
+            inventory = self.prepared_audio_inventory
+        preloader = (
+            snapshot.preloader
+            if not settings.live_sequence_plan
+            else self.chapter_voice_preloader
+        )
+        library = snapshot.library_for(voices)
+        projection = (
+            self.voice_assignments.project_current_voices(voices.library)
+            if voices_changed and previous_voices is not None
+            else None
+        )
+        backend = self.speech_backend
+        with (
+            (
+                backend.generated_preflight_lock
+                if isinstance(backend, GeneratedAudioFallbackBackend)
+                else nullcontext()
+            ),
+            self.story_cursor_lock,
+        ):
+            if (
+                self.shutdown_requested.is_set()
+                or self.settings is not settings
+                or self.speech_backend is not backend
+                or (
+                    reader is not None
+                    and epoch is not None
+                    and not reader.frame_route_epoch_is_current(epoch)
+                )
+            ):
+                return
+            self.prepared_audio_snapshot = snapshot
+            self.prepared_audio_inventory = inventory
+            self.prepared_audio_library = library
+            self.current_voice_snapshot = voices
+            self.automatic_prepared_reading = True
+            if voices_changed and previous_voices is not None:
+                self.voice_assignments.refresh_current_voices(
+                    voices.library, projection=projection
+                )
+            if not settings.live_sequence_plan:
+                current = self.chapter_voice_preloader.current_match
+                same_game = previous is not None and {
+                    source.game_id for source in previous.sources
+                } == {source.game_id for source in snapshot.sources}
+                same_profile = previous_voices is not None and (
+                    previous_voices.settings.active_profile_id
+                    == settings.active_profile_id
+                )
+                if (
+                    current is not None
+                    and same_game
+                    and same_profile
+                    and current.chapter in preloader.by_chapter
+                ):
+                    preloader.current_match = current
+                self.chapter_voice_preloader = preloader
+            if isinstance(backend, GeneratedAudioFallbackBackend):
+                backend.generated_reservations.clear()
+                backend.library = library
+                backend.line_resolver = self.chapter_voice_preloader
 
     def refresh_corrections(self) -> None:
         self.correction_store = OCRCorrectionStore.load(self.correction_store.path)
@@ -1415,6 +1544,7 @@ class AppController:
                 resolution["match_result"] = "empty"
             return result
         confident = confidence >= self.settings.ocr_minimum_confidence
+        self._refresh_prepared_audio()
         with self.story_cursor_lock:
             preloader = self.chapter_voice_preloader
             plan, cursor = self.live_sequence_plan, self.story_cursor
@@ -1465,6 +1595,7 @@ class AppController:
                     if resolution is not None:
                         resolution["match_result"] = "owned-prefix"
                     return result
+            line_ids: tuple[str, ...]
             if confirmation_line_id is not None:
                 line_ids = (confirmation_line_id,)
             elif plan is not None and self.settings.live_sequence_mode != "off":
@@ -1493,6 +1624,19 @@ class AppController:
             line, match = preloader.resolve_complete_among(
                 "", result.text, line_ids, update_context=False
             )
+            if (
+                line is None
+                and confident
+                and self.automatic_prepared_reading
+                and plan is None
+                and preloader.current_match is not None
+            ):
+                line, match = preloader.resolve_complete_among(
+                    "",
+                    result.text,
+                    (row.line_id for row in preloader.dialogue if row.line_id),
+                    update_context=False,
+                )
             if not confident and match not in {"expected-exact", "expected-text-only"}:
                 line = None
                 match = "ocr-uncertain"
@@ -1504,6 +1648,8 @@ class AppController:
                     line, match = chapter_line, chapter_match
             if resolution is not None:
                 resolution.update(match_result=match, line=line)
+            if line is not None and self.automatic_prepared_reading:
+                preloader.select_line_id(line.line_id)
         if line is None:
             return result
         return replace(
@@ -3636,6 +3782,23 @@ class AppController:
             return False
         if routed_character is None:
             routed_character = canonical_character
+        if self.automatic_prepared_reading:
+            preloader = self.chapter_voice_preloader
+            match = preloader.current_match
+            rows = (
+                preloader.by_chapter.get(match.chapter, ())
+                if match
+                else preloader.dialogue
+            )
+            line, _method = preloader.resolve_complete_among(
+                routed_character,
+                routed_text,
+                (row.line_id for row in rows if row.line_id),
+                update_context=False,
+            )
+            return reader.enqueue(
+                routed_character, routed_text, line_id=line.line_id if line else None
+            )
         return reader.enqueue(routed_character, routed_text)
 
     def _current_canonical_occurrence_owned_locked(self) -> bool:
@@ -4103,6 +4266,7 @@ class AppController:
                         chunk.character,
                         chunk.text,
                         line_id=chunk.line_id,
+                        resolve_unidentified=not self.automatic_prepared_reading,
                     )
                     if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
                     else prepare_route(chunk.character, chunk.text)

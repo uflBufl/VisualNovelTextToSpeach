@@ -1414,7 +1414,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 state_path,
                 document,
                 {unrelated.queue_id: unrelated},
-                plan.synthesis_controls_sha256,
             )
             self.assertFalse(_may_have_saved_recordings(*arguments))
             original = state_path.read_bytes()
@@ -1455,7 +1454,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
                                 state,
                                 load_generation_input_metadata(prepared.directory),
                                 {unrelated.queue_id: unrelated},
-                                plan.synthesis_controls_sha256,
                             )
                     finally:
                         sidecar.unlink()
@@ -1684,7 +1682,63 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 target = current.output_directory / item["path"]
                 self.assertTrue(any(target.samefile(source) for source in sources))
 
-    def test_changed_synthesis_controls_do_not_reuse_completed_audio(self):
+    def test_changed_generation_profile_does_not_reuse_completed_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, _ = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            revised = replace(
+                plan,
+                synthesis_controls_sha256="d" * 64,
+                synthesis_profile="natural",
+                groups=tuple(
+                    replace(group, control_sha256="e" * 64) for group in plan.groups
+                ),
+            )
+            current = store.materialize(job, revised)
+            self.assertFalse(current.output_directory.exists())
+
+    def test_changed_narrator_controls_preserve_unaffected_completed_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs, plan, manifest = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            original = store.materialize(job, plan)
+            generate_prepared(original, PocketRenderer())
+            donor = CharacterVoiceRegistry.from_file(manifest).resolve("Rhiannon")
+            self.assertIsNotNone(donor)
+            revised = replace(
+                plan,
+                synthesis_controls_sha256="d" * 64,
+                groups=tuple(
+                    replace(
+                        group,
+                        source_id="character:rhiannon",
+                        source_character="Rhiannon",
+                        source_speaker=donor.speaker,
+                        reference_sha256s=tuple(
+                            sha256_file(path) for path in donor.references
+                        ),
+                        narrator_candidate=None,
+                        control_sha256="e" * 64,
+                    )
+                    if group.route == "narrator"
+                    else group
+                    for group in plan.groups
+                ),
+            )
+            current = store.materialize(job, revised)
+            state = load_generation_state(
+                generation_state_path(current.output_directory), current.queue
+            )
+            self.assertEqual(
+                {value["line_id"] for value in state["items"].values()},
+                {"rhiannon", "original"},
+            )
+
+    def test_unrelated_plan_controls_hash_does_not_invalidate_recordings(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             job, jobs, plan, _ = self.fixture(root)
@@ -1699,7 +1753,18 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ),
             )
             current = store.materialize(job, revised)
-            self.assertFalse(current.output_directory.exists())
+            state = load_generation_state(
+                generation_state_path(current.output_directory), current.queue
+            )
+            self.assertEqual(
+                {value["line_id"] for value in state["items"].values()},
+                {
+                    value["line_id"]
+                    for value in load_generation_state(
+                        generation_state_path(original.output_directory), original.queue
+                    )["items"].values()
+                },
+            )
 
     def test_unrelated_damaged_previous_job_does_not_block_preparation(self):
         with TemporaryDirectory() as directory:

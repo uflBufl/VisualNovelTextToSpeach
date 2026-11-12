@@ -27,7 +27,7 @@ from vntts.versioned_json import (
     write_versioned_json_if_unchanged,
 )
 
-profiles_schema_version = 12
+profiles_schema_version = 13
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -137,6 +137,12 @@ class GameProfile:
             or live_sequence_mode not in live_sequence_modes
         ):
             live_sequence_mode = "off"
+        if (
+            source_schema < 13
+            and _optional_text(values.get("live_sequence_plan")) is None
+            and live_sequence_mode == "audio-auto"
+        ):
+            live_sequence_mode = "off"
         ocr_language = values.get("ocr_language")
         if not isinstance(ocr_language, str) or not ocr_language.strip():
             ocr_language = "eng"
@@ -156,7 +162,9 @@ class GameProfile:
             generated_audio_manifest=_optional_text(
                 values.get("generated_audio_manifest")
             ),
-            audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
+            audio_source_policy=_audio_source_policy(
+                values.get("audio_source_policy"), legacy=source_schema < 13
+            ),
             force_live_narrator=force_live_narrator,
             discover_text_layouts=discover_text_layouts,
             ocr_regions=ocr_regions,
@@ -473,7 +481,9 @@ def _optional_text(value: object) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _audio_source_policy(value: object) -> str:
+def _audio_source_policy(value: object, *, legacy: bool = False) -> str:
+    if legacy and value == "live-tts-only":
+        return default_audio_source_policy
     return (
         value
         if isinstance(value, str) and value in audio_source_policies

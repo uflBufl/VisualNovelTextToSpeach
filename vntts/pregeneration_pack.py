@@ -1166,7 +1166,9 @@ def _add_voice_reference_copies(
             relative = _safe_relative(configured, "Voice reference")
             source = source_manifest.parent / Path(*relative.parts)
             target = (
-                f"references/{sha256_file(source)}.wav" if portable else str(relative)
+                _portable_reference_path(relative, source)
+                if portable
+                else str(relative)
             )
             copies[target] = source
 
@@ -1643,12 +1645,22 @@ def _portable_voice_entries(
             _raise_if_cancelled(cancel_event)
             relative = _safe_relative(configured, "Voice reference")
             source = source_manifest.parent / Path(*relative.parts)
-            digest = sha256_file(source)
-            portable = f"references/{digest}.wav"
+            portable = _portable_reference_path(relative, source)
             _copy_file(source, target_manifest.parent / portable)
             candidate["references"].append(portable)
         result.append(candidate)
     return result
+
+
+def _portable_reference_path(relative: PurePosixPath, source: Path) -> str:
+    # Preparation names normalized WAVs by the original voice-library source hash.
+    if (
+        relative.parent == PurePosixPath("references")
+        and relative.suffix == ".wav"
+        and is_lowercase_sha256(relative.stem)
+    ):
+        return str(relative)
+    return f"references/{sha256_file(source)}.wav"
 
 
 def _write_route_manifest(

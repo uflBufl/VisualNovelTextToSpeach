@@ -319,36 +319,17 @@ live rerun with corrected bounds remains open. Evidence:
 `.codex/investigations/combined-campaign-20261111/`. Keep calibration mistakes and
 separate control episodes distinct from product failures.
 
-- [ ] **RUN-11-UI-02 - Resolve current prepared audio automatically from Read.**
-      Replace the reuse-only confirmation problem with seamless discovery rather
-      than adding a required Finish preparation click. Implementation plan still
-      needs agreement; the user settled these behavior rules:
-      - Reuse existing catalog/job metadata and the canonical OCR matcher to find
-        the visible story for the current game. While identity remains ambiguous,
-        read each accepted visible phrase once through live TTS, use normal
-        auto-advance rules and retry identification on subsequent phrases. No
-        story/position/voice-version picker and no guessed canonical occurrence.
-      - Use the existing active VoiceLibrary bindings as the sole voice authority.
-        Build current playback routes from compatible per-role voice/reference and
-        synthesis metadata. Archived bindings/old inputs are generation-cache
-        sources only, never playback choices; old active packs have no priority
-        over the current voice selection. Do not choose by file timestamps or
-        create another persisted authority for voice choices.
-      - Share per-role identity resolution between preparation reuse and playback.
-        A changed voice excludes its incompatible recordings immediately; missing
-        or failed replacement audio uses live TTS with the current voice. Reuse
-        unaffected characters, including when only the narrator changed. Returning
-        to a prior voice may reuse its cached audio without synthesizing it again.
-      - Once identified, switch routing for later unread speech without replaying
-        the live-read phrase, dropping accepted speech or restarting the capture
-        owner. Preserve Stop/cancellation and reject late selection results. Reuse
-        the existing progressive-manifest path for current background preparation.
-      - Keep discovery metadata-only and cached for the reading session; do not
-        audit every WAV or import every historical pack during matching.
-      Gates: ambiguous live phrase -> unique next phrase with prepared audio;
-      duplicate OCR and late match cannot replay/advance twice; voice A -> B while
-      B is incomplete never plays A; B -> A reuses cache; changing one role leaves
-      others available; restart/profile/game changes and Stop during discovery.
+- [ ] **RUN-11-UI-02 - Qualify automatic prepared Read in the combined live run.**
+      Restart the app and use ordinary Read without activating a saved pack.
+      Confirm current compatible recordings play; an ambiguous phrase uses live
+      TTS once and later unique text selects prepared audio without replaying it,
+      dropping accepted speech, restarting capture or sending duplicate keys.
+      Check a background preparation becoming ready during reading, Stop during
+      discovery, and switching profiles/games. Change one role while its new
+      recordings are incomplete: its previous voice must stay excluded, other
+      roles remain playable, and returning to the previous voice reuses cache.
+      Include this qualification in the caption/chapter run below; do not rerun
+      the whole chapter separately for each case.
 
 - [ ] **RUN-09-05 - Finish remaining caption qualification before extending layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).

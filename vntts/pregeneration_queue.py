@@ -70,6 +70,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.current_voice import generation_controls_match
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.generation_database import (
     read_state,
@@ -398,10 +399,7 @@ def _may_have_saved_recordings(
     state: Path,
     document: dict[str, object],
     current: dict[str, VoiceGenerationQueueItem],
-    controls_sha256: str,
 ) -> bool:
-    if document.get("voice_plan_controls_sha256") != controls_sha256:
-        return False
     index = RecordingIndex(job_store.catalog.path.parent)
     if not index.path.exists() and not index.path.is_symlink():
         return True
@@ -487,7 +485,6 @@ def _reuse_completed_audio(
                 previous_state,
                 document,
                 current_items,
-                plan.synthesis_controls_sha256,
             ):
                 continue
             old_queue, old_sha256 = load_stable_generation_queue(
@@ -549,7 +546,12 @@ def _reuse_completed_audio(
                     or not isinstance(result, dict)
                     or result.get("status") not in {"generated", "approved"}
                     or "audio_event_composition" in result
-                    or result.get("provider") != plan.synthesis_backend
+                    or not generation_controls_match(
+                        result,
+                        backend=plan.synthesis_backend,
+                        model=plan.synthesis_model,
+                        profile=plan.synthesis_profile,
+                    )
                 ):
                     continue
                 requested = synthesis_character_for_line(

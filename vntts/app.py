@@ -106,7 +106,7 @@ from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
 from vntts.game_narrator_ui import GameNarratorDialog
-from vntts.game_pack import GamePackError, apply_game_pack, import_game_pack
+from vntts.game_pack import apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
@@ -228,31 +228,6 @@ from vntts.window_capture import (
 application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 ValidationError = tuple[int, QWidget, str]
-
-
-@dataclass(frozen=True)
-class _ReadingPackAdmission:
-    identity: tuple[str | None, ...]
-    files: tuple[Path, ...]
-    stamps: tuple[tuple[int, ...], ...] | None
-    playable: bool
-
-    @staticmethod
-    def file_stamps(files: tuple[Path, ...]) -> tuple[tuple[int, ...], ...] | None:
-        try:
-            return tuple(
-                (
-                    stat.st_dev,
-                    stat.st_ino,
-                    stat.st_size,
-                    stat.st_mtime_ns,
-                    stat.st_ctime_ns,
-                )
-                for path in files
-                for stat in (path.stat(follow_symlinks=False),)
-            )
-        except OSError:
-            return None
 
 
 @dataclass
@@ -564,7 +539,7 @@ class SettingsDialog(QDialog):
             "live-tts-only",
         )
         self.audio_source_policy.addItem(
-            "Prefer generated audio, then live TTS",
+            "Automatic: current prepared recordings, then live TTS",
             "prefer-generated",
         )
         self.audio_source_policy.addItem(
@@ -2182,7 +2157,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ) = None
         self._narrator_result_after_stop: int | None = None
         self._preparation_activation_settings: AppSettings | None = None
-        self._reading_pack_admission: _ReadingPackAdmission | None = None
         self.unknown_speaker_prompt: QMessageBox | None = None
         self.unknown_speaker_choose_button: QPushButton | None = None
         self.unknown_speaker_continue_button: QPushButton | None = None
@@ -2670,7 +2644,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._prepared_settings = restored if restored != settings else None
         prepared = self._prepared_settings
         if prepared is None:
-            return settings
+            return (
+                settings
+                if settings.live_sequence_plan
+                or settings.live_sequence_mode != "audio-auto"
+                else settings.updated(live_sequence_mode="off")
+            )
         if (
             settings.audio_source_policy != base.audio_source_policy
             or settings.force_live_narrator != base.force_live_narrator
@@ -2699,7 +2678,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         files = tuple(
             Path(path) for path in self._reading_pack_identity(prepared) if path
         )
-        if files and _ReadingPackAdmission.file_stamps(files) is None:
+        if any(not path.is_file() for path in files):
             logging.getLogger(__name__).warning(
                 "Prepared playback files are missing; retaining user preferences: %s",
                 prepared.game_pack,
@@ -2843,90 +2822,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             settings.live_sequence_plan,
         )
 
-    def _active_pack_reading_available(self) -> bool:
-        settings = self._runtime_settings()
-        identity = self._reading_pack_identity(settings)
-        if not settings.game_pack or self._startup_game_pack_errors:
-            return False
-        cached = self._reading_pack_admission
-        if (
-            cached is not None
-            and cached.identity == identity
-            and (cached.stamps == _ReadingPackAdmission.file_stamps(cached.files))
-        ):
-            return cached.playable
-        files = (
-            cached.files
-            if cached is not None and cached.identity == identity
-            else tuple(Path(path) for path in identity if path)
-        )
-        playable = False
-        try:
-            imported = import_game_pack(settings.game_pack)
-            projected = imported.apply_to(settings, preserve_external_sequence=True)
-            playable = bool(imported.pack.generated_wavs) and (
-                self._reading_pack_identity(projected) == identity
-            )
-            bindings = (
-                imported.pack.story_index,
-                imported.pack.voice_manifest,
-                *imported.pack.voice_wavs,
-                *imported.pack.generated_wavs,
-                *(
-                    (imported.pack.generated_audio,)
-                    if imported.pack.generated_audio
-                    else ()
-                ),
-                *(
-                    (imported.pack.live_sequence_plan,)
-                    if imported.pack.live_sequence_plan
-                    else ()
-                ),
-            )
-            files = tuple(
-                dict.fromkeys(
-                    (
-                        Path(settings.game_pack),
-                        *(binding.path for binding in bindings),
-                        *(
-                            (imported.source_audio_semantic_evidence,)
-                            if imported.source_audio_semantic_evidence is not None
-                            else ()
-                        ),
-                    )
-                )
-            )
-        except OSError, ValueError, GamePackError:
-            if self._prepared_settings is not None:
-                logging.getLogger(__name__).exception(
-                    "Prepared playback is no longer available: %s", settings.game_pack
-                )
-                self._prepared_settings = None
-        self._reading_pack_admission = _ReadingPackAdmission(
-            identity, files, _ReadingPackAdmission.file_stamps(files), playable
-        )
-        return playable
-
     def _reading_source_choice(
         self, *, require_preparation: bool = False
     ) -> tuple[AppSettings | None, bool]:
         if require_preparation:
             candidate = self._preparation_runtime_settings()
             return candidate, candidate is not None
-        progress = self._progressive_runtime_settings()
-        if progress is not None:
-            return progress, True
-        active_pack = self._active_pack_reading_available()
-        if active_pack:
-            return None, True
-        candidate = self._preparation_runtime_settings()
-        return candidate, candidate is not None
+        return self._automatic_reading_settings(), True
 
-    def _preparation_blocks_reading(self, *, loaded: bool) -> bool:
-        candidate, available = self._reading_source_choice()
-        return not available or (
-            loaded and candidate is not None and not self._preparation_playback_active()
-        )
+    def _automatic_reading_settings(self) -> AppSettings:
+        settings = user_preferences(self.settings)
+        if settings.live_sequence_mode == "audio-manual":
+            return settings
+        # Ordinary Read follows visible text; a previous chapter cannot bound it.
+        return settings.updated(live_sequence_plan=None, live_sequence_mode="off")
 
     def _preparation_playback_active(self) -> bool:
         candidate = self._progressive_runtime_settings()
@@ -2958,13 +2867,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         runtime_settings, source_available = self._reading_source_choice(
             require_preparation=require_preparation
         )
-        if not source_available and (
-            require_preparation
-            or (
-                self.pregeneration_dialog is not None
-                and self.pregeneration_dialog.has_pending_work()
-            )
-        ):
+        if not source_available and require_preparation:
             self.set_status(
                 "This preparation is not ready for reading yet. "
                 "Continue preparation and wait for Read to become available."
@@ -2989,6 +2892,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if (
             runtime_settings is not None
+            and isinstance(self.controller.settings, AppSettings)
             and not restart_required_setting_changes(
                 self.controller.settings, runtime_settings
             )
@@ -3009,8 +2913,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self._controller_ready = True
                 self._apply_controller_action_state()
                 self.set_status(
-                    "Reading uses prepared recordings and waits for missing audio. "
-                    "Manage preparation in Stories."
+                    "Reading uses current prepared recordings when available; "
+                    "other phrases use live TTS."
                 )
                 if start_live and not self.controller.is_live_running:
                     self.toggle_live()
@@ -3756,7 +3660,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             elif self.settings.discover_text_layouts:
                 message = "Story area saved"
             else:
-                message = "Story area saved; enable text discovery in Settings to use it"
+                message = (
+                    "Story area saved; enable text discovery in Settings to use it"
+                )
             self.set_status(message)
             self.restore_control_window()
 
@@ -5805,7 +5711,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         loaded = getattr(self.controller, "settings", None)
         if enabled and isinstance(loaded, AppSettings):
-            runtime_settings = self._runtime_settings()
+            runtime_settings = (
+                self._runtime_settings()
+                if self._preparation_playback_active()
+                else self._automatic_reading_settings()
+            )
             if (
                 self._reading_pack_identity(loaded)
                 != self._reading_pack_identity(runtime_settings)
@@ -5828,16 +5738,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         snapshot = snapshot or {}
         live = getattr(self.controller, "is_live_running", False)
         one_shot = getattr(self.controller, "is_one_shot_read_running", False)
-        preparing = bool(
-            self.pregeneration_dialog is not None
-            and self.pregeneration_dialog.has_pending_work()
-        )
-        if preparing and self._preparation_blocks_reading(loaded=True):
-            enabled = False
-            if self._preparation_blocks_reading(loaded=False):
-                unavailable_reason = "Story preparation has not finished its first playable dialogue yet."
-            else:
-                initialization_needed = True
         if self.narrator_dialog is not None:
             enabled = False
             unavailable_reason = (
@@ -5952,14 +5852,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _apply_preparation_reading_state(
         self, preparing: bool, choosing_voice: bool
     ) -> None:
-        preparation_blocks = self._preparation_blocks_reading(loaded=False)
         self.dashboard.prepare_reading_button.setEnabled(
-            not (
-                self._controller_busy
-                or self._shutting_down
-                or (preparing and preparation_blocks)
-                or choosing_voice
-            )
+            not (self._controller_busy or self._shutting_down or choosing_voice)
         )
         if preparing or choosing_voice:
             for button in self.dashboard.loading_blocked_buttons:

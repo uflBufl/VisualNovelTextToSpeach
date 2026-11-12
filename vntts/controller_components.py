@@ -53,7 +53,9 @@ from vntts.runtime_config import (
 from vntts.settings import AppSettings, preserve_loaded_runtime_settings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.speech_backend_contract import SpeechBackendCapabilities
+from vntts.speech_worker import clear_voice_memory_caches
 from vntts.synthesis import SynthesisCachePolicy
+from vntts.voice_library import VoiceLibraryReadSnapshot
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -473,14 +475,24 @@ class RuntimeLifecycleComponent:
             if not callable(load) or not callable(load_in_background):
                 raise TypeError("Deferred speech backend has no startup owner")
             routed = controller.speech_backend
-            if isinstance(routed, GeneratedAudioFallbackBackend) and any(
-                not controller._has_manual_voice_override(line.speaker)
-                and (
-                    routed.will_use_source_audio_in_live_mode(line.speaker, line.text)
-                    or routed.has_generated_line(line)
-                )
-                for line in controller.chapter_voice_preloader.dialogue
-            ):
+            ready = False
+            if isinstance(routed, GeneratedAudioFallbackBackend):
+                if controller.automatic_prepared_reading:
+                    ready = bool(
+                        routed.library is not None and routed.library.index.entries
+                    )
+                else:
+                    ready = any(
+                        not controller._has_manual_voice_override(line.speaker)
+                        and (
+                            routed.will_use_source_audio_in_live_mode(
+                                line.speaker, line.text
+                            )
+                            or routed.has_generated_line(line)
+                        )
+                        for line in controller.chapter_voice_preloader.dialogue
+                    )
+            if ready:
                 controller.status_handler(
                     "Prepared audio is ready; loading the fallback speech model in the background..."
                 )
@@ -489,7 +501,6 @@ class RuntimeLifecycleComponent:
                     progress=controller._warmup_progress,
                 )
                 return True
-            # A configured manifest is not proof of admitted playable recordings.
             load()
         return False
 
@@ -1073,6 +1084,11 @@ class LiveSessionComponent:
         if any(facts.get(name) is True for name in ("starting", "speaking", "queued")):
             self.emergency_stop()
             return False
+        if (
+            controller.automatic_prepared_reading
+            and not controller._live_sequence_audio_active()
+        ):
+            controller.chapter_voice_preloader.current_match = None
         if not self._voice_preflight_allows_start():
             return False
         if controller.capture_target is not None:
@@ -1394,6 +1410,53 @@ class VoiceAssignmentComponent:
         controller.status_handler(f"{choice.label} assigned to {character}")
         return controller.settings
 
+    def project_current_voices(
+        self, snapshot: VoiceLibraryReadSnapshot
+    ) -> CharacterVoiceRegistry | None:
+        """Build CURRENT routing before entering a controller commit lock."""
+        controller = self.controller
+        router = controller.voice_router
+        if router is None:
+            return None
+        registry = router.registry
+        projected = registry_with_voice_library(registry, snapshot)
+        for key, name in registry.assignment_names.items():
+            if key not in projected.assignments:
+                # A cleared binding must not reveal an older implicit game voice.
+                projected.assignments[key] = None
+                projected.assignment_names[key] = name
+        return projected
+
+    def refresh_current_voices(
+        self,
+        snapshot: VoiceLibraryReadSnapshot,
+        *,
+        projection: CharacterVoiceRegistry | None = None,
+    ) -> None:
+        """Commit CURRENT routing without rereading prepared voice references."""
+        controller = self.controller
+        router = controller.voice_router
+        if router is None:
+            return
+        projected = (
+            projection
+            if projection is not None
+            else self.project_current_voices(snapshot)
+        )
+        if projected is None:
+            return
+        registry = router.registry
+        registry.voices = projected.voices
+        registry.voice_names = projected.voice_names
+        registry.assignments = projected.assignments
+        registry.assignment_names = projected.assignment_names
+        controller._apply_narrator_voice(
+            registry.resolve("Narrator")
+            if snapshot.binding("Narrator") is not None
+            else None
+        )
+        clear_voice_memory_caches(router)
+
     def _refresh_saved_assignments(
         self, registry: CharacterVoiceRegistry, character: str
     ) -> None:
@@ -1500,6 +1563,11 @@ class VoiceAssignmentComponent:
 
     def unresolved_live_speakers(self) -> tuple[str, ...] | None:
         controller = self.controller
+        if (
+            controller.automatic_prepared_reading
+            and not controller._live_sequence_audio_active()
+        ):
+            return ()
         if (
             controller.allow_unscoped_live_reading
             or controller.settings.audio_source_policy == "live-tts-only"

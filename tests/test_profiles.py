@@ -496,7 +496,7 @@ class GameProfileStoreTest(unittest.TestCase):
             "packs/game-pack.json",
         )
 
-    def test_legacy_profile_without_audio_policy_migrates_to_live_tts(self):
+    def test_legacy_profile_without_audio_policy_uses_prepared_audio(self):
         profile = GameProfile.from_mapping(
             {
                 "id": "legacy",
@@ -511,7 +511,42 @@ class GameProfileStoreTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(profile.audio_source_policy, "live-tts-only")
+        self.assertEqual(profile.audio_source_policy, "prefer-generated")
+
+    def test_only_legacy_profiles_migrate_the_saved_live_only_default(self):
+        values = GameProfile.from_settings(
+            "Game", AppSettings(audio_source_policy="live-tts-only")
+        ).to_mapping()
+        migrated = GameProfile.from_mapping(values, source_schema=12)
+        self.assertEqual(migrated.audio_source_policy, "prefer-generated")
+        self.assertEqual(
+            migrated.apply(AppSettings()).audio_source_policy, "prefer-generated"
+        )
+        current = GameProfile.from_mapping(
+            values, source_schema=profiles_schema_version
+        )
+        self.assertEqual(current.audio_source_policy, "live-tts-only")
+        values["audio_source_policy"] = "prefer-game-audio"
+        self.assertEqual(
+            GameProfile.from_mapping(values, source_schema=12).audio_source_policy,
+            "prefer-game-audio",
+        )
+
+    def test_only_legacy_planless_auto_profiles_migrate_to_ocr_reading(self):
+        values = GameProfile.from_settings(
+            "Game", AppSettings(live_sequence_mode="audio-auto")
+        ).to_mapping()
+        self.assertEqual(
+            GameProfile.from_mapping(values, source_schema=12).live_sequence_mode, "off"
+        )
+        self.assertEqual(
+            GameProfile.from_mapping(values).live_sequence_mode, "audio-auto"
+        )
+        values["live_sequence_plan"] = "plan.json"
+        self.assertEqual(
+            GameProfile.from_mapping(values, source_schema=12).live_sequence_mode,
+            "audio-auto",
+        )
 
     def test_invalid_optional_profile_fields_keep_saved_profile_usable(self):
         base = {

@@ -398,13 +398,68 @@ class SettingsTest(unittest.TestCase):
     def test_pocket_tts_is_the_default_backend(self):
         self.assertEqual(AppSettings().speech_backend, "pocket-tts")
 
-    def test_live_tts_is_the_default_audio_source_policy(self):
-        self.assertEqual(AppSettings().audio_source_policy, "live-tts-only")
+    def test_prepared_audio_is_the_default_audio_source_policy(self):
+        self.assertEqual(AppSettings().audio_source_policy, "prefer-generated")
 
-    def test_sequence_first_auto_is_the_new_install_default(self):
-        self.assertEqual(AppSettings().live_sequence_mode, "audio-auto")
+    def test_legacy_live_only_default_migrates_but_current_explicit_choice_survives(
+        self,
+    ):
+        legacy = AppSettings.from_mapping(
+            {"schema_version": 32, "audio_source_policy": "live-tts-only"}
+        )
+        self.assertEqual(legacy.audio_source_policy, "prefer-generated")
+        self.assertEqual(
+            AppSettings(audio_source_policy="live-tts-only").audio_source_policy,
+            "live-tts-only",
+        )
+        current = AppSettings.from_mapping(
+            {
+                "schema_version": settings_schema_version,
+                "audio_source_policy": "live-tts-only",
+            }
+        )
+        self.assertEqual(current.audio_source_policy, "live-tts-only")
+        self.assertEqual(
+            legacy.with_environment_overrides(
+                {"VNTTS_AUDIO_SOURCE_POLICY": "live-tts-only"}
+            ).audio_source_policy,
+            "live-tts-only",
+        )
+        self.assertEqual(
+            AppSettings.from_mapping(
+                {"schema_version": 32, "audio_source_policy": "prefer-game-audio"}
+            ).audio_source_policy,
+            "prefer-game-audio",
+        )
+
+    def test_ocr_driven_reading_is_the_new_install_default(self):
+        self.assertEqual(AppSettings().live_sequence_mode, "off")
         self.assertTrue(AppSettings().auto_advance_enabled)
         self.assertIsNone(AppSettings().live_sequence_plan)
+
+    def test_legacy_planless_auto_migrates_without_changing_bound_or_explicit_modes(
+        self,
+    ):
+        legacy = {"schema_version": 32, "live_sequence_mode": "audio-auto"}
+        self.assertEqual(AppSettings.from_mapping(legacy).live_sequence_mode, "off")
+        self.assertEqual(
+            AppSettings.from_mapping(
+                {**legacy, "live_sequence_plan": "plan.json"}
+            ).live_sequence_mode,
+            "audio-auto",
+        )
+        self.assertEqual(
+            AppSettings.from_mapping(
+                {**legacy, "schema_version": settings_schema_version}
+            ).live_sequence_mode,
+            "audio-auto",
+        )
+        self.assertEqual(
+            AppSettings.from_mapping(legacy)
+            .with_environment_overrides({"VNTTS_LIVE_SEQUENCE_MODE": "audio-auto"})
+            .live_sequence_mode,
+            "audio-auto",
+        )
 
     def test_pre_cutover_settings_retain_conservative_missing_defaults(self):
         settings = AppSettings.from_mapping({"schema_version": 26})
@@ -444,7 +499,12 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.live_sequence_mode, "audio-manual")
 
     def test_sequence_audio_auto_can_be_selected_explicitly(self):
-        settings = AppSettings.from_mapping({"live_sequence_mode": "audio-auto"})
+        settings = AppSettings.from_mapping(
+            {
+                "schema_version": settings_schema_version,
+                "live_sequence_mode": "audio-auto",
+            }
+        )
 
         self.assertEqual(settings.live_sequence_mode, "audio-auto")
 
@@ -537,7 +597,7 @@ class SettingsTest(unittest.TestCase):
             warn=warnings.append,
         )
 
-        self.assertEqual(settings.audio_source_policy, "live-tts-only")
+        self.assertEqual(settings.audio_source_policy, "prefer-generated")
         self.assertTrue(any("audio_source_policy" in value for value in warnings))
 
     def test_unknown_speech_backend_uses_default(self):

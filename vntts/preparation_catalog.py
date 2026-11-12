@@ -289,6 +289,20 @@ class PreparationCatalog:
             ).fetchall()
             return tuple(self._job_document(connection, row) for row in rows)
 
+    def playback_jobs(self) -> tuple[dict[str, object], ...]:
+        """Read discovery identities without materializing every selected line."""
+        with self._connection() as connection:
+            if connection is None:
+                return ()
+            return tuple(
+                dict(row)
+                for row in connection.execute(
+                    "SELECT job_id, game, game_id, catalog_story_index_sha256, "
+                    "story_index, source_story_index "
+                    "FROM jobs ORDER BY job_id"
+                )
+            )
+
     @staticmethod
     def _job_document(
         connection: sqlite3.Connection, row: sqlite3.Row

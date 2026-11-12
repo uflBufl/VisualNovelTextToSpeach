@@ -2193,6 +2193,42 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
             self.assertEqual(copied, ["first.wav"])
 
+    def test_cumulative_voice_copy_preserves_original_source_reference_identity(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            reference = root / "references" / f"{'c' * 64}.wav"
+            reference.parent.mkdir()
+            reference.write_bytes(b"normalized reference bytes")
+            manifest = root / "voice-manifest.json"
+            write_voice_manifest(
+                manifest,
+                {
+                    "version": 2,
+                    "voices": [
+                        {
+                            "character": "Narrator",
+                            "speaker": "donor",
+                            "references": [f"references/{reference.name}"],
+                        }
+                    ],
+                },
+            )
+            document, voices = load_voice_manifest(manifest, allow_legacy=False)
+            target = root / "staging" / "voice-manifest.json"
+            entries = _portable_voice_entries(
+                manifest, target, document, voices, cancel_event=None
+            )
+            self.assertEqual(entries[0]["references"], [f"references/{reference.name}"])
+            self.assertEqual(
+                (target.parent / entries[0]["references"][0]).read_bytes(),
+                reference.read_bytes(),
+            )
+            copies = {}
+            pack_module._add_voice_reference_copies(
+                copies, manifest, document, voices, portable=True
+            )
+            self.assertEqual(copies, {f"references/{reference.name}": reference})
+
     def test_rejects_generated_wav_changed_after_terminal_validation(self):
         with TemporaryDirectory() as temporary_directory:
             job, generation_input, generation_result, _items = fixture(

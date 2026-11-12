@@ -28,6 +28,7 @@ from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
+    GeneratedAudioLibrary,
     GeneratedAudioRoute,
     LiveFallbackDecision,
     LiveFallbackRoute,
@@ -1480,6 +1481,15 @@ class MainTest(unittest.TestCase):
         controller.shutdown()
 
     @staticmethod
+    def _prepared_discovery_factory(library, preloader=None):
+        snapshot = Mock()
+        snapshot.sources = (Mock(),) if library is not None else ()
+        snapshot.preloader = preloader or ChapterVoicePreloader()
+        snapshot.for_settings.return_value = snapshot
+        snapshot.library_for.return_value = library
+        return Mock(return_value=snapshot)
+
+    @staticmethod
     def _prepared_reading_fixture(root, scenario):
         import hashlib
         import wave
@@ -1540,6 +1550,7 @@ class MainTest(unittest.TestCase):
                     live_factory = Mock(
                         side_effect=AssertionError("Unrelated model loaded")
                     )
+                    preloader = ChapterVoicePreloader((line,))
                     controller = AppController(
                         AppSettings(
                             speech_backend=engine,
@@ -1552,7 +1563,10 @@ class MainTest(unittest.TestCase):
                         tts_factory=live_factory,
                         pocket_backend_factory=live_factory,
                         moss_backend_factory=live_factory,
-                        chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                        chapter_voice_preloader=preloader,
+                        prepared_audio_discovery_factory=self._prepared_discovery_factory(
+                            GeneratedAudioLibrary.load_optional(manifest), preloader
+                        ),
                         generated_audio_backend_factory=lambda *args, **options: (
                             GeneratedAudioFallbackBackend(
                                 *args, audio_output=device, **options
@@ -1604,6 +1618,7 @@ class MainTest(unittest.TestCase):
                     line = replace(
                         line, text="Changed.", text_sha256=text_sha256("Changed.")
                     )
+                preloader = ChapterVoicePreloader((line,))
                 controller = AppController(
                     AppSettings(
                         story_index="bound-story.jsonl",
@@ -1615,7 +1630,10 @@ class MainTest(unittest.TestCase):
                         speech_rate_percent=150 if scenario == "speed" else 100,
                     ),
                     tts_factory=Mock(),
-                    chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                    chapter_voice_preloader=preloader,
+                    prepared_audio_discovery_factory=self._prepared_discovery_factory(
+                        GeneratedAudioLibrary.load_optional(manifest), preloader
+                    ),
                 )
                 live = StubTypedPlaybackBackend()
                 live.capabilities = SpeechBackendCapabilities(False, False, True)
@@ -1764,7 +1782,7 @@ class MainTest(unittest.TestCase):
                 )
                 backend = GeneratedAudioFallbackBackend(
                     None,
-                    controller.generated_audio_library_factory(str(manifest)),
+                    GeneratedAudioLibrary.load_optional(str(manifest)),
                     controller.chapter_voice_preloader,
                     audio_output=FakeAudioOutput(),
                 )
@@ -1868,11 +1886,13 @@ class MainTest(unittest.TestCase):
 
                 runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=create)
                 device = FakeAudioOutput()
-                library_factory = (
-                    Mock(return_value=None)
+                preloader = ChapterVoicePreloader((line,))
+                library = (
+                    None
                     if scenario == "missing"
-                    else GeneratedAudioLibrary.load_optional
+                    else GeneratedAudioLibrary.load_optional(manifest)
                 )
+                discovery_factory = self._prepared_discovery_factory(library, preloader)
                 controller = AppController(
                     AppSettings(
                         speech_backend="pocket-tts",
@@ -1889,9 +1909,9 @@ class MainTest(unittest.TestCase):
                     ),
                     tts_factory=Mock(),
                     pocket_backend_factory=runtime,
-                    chapter_voice_preloader=ChapterVoicePreloader((line,)),
+                    chapter_voice_preloader=preloader,
                     model_asset_manager_factory=Mock(),
-                    generated_audio_library_factory=library_factory,
+                    prepared_audio_discovery_factory=discovery_factory,
                     generated_audio_backend_factory=lambda *args, **options: (
                         GeneratedAudioFallbackBackend(
                             *args, audio_output=device, **options
@@ -1904,6 +1924,7 @@ class MainTest(unittest.TestCase):
                 controller.voice_registry_initializer = Mock(
                     return_value=CharacterVoiceRegistry()
                 )
+                controller.live_reader_factory = Mock()
 
                 def start():
                     try:
@@ -1913,7 +1934,6 @@ class MainTest(unittest.TestCase):
 
                 with (
                     patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
-                    patch("vntts.controller.LiveDialogReader", return_value=Mock()),
                     patch(
                         "vntts.controller.create_dialog_read_scheduler",
                         return_value=Mock(),
@@ -1922,8 +1942,8 @@ class MainTest(unittest.TestCase):
                     caller = Thread(target=start)
                     caller.start()
                     try:
-                        self.assertTrue(entered.wait(1))
-                        if scenario in {"generated", "original"}:
+                        self.assertTrue(entered.wait(1), errors)
+                        if scenario in {"generated", "original", "corrupt"}:
                             self.assertTrue(finished.wait(1))
                             self.assertEqual(results, [True])
                             self.assertEqual(errors, [])
@@ -1939,12 +1959,17 @@ class MainTest(unittest.TestCase):
                                 route,
                                 SourceAudioRoute
                                 if scenario == "original"
+                                else LiveTTSRoute
+                                if scenario == "corrupt"
                                 else GeneratedAudioRoute,
                             )
-                            outcome = backend.play_route(
-                                route, playback_guard=lambda: True
-                            )
-                            self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+                            if scenario != "corrupt":
+                                outcome = backend.play_route(
+                                    route, playback_guard=lambda: True
+                                )
+                                self.assertEqual(
+                                    outcome.status, PlaybackStatus.COMPLETED
+                                )
                             self.assertTrue(
                                 any(
                                     "Prepared audio is ready" in status
@@ -3217,7 +3242,7 @@ class MainTest(unittest.TestCase):
         controller.speech_backend = unprepared_backend
         status = controller.get_live_sequence_status()
         unprepared_backend.prepare_route.assert_not_called()
-        self.assertEqual(status.expected_audio_route, "Live TTS")
+        self.assertEqual(status.expected_audio_route, "Live TTS fallback")
         self.assertEqual(status.actual_audio_route, "-")
         self.assertIn("OCR observing visible dialogue", status.ocr_activity)
         controller.last_audio_route_trace = stub_route_trace(
@@ -7691,7 +7716,7 @@ class MainTest(unittest.TestCase):
     def test_controller_wraps_live_backend_when_generated_audio_is_configured(self):
         library = Mock()
         library.index.entries = (Mock(), Mock())
-        library_factory = Mock(return_value=library)
+        discovery_factory = self._prepared_discovery_factory(library)
         wrapped_backend = Mock()
         backend_factory = Mock(return_value=wrapped_backend)
         controller = AppController(
@@ -7701,7 +7726,7 @@ class MainTest(unittest.TestCase):
                 audio_source_policy="prefer-generated",
             ),
             tts_factory=Mock(),
-            generated_audio_library_factory=library_factory,
+            prepared_audio_discovery_factory=discovery_factory,
             generated_audio_backend_factory=backend_factory,
         )
         live_backend = Mock()
@@ -7709,9 +7734,9 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(controller._configure_generated_audio_backend())
 
-        library_factory.assert_called_once_with(
-            "generated-audio.json",
-            warn=controller.status_handler,
+        discovery_factory.assert_called_once()
+        discovery_factory.return_value.library_for.assert_called_once_with(
+            controller.current_voice_snapshot
         )
         backend_factory.assert_called_once_with(
             live_backend,
@@ -7726,7 +7751,7 @@ class MainTest(unittest.TestCase):
     def test_controller_wraps_live_backend_for_source_audio_without_generations(self):
         wrapped_backend = Mock()
         backend_factory = Mock(return_value=wrapped_backend)
-        library_factory = Mock()
+        discovery_factory = self._prepared_discovery_factory(None)
         controller = AppController(
             AppSettings(
                 story_index="story.jsonl",
@@ -7735,7 +7760,7 @@ class MainTest(unittest.TestCase):
                 auto_advance_enabled=True,
             ),
             tts_factory=Mock(),
-            generated_audio_library_factory=library_factory,
+            prepared_audio_discovery_factory=discovery_factory,
             generated_audio_backend_factory=backend_factory,
         )
         live_backend = Mock()
@@ -7743,7 +7768,7 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(controller._configure_generated_audio_backend())
 
-        library_factory.assert_not_called()
+        discovery_factory.assert_called_once()
         backend_factory.assert_called_once_with(
             live_backend,
             None,
@@ -7795,7 +7820,7 @@ class MainTest(unittest.TestCase):
 
     def test_controller_keeps_live_backend_without_story_identity(self):
         statuses = []
-        library_factory = Mock()
+        discovery_factory = Mock()
         controller = AppController(
             AppSettings(
                 generated_audio_manifest="generated-audio.json",
@@ -7803,7 +7828,7 @@ class MainTest(unittest.TestCase):
             ),
             tts_factory=Mock(),
             status_handler=statuses.append,
-            generated_audio_library_factory=library_factory,
+            prepared_audio_discovery_factory=discovery_factory,
         )
         live_backend = Mock()
         controller.speech_backend = live_backend
@@ -7811,11 +7836,11 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._configure_generated_audio_backend())
 
         self.assertIs(controller.speech_backend, live_backend)
-        library_factory.assert_not_called()
+        discovery_factory.assert_not_called()
         self.assertIn("story index", statuses[-1])
 
     def test_live_tts_policy_does_not_load_or_wrap_story_audio(self):
-        library_factory = Mock()
+        discovery_factory = Mock()
         backend_factory = Mock()
         controller = AppController(
             AppSettings(
@@ -7824,7 +7849,7 @@ class MainTest(unittest.TestCase):
                 audio_source_policy="live-tts-only",
             ),
             tts_factory=Mock(),
-            generated_audio_library_factory=library_factory,
+            prepared_audio_discovery_factory=discovery_factory,
             generated_audio_backend_factory=backend_factory,
         )
         live_backend = Mock(name="moss-tts")
@@ -7834,7 +7859,7 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._configure_generated_audio_backend())
 
         self.assertIs(controller.speech_backend, live_backend)
-        library_factory.assert_not_called()
+        discovery_factory.assert_not_called()
         backend_factory.assert_not_called()
 
     def test_controller_does_not_prime_unknown_speaker_as_narrator(self):
@@ -8406,7 +8431,10 @@ class MainTest(unittest.TestCase):
                     )
                     if wrapped:
                         wrapper.prepare_route.assert_called_once_with(
-                            "Rhiannon", "A line.", line_id="line-id"
+                            "Rhiannon",
+                            "A line.",
+                            line_id="line-id",
+                            resolve_unidentified=True,
                         )
                         self.assertEqual(wrapper.play_route.call_count, 2)
                     controller.error_handler.assert_not_called()

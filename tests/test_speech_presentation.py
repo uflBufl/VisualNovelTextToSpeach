@@ -300,6 +300,10 @@ class SpeechPresentationTest(unittest.TestCase):
         )
         self.assertIn("Play prepared recordings", reading_policy_label(settings))
         self.assertIn("TTS is used for missing audio", reading_policy_label(settings))
+        self.assertEqual(
+            reading_policy_label(settings.updated(generated_audio_manifest=None)),
+            reading_policy_label(settings),
+        )
         self.assertIn(
             "bypassed",
             reading_policy_label(settings.updated(audio_source_policy="live-tts-only")),

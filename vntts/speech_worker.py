@@ -717,6 +717,14 @@ def _module_health(
     return modules
 
 
+def clear_voice_memory_caches(backend: object) -> None:
+    """Invalidate local voice state without stopping an active speech worker."""
+    for name in ("audio_cache", "voice_states", "prompt_audio_codes", "conditionals"):
+        clear = getattr(getattr(backend, name, None), "clear", None)
+        if callable(clear):
+            clear()
+
+
 def _backend_runtime_metadata(backend: object) -> FrameDocument:
     device = str(getattr(backend, "device", "unknown"))
     metadata: FrameDocument = {
@@ -805,7 +813,8 @@ def worker_main(
                 },
             )
             return 0
-        registry = _registry_from_document(_registry_document(document["registry"]))
+        registry_document = _registry_document(document["registry"])
+        registry = _registry_from_document(registry_document)
         options = _worker_options(document.get("options"))
         for key, value in tuple(options.items()):
             if key.endswith("_directory") and value is not None:
@@ -844,9 +853,8 @@ def worker_main(
                 return 0
             request_id = command.get("request_id")
             try:
-                backend.registry = _registry_from_document(
-                    _registry_document(command["registry"])
-                )
+                next_registry = _registry_document(command["registry"])
+                backend.registry = _registry_from_document(next_registry)
                 narrator_reference = command.get("narrator_reference")
                 if narrator_reference is not None and not isinstance(
                     narrator_reference, (str, Path)
@@ -854,16 +862,13 @@ def worker_main(
                     raise TTSConfigurationError(
                         "Speech worker narrator_reference must be text or a path"
                     )
-                if narrator_reference != backend.narrator_reference:
-                    backend.narrator_reference = narrator_reference
-                    for cache_name in (
-                        "voice_states",
-                        "prompt_audio_codes",
-                        "conditionals",
-                    ):
-                        cache = getattr(backend, cache_name, None)
-                        if isinstance(cache, dict):
-                            cache.pop("narrator", None)
+                if (
+                    next_registry != registry_document
+                    or narrator_reference != backend.narrator_reference
+                ):
+                    clear_voice_memory_caches(backend)
+                registry_document = next_registry
+                backend.narrator_reference = narrator_reference
                 if command_type in {"render", "synthesis-key"}:
                     request = SynthesisRequest(
                         voice=_required_text(command, "voice"),

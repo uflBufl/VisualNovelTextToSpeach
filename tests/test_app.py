@@ -2045,12 +2045,15 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(state.can_initialize, not loaded)
                 with patch.object(tray.initial_start_runner, "start") as start:
                     tray.prepare_reading()
-                start.assert_called_once()
-                controller.apply_settings.assert_not_called()
-                self.assertEqual(controller.settings, saved)
-                self.assertEqual(
-                    tray.settings, saved.updated(last_main_section="reading")
+                if loaded:
+                    start.assert_not_called()
+                else:
+                    start.assert_called_once()
+                controller.apply_settings.assert_called_once_with(
+                    saved, cancellation=ANY
                 )
+                self.assertEqual(controller.settings, saved)
+                self.assertEqual(tray.settings, saved)
                 preparation._cancel_or_reject.assert_not_called()
                 tray.pregeneration_dialog = None
                 tray.shutdown()
@@ -2100,7 +2103,6 @@ class TrayApplicationTest(unittest.TestCase):
                     preparation.has_pending_work.return_value = pending
                     selected = controller.settings
                     with (
-                        patch.object(tray, "_active_pack_reading_available") as inspect,
                         patch.object(tray, "toggle_live") as start,
                         patch.object(tray.initial_start_runner, "start") as initialize,
                         patch.object(tray.session_owner, "attach") as attach,
@@ -2109,7 +2111,6 @@ class TrayApplicationTest(unittest.TestCase):
                             tray._reading_source_choice(require_preparation=True),
                             (None, False),
                         )
-                        inspect.assert_not_called()
                         tray._read_prepared_story(True)
                     start.assert_not_called()
                     initialize.assert_not_called()
@@ -2125,7 +2126,10 @@ class TrayApplicationTest(unittest.TestCase):
                 self._progressive_pack_reading_tray(Path(directory))
             )
             preparation.runtime_playback_settings.return_value = None
-            self.assertEqual(tray._reading_source_choice(), (previous, True))
+            self.assertEqual(
+                tray._reading_source_choice(),
+                (tray._automatic_reading_settings(), True),
+            )
             self.assertEqual(
                 tray._reading_source_choice(require_preparation=True), (None, False)
             )
@@ -2172,7 +2176,10 @@ class TrayApplicationTest(unittest.TestCase):
                         tray._reading_pack_identity(effective),
                         tray._reading_pack_identity(progress),
                     )
-                    self.assertEqual(tray._reading_source_choice(), (effective, True))
+                    self.assertEqual(
+                        tray._reading_source_choice(),
+                        (tray._automatic_reading_settings(), True),
+                    )
                     self.assertEqual(
                         tray._runtime_control_state().ready,
                         name != "live_sequence_mode",
@@ -2353,15 +2360,6 @@ class TrayApplicationTest(unittest.TestCase):
                 SequenceUnavailableReason.NOT_READY
             )
             self.assertIsNone(tray._initial_start_sequence_reason)
-            with patch.object(tray, "schedule_hotkeys"):
-                tray.prepare_reading()
-            self.assertEqual(
-                tray._prepared_sequence_reason, SequenceUnavailableReason.NOT_READY
-            )
-            controller.set_sequence_unavailable_reason.assert_called_with(
-                SequenceUnavailableReason.NOT_READY
-            )
-            self.assertIsNone(controller.settings.live_sequence_plan)
             self.assertEqual(pool.tasks, [])
 
             other_audio = Path(directory) / "other-audio.json"
@@ -2426,7 +2424,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray.pregeneration_dialog = None
             tray.shutdown()
 
-    def test_active_pack_is_selected_until_explicit_progressive_handoff(self):
+    def test_ordinary_read_uses_user_settings_until_explicit_progressive_handoff(self):
         with TemporaryDirectory() as directory:
             tray, controller, preparation, _wav = self._prepared_pack_reading_tray(
                 Path(directory), loaded=True
@@ -2439,12 +2437,12 @@ class TrayApplicationTest(unittest.TestCase):
                 live_sequence_plan=None,
             )
             preparation.runtime_playback_settings.return_value = progress
-            self.assertEqual(tray._reading_source_choice(), (None, True))
+            self.assertEqual(tray._reading_source_choice(), (saved, True))
             with patch.object(tray.initial_start_runner, "start") as load:
                 tray.prepare_reading()
-            initialize, *arguments = load.call_args.args
-            self.assertTrue(initialize(*arguments))
-            controller.apply_settings.assert_not_called()
+            load.assert_not_called()
+            controller.apply_settings.assert_called_once_with(saved, cancellation=ANY)
+            controller.apply_settings.reset_mock()
             tray._finish_controller_lifecycle()
             controller.apply_settings.return_value = True
             with patch.object(tray, "toggle_live") as start:
@@ -2453,45 +2451,45 @@ class TrayApplicationTest(unittest.TestCase):
                 progress, cancellation=ANY
             )
             start.assert_called_once()
-            self.assertEqual(tray.settings, saved.updated(last_main_section="reading"))
+            self.assertEqual(tray.settings, saved)
             tray.pregeneration_dialog = None
             tray.shutdown()
 
-    def test_invalid_or_empty_active_pack_does_not_bypass_first_prepared_audio(self):
+    def test_missing_prepared_audio_does_not_block_ordinary_read(self):
         for damage in ("missing", "corrupt", "empty", "mismatch"):
             with self.subTest(damage=damage), TemporaryDirectory() as directory:
                 tray, _controller, _preparation, _wav = (
                     self._prepared_pack_reading_tray(Path(directory), damage=damage)
                 )
                 tray._apply_controller_action_state()
-                self.assertFalse(tray.dashboard.prepare_reading_button.isEnabled())
+                self.assertTrue(tray.dashboard.prepare_reading_button.isEnabled())
                 self.assertFalse(tray._runtime_control_state().ready)
                 with patch.object(tray.initial_start_runner, "start") as start:
                     tray.prepare_reading()
-                start.assert_not_called()
+                start.assert_called_once()
                 tray.pregeneration_dialog = None
                 tray.shutdown()
 
-    def test_active_pack_admission_is_reused_and_bound_wav_change_requires_validation(
+    def test_ordinary_read_does_not_audit_all_active_pack_wavs(
         self,
     ):
         with TemporaryDirectory() as directory:
             tray, _controller, _preparation, wav = self._prepared_pack_reading_tray(
                 Path(directory), loaded=True
             )
-            tray._reading_pack_admission = None
             original = wav.read_bytes()
-            with patch("vntts.app.import_game_pack", wraps=import_game_pack) as admit:
+            with patch(
+                "vntts.prepared_playback.import_game_pack", wraps=import_game_pack
+            ) as admit:
                 for _ in range(3):
                     self.assertTrue(tray._runtime_control_state().ready)
                     tray._apply_preparation_reading_state(True, False)
-                admit.assert_called_once()
+                admit.assert_not_called()
                 wav.write_bytes(b"corrupt audio")
-                self.assertFalse(tray._runtime_control_state().ready)
-                self.assertEqual(admit.call_count, 2)
+                self.assertTrue(tray._runtime_control_state().ready)
                 wav.write_bytes(original)
                 self.assertTrue(tray._runtime_control_state().ready)
-                self.assertEqual(admit.call_count, 3)
+                admit.assert_not_called()
             tray.pregeneration_dialog = None
             tray.shutdown()
 
@@ -2670,7 +2668,6 @@ class TrayApplicationTest(unittest.TestCase):
             picker = Mock(result_settings=tray.settings.updated(tts_speaker="marius"))
             with (
                 patch("vntts.app.GameNarratorDialog", return_value=picker),
-                patch.object(tray, "_active_pack_reading_available", return_value=True),
                 patch.object(tray.dashboard, "embed_narrator"),
                 patch.object(tray.dashboard, "remove_narrator"),
                 patch.object(
@@ -4040,7 +4037,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray.voice_auditions, "suspend") as suspend,
             patch.object(tray, "_preparation_runtime_settings", return_value=None),
         ):
-            tray.prepare_reading()
+            tray.prepare_reading(require_preparation=True)
             suspend.assert_not_called()
         tray.pregeneration_dialog = None
         controller.unresolved_live_speakers.return_value = None
@@ -4386,8 +4383,12 @@ class TrayApplicationTest(unittest.TestCase):
     def test_saved_voice_resumes_only_after_runtime_apply(self):
         for queued in (False, True):
             with self.subTest(queued=queued):
+                settings = AppSettings()
                 controller = Mock(
-                    settings=AppSettings(), is_ready=True, is_live_running=False
+                    settings=settings, is_ready=True, is_live_running=False
+                )
+                controller.apply_settings.side_effect = lambda selected, **_kwargs: (
+                    setattr(controller, "settings", selected) or True
                 )
                 controller.live_reader.runtime_control_snapshot.return_value = {}
                 controller.unresolved_live_speakers.return_value = ()
@@ -4396,7 +4397,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 tray = TrayApplication(
                     self.application,
-                    AppSettings(),
+                    settings,
                     controller_factory=Mock(return_value=controller),
                 )
                 tray.set_ready(True)
@@ -5745,7 +5746,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(dialog.auto_advance_delay.isEnabled())
         delete_dialog(dialog)
 
-    def test_new_install_settings_recommend_guarded_sequence_auto(self):
+    def test_new_install_settings_use_ocr_with_automatic_prepared_audio(self):
         dialog = SettingsDialog(
             AppSettings(
                 capture_mode="window",
@@ -5753,8 +5754,8 @@ class TrayApplicationTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-auto")
-        self.assertIn("recommended", dialog.live_sequence_mode.currentText().casefold())
+        self.assertEqual(dialog.live_sequence_mode.currentData(), "off")
+        self.assertEqual(dialog.audio_source_policy.currentData(), "prefer-generated")
         self.assertTrue(dialog.auto_advance.isChecked())
         self.assertFalse(dialog.validation_errors())
         delete_dialog(dialog)
@@ -8108,6 +8109,9 @@ class TrayApplicationTest(unittest.TestCase):
         controller.runtime_control_snapshot.return_value = {}
         controller.unresolved_live_speakers.return_value = ()
         controller.start.return_value = True
+        controller.apply_settings.side_effect = lambda selected, **_kwargs: (
+            setattr(controller, "settings", selected) or True
+        )
         controller.toggle_live.side_effect = lambda: (
             setattr(controller, "is_live_running", True) or True
         )
@@ -8264,7 +8268,7 @@ class TrayApplicationTest(unittest.TestCase):
             pool.run_next()
             self.application.processEvents()
         controller.apply_settings.assert_called_once_with(
-            tray.settings, cancellation=ANY
+            tray._automatic_reading_settings(), cancellation=ANY
         )
         controller.start.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
@@ -8284,7 +8288,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(pool.tasks, [])
         tray.shutdown()
 
-    def test_pending_preparation_initializes_only_an_available_reading_source(self):
+    def test_pending_preparation_does_not_choose_or_block_ordinary_read(self):
         for source in ("active-pack", "progressive", "unavailable"):
             with self.subTest(source=source):
                 tray, controller, pool = self._cold_reading_tray()
@@ -8310,36 +8314,20 @@ class TrayApplicationTest(unittest.TestCase):
                     return True
 
                 controller.apply_settings.side_effect = attach
-                with (
-                    patch.object(
-                        tray,
-                        "_active_pack_reading_available",
-                        return_value=source == "active-pack",
-                    ),
-                    patch.object(tray, "schedule_hotkeys"),
-                ):
+                reading = tray._automatic_reading_settings()
+                with patch.object(tray, "schedule_hotkeys"):
                     tray._apply_controller_action_state()
                     state = tray._runtime_control_state()
-                    self.assertEqual(state.can_initialize, source != "unavailable")
+                    self.assertTrue(state.can_initialize)
                     self.assertFalse(tray.toggle_live())
-                    if source == "unavailable":
-                        self.assertIn(
-                            "first playable dialogue", state.unavailable_reason
-                        )
-                        self.assertEqual(pool.tasks, [])
-                        controller.toggle_live.assert_not_called()
-                    else:
-                        self.assertEqual(len(pool.tasks), 1)
-                        pool.run_next()
-                        self.application.processEvents()
-                        controller.start.assert_called_once_with()
-                        controller.toggle_live.assert_called_once_with()
-                    if source == "progressive":
-                        controller.apply_settings.assert_called_once_with(
-                            progress, cancellation=ANY
-                        )
-                    else:
-                        controller.apply_settings.assert_not_called()
+                    self.assertEqual(len(pool.tasks), 1)
+                    pool.run_next()
+                    self.application.processEvents()
+                    controller.start.assert_called_once_with()
+                    controller.toggle_live.assert_called_once_with()
+                    controller.apply_settings.assert_called_once_with(
+                        reading, cancellation=ANY
+                    )
                 tray.pregeneration_dialog = None
                 tray.shutdown()
 
@@ -8397,7 +8385,8 @@ class TrayApplicationTest(unittest.TestCase):
         started = Event()
         release = Event()
         runtime = {"live": False}
-        controller = Mock()
+        settings = AppSettings(onboarding_completed=True, live_sequence_mode="off")
+        controller = Mock(settings=settings, is_ready=False, is_live_running=False)
 
         def start():
             started.set()
@@ -8413,7 +8402,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.request_shutdown.side_effect = release.set
         tray_application = TrayApplication(
             self.application,
-            AppSettings(onboarding_completed=True),
+            settings,
             controller_factory=Mock(return_value=controller),
         )
         ready_events = []
@@ -9464,7 +9453,9 @@ class TrayApplicationTest(unittest.TestCase):
                 self.wait_requested(
                     timeout_seconds=timeout_seconds, include_speech=include_speech
                 )
-                self.live_reader.wait(timeout_seconds=0.02, include_speech=include_speech)
+                self.live_reader.wait(
+                    timeout_seconds=0.02, include_speech=include_speech
+                )
 
         controller = ReadingController(
             is_ready=True,
@@ -9472,7 +9463,9 @@ class TrayApplicationTest(unittest.TestCase):
             is_one_shot_read_running=False,
             live_reader=reader,
         )
-        controller.runtime_control_snapshot.side_effect = reader.runtime_control_snapshot
+        controller.runtime_control_snapshot.side_effect = (
+            reader.runtime_control_snapshot
+        )
 
         def stop_capture():
             reader.stop()
@@ -10777,11 +10770,9 @@ class TrayApplicationTest(unittest.TestCase):
                 playback_store=playback,
             )
             self.assertEqual(factory.call_args.args[0].game_pack, str(pack.manifest))
-            self.assertTrue(tray._active_pack_reading_available())
+            self.assertEqual(tray._automatic_reading_settings(), preferences)
             pack.manifest.unlink()
-            with self.assertLogs("vntts.app", level="WARNING"):
-                self.assertFalse(tray._active_pack_reading_available())
-            self.assertEqual(tray._runtime_settings(), preferences)
+            self.assertEqual(tray._automatic_reading_settings(), preferences)
             self.assertEqual(tray.settings, preferences)
             tray.shutdown()
             with self.assertLogs("vntts.prepared_playback", level="ERROR"):
@@ -10793,7 +10784,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
             self.assertEqual(factory.call_args.args[0], preferences)
             self.assertEqual(restarted.settings, preferences)
-            self.assertFalse(restarted._active_pack_reading_available())
+            self.assertEqual(restarted._automatic_reading_settings(), preferences)
             restarted.shutdown()
             playback.path.unlink()
             fresh = TrayApplication(
@@ -11536,7 +11527,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertIs(tray.settings, preferences)
             self.assertIsNone(draft.story_index)
             self.assertIsNone(draft.generated_audio_manifest)
-            self.assertEqual(draft.audio_source_policy, "live-tts-only")
+            self.assertEqual(draft.audio_source_policy, "prefer-generated")
             self.assertIs(tray._onboarding_preview_settings, runtime)
             tray.shutdown()
 

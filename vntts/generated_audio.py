@@ -815,12 +815,20 @@ class GeneratedAudioFallbackBackend:
         return self.has_generated_line(line)
 
     def prepare_route(
-        self, character: str, text: str, *, line_id: str | None = None
+        self,
+        character: str,
+        text: str,
+        *,
+        line_id: str | None = None,
+        resolve_unidentified: bool = True,
     ) -> RouteDecision:
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
         )
-        if line_id is not None and not voice_overridden:
+        if not resolve_unidentified and line_id is None:
+            # Admission owns identity: later discoveries cannot reclassify queued OCR.
+            line, match_result = None, "unresolved-at-admission"
+        elif line_id is not None and not voice_overridden:
             line = self.line_resolver.line_for_id(line_id)
             if line is not None and (line.speaker, line.text) == (character, text):
                 match_result = "exact"

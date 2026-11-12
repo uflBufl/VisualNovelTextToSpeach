@@ -4,6 +4,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock
+from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
 from vntts.controller import AppController
@@ -22,6 +23,32 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceR
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_automatic_start_uses_prepared_metadata_without_reading_recordings(self):
+        routed = Mock(spec=GeneratedAudioFallbackBackend)
+        routed.library = SimpleNamespace(index=SimpleNamespace(entries=[object()]))
+        routed.has_generated_line.side_effect = AssertionError("Recording read")
+        routed.will_use_source_audio_in_live_mode.side_effect = AssertionError(
+            "Story scan"
+        )
+        backend = Mock(deferred_startup=True)
+        controller = SimpleNamespace(
+            tts=backend,
+            speech_backend=routed,
+            automatic_prepared_reading=True,
+            settings=AppSettings(warm_up_voices=False),
+            _warmup_progress=Mock(),
+            status_handler=Mock(),
+        )
+        lifecycle = RuntimeLifecycleComponent(controller)
+        self.assertTrue(lifecycle._start_prepared_audio_fallback())
+        backend.load.assert_not_called()
+        backend.load_in_background.assert_called_once_with(
+            warm_up=False, progress=controller._warmup_progress
+        )
+        routed.library.index.entries = []
+        self.assertFalse(lifecycle._start_prepared_audio_fallback())
+        backend.load.assert_called_once_with()
+
     def test_live_dispatch_requires_typed_outcome_from_dynamic_backend(self):
         class Backend:
             def __init__(self, outcome):
