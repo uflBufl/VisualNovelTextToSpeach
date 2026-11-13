@@ -311,22 +311,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: confirm the effective Story area and qualify the terminal captions
-through ordinary Read in a short native pass. Do not repeat the completed lower
-dialogue chapter to reach the same checks.
+Next action: plan the remaining automatic-prepared transitions and caption paths
+below as one targeted native pass. Reuse the completed ordinary lower-dialogue
+and terminal-caption checks; do not repeat the chapter for each remaining case.
 
-- [ ] **RUN-13-01 - Restore confirmed Story area before ordinary terminal-caption acceptance.**
-      Use the existing Set story area UI for the selected target; before Read,
-      verify resolve_story_region returns the confirmed bounds containing the
-      dialogue crop and excluding unrelated controls. In the next short native
-      pass, start near the end of The Histories and require canonical88/89,
-      current prepared PCM/completion without repeats, retained speech through
-      game-owned transitions, no menu speech and no late keys after Stop.
-      A checked discovery preference alone does not establish a usable Story area.
-      The last pass had no saved bounds before startup; it does not establish an
-      OCR, prepared-audio or calibration-persistence regression. Do not infer why
-      the prior bounds disappeared or widen reading permission automatically.
-      Evidence: `.codex/investigations/combined-native-20261113/results.md`.
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh
