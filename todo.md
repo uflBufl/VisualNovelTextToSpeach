@@ -311,9 +311,25 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: plan the remaining automatic-prepared transitions and caption paths
-below as one targeted native pass. Reuse the completed ordinary lower-dialogue
+Next action: agree the source-audio eligibility correction below before selecting
+an ambiguous live-to-prepared fixture. Reuse the completed ordinary lower-dialogue
 and terminal-caption checks; do not repeat the chapter for each remaining case.
+
+- [ ] **MATCH-13-01 - Exclude fully game-voiced dialogue from synthesis and competing TTS matches.**
+      Agree the implementation plan before changing code. Reuse one shared full
+      spoken-source eligibility decision across preparation, ordinary TTS matching
+      and automatic prepared discovery; historical generated entries must not
+      restore a source-voiced line to that candidate pool. Keep complete canonical
+      rows for story navigation/original-audio tracking instead of deleting them
+      from the shared source model. Distinguish verified full narration from
+      partial reactions, effects and unverified/unavailable source metadata;
+      a voice ID or local file alone does not prove that the text is fully spoken.
+      Verify full-original/unvoiced duplicate selection, genuine unvoiced ambiguity,
+      exclusion of obsolete generated routes and unchanged source navigation.
+      Then find an accessible native fixture with an unvoiced duplicate followed
+      by a unique compatible prepared line. The proposed Cornerstone pair has
+      original audio on one occurrence with full coverage unproved; do not treat
+      our generated files as evidence that the game has no voice for it.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
