@@ -1187,6 +1187,24 @@ class MainTest(unittest.TestCase):
         controller.chapter_voice_preloader.resolve_unique_prefix.assert_called_once_with(
             "Rhiannon",
             "The complete generated",
+            candidate_filter=ANY,
+        )
+        candidate_filter = (
+            controller.chapter_voice_preloader.resolve_unique_prefix.call_args.kwargs[
+                "candidate_filter"
+            ]
+        )
+        self.assertTrue(candidate_filter(line))
+        original = replace(
+            line,
+            source_audio_status="available",
+            source_audio_authoritative=True,
+            source_audio_completeness="full",
+            source_audio_duration_seconds=1.0,
+        )
+        self.assertFalse(candidate_filter(original))
+        self.assertTrue(
+            candidate_filter(replace(original, source_audio_completeness="partial"))
         )
         wrapper.has_generated_line.assert_called_once_with(line)
 
@@ -1943,7 +1961,7 @@ class MainTest(unittest.TestCase):
                     caller.start()
                     try:
                         self.assertTrue(entered.wait(1), errors)
-                        if scenario in {"generated", "original", "corrupt"}:
+                        if scenario in {"generated", "original", "corrupt", "speed"}:
                             self.assertTrue(finished.wait(1))
                             self.assertEqual(results, [True])
                             self.assertEqual(errors, [])
@@ -1960,10 +1978,15 @@ class MainTest(unittest.TestCase):
                                 SourceAudioRoute
                                 if scenario == "original"
                                 else LiveTTSRoute
-                                if scenario == "corrupt"
+                                if scenario in {"corrupt", "speed"}
                                 else GeneratedAudioRoute,
                             )
-                            if scenario != "corrupt":
+                            if scenario == "speed":
+                                self.assertIn(
+                                    "generated-audio-skipped-nondefault-speed",
+                                    route.trace.fallback_reason,
+                                )
+                            if scenario not in {"corrupt", "speed"}:
                                 outcome = backend.play_route(
                                     route, playback_guard=lambda: True
                                 )
@@ -7839,8 +7862,13 @@ class MainTest(unittest.TestCase):
         discovery_factory.assert_not_called()
         self.assertIn("story index", statuses[-1])
 
-    def test_live_tts_policy_does_not_load_or_wrap_story_audio(self):
-        discovery_factory = Mock()
+    def test_live_tts_policy_does_not_wrap_generated_audio_without_originals(self):
+        line = ChapterDialogue(
+            "line", "chapter", 1, "Narrator", "Hello.", text_sha256("Hello.")
+        )
+        discovery_factory = self._prepared_discovery_factory(
+            Mock(), ChapterVoicePreloader((line,))
+        )
         backend_factory = Mock()
         controller = AppController(
             AppSettings(
@@ -7859,7 +7887,7 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._configure_generated_audio_backend())
 
         self.assertIs(controller.speech_backend, live_backend)
-        discovery_factory.assert_not_called()
+        discovery_factory.assert_called_once()
         backend_factory.assert_not_called()
 
     def test_controller_does_not_prime_unknown_speaker_as_narrator(self):
@@ -8435,6 +8463,7 @@ class MainTest(unittest.TestCase):
                             "A line.",
                             line_id="line-id",
                             resolve_unidentified=True,
+                            prepared_audio=None,
                         )
                         self.assertEqual(wrapper.play_route.call_count, 2)
                     controller.error_handler.assert_not_called()

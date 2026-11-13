@@ -1,6 +1,8 @@
+import gc
 import json
 import shutil
 import unittest
+import weakref
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +23,37 @@ from vntts.settings import AppSettings
 
 
 class PreparedAudioDiscoveryTests(unittest.TestCase):
+    def test_reservation_keeps_archive_entry_without_reading_pcm_or_rediscovering(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, text_hash, wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            snapshot = discover_prepared_audio(game_pack=pack)
+            source = snapshot.sources[0]
+            source_owner = weakref.ref(source.library)
+            allowed = [True]
+            library = snapshot.library_for(lambda entry: allowed[0])
+            with patch(
+                "vntts.generated_audio.read_regular_bytes",
+                side_effect=AssertionError("WAV read"),
+            ):
+                reference = library.reserve(line_id, text_hash)
+            self.assertIsNotNone(reference)
+            self.assertEqual(reference.line_id, line_id)
+            allowed[0] = False
+            self.assertIsNone(library.reserve(line_id, text_hash))
+            self.assertIsNone(
+                PreparedAudioSnapshot()
+                .library_for(lambda entry: True)
+                .reserve(line_id, text_hash)
+            )
+            del library, source, snapshot
+            gc.collect()
+            self.assertIsNone(source_owner())
+            prepared, _state = reference.load()
+            self.assertIsNotNone(prepared)
+            self.assertTrue(prepared.audio_path.samefile(wav))
+
     def test_archived_tts_excludes_only_validated_full_original_audio(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
@@ -53,6 +86,9 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                         library = snapshot.library_for(lambda entry: True)
                         self.assertEqual(
                             library.has_entry(line_id, text_hash), eligible
+                        )
+                        self.assertEqual(
+                            library.reserve(line_id, text_hash) is not None, eligible
                         )
                         self.assertEqual(bool(library.index.entries), eligible)
                         self.assertEqual(
@@ -316,6 +352,7 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 GeneratedAudioLibrary, "find_with_preflight", side_effect=AssertionError
             ):
                 self.assertFalse(library.has_entry(line_id, text_hash))
+                self.assertIsNone(library.reserve(line_id, text_hash))
                 self.assertIsNone(library.find(line_id, text_hash))
             self.assertFalse(library.runtime_progress)
 
@@ -370,6 +407,9 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             self.assertIsNone(snapshot.preloader.line_for_id(line_id))
             self.assertFalse(
                 snapshot.library_for(lambda entry: True).has_entry(line_id, text_hash)
+            )
+            self.assertIsNone(
+                snapshot.library_for(lambda entry: True).reserve(line_id, text_hash)
             )
 
     def test_repeated_pack_metadata_deduplicates_canonical_story(self):

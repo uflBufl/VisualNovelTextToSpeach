@@ -3296,7 +3296,22 @@ class AppController:
             return str(line.line_id)
 
     def _accept_live_chunk(self, chunk: SpeechChunk) -> SpeechChunk | None:
-        if chunk.explicit_replay or not self._live_sequence_audio_active():
+        if chunk.explicit_replay:
+            return chunk
+        if not self._live_sequence_audio_active():
+            backend = self.speech_backend
+            if self.automatic_prepared_reading and isinstance(
+                backend, GeneratedAudioFallbackBackend
+            ):
+                candidates = self.chapter_voice_preloader.equivalent_speech_candidates(
+                    chunk.character, chunk.text, line_id=chunk.line_id
+                )
+                return replace(
+                    chunk,
+                    prepared_audio=backend.reserve_equivalent_audio(
+                        chunk.character, candidates
+                    ),
+                )
             return chunk
         with self.story_cursor_lock:
             cursor = self.story_cursor
@@ -4342,6 +4357,7 @@ class AppController:
                         chunk.text,
                         line_id=chunk.line_id,
                         resolve_unidentified=not self.automatic_prepared_reading,
+                        prepared_audio=chunk.prepared_audio,
                     )
                     if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
                     else prepare_route(chunk.character, chunk.text)
@@ -4996,6 +5012,7 @@ class AppController:
                 match_result=trace.match_result,
                 fallback_reason=trace.fallback_reason,
                 line_id=trace.line_id,
+                audio_line_id=trace.audio_line_id,
                 artifact_preflight_state=trace.artifact_preflight_state,
                 chunk_id=trace.chunk_id,
                 chunk_ordinal=trace.chunk_ordinal,

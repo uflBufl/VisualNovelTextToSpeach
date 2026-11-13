@@ -1684,6 +1684,132 @@ class SynthesisPreferenceTest(unittest.TestCase):
             source_audio_authoritative=full,
         )
 
+    def test_equivalent_duplicates_have_speech_without_chapter_ownership(self):
+        rows = (
+            self.row("first", "Huh?"),
+            self.row("second", "Huh?", chapter="2"),
+            self.row("original", "Huh?", chapter="3", full=True),
+            self.row("other-speaker", "Huh?", speaker="Bob"),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", "Huh?"), rows[:2]
+        )
+        self.assertIsNone(preloader.current_match)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Bob", "Huh?"), rows[3:]
+        )
+        self.assertEqual(preloader.equivalent_speech_candidates("Unknown", "Huh?"), ())
+
+    def test_equivalent_speech_never_groups_nearby_or_changed_protected_text(self):
+        rows = (
+            self.row("exact", "We are here."),
+            self.row("near", "We are there.", chapter="2"),
+            self.row("dose", "Take 20 mg."),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", rows[0].text), rows[:1]
+        )
+        for observed in ("We are her.", "We are here!", "Take 2 mg."):
+            with self.subTest(observed=observed):
+                self.assertEqual(
+                    preloader.equivalent_speech_candidates("Ada", observed), ()
+                )
+
+    def test_equivalent_duplicate_prefixes_still_wait_for_full_text(self):
+        rows = (
+            self.row("first", "The gate is open."),
+            self.row("second", "The gate is open.", chapter="2"),
+            self.row("longer", "The gate is open. Follow me.", chapter="3"),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", rows[0].text), ()
+        )
+        self.assertIsNone(preloader.current_match)
+
+    def test_equivalent_known_identity_can_reuse_other_chapters_without_rebinding(self):
+        rows = (
+            self.row("first", "The gate is open."),
+            self.row("second", "The gate is open.", chapter="2"),
+            self.row("longer", "The gate is open. Follow me.", chapter="3"),
+            self.row("original", "The gate is open.", full=True),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        previous = ChapterMatch("previous", 7, 1.0)
+        preloader.current_match = previous
+        self.assertEqual(
+            preloader.equivalent_speech_candidates(
+                "Ada", rows[0].text, line_id="first"
+            ),
+            rows[:2],
+        )
+        for line_id in ("longer", "original", "missing"):
+            with self.subTest(line_id=line_id):
+                self.assertEqual(
+                    preloader.equivalent_speech_candidates(
+                        "Ada", rows[0].text, line_id=line_id
+                    ),
+                    (),
+                )
+        self.assertEqual(
+            preloader.equivalent_speech_candidates(
+                "Bob", rows[0].text, line_id="first"
+            ),
+            (),
+        )
+        self.assertIs(preloader.current_match, previous)
+
+    def test_equivalent_completeness_preserves_current_chapter_scope(self):
+        rows = (
+            self.row("first", "The gate is open."),
+            self.row("second", "The gate is open.", chapter="2"),
+            self.row("longer", "The gate is open. Follow me.", chapter="3"),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        preloader.resolve_observation_among(
+            "Ada", rows[0].text, (row.line_id for row in rows), update_context=False
+        )
+        diagnostics = preloader.last_resolution_diagnostics
+        self.assertEqual(diagnostics["match_result"], "expected-ambiguous")
+        previous = ChapterMatch("1", 5, 1.0)
+        preloader.current_match = previous
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", rows[0].text), rows[:2]
+        )
+        self.assertIs(preloader.current_match, previous)
+        self.assertIs(preloader.last_resolution_diagnostics, diagnostics)
+        preloader.current_match = ChapterMatch("3", 1, 1.0)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", rows[0].text), ()
+        )
+        self.assertIs(preloader.last_resolution_diagnostics, diagnostics)
+
+    def test_equivalent_original_continuations_do_not_block_synthesis(self):
+        rows = (
+            self.row("first", "The gate is open."),
+            self.row("second", "The gate is open.", chapter="2"),
+            self.row("original", "The gate is open. Follow me.", full=True),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", rows[0].text), rows[:2]
+        )
+
+    def test_equivalent_symbol_text_keeps_exact_symbol_identity(self):
+        rows = (
+            self.row("first", "?!"),
+            self.row("second", "？ ！", chapter="2"),
+            self.row("different", "!?", chapter="3"),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Ada", "？！"), rows[:2]
+        )
+        self.assertEqual(preloader.equivalent_speech_candidates("Ada", "?"), ())
+        self.assertIsNone(preloader.current_match)
+
     def test_full_original_duplicates_do_not_compete_with_synthesis(self):
         originals = (
             self.row("original-1", "Huh?", full=True),

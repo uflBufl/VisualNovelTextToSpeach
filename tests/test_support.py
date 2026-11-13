@@ -1476,6 +1476,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
                 fallback_reason="generated-audio-entry-not-found",
                 voice_reference_id="voice:rhiannon-v2:reference-1",
                 line_id="reverse1999:24006:12",
+                audio_line_id="reverse1999:other-chapter:3",
                 artifact_preflight_state="generated-audio-entry-not-found",
             )
 
@@ -1492,6 +1493,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
             "generated-audio-entry-not-found",
         )
         self.assertEqual(persisted["line_id"], "reverse1999:24006:12")
+        self.assertEqual(persisted["audio_line_id"], "reverse1999:other-chapter:3")
         self.assertEqual(persisted["generation"], 7)
 
     def test_live_scope_match_diagnostics_keep_metrics_without_dialogue(self):

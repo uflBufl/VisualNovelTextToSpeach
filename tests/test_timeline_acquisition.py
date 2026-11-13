@@ -17,6 +17,29 @@ def read_journal(path):
 
 
 class TimelineAcquisitionTest(unittest.TestCase):
+    def test_borrowed_recording_keeps_audio_identity_without_chapter_identity(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.jsonl"
+            log = GenerationTimelineLog()
+            log.start_acquisition(path)
+            log.record(
+                "route-decision",
+                1,
+                1.0,
+                line_id=None,
+                audio_line_id="other-story:47",
+                effective_source="generated",
+            )
+            log.stop_acquisition()
+            event = next(
+                entry for entry in read_journal(path) if entry["kind"] == "event"
+            )
+            self.assertEqual(event["audio_line_id"], "other-story:47")
+            self.assertNotIn("line_id", event)
+            self.assertEqual(
+                log.snapshot()[0]["events"][0]["audio_line_id"], "other-story:47"
+            )
+
     def test_input_dispatch_fields_and_correlation_survive_acquisition(self):
         dispatch_id = str(uuid4())
         details = {

@@ -15,6 +15,7 @@ from vntts.dialog import is_symbol_only_text, symbol_text_key
 
 if TYPE_CHECKING:
     from vntts.chapter_voice_preload import ChapterDialogue
+    from vntts.generated_audio import GeneratedAudioReference
 
 
 def _punctuation_boundaries(text: str, punctuation: str) -> Iterator[int]:
@@ -47,6 +48,9 @@ class SpeechChunk:
     playback_id: str = field(default_factory=lambda: uuid4().hex, compare=False)
     sequence_event_id: str | None = field(default=None, compare=False)
     sequence_occurrence_id: int | None = field(default=None, compare=False)
+    prepared_audio: "GeneratedAudioReference | None" = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def chunk_id(self) -> str | None:

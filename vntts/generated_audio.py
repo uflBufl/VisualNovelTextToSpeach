@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock, RLock
@@ -35,7 +36,7 @@ from vntts.audio_output import (
     resolve_audio_output,
     write_pcm_chunks,
 )
-from vntts.chapter_voice_preload import ChapterDialogue
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import has_schema_version
 from vntts.path_safety import read_regular_bytes
@@ -87,6 +88,20 @@ class PreparedGeneratedAudio:
 
 
 @dataclass(frozen=True)
+class GeneratedAudioReference:
+    """A selected recording; accepted history must not retain decoded PCM."""
+
+    entry: GeneratedAudioEntryLike
+
+    @property
+    def line_id(self) -> str:
+        return cast(str, self.entry.line_id)
+
+    def load(self) -> tuple[PreparedGeneratedAudio | None, str]:
+        return _prepare_generated_audio(self.entry)
+
+
+@dataclass(frozen=True)
 class PreparedSourceAudioPassThrough:
     """A line whose original audio is already being played by the game."""
 
@@ -109,12 +124,14 @@ class AudioRouteTrace:
     chunk_id: str | None = None
     chunk_ordinal: int | None = None
     chunk_characters: int | None = None
+    audio_line_id: str | None = None
 
     def message(self) -> str:
         values = (
             ("generation", self.generation),
             ("source", self.effective_source),
             ("line", self.line_id),
+            ("audio-line", self.audio_line_id),
             ("match", self.match_result),
             ("fallback", self.fallback_reason),
             ("voice-reference", self.voice_reference_id),
@@ -134,6 +151,7 @@ class AudioRouteTrace:
             "fallback_reason": self.fallback_reason,
             "voice_reference_id": self.voice_reference_id,
             "line_id": self.line_id,
+            "audio_line_id": self.audio_line_id,
             "artifact_preflight_state": self.artifact_preflight_state,
             "chunk_id": self.chunk_id,
             "chunk_ordinal": self.chunk_ordinal,
@@ -257,6 +275,7 @@ class AudioRouteDetails(TypedDict):
     fallback_reason: str | None
     voice_reference_id: str | None
     line_id: str | None
+    audio_line_id: str | None
     artifact_preflight_state: str
     chunk_id: str | None
     chunk_ordinal: int | None
@@ -379,17 +398,13 @@ class GeneratedAudioLibrary:
             raise GeneratedAudioManifestError(
                 "Generated audio conflicts with an audio-event omission"
             )
-        narrator_fallback_roles = {
-            (entry.line_id, entry.text_sha256): role
-            for entry in index.entries
-            if (role := _narrator_fallback_role(entry)) is not None
-        }
+        for entry in index.entries:
+            _narrator_fallback_role(entry)
         self.index = index
         self._entries_by_identity = entries_by_identity
         self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
         self.live_fallbacks = live_fallbacks
         self.audio_event_omissions = audio_event_omissions
-        self.narrator_fallback_roles = narrator_fallback_roles
 
     def _reload_if_changed(self) -> None:
         signature = _manifest_signature(self.manifest_path)
@@ -459,50 +474,15 @@ class GeneratedAudioLibrary:
         self._reload_if_changed()
         with self.reload_lock:
             entry = self._entry(line_id, text_sha256)
-            narrator_fallback_roles = self.narrator_fallback_roles
         if entry is None:
             return None, "generated-audio-entry-not-found"
-        narrator_fallback_role = narrator_fallback_roles.get(
-            (entry.line_id, entry.text_sha256)
-        )
-        cache_key = (
-            entry.line_id,
-            entry.text_sha256,
-            entry.audio_sha256,
-        )
-        cached = self.cache.get(cache_key)
-        if cached is None:
-            try:
-                payload = read_regular_bytes(entry.audio)
-            except OSError:
-                self._warn_once(
-                    entry, f"Generated audio is missing or unreadable: {entry.audio}"
-                )
-                return None, "generated-audio-entry-missing"
-            try:
-                samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
-            except Pcm16MonoWavError as error:
-                self._warn_once(
-                    entry, f"Generated audio is invalid: {entry.audio}: {error}"
-                )
-                return None, "generated-audio-invalid-wav"
-            self.cache.put(cache_key, (samples, sample_rate))
-        else:
-            samples, sample_rate = cached
-        prepared = PreparedGeneratedAudio(
-            line_id=entry.line_id,
-            text_sha256=entry.text_sha256,
-            samples=samples.copy(),
-            sample_rate=sample_rate,
-            narrator_fallback_role=narrator_fallback_role,
-            provider=getattr(entry, "provider", None),
-            model=getattr(entry, "model", None),
-            voice_character=getattr(entry, "voice_character", None),
-            recorded_voice=recorded_voice_identity(entry),
-            audio_path=entry.audio,
-            audio_sha256=entry.audio_sha256,
-        )
-        return prepared, "generated-audio-entry-ready"
+        return _prepare_generated_audio(entry, cache=self.cache, warn=self._warn_once)
+
+    def reserve(self, line_id: str, text_sha256: str) -> GeneratedAudioReference | None:
+        self._reload_if_changed()
+        with self.reload_lock:
+            entry = self._entry(line_id, text_sha256)
+        return GeneratedAudioReference(entry) if entry is not None else None
 
     def find_live_fallback(
         self, line_id: str, text_sha256: str
@@ -548,6 +528,56 @@ class GeneratedAudioLibrary:
             return
         self.warned_entries.add(identity)
         self.warn(message)
+
+
+def _warn_generated_audio(_entry: GeneratedAudioEntryLike, message: str) -> None:
+    logging.getLogger(__name__).warning(message)
+
+
+def _prepare_generated_audio(
+    entry: GeneratedAudioEntryLike,
+    *,
+    cache: BoundedCache[tuple[str, str, str], tuple[NDArray[np.float32], int]]
+    | None = None,
+    warn: Callable[[GeneratedAudioEntryLike, str], object] | None = None,
+) -> tuple[PreparedGeneratedAudio | None, str]:
+    warn = warn or _warn_generated_audio
+    narrator_fallback_role = _narrator_fallback_role(entry)
+    cache_key = (
+        entry.line_id,
+        entry.text_sha256,
+        entry.audio_sha256,
+    )
+    cached = cache.get(cache_key) if cache is not None else None
+    if cached is None:
+        try:
+            payload = read_regular_bytes(entry.audio)
+        except OSError:
+            warn(entry, f"Generated audio is missing or unreadable: {entry.audio}")
+            return None, "generated-audio-entry-missing"
+        try:
+            samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
+        except Pcm16MonoWavError as error:
+            warn(entry, f"Generated audio is invalid: {entry.audio}: {error}")
+            return None, "generated-audio-invalid-wav"
+        if cache is not None:
+            cache.put(cache_key, (samples, sample_rate))
+    else:
+        samples, sample_rate = cached
+    prepared = PreparedGeneratedAudio(
+        line_id=entry.line_id,
+        text_sha256=entry.text_sha256,
+        samples=samples.copy() if cache is not None else samples,
+        sample_rate=sample_rate,
+        narrator_fallback_role=narrator_fallback_role,
+        provider=getattr(entry, "provider", None),
+        model=getattr(entry, "model", None),
+        voice_character=getattr(entry, "voice_character", None),
+        recorded_voice=recorded_voice_identity(entry),
+        audio_path=entry.audio,
+        audio_sha256=entry.audio_sha256,
+    )
+    return prepared, "generated-audio-entry-ready"
 
 
 def _manifest_signature(path: Path) -> tuple[int, int, int] | None:
@@ -706,6 +736,16 @@ class GeneratedAudioFallbackBackend:
         try:
             line = self.line_resolver.resolve_exact(character, text)
             if line is None or not line.line_id or not line.text_sha256:
+                if isinstance(self.line_resolver, ChapterVoicePreloader):
+                    return (
+                        self.reserve_equivalent_audio(
+                            character,
+                            self.line_resolver.equivalent_speech_candidates(
+                                character, text
+                            ),
+                        )
+                        is not None
+                    )
                 return False
             if line.has_full_source_audio:
                 return True
@@ -795,6 +835,24 @@ class GeneratedAudioFallbackBackend:
             return False
         return self.has_generated_line(line)
 
+    def reserve_equivalent_audio(
+        self, character: str, candidates: Iterable[ChapterDialogue]
+    ) -> GeneratedAudioReference | None:
+        """Keep ready speech independently of its canonical story location."""
+        if (
+            self.library is None
+            or self.audio_source_policy not in {"prefer-generated", "prefer-game-audio"}
+            or self.speed != 1.0
+            or (self.voice_override is not None and self.voice_override(character))
+        ):
+            return None
+        for line in candidates:
+            if line.line_id and line.text_sha256 and not line.has_full_source_audio:
+                reference = self.library.reserve(line.line_id, line.text_sha256)
+                if reference is not None:
+                    return reference
+        return None
+
     def prepare_route(
         self,
         character: str,
@@ -802,6 +860,7 @@ class GeneratedAudioFallbackBackend:
         *,
         line_id: str | None = None,
         resolve_unidentified: bool = True,
+        prepared_audio: GeneratedAudioReference | None = None,
     ) -> RouteDecision:
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
@@ -926,6 +985,31 @@ class GeneratedAudioFallbackBackend:
             )
             return AudioEventOmissionRoute(omission, trace)
         if (
+            prepared_audio is not None
+            and not voice_overridden
+            and self.audio_source_policy in {"prefer-generated", "prefer-game-audio"}
+            and self.speed == 1.0
+        ):
+            reserved, artifact_preflight_state = prepared_audio.load()
+            if reserved is not None:
+                return GeneratedAudioRoute(
+                    reserved,
+                    AudioRouteTrace(
+                        None,
+                        "generated",
+                        match_result,
+                        None,
+                        None,
+                        line.line_id if line is not None else None,
+                        artifact_preflight_state,
+                        audio_line_id=reserved.line_id,
+                    ),
+                    source_audio_lead_seconds=(
+                        source_audio_wait or 0.0 if source_audio_partial else 0.0
+                    ),
+                )
+            fallback_reasons.append(artifact_preflight_state)
+        if (
             line is not None
             and line.line_id
             and line.text_sha256
@@ -954,6 +1038,7 @@ class GeneratedAudioFallbackBackend:
                     None,
                     line.line_id,
                     artifact_preflight_state,
+                    audio_line_id=prepared.line_id,
                 )
                 generated_route = GeneratedAudioRoute(prepared, trace)
                 return (
@@ -1452,7 +1537,8 @@ class AudioRoutePlaybackOwner:
 
             record_audio_lifecycle(
                 "prepared-source",
-                line_id=route.prepared.line_id,
+                line_id=route.trace.line_id,
+                audio_line_id=route.prepared.line_id,
                 source_sha256=route.prepared.audio_sha256,
                 source_sample_rate=route.prepared.sample_rate,
                 source_audio_lead_ms=route.source_audio_lead_seconds * 1000,

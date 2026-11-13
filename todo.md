@@ -311,32 +311,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the prepared-audio/chapter-identity separation below before
-resuming native acceptance. Reuse the completed ordinary lower-dialogue and
-terminal-caption checks; do not repeat the chapter for each remaining case.
-
-- [ ] **MATCH-13-02 - Reuse identical prepared speech without choosing a chapter.**
-      Agree the implementation plan before changing code:
-      - Keep canonical line/chapter identification separate from the recording
-        used to speak a phrase. The same recognized speaker and complete canonical
-        text may reuse any ready recording compatible with the current voice and
-        synthesis controls, while chapter identity remains unresolved.
-      - Reuse existing source eligibility and current-voice discovery filtering.
-        Do not group merely fuzzy-similar different texts, revive archived voices
-        or admit verified full-original lines as TTS competitors.
-      - Select and retain a separate audio reference when accepting the speech
-        chunk; consume it through normal playback. Never put its source line ID
-        into canonical chunk identity, chapter context, navigation or key authority.
-        Later unique text may establish chapter context without changing already
-        accepted speech. Preserve existing live fallback when no recording fits.
-        Preserve the reference through Repeat and expose archive provenance
-        separately in diagnostics. Keep incomplete/typewriter admission guards;
-        an exact short WAV must not authorize reading an unfinished longer line.
-      - Cover identical duplicates, different speakers/texts/voices, unresolved
-        chapter after playback, later unique identification, queued discovery
-        changes, Stop and source-recording provenance in diagnostics. Reuse the
-        existing matcher/library/playback owners; remove superseded ambiguity
-        fallback expectations in affected tests.
+Next action: qualify automatic prepared Read in the combined native run below,
+including equivalent speech without chapter ownership. Reuse the completed
+ordinary lower-dialogue and terminal-caption checks; do not repeat the chapter
+for each remaining case. Windows recording acceptance needs its own host.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
@@ -359,7 +337,7 @@ terminal-caption checks; do not repeat the chapter for each remaining case.
       First verify actual visibility of the short repeated phrase: ROI-only
       setup navigation reached its successor without retaining that frame.
       7TH-02 The Blue and the Grey (Bang!) remains a metadata-only alternative.
-      After MATCH-13-02, prepare the repeated phrase only from the other chapter
+      Prepare the repeated phrase only from the other chapter
       and verify reuse without anchoring there, followed by unique identification
       of the actual chapter. Also cover no-ready-recording live fallback without
       replay, accepted-speech loss, capture restart or duplicate keys. Matching an

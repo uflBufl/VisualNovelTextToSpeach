@@ -602,13 +602,15 @@ def analyze_session(
             for index, route in enumerate(routes):
                 _check(started, cancelled)
                 playback_id = route.get("playback_id")
-                line_id = route.get("line_id")
-                if not isinstance(playback_id, str) or not isinstance(line_id, str):
+                audio_line_id = route.get("audio_line_id") or route.get("line_id")
+                if not isinstance(playback_id, str) or not isinstance(
+                    audio_line_id, str
+                ):
                     continue
                 playback_key = _playback_key(route)
                 digests = admitted.get(playback_key, set())
                 entry = (
-                    sources.get((line_id, next(iter(digests))))
+                    sources.get((audio_line_id, next(iter(digests))))
                     if len(digests) == 1
                     else None
                 )
@@ -731,7 +733,8 @@ def analyze_session(
                     matched.add(index)
                 results.append(
                     {
-                        "line_id": route["line_id"],
+                        "line_id": route.get("line_id"),
+                        "audio_line_id": audio_line_id,
                         "run_id": route.get("run_id"),
                         "playback_id": route.get("playback_id"),
                         "capture": capture.name,
@@ -783,6 +786,7 @@ def analyze_session(
     unmatched = [
         {
             "line_id": route.get("line_id"),
+            "audio_line_id": route.get("audio_line_id") or route.get("line_id"),
             "playback_id": route.get("playback_id"),
             "status": "review-required" if index in attempted else "unmatched",
             "reason": unmatched_reasons.get(index, "missing-source-or-worker-evidence"),

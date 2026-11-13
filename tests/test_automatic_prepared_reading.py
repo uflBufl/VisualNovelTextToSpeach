@@ -130,7 +130,10 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         self.controller._refresh_prepared_audio(force=True)
         admitted, line = self.resolve(duplicate)
         self.assertIsNone(line)
-        queued = SpeechChunk(1, admitted.character, admitted.text)
+        queued = self.controller._accept_live_chunk(
+            SpeechChunk(1, admitted.character, admitted.text)
+        )
+        self.assertIsNotNone(queued)
         _, identified = self.resolve(self.text)
         self.assertEqual(identified.line_id, self.line_id)
         first = self.controller._prepare_live_chunk(queued)
@@ -143,6 +146,130 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         )
         self.assertIsInstance(following, GeneratedAudioRoute)
         self.live.prepare_playback.assert_called_once_with("Ada", duplicate)
+
+    def ambiguous_ready_story(self):
+        source = self.snapshot.sources[0]
+        recorded = replace(source.preloader.dialogue[0], chapter="other-chapter")
+        visible = replace(recorded, line_id="visible", chapter="correct-chapter")
+        next_text = "The next unique line identifies the correct chapter."
+        successor = replace(
+            visible,
+            line_id="successor",
+            sequence=2,
+            text=next_text,
+            text_sha256=text_sha256(next_text),
+        )
+        self.snapshot = PreparedAudioSnapshot(
+            (
+                replace(
+                    source,
+                    preloader=ChapterVoicePreloader((recorded, visible, successor)),
+                ),
+            )
+        )
+        self.controller._refresh_prepared_audio(force=True)
+        return recorded, successor
+
+    def test_ambiguous_ready_audio_does_not_claim_its_recording_chapter(self):
+        recorded, successor = self.ambiguous_ready_story()
+        admitted, line = self.resolve(self.text)
+        self.assertIsNone(line)
+        queued = self.controller._accept_live_chunk(
+            SpeechChunk(1, admitted.character, admitted.text)
+        )
+        self.assertIsNotNone(queued)
+        self.assertIsNone(queued.line_id)
+        self.assertIsNotNone(queued.prepared_audio)
+        self.assertEqual(queued.prepared_audio.line_id, recorded.line_id)
+        self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+
+        route = self.controller._prepare_live_chunk(queued)
+
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertIsNone(route.trace.line_id)
+        self.assertEqual(route.trace.audio_line_id, recorded.line_id)
+        self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+        self.live.prepare_playback.assert_not_called()
+        _, identified = self.resolve(successor.text)
+        self.assertEqual(identified.line_id, successor.line_id)
+        self.assertEqual(
+            self.controller.chapter_voice_preloader.current_match.chapter,
+            successor.chapter,
+        )
+
+    def test_admitted_equivalent_audio_survives_identification_and_discovery_refresh(
+        self,
+    ):
+        recorded, successor = self.ambiguous_ready_story()
+        admitted, line = self.resolve(self.text)
+        self.assertIsNone(line)
+        queued = self.controller._accept_live_chunk(
+            SpeechChunk(1, admitted.character, admitted.text)
+        )
+        self.assertIsNotNone(queued)
+        reserved = queued.prepared_audio
+        self.assertIsNotNone(reserved)
+        _, identified = self.resolve(successor.text)
+        self.assertEqual(identified.line_id, successor.line_id)
+        self.snapshot = PreparedAudioSnapshot()
+        self.controller._refresh_prepared_audio(force=True)
+
+        route = self.controller._prepare_live_chunk(queued)
+
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertIs(queued.prepared_audio, reserved)
+        self.assertEqual(route.prepared.line_id, reserved.line_id)
+        self.assertEqual(route.prepared.audio_path, reserved.entry.audio)
+        self.assertEqual(route.prepared.audio_sha256, reserved.entry.audio_sha256)
+        loaded, _state = reserved.load()
+        self.assertIsNotNone(loaded)
+        self.assertEqual(route.prepared.samples.tobytes(), loaded.samples.tobytes())
+        self.assertIsNone(queued.line_id)
+        self.assertIsNone(route.trace.line_id)
+        self.assertEqual(route.trace.audio_line_id, recorded.line_id)
+        self.live.prepare_playback.assert_not_called()
+
+    def test_ambiguous_voice_rejected_at_admission_stays_live_after_audio_becomes_ready(
+        self,
+    ):
+        self.ambiguous_ready_story()
+        self.voices.matches.return_value = False
+        self.controller._refresh_prepared_audio(force=True)
+        admitted, line = self.resolve(self.text)
+        self.assertIsNone(line)
+        queued = self.controller._accept_live_chunk(
+            SpeechChunk(1, admitted.character, admitted.text)
+        )
+        self.assertIsNotNone(queued)
+        self.assertIsNone(queued.prepared_audio)
+        self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+        self.voices.matches.return_value = True
+        self.controller._refresh_prepared_audio(force=True)
+
+        route = self.controller._prepare_live_chunk(queued)
+
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertIsNone(route.trace.line_id)
+        self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+        self.live.prepare_playback.assert_called_once_with("Ada", self.text)
+
+    def test_equivalent_audio_requires_the_same_speaker_and_complete_text(self):
+        self.ambiguous_ready_story()
+        for character, text in (("Bea", self.text), ("Ada", "Keep this exact line")):
+            with self.subTest(character=character, text=text):
+                self.live.prepare_playback.reset_mock()
+                queued = self.controller._accept_live_chunk(
+                    SpeechChunk(1, character, text)
+                )
+                self.assertIsNotNone(queued)
+                self.assertIsNone(queued.prepared_audio)
+
+                route = self.controller._prepare_live_chunk(queued)
+
+                self.assertIsInstance(route, LiveTTSRoute)
+                self.assertIsNone(route.trace.line_id)
+                self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+                self.live.prepare_playback.assert_called_once_with(character, text)
 
     def test_metadata_refresh_keeps_capture_backend_and_accepted_identity(self):
         _, line = self.resolve(self.text)

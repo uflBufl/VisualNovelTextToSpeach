@@ -975,6 +975,7 @@ class LiveDialogReader:
                     chunk.text,
                     line_id=chunk.line_id,
                     explicit_replay=True,
+                    prepared_audio=chunk.prepared_audio,
                 )
             ]
         )

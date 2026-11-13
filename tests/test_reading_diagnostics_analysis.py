@@ -240,6 +240,21 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         self.assertEqual(report["unmatched_routes"], [])
         self.assertTrue((self.root / "analysis.json").is_file())
 
+    def test_equivalent_audio_is_correlated_without_inventing_canonical_ownership(self):
+        self.fixture()
+        path = self.root / "timeline.jsonl"
+        timeline = [json.loads(line) for line in path.read_text().splitlines()]
+        timeline[0].pop("line_id")
+        timeline[0]["audio_line_id"] = "line-54"
+        self.journal(path, timeline)
+
+        report = analyze_session(self.root)
+
+        self.assertEqual(report["qualification"], "digital-source-correlated")
+        self.assertIsNone(report["clips"][0]["line_id"])
+        self.assertEqual(report["clips"][0]["audio_line_id"], "line-54")
+        self.assertEqual(report["unmatched_routes"], [])
+
     def test_full_source_after_capture_start_keeps_earlier_dispatch_and_admission(self):
         root = self.root
         for windows in (False, True):

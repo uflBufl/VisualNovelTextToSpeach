@@ -32,6 +32,7 @@ from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
+    GeneratedAudioReference,
     GeneratedAudioRoute,
     LiveFallbackRoute,
     LiveTTSRoute,
@@ -2123,6 +2124,82 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
         self.assertIsNotNone(outcome.playback_ms)
         live.prepare_playback.assert_not_called()
+
+    def test_reserved_recording_keeps_its_source_separate_from_canonical_identity(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            reserved = library.reserve("game:1", text_sha256("Hello."))
+            self.assertIsNotNone(reserved)
+            current = ChapterDialogue(
+                "current", "current-chapter", 1, "Ada", "Hello.", text_sha256("Hello.")
+            )
+            ambiguous = ChapterVoicePreloader(
+                (current, replace(current, line_id="game:1", chapter="archive"))
+            )
+            preflight = GeneratedAudioFallbackBackend(None, library, ambiguous)
+            self.assertTrue(preflight.has_resolved_route_in_live_mode("Ada", "Hello."))
+            self.assertIsNone(ambiguous.current_match)
+            resolver = ChapterVoicePreloader((current,))
+            for line_id in (None, current.line_id):
+                with self.subTest(line_id=line_id):
+                    output = FakeAudioOutput()
+                    live = self.create_live_backend()
+                    backend = GeneratedAudioFallbackBackend(
+                        live, None, resolver, audio_output=output
+                    )
+                    route = backend.prepare_route(
+                        "Ada",
+                        "Hello.",
+                        line_id=line_id,
+                        resolve_unidentified=False,
+                        prepared_audio=reserved,
+                    )
+                    self.assertIsInstance(route, GeneratedAudioRoute)
+                    self.assertEqual(route.prepared.audio_path, reserved.entry.audio)
+                    self.assertEqual(
+                        route.prepared.audio_sha256, reserved.entry.audio_sha256
+                    )
+                    self.assertEqual(route.trace.line_id, line_id)
+                    self.assertEqual(route.trace.audio_line_id, "game:1")
+                    self.assertIsNone(resolver.current_match)
+                    with patch(
+                        "vntts.audio_lifecycle.record_audio_lifecycle"
+                    ) as events:
+                        denied = backend.play_route(route, playback_guard=lambda: False)
+                        events.assert_not_called()
+                        self.assertIs(denied.status, PlaybackStatus.INTERRUPTED)
+                        outcome = backend.play_route(route)
+                    event = next(
+                        call
+                        for call in events.call_args_list
+                        if call.args[0] == "prepared-source"
+                    )
+                    self.assertEqual(event.kwargs["line_id"], line_id)
+                    self.assertEqual(event.kwargs["audio_line_id"], "game:1")
+                    self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
+                    self.assertIsNone(resolver.current_match)
+                    live.prepare_playback.assert_not_called()
+
+    def test_reserved_audio_does_not_override_live_policy_speed_or_voice_override(self):
+        reserved = Mock(spec=GeneratedAudioReference)
+        for controls in (
+            {"audio_source_policy": "live-tts-only"},
+            {"speed": 1.25},
+            {"voice_override": lambda _character: True},
+        ):
+            with self.subTest(controls=controls):
+                live = self.create_live_backend()
+                backend = GeneratedAudioFallbackBackend(
+                    live, None, self.create_resolver()
+                )
+                for key, value in controls.items():
+                    setattr(backend, key, value)
+                route = backend.prepare_route(
+                    "Ada", "Hello.", resolve_unidentified=False, prepared_audio=reserved
+                )
+                self.assertIsInstance(route, LiveTTSRoute)
+                reserved.load.assert_not_called()
+                live.prepare_playback.assert_called_once_with("Ada", "Hello.")
 
     def test_explicit_line_id_routes_repeated_text_without_resolution_ambiguity(self):
         repeated = "The same words appear twice."

@@ -12,6 +12,7 @@ from vntts.dialog import ocr_texts_equivalent
 from vntts.dialog_capture import OCRError
 from vntts.generated_audio import (
     AudioRouteTrace,
+    GeneratedAudioReference,
     GeneratedAudioRoute,
     PreparedGeneratedAudio,
 )
@@ -1143,7 +1144,9 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
     def test_exact_route_mode_can_emit_unique_full_line_before_idle(self):
         full_text = "These old ones are enough to carry everyone."
         resolver = Mock(
-            return_value=ChapterDialogue("early", "chapter", 1, "Kamuta", full_text, None)
+            return_value=ChapterDialogue(
+                "early", "chapter", 1, "Kamuta", full_text, None
+            )
         )
         tracker = self.create_tracker(
             idle_flush_seconds=0.7,
@@ -3458,12 +3461,17 @@ class LiveDialogReaderTest(unittest.TestCase):
             play_prepared=play_prepared,
         )
         reader.active_generation = 3
-        reader.last_spoken_chunk = SpeechChunk(1, "Alice", "Repeat me.")
+        reserved = Mock(spec=GeneratedAudioReference)
+        reader.last_spoken_chunk = SpeechChunk(
+            1, "Alice", "Repeat me.", prepared_audio=reserved
+        )
 
         self.assertTrue(reader.repeat_last())
 
         repeated = SpeechChunk(3, "Alice", "Repeat me.", explicit_replay=True)
         prepare_chunk.assert_called_once_with(repeated)
+        self.assertIs(prepare_chunk.call_args.args[0].prepared_audio, reserved)
+        self.assertIsNone(prepare_chunk.call_args.args[0].line_id)
         play_prepared.assert_called_once_with(
             repeated,
             "prepared",

@@ -23,6 +23,7 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
     GeneratedAudioEntryLike,
     GeneratedAudioLibrary,
+    GeneratedAudioReference,
     PreparedGeneratedAudio,
 )
 from vntts.path_safety import contained_path, read_regular_bytes, safe_relative_path
@@ -269,6 +270,13 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
 
     def has_entry(self, line_id: str, text_sha256: str) -> bool:
         return bool(self._candidates(line_id, text_sha256))
+
+    def reserve(self, line_id: str, text_sha256: str) -> GeneratedAudioReference | None:
+        candidates = self._candidates(line_id, text_sha256)
+        if not candidates:
+            return None
+        entry, _library = candidates[0]
+        return GeneratedAudioReference(entry)
 
     def find(self, line_id: str, text_sha256: str) -> PreparedGeneratedAudio | None:
         return self.find_with_preflight(line_id, text_sha256)[0]

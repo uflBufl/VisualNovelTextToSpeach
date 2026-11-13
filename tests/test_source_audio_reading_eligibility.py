@@ -10,6 +10,7 @@ from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
+    GeneratedAudioReference,
     GeneratedAudioRoute,
     LiveTTSRoute,
     PreparedGeneratedAudio,
@@ -58,12 +59,23 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         if generated:
             library = Mock(runtime_progress=False)
             library.find_audio_event_omission.return_value = None
-            library.find_with_preflight.side_effect = lambda line_id, text_hash: (
-                PreparedGeneratedAudio(
-                    line_id, text_hash, np.zeros(1, dtype=np.float32), 24_000
-                ),
-                "generated-audio-entry-ready",
-            )
+
+            def ready_audio(line_id, text_hash):
+                return (
+                    PreparedGeneratedAudio(
+                        line_id, text_hash, np.zeros(1, dtype=np.float32), 24_000
+                    ),
+                    "generated-audio-entry-ready",
+                )
+
+            def reserve_audio(line_id, text_hash):
+                reference = Mock(spec=GeneratedAudioReference)
+                reference.line_id = line_id
+                reference.load.return_value = ready_audio(line_id, text_hash)
+                return reference
+
+            library.find_with_preflight.side_effect = ready_audio
+            library.reserve.side_effect = reserve_audio
         backend = GeneratedAudioFallbackBackend(
             live,
             library,
@@ -83,7 +95,7 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         return admitted, resolution.get("line")
 
     def route(self, controller, admitted, line):
-        return controller._prepare_live_chunk(
+        accepted = controller._accept_live_chunk(
             SpeechChunk(
                 1,
                 admitted.character,
@@ -91,6 +103,8 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
                 line_id=None if line is None else line.line_id,
             )
         )
+        self.assertIsNotNone(accepted)
+        return controller._prepare_live_chunk(accepted)
 
     def test_full_originals_in_other_chapters_do_not_compete_with_unvoiced_line(self):
         unvoiced = story_line("unvoiced")
@@ -110,7 +124,7 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         self.assertEqual(route.trace.line_id, unvoiced.line_id)
         live.prepare_playback.assert_not_called()
 
-    def test_unvoiced_duplicates_remain_ambiguous(self):
+    def test_unvoiced_duplicates_stay_canonically_ambiguous_with_equivalent_audio(self):
         controller, live = self.controller(
             (
                 story_line("unvoiced-a"),
@@ -122,7 +136,23 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         admitted, line = self.resolve(controller)
 
         self.assertIsNone(line)
+        route = self.route(controller, admitted, line)
+        self.assertIsInstance(route, GeneratedAudioRoute)
+        self.assertIsNone(route.trace.line_id)
+        self.assertIn(route.trace.audio_line_id, ("unvoiced-a", "unvoiced-b"))
+        self.assertIsNone(controller.chapter_voice_preloader.current_match)
+        live.prepare_playback.assert_not_called()
+
+    def test_unvoiced_duplicates_without_ready_audio_still_use_live_tts(self):
+        controller, live = self.controller(
+            (story_line("unvoiced-a"), story_line("unvoiced-b")), generated=False
+        )
+
+        admitted, line = self.resolve(controller)
+
+        self.assertIsNone(line)
         self.assertIsInstance(self.route(controller, admitted, line), LiveTTSRoute)
+        self.assertIsNone(controller.chapter_voice_preloader.current_match)
         live.prepare_playback.assert_called_once_with("Ada", "Huh?")
 
     def test_known_chapter_original_keeps_its_identity(self):

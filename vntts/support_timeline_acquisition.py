@@ -121,6 +121,7 @@ _IDENTITY_FIELDS = {
     "coordinate_space",
     "chunk_id",
     "line_id",
+    "audio_line_id",
     "event_id",
     "previous_event_id",
     "target_event_id",

@@ -406,6 +406,74 @@ class ChapterVoicePreloader:
         )
         return selected, match_result
 
+    def equivalent_speech_candidates(
+        self,
+        character: object,
+        text: object,
+        *,
+        line_id: str | None = None,
+    ) -> tuple[ChapterDialogue, ...]:
+        """Return exact speech equivalents without assigning canonical ownership."""
+        speaker = _normalize(character)
+        exact_text = _normalize_exact_text(text)
+        if not speaker or not exact_text:
+            return ()
+        symbol_only = is_symbol_only_text(text)
+        observed = prepare_text(text)
+        candidates = tuple(
+            row
+            for row in self.by_exact_dialogue.get(
+                (speaker, symbol_only, exact_text), ()
+            )
+            if row.line_id
+            and row.text_sha256
+            and not row.has_full_source_audio
+            and (
+                symbol_only
+                or compare_text(observed, self.matching_text[row], limit=0).complete
+            )
+        )
+        if not candidates:
+            return ()
+        if line_id is not None:
+            return candidates if self.line_for_id(line_id) in candidates else ()
+
+        scope = (
+            self.dialogue
+            if self.current_match is None
+            else self.by_chapter.get(self.current_match.chapter, ())
+        )
+        representatives: dict[tuple[str, bool, str], ChapterDialogue] = {}
+        for row in scope:
+            if row.line_id and row.text_sha256 and not row.has_full_source_audio:
+                representatives.setdefault(
+                    (
+                        _normalize(row.speaker),
+                        is_symbol_only_text(row.text),
+                        _normalize_exact_text(row.text),
+                    ),
+                    row,
+                )
+        # Duplicate positions share speech content, while continuations still
+        # compete through the ordinary completeness guards.
+        diagnostics = self.last_resolution_diagnostics
+        try:
+            match = self.resolve_observation_among(
+                character,
+                text,
+                (row.line_id for row in representatives.values()),
+                update_context=False,
+            )
+        finally:
+            self.last_resolution_diagnostics = diagnostics
+        return (
+            candidates
+            if match.complete
+            and match.method == "expected-exact"
+            and match.line in candidates
+            else ()
+        )
+
     def resolve_exact_among(
         self,
         character: object,
