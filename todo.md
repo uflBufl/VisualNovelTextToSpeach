@@ -311,9 +311,32 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: select an accessible ambiguous live-to-prepared fixture using
-validated source-audio eligibility. Reuse the completed ordinary lower-dialogue
-and terminal-caption checks; do not repeat the chapter for each remaining case.
+Next action: agree the prepared-audio/chapter-identity separation below before
+resuming native acceptance. Reuse the completed ordinary lower-dialogue and
+terminal-caption checks; do not repeat the chapter for each remaining case.
+
+- [ ] **MATCH-13-02 - Reuse identical prepared speech without choosing a chapter.**
+      Agree the implementation plan before changing code:
+      - Keep canonical line/chapter identification separate from the recording
+        used to speak a phrase. The same recognized speaker and complete canonical
+        text may reuse any ready recording compatible with the current voice and
+        synthesis controls, while chapter identity remains unresolved.
+      - Reuse existing source eligibility and current-voice discovery filtering.
+        Do not group merely fuzzy-similar different texts, revive archived voices
+        or admit verified full-original lines as TTS competitors.
+      - Select and retain a separate audio reference when accepting the speech
+        chunk; consume it through normal playback. Never put its source line ID
+        into canonical chunk identity, chapter context, navigation or key authority.
+        Later unique text may establish chapter context without changing already
+        accepted speech. Preserve existing live fallback when no recording fits.
+        Preserve the reference through Repeat and expose archive provenance
+        separately in diagnostics. Keep incomplete/typewriter admission guards;
+        an exact short WAV must not authorize reading an unfinished longer line.
+      - Cover identical duplicates, different speakers/texts/voices, unresolved
+        chapter after playback, later unique identification, queued discovery
+        changes, Stop and source-recording provenance in diagnostics. Reuse the
+        existing matcher/library/playback owners; remove superseded ambiguity
+        fallback expectations in affected tests.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
@@ -330,15 +353,17 @@ and terminal-caption checks; do not repeat the chapter for each remaining case.
       (user confirmed); exclude it from the upcoming run. A cached story or
       generated audio does not prove current menu access. Select a currently
       accessible ordinary-dialogue story; book anecdotes need their own reader.
-      Main-story alternatives from extracted text: 6TH-23 Hansel and Gretel
-      (She closes her eyes.) or 7TH-02 The Blue and the Grey (Bang!). Offer
-      these concrete choices for the user to
-      confirm access. After selection, prepare the unique successor and include
-      its duplicate competitors in the actual discovery scope before native Read;
-      matching an isolated metadata scope is not native qualification.
-      Remaining scenarios: a genuinely ambiguous phrase uses live
-      TTS once and later unique text selects prepared audio without replaying it,
-      dropping accepted speech, restarting capture or sending duplicate keys.
+      User opened 6TH-23 Hansel and Gretel. Its canonical duplicate candidates
+      100631:54/101014:96 are registered for actual discovery; current-voice audio
+      for unique successor 100631:55 is prepared. Native Read has not started.
+      First verify actual visibility of the short repeated phrase: ROI-only
+      setup navigation reached its successor without retaining that frame.
+      7TH-02 The Blue and the Grey (Bang!) remains a metadata-only alternative.
+      After MATCH-13-02, prepare the repeated phrase only from the other chapter
+      and verify reuse without anchoring there, followed by unique identification
+      of the actual chapter. Also cover no-ready-recording live fallback without
+      replay, accepted-speech loss, capture restart or duplicate keys. Matching an
+      isolated metadata scope is not native qualification.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other
