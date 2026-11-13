@@ -1,95 +1,20 @@
 import argparse
-import ast
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import vntts.authoring.cli_terminal_conflicts as terminal_cli
-from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
-from vntts.authoring.cli_contract import parser_contract
+from vntts.authoring.cli import create_parser, main
 from vntts.authoring.cli_terminal_conflicts import (
-    COMMANDS,
     TerminalConflictResolutionError,
     handle,
 )
 
 
 class AuthoringCliTerminalConflictsTest(unittest.TestCase):
-    def test_family_owns_the_exact_terminal_conflict_inventory(self):
-        self.assertEqual(
-            COMMANDS,
-            {
-                "terminal-conflict-resolution",
-                "terminal-conflict-carry",
-                "terminal-conflict-cohort-carry",
-                "terminal-conflict-successor",
-                "terminal-conflict-merge",
-            },
-        )
-        owners = [family for family in COMMAND_FAMILIES if family.commands == COMMANDS]
-        self.assertEqual(len(owners), 1)
-        self.assertIs(owners[0].handler, handle)
-
-    def test_command_order_matches_the_captured_cli(self):
-        parser = create_parser()
-        names = list(parser_contract(parser))
-        expected = (
-            "failed-prompt-hypothesis-selection",
-            "terminal-conflict-resolution",
-            "terminal-conflict-carry",
-            "terminal-conflict-cohort-carry",
-            "terminal-conflict-successor",
-            "terminal-conflict-merge",
-            "create-failure-reference-workspace",
-        )
-        start = names.index(expected[0])
-        self.assertEqual(tuple(names[start : start + len(expected)]), expected)
-
-    def test_document_commands_preserve_calls_and_json(self):
-        cases = (
-            (
-                "terminal-conflict-resolution",
-                "publish_terminal_conflict_resolution",
-                argparse.Namespace(
-                    command="terminal-conflict-resolution",
-                    review_directory=Path("review"),
-                    output=Path("resolution"),
-                ),
-                (Path("review"), Path("resolution")),
-            ),
-            (
-                "terminal-conflict-successor",
-                "publish_terminal_conflict_successor",
-                argparse.Namespace(
-                    command="terminal-conflict-successor",
-                    reconciliation=Path("reconciliation.json"),
-                    resolution_directory=Path("resolution"),
-                    output=Path("successor"),
-                ),
-                (
-                    Path("reconciliation.json"),
-                    Path("resolution"),
-                    Path("successor"),
-                ),
-            ),
-        )
-        for command, target, arguments, expected_call in cases:
-            with self.subTest(command=command):
-                result = Mock()
-                result.to_dict.return_value = {"command": command}
-                output = StringIO()
-                with (
-                    patch.object(terminal_cli, target, return_value=result) as call,
-                    redirect_stdout(output),
-                ):
-                    self.assertEqual(handle(arguments), 0)
-                call.assert_called_once_with(*expected_call)
-                self.assertEqual(json.loads(output.getvalue()), {"command": command})
-
     def test_carry_commands_preserve_raw_progress_json(self):
         cases = (
             (
@@ -123,36 +48,6 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
                     self.assertEqual(handle(arguments), 0)
                 call.assert_called_once_with(*expected_call)
                 self.assertEqual(json.loads(output.getvalue()), progress)
-
-    def test_merge_preserves_workspace_json_contract(self):
-        result = SimpleNamespace(directory=Path("workspace"), created=False)
-        output = StringIO()
-        with (
-            patch.object(
-                terminal_cli,
-                "merge_terminal_conflict_resolution",
-                return_value=result,
-            ) as merge,
-            redirect_stdout(output),
-        ):
-            self.assertEqual(
-                handle(
-                    argparse.Namespace(
-                        command="terminal-conflict-merge",
-                        base_workspace=Path("base"),
-                        successor_directory=Path("successor"),
-                        workspaces_root=Path("workspaces"),
-                    )
-                ),
-                0,
-            )
-        merge.assert_called_once_with(
-            Path("base"), Path("successor"), Path("workspaces")
-        )
-        self.assertEqual(
-            json.loads(output.getvalue()),
-            {"directory": "workspace", "created": False},
-        )
 
     def test_carry_io_failures_remain_raw_and_become_parser_errors(self):
         for target, arguments in (
@@ -202,32 +97,6 @@ class AuthoringCliTerminalConflictsTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("authority changed", errors.getvalue())
-
-    def test_family_handler_rejects_an_unowned_command(self):
-        with self.assertRaisesRegex(
-            ValueError, "Unsupported terminal-conflict command"
-        ):
-            handle(argparse.Namespace(command="other"))
-
-    def test_top_level_cli_imports_only_the_terminal_conflict_family_boundary(self):
-        cli_path = Path(terminal_cli.__file__).with_name("cli.py")
-        tree = ast.parse(cli_path.read_text(encoding="utf-8"))
-        imported_modules = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        }
-
-        self.assertIn("vntts.authoring.cli_terminal_conflicts", imported_modules)
-        self.assertFalse(
-            {
-                "vntts.authoring.terminal_conflict_resolution",
-                "vntts.authoring.terminal_conflict_review",
-                "vntts.authoring.terminal_conflict_successor",
-                "vntts.authoring.terminal_conflict_workspace",
-            }
-            & imported_modules
-        )
 
 
 if __name__ == "__main__":

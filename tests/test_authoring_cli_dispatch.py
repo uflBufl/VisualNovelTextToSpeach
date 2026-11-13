@@ -1,5 +1,4 @@
 import argparse
-import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -7,11 +6,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
-from vntts.authoring.cli_contract import (
-    _normalized,
-    parser_contract,
-    parser_contract_sha256,
-)
 from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
 from vntts.authoring.publication import AtomicPublicationError
 
@@ -32,51 +26,8 @@ class AuthoringCliDispatchTest(unittest.TestCase):
             '{\n  "name": "\\u0442\\u043e\\u0447\\u043d\\u044b\\u0439",\n  "z": [\n    "\\u00e9"\n  ]\n}\n',
         )
 
-    def test_contract_normalizes_absolute_and_relative_path_defaults(self):
-        self.assertEqual(
-            _normalized(Path.cwd() / "different-user" / "authoring" / "workspaces"),
-            {"kind": "absolute-path", "name": "workspaces"},
-        )
-        self.assertEqual(_normalized(Path("relative/path")), "relative/path")
-
-    def test_parser_matches_captured_semantic_contract(self):
-        fixture = json.loads(
-            (
-                Path(__file__).parent / "fixtures" / "authoring-cli-contract-v1.json"
-            ).read_text(encoding="utf-8")
-        )
+    def test_parser_defaults_preserve_paths_and_narrator_delivery(self):
         parser = create_parser()
-        contract = parser_contract(parser)
-
-        self.assertEqual(list(contract), fixture["commands"])
-        self.assertEqual(len(contract), fixture["command_count"])
-        self.assertEqual(parser_contract_sha256(parser), fixture["sha256"])
-
-    def test_whole_parser_snapshot_detects_help_metavar_changes(self):
-        parser = create_parser()
-        before = parser_contract_sha256(parser)
-        subparsers = next(
-            action
-            for action in parser._actions
-            if isinstance(action, argparse._SubParsersAction)
-        )
-        command_parser = subparsers.choices["terminal-conflict-resolution"]
-        argument = next(
-            action for action in command_parser._actions if action.dest != "help"
-        )
-        argument.metavar = "CHANGED_ARGUMENT_LABEL"
-        self.assertNotEqual(parser_contract_sha256(parser), before)
-
-    def test_migrated_parser_defaults_and_order_remain_stable(self):
-        parser = create_parser()
-        help_text = parser.format_help()
-
-        self.assertLess(
-            help_text.index("discover-legacy"), help_text.index("build-queue")
-        )
-        self.assertLess(
-            help_text.index("publish-pack"), help_text.index("annotate-delivery")
-        )
         legacy = parser.parse_args(["discover-legacy"])
         listening = parser.parse_args(["inspect-listening", "session"])
         delivery = parser.parse_args(["annotate-delivery", "--text", "Hello"])
@@ -86,7 +37,13 @@ class AuthoringCliDispatchTest(unittest.TestCase):
         self.assertEqual(delivery.kind, "dialogue")
 
     def test_every_migrated_command_has_one_family_owner(self):
-        parser_commands = set(parser_contract(create_parser()))
+        parser = create_parser()
+        subparsers = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        parser_commands = set(subparsers.choices)
         commands = [
             command for family in COMMAND_FAMILIES for command in family.commands
         ]

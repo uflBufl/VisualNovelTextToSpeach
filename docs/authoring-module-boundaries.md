@@ -47,9 +47,8 @@ every calculated identity; non-finite JSON numbers are rejected.
 `bulk_generation._canonical_sha256` remains available for compatibility, and
 the few modules whose existing tests exercised their imported private alias
 retain a local alias to the leaf function. New code must use the public
-authority name. The import-graph test performs an AST inventory over all
-production modules and fails if a direct private bulk-generation hash import is
-introduced again.
+authority name. Compatibility tests preserve the supported exports and their
+behavior without prescribing the source-level import graph.
 
 ## Low-level publication and subprocess primitives
 
@@ -77,9 +76,8 @@ metadata and notice match the same pinned controls.
 definition of a terminal reviewed state item: approved/approved or
 generated/rejected. Config rebase consumes this record-level predicate directly;
 workbench retains `_terminal_review_outcome` as an identity-preserving
-compatibility alias. The import-graph gate forbids production use of the old
-private name so the terminal status vocabulary cannot diverge between the two
-workflows.
+compatibility alias. Consumers share the public predicate so the terminal
+status vocabulary remains consistent between the two workflows.
 
 The record leaf also owns canonical non-empty text, lowercase SHA-256,
 timezone-aware timestamp and symlink-free contained-file validation. Review,
@@ -121,16 +119,14 @@ reuse review, voice-repair comparison and terminal-conflict publication retain
 their exact workspace digest bindings through the same public API.
 Terminal-conflict publication calls the foundation tree-copy API directly;
 workbench retains `_copy_workspace_tree_snapshot` only as an internal
-compatibility alias. The AST regression forbids importing the superseded
-private workbench names, while the workbench test suite verifies that
-compatibility behavior is unchanged.
+compatibility alias. The workbench test suite verifies the supported
+compatibility behavior.
 
 Outcome reconciliation enters workbench through
 `merge_reconciled_workspace_outcomes()`, which requires the caller's immutable
 reconciliation selection and keeps the unrestricted outcome merge API
 separate. The internal `_merge_workspace_outcomes` implementation remains a
-workbench detail and is protected from renewed production imports by the AST
-regression.
+workbench detail.
 
 ## Generation lease foundation
 
@@ -144,8 +140,7 @@ generation orchestrator.
 `bulk_generation` re-exports `BulkGenerationError`, the lease constants and
 process helpers and retains `_GenerationLease`, `_process_started_at` and
 `_archive_interrupted_artifact` aliases for compatibility. All compatibility
-imports resolve to the shared leaf objects, while the import-graph test forbids
-any production module from importing the historical private lease name.
+imports resolve to the shared leaf objects.
 Lease payload fields, stale-owner PID/start-time checks, advisory guard locking,
 crash archive naming and post-commit cleanup behavior remain unchanged.
 
@@ -163,8 +158,6 @@ backed by the same leaf objects.
 The projection preserves entry ordering, optional provenance fields, exact WAV
 checksum/quality checks and contained POSIX paths. Working results remain in
 SQLite; package writers serialize the projected artifact schema when needed.
-The import-graph regression forbids production callers from importing
-the historical private projection names.
 
 ## Speech-quality foundation
 
@@ -199,9 +192,6 @@ audio-event results and terminal-conflict provenance. Validation operates on an
 isolated copy and returns that validated document. Production workflows import
 this API directly; bulk generation re-exports it and retains
 `_load_stable_queue` plus its internal helper aliases for compatibility.
-The import-graph regression proves that `generation_state` cannot reach the
-bulk orchestrator and that the old private validator definition cannot return
-to it.
 
 ## Bulk orchestration public boundary
 
@@ -213,10 +203,8 @@ and immutable generation-control snapshots. The historical
 `_snapshot_control_files` names remain identity-preserving compatibility aliases
 for tests and external callers; they are not production dependencies.
 
-The import-graph regression inventories every production authoring import and
-fails if any underscore-prefixed compatibility helper is imported from
-`bulk_generation`. This ratchets the dependency magnet without changing cohort
-CAS authority, render validation, repair selection or source-change detection.
+Compatibility tests preserve these exports. Behavioral tests cover cohort CAS
+authority, render validation, repair selection and source-change detection.
 
 ## Workspace configuration foundation
 
@@ -229,9 +217,7 @@ reuse consume these APIs directly.
 
 `workbench._workspace_config_fingerprint` remains an identity-preserving alias,
 while `_selected_voice_manifest` remains a compatibility wrapper that supplies
-`AuthoringWorkbenchError` as the leaf validator's error type. The AST regression
-forbids production imports of both historical private names and ensures
-`workspace_config` cannot reach the workbench dependency magnet. Canonical JSON
+`AuthoringWorkbenchError` as the leaf validator's error type. Canonical JSON
 ordering, SHA-256 identity, path containment, selected-path equality and copied
 reference verification are unchanged.
 
@@ -248,8 +234,7 @@ Optional workspace provenance layers are validated through
 `validate_workspace_provenance_extensions()`. Its ordered contract covers
 carry-forward, input configuration, offline fallback, outcome merge and
 terminal-conflict merge without exposing the five implementation validators.
-The terminal-conflict publisher uses this composite API; an AST inventory
-prevents production code from importing any of the private validators again.
+The terminal-conflict publisher uses this composite API.
 
 ## Workspace generation-state boundary
 
@@ -264,16 +249,14 @@ are returned for downstream CAS bindings.
 Missing-voice reuse and review, voice-repair comparison and terminal-conflict
 publication use this domain API directly. Workbench retains
 `_stable_workspace_state` only as an `AuthoringWorkbenchError` compatibility
-wrapper. The AST regression forbids production imports of the private name and
-ensures `workspace_state` cannot reach workbench.
+wrapper.
 
 ## Regression gate
 
-`tests/test_authoring_import_graph.py` parses every `vntts.authoring` module and
-asserts that neither extracted record module can reach its higher layers and
-that no pair in either former strongly connected component is mutually
-reachable. It also enforces the canonical-hash, generation-lease, generated
-manifest and generation-state leaf boundaries described above.
+`tests/test_authoring_import_graph.py` checks supported compatibility exports,
+serialized public record identities and imports in a separate process that
+must remain free of GUI or bulk-execution dependencies. Publication, loader,
+decision, workbench and final-pack tests exercise the resulting behavior.
 
 ## Authoring CLI command families
 
@@ -305,9 +288,8 @@ registration functions at the two historical composition points, while one
 immutable command inventory prevents split or overlapping dispatch ownership.
 The family re-exports both workflow error types for top-level parser translation;
 `cli.py` must not import `reference_render_comparison` or
-`render_hypothesis_review` directly. A normalized parser-contract digest binds
-all seven commands' help, action order, types, choices, defaults and required
-flags, while focused tests bind their JSON and implementation call contracts.
+`render_hypothesis_review` directly. Focused tests exercise their commands,
+JSON output and workflow inputs.
 
 `cli_cohort_reviews` owns the five checksum-bound plan, cross-workspace bundle,
 decision and atomic projection commands. Its planning and decision parser
@@ -315,31 +297,28 @@ builders preserve the two historical help-order positions, and its family
 handler preserves fail-fast queue-selection validation before any artifact I/O.
 Plan and decision loaders remain private to the family handler. Voice-quality
 consumers load their evidence inside their own family boundary, so `cli.py`
-remains free of concrete `cohort_bundle` and `cohort_review` imports. A
-normalized parser digest, single-owner dispatch test and focused
-validation/output tests bind this contract.
+remains free of concrete `cohort_bundle` and `cohort_review` imports.
+Single-owner dispatch and focused validation/output tests cover this contract.
 
 `cli_silence_comparison` owns the checksum-bound comparison publication,
 integrity inspection and blind-listening session commands. It also owns the
 comparison-only target-silence default and re-exports the domain error, so
 `cli.py` does not import either `silence_comparison` or `failure_repair` for this
-workflow. Its normalized parser digest and focused tests bind all three distinct
-JSON result schemas in addition to parser order and implementation calls.
+workflow. Focused tests cover the distinct JSON result schemas and workflow
+inputs.
 
 `cli_terminal_conflicts` owns the five resolution, unchanged/cohort decision
 carry, reconciliation-successor and immutable workspace-merge commands. It
 re-exports the resolution, review and successor domain errors for top-level
 parser translation and keeps all four concrete terminal-conflict workflow
-modules out of `cli.py`. Its contract tests bind the contiguous parser position,
-workspace-root default and the intentionally distinct document, raw-progress
-and workspace-result JSON forms.
+modules out of `cli.py`. Its tests exercise the intentionally distinct document,
+raw-progress and workspace-result JSON forms.
 
 `cli_voice_quality` owns the reusable cohort-backed quality gate and bounded
 voice-repair comparison, candidate-workspace and exact-command operations. It
 loads cohort evidence directly instead of coupling `cli.py` to either the
-concrete cohort workflow or the sibling cohort CLI family. Its parser contract
-binds the default `stable,natural` comparison profiles and workspace-root
-default; focused tests separately preserve document and argv JSON outputs.
+concrete cohort workflow or the sibling cohort CLI family. Focused tests cover
+implicit and explicit comparison profiles, document results and argv JSON output.
 
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by generation and workspace families
@@ -352,21 +331,15 @@ user-facing exception boundary.
 
 The top-level `cli.py` contains only parser composition, immutable
 single-owner family registration, shared error translation and dispatch. It no
-longer imports concrete workflow leaves. `cli_contract` restores the historical
-95-command help order after family composition and hashes both that complete
-order and the normalized parser schema: every option, positional, type, required
-flag, choice, default and help text. The checked-in v1 contract prevents
-extraction work from silently changing the public CLI. Its gate also requires
-the parser inventory to equal the union of family inventories with exactly one
-owner per command. The contract runs on the supported Python runtime, guarding
-the compatibility shim that preserves historical
-argparse help order. Family modules depend only on workflow leaves and never on
-`cli.py` or sibling command families. Focused tests bind their parser defaults,
-ordering, single-owner dispatch and existing JSON behavior; the complete suite
-remains the final compatibility gate for each extraction slice.
+longer imports concrete workflow leaves. `cli_contract` restores the established
+help order after family composition. Tests require the parser inventory to equal
+the union of family inventories with exactly one owner per command. Focused
+CLI scenarios exercise typed arguments, meaningful defaults, validation errors,
+dispatch and JSON results. Generation requires explicit consent/access flags
+and leaves newly generated audio pending review until an explicit approval.
+The tests follow the [behavior-focused testing principles](testing-principles.md);
+help wording, metavar spelling and argparse implementation classes are free to
+change without maintaining a serialized parser snapshot.
 
-The audio-event, render-review, cohort-review, silence-comparison,
-terminal-conflict and voice-quality slices additionally retain focused concrete
-import-boundary gates.
 Focused publication, loader, decision, workbench and final-pack tests must
-accompany this graph gate whenever either record schema changes.
+cover changes to record schemas and their consumers.

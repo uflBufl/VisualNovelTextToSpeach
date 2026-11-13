@@ -22,8 +22,9 @@ warm-up cache/generation limit. The remaining live preview and fallback helper
 calls were migrated from `speak()` to `prepare_playback()` plus
 `play_prepared()`. No application orchestration now consumes the deprecated
 concrete-backend facade or reads its mutable fields for correctness.
-`tests/test_speech_backend_api_boundaries.py` keeps the runtime protocol and
-controller helpers on that typed boundary.
+Behavioral tests in `tests/test_live_speech.py` and `tests/test_main.py` exercise
+typed playback outcomes, forwarded speech inputs, stale-playback guards and
+error propagation on that boundary.
 
 Removal remains blocked until a future major release has all of the following:
 

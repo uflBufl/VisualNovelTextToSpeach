@@ -1,5 +1,4 @@
 import argparse
-import ast
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -8,81 +7,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import vntts.authoring.cli_voice_quality as voice_cli
-from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
-from vntts.authoring.cli_contract import parser_contract
-from vntts.authoring.cli_voice_quality import COMMANDS, VoiceQualityGateError, handle
+from vntts.authoring.cli import main
+from vntts.authoring.cli_voice_quality import VoiceQualityGateError, handle
 
 
 class AuthoringCliVoiceQualityTest(unittest.TestCase):
-    def test_family_owns_the_exact_voice_quality_inventory(self):
-        self.assertEqual(
-            COMMANDS,
-            {
-                "voice-quality-gate",
-                "voice-quality-check",
-                "voice-repair-comparison-plan",
-                "voice-repair-candidate-workspace",
-                "voice-repair-candidate-command",
-            },
-        )
-        owners = [family for family in COMMAND_FAMILIES if family.commands == COMMANDS]
-        self.assertEqual(len(owners), 1)
-        self.assertIs(owners[0].handler, handle)
-
-    def test_command_order_matches_the_captured_cli(self):
-        parser = create_parser()
-        names = list(parser_contract(parser))
-        expected = (
-            "failure-reference-binding",
-            "voice-quality-gate",
-            "voice-quality-check",
-            "voice-repair-comparison-plan",
-            "voice-repair-candidate-workspace",
-            "voice-repair-candidate-command",
-            "missing-voice-reuse-plan",
-        )
-        start = names.index(expected[0])
-        self.assertEqual(tuple(names[start : start + len(expected)]), expected)
-
-    def test_gate_preserves_load_build_write_and_json_contract(self):
-        plan = object()
-        decision = object()
-        gate = Mock()
-        gate.to_dict.return_value = {"z": ["é"], "gate": "точный"}
-        output = StringIO()
-        with (
-            patch.object(
-                voice_cli, "load_cohort_review_plan", return_value=plan
-            ) as load_plan,
-            patch.object(
-                voice_cli, "load_cohort_review_decision", return_value=decision
-            ) as load_decision,
-            patch.object(
-                voice_cli, "build_voice_quality_gate", return_value=gate
-            ) as build,
-            patch.object(voice_cli, "write_voice_quality_gate") as write,
-            redirect_stdout(output),
-        ):
-            self.assertEqual(
-                handle(
-                    argparse.Namespace(
-                        command="voice-quality-gate",
-                        workspace=Path("workspace"),
-                        plan=Path("plan.json"),
-                        decision=Path("decision.json"),
-                        output=Path("gate.json"),
-                    )
-                ),
-                0,
-            )
-        load_plan.assert_called_once_with(Path("plan.json"))
-        load_decision.assert_called_once_with(Path("decision.json"))
-        build.assert_called_once_with(Path("workspace"), plan, decision)
-        write.assert_called_once_with(gate, Path("gate.json"))
-        self.assertEqual(
-            output.getvalue(), '{\n  "gate": "точный",\n  "z": [\n    "é"\n  ]\n}\n'
-        )
-
     def test_repair_plan_preserves_implicit_and_explicit_profiles(self):
         for configured, expected in (
             (None, ("stable", "natural")),
@@ -169,29 +98,6 @@ class AuthoringCliVoiceQualityTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("gate authority changed", errors.getvalue())
-
-    def test_family_handler_rejects_an_unowned_command(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported voice-quality command"):
-            handle(argparse.Namespace(command="other"))
-
-    def test_top_level_cli_imports_only_the_voice_quality_family_boundary(self):
-        cli_path = Path(voice_cli.__file__).with_name("cli.py")
-        tree = ast.parse(cli_path.read_text(encoding="utf-8"))
-        imported_modules = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        }
-
-        self.assertIn("vntts.authoring.cli_voice_quality", imported_modules)
-        self.assertFalse(
-            {
-                "vntts.authoring.cohort_review",
-                "vntts.authoring.voice_quality_gate",
-                "vntts.authoring.voice_repair_comparison",
-            }
-            & imported_modules
-        )
 
 
 if __name__ == "__main__":

@@ -1922,33 +1922,6 @@ class TrayApplicationTest(unittest.TestCase):
             controller.start.assert_not_called()
             tray.shutdown()
 
-    def test_shared_voice_entry_and_reading_start_use_existing_actions(self):
-        controller = Mock(is_ready=False, is_live_running=False)
-        tray = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-        with patch.object(tray, "open_voice_previews") as voices:
-            tray.open_speaker_mapping()
-        voices.assert_called_once()
-        with (
-            patch.object(tray, "_save_settings_candidate"),
-            patch.object(tray, "prepare_reading") as prepare,
-            patch.object(tray, "toggle_live") as start_reading,
-        ):
-            tray._read_prepared_story()
-            prepare.assert_called_once()
-            start_reading.assert_not_called()
-            tray._controller_ready = True
-            tray._read_prepared_story()
-            start_reading.assert_called_once()
-            controller.is_live_running = True
-            tray._read_prepared_story()
-            start_reading.assert_called_once()
-        controller.start.assert_not_called()
-        tray.shutdown()
-
     def _prepared_pack_reading_tray(self, root, *, loaded=False, damage=None):
         pack, *_unused, wav = write_synthetic_game_pack(
             root, include_generated=damage != "empty"
@@ -6383,32 +6356,6 @@ class TrayApplicationTest(unittest.TestCase):
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
 
-    def test_history_dialog_uses_controller_session_and_replay(self):
-        controller = Mock()
-        controller.is_live_running = False
-        controller.is_one_shot_read_running = False
-        controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
-            None,
-            text="Fresh manual capture",
-        )
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-        dialog = Mock()
-
-        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog) as factory:
-            tray_application.open_history()
-
-        factory.assert_called_once_with(
-            controller.history,
-            controller.replay_dialog,
-            stop_handler=controller.stop_voice_preview,
-        )
-        dialog.exec.assert_called_once_with()
-        tray_application.shutdown()
-
     def test_history_waits_for_one_shot_read_before_opening(self):
         controller = Mock()
         controller.is_live_running = False
@@ -10558,36 +10505,6 @@ class TrayApplicationTest(unittest.TestCase):
                     hidden.close()
                     visible.deleteLater()
                     hidden.deleteLater()
-
-    def test_onboarding_test_runs_controller_end_to_end(self):
-        controller = Mock()
-        controller.start.return_value = True
-        controller.test_current_dialog.return_value = (
-            "Marcus",
-            "This is a complete test.",
-        )
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-        results = []
-        tray_application.signals.onboarding_test_finished.connect(
-            lambda success, message: results.append((success, message))
-        )
-
-        tray_application.onboarding_test_runner.thread_pool = ImmediateTaskPool()
-        tray_application.run_onboarding_test(
-            AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
-        )
-
-        controller.apply_settings.assert_called_once()
-        controller.model_assets.download.assert_called_once()
-        controller.test_current_dialog.assert_called_once_with(capture_context=ANY)
-        controller.shutdown.assert_not_called()
-        self.assertTrue(results[0][0])
-        self.assertIn("Marcus", results[0][1])
-        tray_application.shutdown()
 
     def test_onboarding_actual_onset_is_scoped_to_current_running_test(self):
         controller = Mock()

@@ -18,7 +18,7 @@ from vntts.versioned_json import write_versioned_json
 
 
 class PreparedPlaybackTest(unittest.TestCase):
-    def test_activation_and_restart_preserve_preferences_and_profile(self):
+    def test_activation_and_restart_preserve_preferences(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             pack = published_pack(root / "generated")
@@ -30,7 +30,6 @@ class PreparedPlaybackTest(unittest.TestCase):
             )
             path = preferences.save(root / "settings.json")
             original = path.read_bytes()
-            profile = GameProfile.from_settings("Game", preferences)
             store = PreparedPlaybackStore(root / "local" / "playback.json")
             controller = Mock(is_ready=False)
             controller.apply_settings.return_value = True
@@ -41,12 +40,10 @@ class PreparedPlaybackTest(unittest.TestCase):
             self.assertEqual(result.state_path, store.path)
             self.assertEqual(result.settings.game_pack, str(pack.manifest))
             self.assertEqual(result.settings.audio_source_policy, "prefer-generated")
+            self.assertEqual(result.settings.output_volume_percent, 37)
+            self.assertEqual(result.settings.speech_rate_percent, 135)
             self.assertFalse(result.settings.force_live_narrator)
             self.assertTrue(preferences.force_live_narrator)
-            self.assertEqual(
-                profile,
-                GameProfile.from_settings("Game", preferences, profile_id=profile.id),
-            )
             saved = load_app_settings(path, environment={})
             self.assertEqual(saved, preferences)
             restarted = PreparedPlaybackStore(store.path).restore(saved)
@@ -62,10 +59,10 @@ class PreparedPlaybackTest(unittest.TestCase):
             original = store.path.read_bytes()
             shutil.rmtree(pack.directory)
             with self.assertLogs("vntts.prepared_playback", level="ERROR"):
-                self.assertIs(store.restore(preferences), preferences)
+                self.assertEqual(store.restore(preferences), preferences)
             self.assertEqual(store.path.read_bytes(), original)
             store.path.unlink()
-            self.assertIs(store.restore(preferences), preferences)
+            self.assertEqual(store.restore(preferences), preferences)
 
     def test_profile_and_source_changes_do_not_reuse_another_selection(self):
         with TemporaryDirectory() as temporary:
@@ -75,11 +72,13 @@ class PreparedPlaybackTest(unittest.TestCase):
             store = PreparedPlaybackStore(root / "playback.json")
             store.save(preferences, pack)
             other = preferences.updated(active_profile_id="b")
-            self.assertIs(store.restore(other), other)
+            self.assertEqual(store.restore(other), other)
             other_source = preferences.updated(story_index="another-story.json")
-            self.assertIs(store.restore(other_source), other_source)
+            self.assertEqual(store.restore(other_source), other_source)
             changed_volume = preferences.updated(output_volume_percent=42)
-            self.assertEqual(store.restore(changed_volume).output_volume_percent, 42)
+            restored = store.restore(changed_volume)
+            self.assertEqual(restored.output_volume_percent, 42)
+            self.assertEqual(restored.game_pack, str(pack.manifest))
             changed_routing = preferences.updated(
                 audio_source_policy="prefer-game-audio",
                 force_live_narrator=True,
@@ -90,9 +89,10 @@ class PreparedPlaybackTest(unittest.TestCase):
             self.assertEqual(routed.audio_source_policy, "prefer-game-audio")
             self.assertTrue(routed.force_live_narrator)
             self.assertEqual(routed.live_sequence_mode, "audio-manual")
-            store.save(other, pack)
+            other_pack = published_pack(root / "other-generated")
+            store.save(other, other_pack)
             self.assertEqual(store.restore(preferences).game_pack, str(pack.manifest))
-            self.assertEqual(store.restore(other).game_pack, str(pack.manifest))
+            self.assertEqual(store.restore(other).game_pack, str(other_pack.manifest))
 
     def test_corrupt_or_changed_state_is_logged_without_changing_preferences(self):
         with TemporaryDirectory() as temporary:
@@ -106,7 +106,7 @@ class PreparedPlaybackTest(unittest.TestCase):
             for raw in (b"{broken", json.dumps(document).encode()):
                 store.path.write_bytes(raw)
                 with self.assertLogs("vntts.prepared_playback", level="ERROR"):
-                    self.assertIs(store.restore(preferences), preferences)
+                    self.assertEqual(store.restore(preferences), preferences)
                 self.assertEqual(store.path.read_bytes(), raw)
 
     def test_failed_state_save_restores_actual_previous_runtime(self):

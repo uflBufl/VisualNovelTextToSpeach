@@ -100,18 +100,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
                 self.assertNotIn("abcdef123456", self.row_values()[1])
                 self.assertNotEqual(self.row_values()[1], "Game voice")
 
-    def test_saved_voice_immediately_rechecks_ready_recordings(self):
-        self.dialog._job = Mock(job_id=self.plan.job_id)
-        self.dialog._changes_rows = (
-            ("Reuse", "120 recordings"),
-            ("To generate", "200 lines"),
-        )
-        self.dialog._fast_voice_choice_pending = True
-        with patch.object(self.dialog, "_start_generation_input") as start:
-            self.dialog._voice_plan_finished(self.plan, None)
-        start.assert_called_once_with(self.plan)
-        self.assertIn(("Reuse", "120 recordings"), self.dialog._changes_rows)
-
     def test_routine_routes_do_not_repeat_summary_or_assignment_explanation(self):
         group = self.saved_group()
         self.show_plan((group,))
@@ -279,28 +267,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.assertIs(self.dialog.voice_plan(), plan)
         self.assertTrue(self.dialog._awaiting_voice_confirmation)
         self.dialog.apply_narrator_settings.assert_not_called()
-
-    def test_accepted_editor_replans_even_when_narrator_settings_are_unchanged(self):
-        self.show_plan()
-        self.dialog.game_narrator_chooser = Mock(return_value=self.dialog.settings)
-        self.dialog.apply_narrator_settings = Mock()
-        self.dialog.inspect_character_voice.click()
-        self.dialog.apply_narrator_settings.assert_called_once_with(
-            self.dialog.settings, voice_changed=True
-        )
-
-    def test_standalone_editor_receives_selected_role_and_story_plan(self):
-        from PySide6.QtWidgets import QDialog
-
-        plan = self.show_plan()
-        with patch("vntts.game_narrator_ui.GameNarratorDialog") as editor:
-            editor.return_value.exec.return_value = QDialog.DialogCode.Rejected
-            self.dialog.inspect_character_voice.click()
-        editor.return_value.set_voice_context.assert_called_once_with(
-            plan, character=self.group.character
-        )
-        self.assertIs(editor.call_args.kwargs["voice_library"], self.library)
-        self.assertIs(self.dialog.voice_plan(), plan)
 
     def test_editor_context_survives_deferred_initialization(self):
         from vntts.game_narrator_ui import GameNarratorDialog

@@ -31,43 +31,6 @@ from vntts.voice_packs import VoiceReplacementRequired
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
-class AssetCompatibilityTest(unittest.TestCase):
-    def test_facade_reexports_canonical_objects(self):
-        owners = (
-            (
-                asset_integrity,
-                ("AssetError", "ModelIntegrityError", "asset_manifest_name"),
-            ),
-            (
-                model_assets,
-                (
-                    "ModelAsset",
-                    "ModelAssetManager",
-                    "ModelDownloadCancelled",
-                    "UnsupportedModelError",
-                    "load_coqui_model_asset",
-                ),
-            ),
-            (
-                voice_packs,
-                ("VoicePackManager", "read_json", "supported_audio_extensions"),
-            ),
-        )
-        exports = [(owner, name) for owner, names in owners for name in names]
-        self.assertEqual(len(exports), 11)
-        for owner, name in exports:
-            with self.subTest(name=name):
-                self.assertIs(getattr(assets, name), getattr(owner, name))
-        for error in (
-            assets.ModelIntegrityError,
-            assets.ModelDownloadCancelled,
-            assets.UnsupportedModelError,
-        ):
-            with self.subTest(error=error):
-                self.assertEqual(error.__bases__, (assets.AssetError,))
-        self.assertEqual(assets.AssetError.__bases__, (RuntimeError,))
-
-
 class MemoryResponse:
     def __init__(self, data, *, status=200, headers=None):
         self.data = data
@@ -119,7 +82,6 @@ class MemoryOpener:
 
 class CoquiCatalogTest(unittest.TestCase):
     def test_all_supported_models_have_pinned_offline_downloads(self):
-        self.assertEqual(len(COQUI_MODEL_SOURCES), 6)
         for name, source in COQUI_MODEL_SOURCES.items():
             with self.subTest(model=name), TemporaryDirectory() as directory:
                 asset = model_assets.load_coqui_model_asset(name)

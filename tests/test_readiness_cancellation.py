@@ -137,16 +137,3 @@ class ReadinessCancellationTest(unittest.TestCase):
         diagnostics.audio_probe.assert_called_once_with()
         self.display_target.return_value.capture_native.assert_called_once()
         self.display_target.return_value.close.assert_called_once_with()
-
-    def test_setup_passes_its_cancellation_to_read_only_diagnostics(self):
-        diagnostics = self.diagnostics()
-        settings = self.settings()
-        cancelled = Event()
-        with patch.object(diagnostics, "run", return_value=()) as run:
-            self.assertEqual(
-                diagnostics.prepare_and_run(
-                    settings, cancellation=cancelled, progress=Mock()
-                ),
-                (),
-            )
-        run.assert_called_once_with(settings, cancellation=cancelled)

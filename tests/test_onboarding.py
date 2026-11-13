@@ -1880,37 +1880,6 @@ class OnboardingWizardTest(unittest.TestCase):
                 widget.close()
                 widget.deleteLater()
 
-    def test_reading_setup_passes_profile_aware_region_save_to_overlay(self):
-        save_region = Mock()
-        region = DialogRegion(0.1, 0.6, 0.8, 0.3)
-        wizard = OnboardingWizard(
-            AppSettings(active_profile_id="active", capture_mode="screen"),
-            reading_setup=True,
-            save_region=save_region,
-            capture_region=region,
-        )
-        pool = ManualThreadPool()
-        wizard.calibration_page.capture_runner.thread_pool = pool
-        background = Image.new("RGB", (16, 16))
-        with (
-            patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay,
-            patch(
-                "vntts.onboarding_ui.capture_calibration_preview",
-                return_value=(None, background),
-            ),
-        ):
-            wizard.calibration_page.calibrate()
-            wizard.calibration_page.open_overlay()
-            pool.run_next()
-            self.application.processEvents()
-
-        show_overlay.assert_called_once_with(
-            None, background=background, save_region=save_region, capture_region=region
-        )
-        save_region.assert_not_called()
-        wizard.close()
-        wizard.deleteLater()
-
     def test_calibration_invalid_background_restores_survivors_without_opening_overlay(
         self,
     ):

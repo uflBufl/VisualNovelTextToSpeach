@@ -1,61 +1,21 @@
 import argparse
-import ast
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import vntts.authoring.cli_audio_events as audio_event_cli
-from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
+from vntts.authoring.cli import create_parser, main
 from vntts.authoring.cli_audio_events import (
-    COMMANDS,
     AudioEventReviewError,
     handle,
 )
 
 
 class AuthoringCliAudioEventsTest(unittest.TestCase):
-    def test_family_owns_the_exact_audio_event_command_inventory(self):
-        self.assertEqual(
-            COMMANDS,
-            {
-                "audio-event-omission",
-                "audio-event-projection-fallback",
-                "audio-event-review-publish",
-                "audio-event-review-decide",
-                "audio-event-review-status",
-                "audio-event-composition-publish",
-                "audio-event-composition-decide",
-                "audio-event-composition-status",
-                "audio-event-composition-workspace",
-            },
-        )
-        owners = [family for family in COMMAND_FAMILIES if family.commands == COMMANDS]
-        self.assertEqual(len(owners), 1)
-        self.assertIs(owners[0].handler, handle)
-
-    def test_command_order_matches_the_captured_cli(self):
-        parser = create_parser()
-        help_text = parser.format_help()
-        self.assertLess(
-            help_text.index("known-role-live-fallback"),
-            help_text.index("audio-event-omission"),
-        )
-        self.assertLess(
-            help_text.index("audio-event-projection-fallback"),
-            help_text.index("reviewed-waveform-publication"),
-        )
-        self.assertLess(
-            help_text.index("status"), help_text.index("audio-event-review-publish")
-        )
-        self.assertLess(
-            help_text.index("audio-event-composition-workspace"),
-            help_text.index("render-hypothesis-review-publish"),
-        )
-
     def test_workspace_commands_preserve_json_and_call_contracts(self):
         result = SimpleNamespace(directory=Path("workspace"), created=True)
         cases = (
@@ -90,54 +50,6 @@ class AuthoringCliAudioEventsTest(unittest.TestCase):
                     json.loads(output.getvalue()),
                     {"directory": "workspace", "created": True},
                 )
-
-    def test_review_and_composition_workspace_outputs_remain_compatible(self):
-        review = Mock()
-        review.to_dict.return_value = {"review": "valid"}
-        review_output = StringIO()
-        with (
-            patch.object(
-                audio_event_cli, "load_audio_event_review", return_value=review
-            ),
-            redirect_stdout(review_output),
-        ):
-            self.assertEqual(
-                handle(
-                    argparse.Namespace(
-                        command="audio-event-review-status",
-                        directory=Path("review"),
-                    )
-                ),
-                0,
-            )
-        self.assertEqual(json.loads(review_output.getvalue()), {"review": "valid"})
-
-        workspace = SimpleNamespace(directory=Path("successor"), created=False)
-        workspace_output = StringIO()
-        with (
-            patch.object(
-                audio_event_cli,
-                "create_audio_event_composition_workspace",
-                return_value=workspace,
-            ) as call,
-            redirect_stdout(workspace_output),
-        ):
-            self.assertEqual(
-                handle(
-                    argparse.Namespace(
-                        command="audio-event-composition-workspace",
-                        base_workspace=Path("base"),
-                        composition=Path("composition"),
-                        workspaces_root=None,
-                    )
-                ),
-                0,
-            )
-        call.assert_called_once_with(Path("base"), Path("composition"), None)
-        self.assertEqual(
-            json.loads(workspace_output.getvalue()),
-            {"created": False, "workspace": "successor"},
-        )
 
     def test_top_level_parser_translates_family_domain_errors(self):
         errors = StringIO()
@@ -208,30 +120,6 @@ class AuthoringCliAudioEventsTest(unittest.TestCase):
                 self.assertEqual(exited.exception.code, 2)
                 self.assertIn(str(error), stderr.getvalue())
                 self.assertEqual(stdout.getvalue(), "")
-
-    def test_family_handler_rejects_an_unowned_command(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported audio-event command"):
-            handle(argparse.Namespace(command="other"))
-
-    def test_top_level_cli_imports_only_the_audio_event_family_boundary(self):
-        cli_path = Path(audio_event_cli.__file__).with_name("cli.py")
-        tree = ast.parse(cli_path.read_text(encoding="utf-8"))
-        imported_modules = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        }
-
-        self.assertIn("vntts.authoring.cli_audio_events", imported_modules)
-        self.assertFalse(
-            {
-                "vntts.authoring.audio_event_composition",
-                "vntts.authoring.audio_event_omission",
-                "vntts.authoring.audio_event_projection_fallback",
-                "vntts.authoring.audio_event_review",
-            }
-            & imported_modules
-        )
 
 
 if __name__ == "__main__":

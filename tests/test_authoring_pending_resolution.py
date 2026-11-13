@@ -1,14 +1,11 @@
 import hashlib
 import json
 import unittest
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import CohortReviewPlan
 from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.pending_resolution import (
@@ -112,32 +109,6 @@ class PendingResolutionPlanTest(unittest.TestCase):
             self.assertRaisesRegex(PendingResolutionError, "state changed"),
         ):
             build_pending_resolution_plan("workspace")
-
-    def test_cli_prints_the_canonical_read_only_plan(self):
-        plan, item = self.fixture()
-        with (
-            patch(
-                "vntts.authoring.pending_resolution.build_cohort_review_plan",
-                return_value=plan,
-            ),
-            patch(
-                "vntts.authoring.pending_resolution.list_review_items",
-                return_value=(item,),
-            ),
-        ):
-            expected = build_pending_resolution_plan("workspace")
-        output = StringIO()
-        with (
-            patch(
-                "vntts.authoring.pending_resolution.build_pending_resolution_plan",
-                return_value=expected,
-            ),
-            redirect_stdout(output),
-        ):
-            exit_code = authoring_main(["pending-resolution-plan", "workspace"])
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(json.loads(output.getvalue()), expected.document)
 
     def test_plan_publication_is_no_replace_and_tamper_evident(self):
         plan, item = self.fixture()

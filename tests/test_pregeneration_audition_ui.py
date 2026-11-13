@@ -1074,27 +1074,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             panel.cancel()
 
-    def test_editor_has_no_technical_reference_or_speech_check_panes(self):
-        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
-        self.addCleanup(panel.deleteLater)
-        self.addCleanup(panel.shutdown)
-        for name in (
-            "reference_details_toggle",
-            "reference_details",
-            "advice_details",
-            "runtime",
-            "summary",
-            "character",
-            "scope",
-            "auto_button",
-            "choose_all_button",
-            "preview_box",
-            "_comparison_mode",
-            "_inspection_mode",
-        ):
-            with self.subTest(name=name):
-                self.assertFalse(hasattr(panel, name))
-
     def test_start_requires_one_matching_character(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))

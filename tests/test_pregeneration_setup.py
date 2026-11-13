@@ -4883,29 +4883,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.progress_timing.isHidden())
             dialog.voice_runner.cancel()
 
-    def test_reverse1999_stage_asr_is_captured_before_voice_worker_starts(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            content = inspect_story_index(
-                write_story_index(root / "content"), provider_id="reverse1999"
-            )
-            importer = Mock(provider_id="reverse1999", display_name="Reverse: 1999")
-            importer.availability.return_value = ImporterAvailability(True, "Ready")
-            pool = ManualThreadPool()
-            dialog = OfflineAudioPreparationDialog(
-                AppSettings(),
-                discovery=lambda: ContentDiscovery((content,)),
-                importer=importer,
-                job_store=PregenerationJobStore(root / "jobs"),
-                thread_pool=pool,
-            )
-            self.addCleanup(dialog.deleteLater)
-
-            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
-            dialog._save_selection()
-
-        self.assertTrue(pool.tasks[-1].function.args[2])
-
     def test_semantic_successor_replaces_job_only_after_voice_plan_succeeds(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

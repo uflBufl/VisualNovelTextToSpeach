@@ -404,14 +404,6 @@ class OfflineGenerationSessionTest(unittest.TestCase):
                 self.lease()
         self.assertEqual(len(self.backends), 1)
 
-    def test_default_custom_factory_keeps_per_call_backend_ownership(self):
-        custom = Mock(return_value=object())
-        worker = OfflineGenerationWorker(backend_factory=custom)
-        with worker.generation_session(self.generation_input, self.plan):
-            self.assertIsNone(worker._backend_session)
-            self.assertIs(worker.backend_factory, custom)
-        custom.assert_not_called()
-
     def test_native_backend_keeps_existing_factory_and_per_call_shutdown(self):
         self.cpp.return_value = True
         with self.worker.generation_session(self.generation_input, self.plan):

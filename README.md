@@ -862,6 +862,10 @@ uv run ruff check .
 
 ### Test selection
 
+Use the [behavior-focused testing principles](docs/testing-principles.md) when
+adding, reviewing or removing tests. Test usefulness is determined by the
+behavior or supported contract it protects, not by coverage or test count.
+
 After code changes, run the changed-test selector in local mode first:
 
 ```sh

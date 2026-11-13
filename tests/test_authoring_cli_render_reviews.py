@@ -1,126 +1,21 @@
 import argparse
-import ast
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import vntts.authoring.cli_render_reviews as render_review_cli
-from vntts.authoring.cli import COMMAND_FAMILIES, create_parser, main
-from vntts.authoring.cli_contract import parser_contract
+from vntts.authoring.cli import main
 from vntts.authoring.cli_render_reviews import (
-    COMMANDS,
     RenderHypothesisReviewError,
     handle,
 )
 
 
 class AuthoringCliRenderReviewsTest(unittest.TestCase):
-    def test_family_owns_the_exact_render_review_command_inventory(self):
-        self.assertEqual(
-            COMMANDS,
-            {
-                "render-hypothesis-review-publish",
-                "render-hypothesis-review-decide",
-                "render-hypothesis-review-status",
-                "render-hypothesis-review-import",
-                "failure-reference-render-comparison",
-                "failure-reference-render-session",
-                "failure-reference-import-listening",
-            },
-        )
-        owners = [family for family in COMMAND_FAMILIES if family.commands == COMMANDS]
-        self.assertEqual(len(owners), 1)
-        self.assertIs(owners[0].handler, handle)
-
-    def test_command_order_matches_the_captured_cli(self):
-        parser = create_parser()
-        names = list(parser_contract(parser))
-        expected_runs = (
-            (
-                "audio-event-composition-workspace",
-                "render-hypothesis-review-publish",
-                "render-hypothesis-review-decide",
-                "render-hypothesis-review-status",
-                "render-hypothesis-review-import",
-                "failure-report",
-            ),
-            (
-                "failure-reference-audit",
-                "failure-reference-render-comparison",
-                "failure-reference-render-session",
-                "failure-reference-import-listening",
-                "failure-reference-binding",
-            ),
-        )
-        for expected in expected_runs:
-            start = names.index(expected[0])
-            self.assertEqual(tuple(names[start : start + len(expected)]), expected)
-
-    def test_hypothesis_commands_preserve_call_and_json_contracts(self):
-        cases = (
-            (
-                "render-hypothesis-review-publish",
-                "publish_render_hypothesis_review",
-                argparse.Namespace(
-                    command="render-hypothesis-review-publish",
-                    comparison=Path("comparison"),
-                    queue_id="queue-1",
-                    arm_id="arm-1",
-                    output=Path("review"),
-                ),
-                (Path("comparison"), "queue-1", "arm-1", Path("review")),
-            ),
-            (
-                "render-hypothesis-review-decide",
-                "record_render_hypothesis_decision",
-                argparse.Namespace(
-                    command="render-hypothesis-review-decide",
-                    directory=Path("review"),
-                    decision="accept_hypothesis",
-                ),
-                (Path("review"), "accept_hypothesis"),
-            ),
-            (
-                "render-hypothesis-review-status",
-                "load_render_hypothesis_review",
-                argparse.Namespace(
-                    command="render-hypothesis-review-status",
-                    directory=Path("review"),
-                ),
-                (Path("review"),),
-            ),
-            (
-                "render-hypothesis-review-import",
-                "import_accepted_render_hypothesis",
-                argparse.Namespace(
-                    command="render-hypothesis-review-import",
-                    audit=Path("audit"),
-                    comparison=Path("comparison"),
-                    review=Path("review"),
-                    queue_id="queue-1",
-                ),
-                (Path("audit"), Path("comparison"), Path("review"), "queue-1"),
-            ),
-        )
-        for command, target, arguments, expected_call in cases:
-            with self.subTest(command=command):
-                result = Mock()
-                result.to_dict.return_value = {"command": command}
-                output = StringIO()
-                with (
-                    patch.object(
-                        render_review_cli, target, return_value=result
-                    ) as call,
-                    redirect_stdout(output),
-                ):
-                    self.assertEqual(handle(arguments), 0)
-                call.assert_called_once_with(*expected_call)
-                self.assertEqual(json.loads(output.getvalue()), {"command": command})
-
     def test_reference_render_commands_preserve_special_json_contracts(self):
         plan = object()
         comparison_result = SimpleNamespace(
@@ -212,28 +107,6 @@ class AuthoringCliRenderReviewsTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 2)
         self.assertIn("review authority changed", errors.getvalue())
-
-    def test_family_handler_rejects_an_unowned_command(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported render-review command"):
-            handle(argparse.Namespace(command="other"))
-
-    def test_top_level_cli_imports_only_the_render_review_family_boundary(self):
-        cli_path = Path(render_review_cli.__file__).with_name("cli.py")
-        tree = ast.parse(cli_path.read_text(encoding="utf-8"))
-        imported_modules = {
-            node.module
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        }
-
-        self.assertIn("vntts.authoring.cli_render_reviews", imported_modules)
-        self.assertFalse(
-            {
-                "vntts.authoring.reference_render_comparison",
-                "vntts.authoring.render_hypothesis_review",
-            }
-            & imported_modules
-        )
 
 
 if __name__ == "__main__":

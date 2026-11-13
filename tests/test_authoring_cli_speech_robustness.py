@@ -13,25 +13,14 @@ from tests.test_authoring_robustness_asr_publication import _report
 from vntts.authoring.asr_model import ManagedAsrModelError
 from vntts.authoring.cli import create_parser
 from vntts.authoring.cli_speech_robustness import (
-    COMMANDS,
     SpeechRobustnessCommandError,
     handle,
 )
 
 
 class SpeechRobustnessCliFamilyTest(unittest.TestCase):
-    def test_parser_order_and_defaults_remain_compatible(self):
+    def test_asr_accepts_offline_corpus_without_an_explicit_model(self):
         parser = create_parser()
-        help_text = parser.format_help()
-
-        self.assertLess(
-            help_text.index("failure-report"),
-            help_text.index("speech-robustness-corpus"),
-        )
-        self.assertLess(
-            help_text.index("asr-model-status"),
-            help_text.index("specialist-failure-plan"),
-        )
         arguments = parser.parse_args(
             [
                 "speech-robustness-asr",
@@ -126,32 +115,6 @@ class SpeechRobustnessCliFamilyTest(unittest.TestCase):
                 )
             self.assertTrue(output.is_symlink())
             self.assertFalse(target.exists())
-
-    def test_family_owns_every_speech_robustness_command(self):
-        self.assertEqual(
-            COMMANDS,
-            {
-                "speech-robustness-corpus",
-                "speech-robustness-check",
-                "speech-robustness-asr",
-                "asr-model-install",
-                "asr-model-status",
-            },
-        )
-
-    @patch("vntts.authoring.cli_speech_robustness.managed_asr_status")
-    def test_status_preserves_sorted_json_output(self, status):
-        status.return_value = {"status": "installed", "model_id": "tiny"}
-        output = io.StringIO()
-
-        with redirect_stdout(output):
-            result = handle(argparse.Namespace(command="asr-model-status"))
-
-        self.assertEqual(result, 0)
-        self.assertEqual(
-            json.loads(output.getvalue()),
-            {"model_id": "tiny", "status": "installed"},
-        )
 
     @patch("vntts.authoring.cli_speech_robustness.resolve_managed_asr_model")
     @patch("vntts.authoring.cli_speech_robustness.write_speech_robustness_asr_report")

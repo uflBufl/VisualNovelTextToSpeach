@@ -4932,6 +4932,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             renderer.shutdown.assert_called_once_with()
             self.assertEqual(renderer.stop_calls, 0)
             state = load_generation_state(output / "generation-state.sqlite3", queue)
+            self.assertEqual(
+                state["items"][item["queue_id"]]["review_status"], "pending_review"
+            )
             controls = next(iter(state["synthesis_controls"].values()))
             self.assertTrue(
                 any(

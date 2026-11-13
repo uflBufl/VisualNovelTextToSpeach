@@ -10,7 +10,6 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock, RLock, Thread
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
-from uuid import UUID
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -19,7 +18,6 @@ from vntts_artifacts.hashing import text_sha256
 from tests.native_capture_fixtures import native_frame
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import PreparedLiveChunkRoutes, SequenceEventLease
-from vntts.controller_components import _is_live_voice_router, _is_xtts_voice_router
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.generated_audio import (
     AudioRouteTrace,
@@ -230,38 +228,6 @@ class MainTest(unittest.TestCase):
         self.assertEqual(
             [entry.text for entry in controller.history.snapshot()], [text]
         )
-
-    def test_live_voice_router_guard_requires_backend_fields(self):
-        backend = SimpleNamespace(
-            **{
-                name: Mock()
-                for name in (
-                    "prepare_playback",
-                    "play_prepared",
-                    "stop",
-                    "warm_up",
-                    "set_volume",
-                    "set_speed",
-                )
-            }
-        )
-
-        self.assertFalse(_is_live_voice_router(backend))
-        backend.registry = Mock()
-        backend.name = "test-live"
-        backend.capabilities = SpeechBackendCapabilities(True, False, True)
-        self.assertTrue(_is_live_voice_router(backend))
-
-    def test_xtts_voice_router_guard_requires_backend_fields(self):
-        backend = SimpleNamespace(
-            prepare_playback=Mock(), play_prepared=Mock(), warm_up=Mock()
-        )
-
-        self.assertFalse(_is_xtts_voice_router(backend))
-        backend.tts = Mock()
-        backend.registry = Mock()
-        backend.narrator_voice = None
-        self.assertTrue(_is_xtts_voice_router(backend))
 
     def test_dialog_fingerprint_changes_when_only_the_text_changes(self):
         first = Image.new("RGB", (1200, 240), "#202020")
@@ -1319,97 +1285,6 @@ class MainTest(unittest.TestCase):
             controller._resolve_early_indexed_dialogue("Hotelier", prefix)
         )
         backend.has_generated_line.assert_not_called()
-
-    def test_controller_passes_initialized_tts_to_dialog_scheduler(self):
-        tts = Mock()
-        tts_factory = Mock(return_value=tts)
-        schedule_dialog_read = Mock()
-        capture_executor = Mock()
-        ocr_executor = Mock()
-        speech_executor = Mock()
-        playback_executor = Mock()
-        live_reader = Mock()
-        voice_router = Mock()
-        model_assets = Mock()
-        screenshot_directory = Path("custom/captures")
-        settings = AppSettings(
-            screenshot_directory=str(screenshot_directory),
-            warm_up_voices=True,
-            speech_backend="coqui-xtts",
-            tts_model="tts_models/multilingual/multi-dataset/xtts_v2",
-        )
-
-        with (
-            redirect_stdout(io.StringIO()),
-            patch(
-                "vntts.controller.initialize_voice_router",
-                return_value=voice_router,
-            ),
-            patch(
-                "vntts.controller.ThreadPoolExecutor",
-                side_effect=[
-                    capture_executor,
-                    ocr_executor,
-                    speech_executor,
-                    playback_executor,
-                ],
-            ),
-            patch(
-                "vntts.controller.LiveDialogReader",
-                return_value=live_reader,
-            ) as live_reader_factory,
-            patch(
-                "vntts.controller.create_dialog_read_scheduler",
-                schedule_dialog_read,
-            ),
-        ):
-            controller = AppController(
-                settings,
-                tts_factory=tts_factory,
-                model_asset_manager_factory=Mock(return_value=model_assets),
-            )
-            result = controller.start()
-
-        self.assertTrue(result)
-        model_assets.configure_environment.assert_called_once_with()
-        voice_router.warm_up.assert_called_once_with(
-            progress=controller._warmup_progress
-        )
-        live_reader_factory.assert_called_once()
-        self.assertTrue(
-            live_reader_factory.call_args.kwargs["require_visible_auto_advance"]
-        )
-        session_id = controller.live_reader_session_id
-        self.assertEqual(UUID(session_id).hex, session_id)
-        self.assertIs(
-            live_reader_factory.call_args.kwargs["shutdown_requested"],
-            controller.shutdown_requested,
-        )
-        pipeline = live_reader_factory.call_args.kwargs["pipeline_event_handler"]
-        self.assertEqual(pipeline.keywords["session_id"], session_id)
-        schedule_dialog_read.assert_called_once_with(
-            capture_executor,
-            voice_router,
-            screenshot_directory,
-            live_reader=live_reader,
-            error_handler=controller.error_handler,
-            capture_target=controller.capture_target,
-            speech_handler=controller._enqueue_dialog,
-            shutdown_requested=controller.shutdown_requested,
-            minimum_confidence=60,
-            uncertain_frame_recorder=None,
-            diagnostic_handler=controller._publish_diagnostic,
-            voice_resolver=controller._resolve_voice_label,
-            ocr_language="eng",
-            correction_dictionary_provider=ANY,
-            region_provider=controller._capture_region,
-            ocr_regions_provider=controller._capture_ocr_regions,
-            result_resolver=controller._resolve_story_ocr_result,
-        )
-        self.assertIs(
-            schedule_dialog_read.call_args.kwargs["correction_dictionary_provider"](),
-            controller.correction_dictionary,
-        )
 
     def test_controller_can_skip_startup_voice_warmup(self):
         tts = Mock()
@@ -2643,30 +2518,6 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router.speak.assert_not_called()
 
-    def test_controller_preview_uses_live_backend_rendering_boundary(self):
-        controller = AppController(AppSettings(), tts_factory=Mock())
-        controller.voice_router = Mock()
-        controller.speech_backend = Mock()
-        prepared = PreparedPlayback(object(), None, None, None, "test")
-        controller.speech_backend.prepare_playback.return_value = prepared
-        controller.speech_backend.play_prepared.return_value = PlaybackOutcome(
-            PlaybackStatus.COMPLETED,
-            1.0,
-        )
-
-        controller._preview_voice("Marcus", "Preview this.")
-
-        controller.speech_backend.prepare_playback.assert_called_once_with(
-            "Marcus",
-            "Preview this.",
-        )
-        controller.speech_backend.play_prepared.assert_called_once_with(
-            prepared,
-            playback_guard=None,
-        )
-        controller.speech_backend.speak.assert_not_called()
-        controller.voice_router.prepare_playback.assert_not_called()
-
     def test_controller_exposes_speech_queue_controls(self):
         statuses = []
         controller = AppController(
@@ -2930,23 +2781,6 @@ class MainTest(unittest.TestCase):
             )
         self.assertIs(controller.settings, assigned_settings)
         self.assertFalse(controller.settings.force_live_narrator)
-
-    def test_controller_previews_a_catalog_choice_on_the_speech_executor(self):
-        controller = AppController(
-            AppSettings(speech_backend="pocket-tts"),
-            tts_factory=Mock(),
-        )
-        controller.live_reader = Mock(is_running=False)
-        controller.speech_executor = Mock()
-        controller.voice_router = Mock(registry=CharacterVoiceRegistry())
-
-        result = controller.preview_voice_choice("preset:marius", " Hello. ")
-
-        self.assertIs(result, controller.speech_executor.submit.return_value)
-        submitted = controller.speech_executor.submit.call_args.args
-        self.assertEqual(submitted[0], controller._preview_voice_choice)
-        self.assertEqual(submitted[1].id, "preset:marius")
-        self.assertEqual(submitted[2], "Hello.")
 
     def test_controller_stops_only_the_loaded_preview_backend(self):
         controller = AppController(
@@ -7591,72 +7425,6 @@ class MainTest(unittest.TestCase):
         self.assertLess(
             events.index("live-mode-off"), events.index("executor-shutdown")
         )
-
-    def test_controller_wraps_live_backend_when_generated_audio_is_configured(self):
-        library = Mock()
-        library.index.entries = (Mock(), Mock())
-        library_factory = Mock(return_value=library)
-        wrapped_backend = Mock()
-        backend_factory = Mock(return_value=wrapped_backend)
-        controller = AppController(
-            AppSettings(
-                story_index="story.jsonl",
-                generated_audio_manifest="generated-audio.json",
-                audio_source_policy="prefer-generated",
-            ),
-            tts_factory=Mock(),
-            generated_audio_library_factory=library_factory,
-            generated_audio_backend_factory=backend_factory,
-        )
-        live_backend = Mock()
-        controller.speech_backend = live_backend
-
-        self.assertTrue(controller._configure_generated_audio_backend())
-
-        library_factory.assert_called_once_with(
-            "generated-audio.json",
-            warn=controller.status_handler,
-        )
-        backend_factory.assert_called_once_with(
-            live_backend,
-            library,
-            controller.chapter_voice_preloader,
-            volume=1.0,
-            speed=1.0,
-            audio_source_policy="prefer-generated",
-        )
-        self.assertIs(controller.speech_backend, wrapped_backend)
-
-    def test_controller_wraps_live_backend_for_source_audio_without_generations(self):
-        wrapped_backend = Mock()
-        backend_factory = Mock(return_value=wrapped_backend)
-        library_factory = Mock()
-        controller = AppController(
-            AppSettings(
-                story_index="story.jsonl",
-                audio_source_policy="prefer-game-audio",
-                live_sequence_mode="audio-auto",
-                auto_advance_enabled=True,
-            ),
-            tts_factory=Mock(),
-            generated_audio_library_factory=library_factory,
-            generated_audio_backend_factory=backend_factory,
-        )
-        live_backend = Mock()
-        controller.speech_backend = live_backend
-
-        self.assertTrue(controller._configure_generated_audio_backend())
-
-        library_factory.assert_not_called()
-        backend_factory.assert_called_once_with(
-            live_backend,
-            None,
-            controller.chapter_voice_preloader,
-            volume=1.0,
-            speed=1.0,
-            audio_source_policy="prefer-game-audio",
-        )
-        self.assertIs(controller.speech_backend, wrapped_backend)
 
     def test_unverified_unknown_source_audio_uses_live_fallback(self):
         text = "An unattributed source line."

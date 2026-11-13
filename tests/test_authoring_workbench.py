@@ -24,7 +24,6 @@ from vntts_artifacts.voice_generation_queue import (
 
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.generation_review as review_module
-import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
 import vntts.authoring.workspace_creation as workspace_creation_module
@@ -61,7 +60,6 @@ from vntts.authoring.reference_selection import select_voice_reference
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
-    CollectionSelection,
     create_resume_workspace,
     discover_imports,
     discover_workspaces,
@@ -581,20 +579,6 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
     def create_workspace(self, root):
         return create_test_workspace(root)
-
-    def test_collection_selection_api_is_exported_from_authoring_package(self):
-        self.assertIs(
-            workbench_module.inspect_collection_selection,
-            inspect_collection_selection,
-        )
-        self.assertIs(
-            workbench_module.CollectionSelection,
-            CollectionSelection,
-        )
-        self.assertIs(
-            reconciliation_merge_module.merge_reconciled_terminal_outcomes,
-            merge_reconciled_terminal_outcomes,
-        )
 
     def test_exact_unknown_label_uses_configured_narrator_reference(self):
         with TemporaryDirectory() as directory:

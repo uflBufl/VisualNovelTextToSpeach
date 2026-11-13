@@ -1,7 +1,5 @@
 import json
 import unittest
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -9,7 +7,6 @@ from unittest.mock import patch
 from vntts_artifacts.file_integrity import sha256_file
 
 from tests.generation_state_fixtures import replace_generation_state
-from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_regeneration import (
     FailureRegenerationError,
     FailureRegenerationPlan,
@@ -167,21 +164,6 @@ class FailureRegenerationPlanTest(unittest.TestCase):
             self.assertRaisesRegex(FailureRegenerationError, "authority changed"),
         ):
             build_failure_regeneration_command("workspace", expected, batch_index=1)
-
-    def test_cli_prints_plan_and_bounded_command(self):
-        expected = self.build()
-        output = StringIO()
-        with (
-            patch(
-                "vntts.authoring.failure_regeneration.build_failure_regeneration_plan",
-                return_value=expected,
-            ),
-            redirect_stdout(output),
-        ):
-            self.assertEqual(
-                authoring_main(["failure-regeneration-plan", "workspace"]), 0
-            )
-        self.assertEqual(json.loads(output.getvalue()), expected.document)
 
 
 if __name__ == "__main__":

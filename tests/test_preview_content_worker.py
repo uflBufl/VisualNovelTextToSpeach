@@ -1,4 +1,3 @@
-import ast
 import os
 import runpy
 import sys
@@ -268,30 +267,7 @@ class PreviewContentWorkerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 close.call_args.args[0].is_alive()
 
-    def test_frozen_entrypoint_dispatches_before_desktop_imports(self):
-        source = Path(worker.__file__).with_name("app.py").read_text()
-        statements = ast.parse(source).body
-        dispatch = next(
-            index
-            for index, statement in enumerate(statements)
-            if isinstance(statement, ast.If)
-            and any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "freeze_support"
-                for node in ast.walk(statement)
-            )
-        )
-        self.assertTrue(
-            all(
-                not isinstance(statement, ast.ImportFrom)
-                or not (statement.module or "").startswith(
-                    ("PySide6", "pynput", "vntts")
-                )
-                for statement in statements[:dispatch]
-            )
-        )
-
+    def test_frozen_entrypoint_dispatches_worker(self):
         class WorkerDispatched(Exception):
             pass
 
