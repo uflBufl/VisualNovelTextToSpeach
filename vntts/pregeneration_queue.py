@@ -447,9 +447,7 @@ def _reuse_completed_audio(
         else None
     )
     protected = {} if existing is None else generation_state_items(existing)
-    if existing is not None and (
-        existing.get("active") is not None or len(protected) == len(queue.items)
-    ):
+    if existing is not None and existing.get("active") is not None:
         return
     voices = CharacterVoiceRegistry.from_file(current.voice_manifest)
     current_items = {item.queue_id: item for item in queue.items}
@@ -459,7 +457,11 @@ def _reuse_completed_audio(
     controls: dict[str, object] = {}
     sources: dict[str, Path] = {}
     try:
-        previous_inputs = job_store.generation_input_directories()
+        previous_inputs = (
+            ()
+            if len(protected) == len(queue.items)
+            else job_store.generation_input_directories()
+        )
     except PregenerationSetupError as error:
         raise PregenerationQueueError(
             f"Unable to find saved offline audio: {error}"
@@ -609,9 +611,34 @@ def _reuse_completed_audio(
             raise PregenerationQueueError(
                 f"Unable to reuse saved offline audio: {error}"
             ) from error
-    if not saved:
-        return
     try:
+        if not saved:
+            if (
+                existing is not None
+                and not (
+                    current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME
+                ).is_file()
+            ):
+                with GenerationLease(
+                    current.output_directory,
+                    queue_sha256,
+                    process_checker=process_is_alive,
+                ):
+                    latest = load_generation_state_from_snapshot(
+                        state_path, queue, queue_sha256, validate_files=False
+                    )
+                    if latest.get("active") is None:
+                        write_generated_manifest_from_state(
+                            latest,
+                            current.output_directory,
+                            current.output_directory / "manifest.json",
+                        )
+                        write_runtime_progress_manifest_from_state(
+                            latest,
+                            current.output_directory,
+                            current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
+                        )
+            return
         with staged_directory(
             current.directory.parent, prefix=".generation-reuse-"
         ) as staging:
@@ -637,6 +664,12 @@ def _reuse_completed_audio(
                 queue,
                 queue_sha256,
                 validate_files=False,
+            )
+            write_generated_manifest_from_state(
+                state, staging, staging / "manifest.json"
+            )
+            write_runtime_progress_manifest_from_state(
+                state, staging, staging / RUNTIME_PROGRESS_MANIFEST_NAME
             )
             if existing is None:
                 rename_directory_no_replace(staging, current.output_directory)
@@ -665,6 +698,16 @@ def _reuse_completed_audio(
                     if isinstance(latest_controls, dict):
                         latest_controls.update(controls)
                     write_generation_state(state_path, latest)
+                    write_generated_manifest_from_state(
+                        latest,
+                        current.output_directory,
+                        current.output_directory / "manifest.json",
+                    )
+                    write_runtime_progress_manifest_from_state(
+                        latest,
+                        current.output_directory,
+                        current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
+                    )
     except (AtomicPublicationError, BulkGenerationError, OSError, ValueError) as error:
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"

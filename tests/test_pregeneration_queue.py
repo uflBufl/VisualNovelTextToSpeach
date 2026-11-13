@@ -33,6 +33,7 @@ from vntts.authoring.generation_state import (
     load_stable_generation_queue,
 )
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.generation_database import state_path as generation_state_path
 from vntts.pregeneration_pack import (
     OfflinePackError,
@@ -1678,7 +1679,28 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 validate_files=False,
             )
             self.assertEqual(len(saved["items"]), 4)
+            (current.output_directory / "manifest.json").unlink()
+            (current.output_directory / "live-progress-manifest.json").unlink()
+            with (
+                patch(
+                    "vntts.pregeneration_queue.write_generated_manifest_from_state",
+                    side_effect=OSError("publication failed"),
+                ),
+                self.assertRaisesRegex(PregenerationQueueError, "Unable to reuse"),
+            ):
+                store.materialize(job, revised)
+            self.assertEqual(store.materialize(job, revised), current)
+            library = GeneratedAudioLibrary.load_optional(
+                current.output_directory / "live-progress-manifest.json"
+            )
+            self.assertIsNotNone(library)
+            self.assertEqual(
+                library.index.metadata["source_queue_sha256"], current.queue_sha256
+            )
             for item in saved["items"].values():
+                self.assertIsNotNone(
+                    library.reserve(item["line_id"], item["text_sha256"])
+                )
                 target = current.output_directory / item["path"]
                 self.assertTrue(any(target.samefile(source) for source in sources))
 
