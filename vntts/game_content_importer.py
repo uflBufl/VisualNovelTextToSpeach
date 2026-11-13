@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 from typing import Protocol, TypeAlias
 
 from durable_file import atomic_write_json
+from r1999extractor.source_audio_policy import has_full_main_story_source_audio
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -38,6 +39,7 @@ from vntts.authoring.asr_model import (
 )
 from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
+    _source_audio_duration_seconds,
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
@@ -675,7 +677,7 @@ class Reverse1999GameImporter:
             )
         if not timed_story.exists():
             if progress is not None:
-                progress("Measuring selected game speech before offline ASR...")
+                progress("Measuring selected game speech...")
             duration_arguments = [
                 *duration_command,
                 "--story-index",
@@ -707,6 +709,7 @@ class Reverse1999GameImporter:
         return any(
             record.line_id in selected
             and record.source_audio_status == "available"
+            and not has_full_main_story_source_audio(record.document)
             and self._has_exact_source_audio_timing(record)
             and record.document.get("source_audio_completeness") == "unknown"
             for record in timed_document.records
@@ -861,6 +864,28 @@ class Reverse1999GameImporter:
     def _semantic_evidence_is_current(
         story: Path, document: StoryIndexDocument, selected: set[str]
     ) -> bool:
+        selected_available = tuple(
+            record
+            for record in document.records
+            if record.line_id in selected and record.source_audio_status == "available"
+        )
+        if any(
+            has_full_main_story_source_audio(record.document)
+            and _source_audio_duration_seconds(
+                record.document,
+                completion_contract=str(
+                    document.metadata.get("source_audio_completion") or ""
+                ),
+            )
+            is None
+            for record in selected_available
+        ):
+            return False
+        if selected_available and all(
+            has_full_main_story_source_audio(record.document)
+            for record in selected_available
+        ):
+            return True
         evidence = story.parent / "source-audio-semantic-evidence.json"
         try:
             authority = load_source_audio_semantic_evidence(evidence, document)
@@ -873,6 +898,7 @@ class Reverse1999GameImporter:
             for record in document.records
             if record.line_id in selected
             and record.source_audio_status == "available"
+            and not has_full_main_story_source_audio(record.document)
             and Reverse1999GameImporter._has_exact_source_audio_timing(record)
         )
         return bool(selected_source_records) and all(

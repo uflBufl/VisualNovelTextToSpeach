@@ -49,7 +49,7 @@ if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
 
 job_schema_version = 1
-story_catalog_schema_version = 8
+story_catalog_schema_version = 9
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.

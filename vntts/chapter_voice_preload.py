@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from durable_file import atomic_output_path
+from r1999extractor.source_audio_policy import has_full_main_story_source_audio
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -1248,8 +1249,11 @@ def _source_audio_completeness(
     if (
         duration_seconds is None
         or completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION
-        or not semantic_authorized
     ):
+        return "unknown"
+    if has_full_main_story_source_audio(entry):
+        return "full"
+    if not semantic_authorized:
         return "unknown"
     value = str(entry.get("source_audio_completeness") or "unknown").strip()
     expected_reasons = {
@@ -1319,6 +1323,13 @@ def _validated_source_audio_line_ids(
         != VERIFIED_SOURCE_AUDIO_COMPLETION
     ):
         return frozenset()
+    policy_line_ids = frozenset(
+        record.line_id
+        for record in document.records
+        if has_full_main_story_source_audio(record.document)
+    )
+    if "source_audio_semantics" not in document.metadata:
+        return policy_line_ids
     evidence_path = Path(path).expanduser().resolve().parent / (
         "source-audio-semantic-evidence.json"
     )
@@ -1327,8 +1338,8 @@ def _validated_source_audio_line_ids(
             evidence_path, document, payload=evidence_payload
         )
     except OSError, SourceAudioSemanticEvidenceError:
-        return frozenset()
-    return frozenset(
+        return policy_line_ids
+    return policy_line_ids | frozenset(
         record.line_id
         for record in document.records
         if record.document.get("source_audio_semantic_evidence_entry_id") is not None

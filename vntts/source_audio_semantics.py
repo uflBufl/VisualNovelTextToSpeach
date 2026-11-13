@@ -17,6 +17,10 @@ from r1999extractor.source_audio_matching import (
 from r1999extractor.source_audio_matching import (
     normalize_semantic_text as _normalize_semantic_text,
 )
+from r1999extractor.source_audio_policy import (
+    apply_main_story_source_audio_policy,
+    has_full_main_story_source_audio,
+)
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -148,6 +152,20 @@ def _bound_semantic_evidence(
     )
 
 
+def source_audio_asr_needs_migration(document: StoryIndexDocument) -> bool:
+    """Whether retained ASR evidence needs recognition under the current contract."""
+    evidence = _bound_semantic_evidence(document)
+    return (
+        evidence is not None
+        and not semantic_preprocessing_is_current(evidence)
+        and any(
+            record.document.get("source_audio_semantic_evidence_entry_id") is not None
+            and not has_full_main_story_source_audio(record.document)
+            for record in document.records
+        )
+    )
+
+
 def source_audio_semantics_need_migration(
     story: str | Path | StoryIndexDocument,
 ) -> bool:
@@ -156,8 +174,9 @@ def source_audio_semantics_need_migration(
         if isinstance(story, StoryIndexDocument)
         else load_story_index_document(story)
     )
-    evidence = _bound_semantic_evidence(document)
-    return evidence is not None and not semantic_preprocessing_is_current(evidence)
+    return apply_main_story_source_audio_policy(
+        deepcopy(document.metadata), [record.to_record() for record in document.records]
+    ) or source_audio_asr_needs_migration(document)
 
 
 def _clear_semantic_verdict(record: JsonDocument) -> None:
@@ -175,7 +194,7 @@ def _clear_semantic_verdict(record: JsonDocument) -> None:
 def reset_stale_source_audio_semantics(
     document: StoryIndexDocument, destination: str | Path
 ) -> StoryIndexDocument:
-    """Expire validated ASR verdicts in a private successor, retaining native timing."""
+    """Refresh source-speech policy and stale ASR in a private timed successor."""
     source_sha256 = sha256_file(document.path)
     evidence_path = document.path.parent / "source-audio-semantic-evidence.json"
     evidence_payload = (
@@ -200,8 +219,12 @@ def reset_stale_source_audio_semantics(
                 "Semantic migration source or evidence changed while read"
             )
 
+    metadata = deepcopy(document.metadata)
+    records = [record.to_record() for record in document.records]
+    policy_changed = apply_main_story_source_audio_policy(metadata, records)
+    stale_asr = evidence is not None and not semantic_preprocessing_is_current(evidence)
     assert_unchanged()
-    if evidence is None or semantic_preprocessing_is_current(evidence):
+    if not policy_changed and not stale_asr:
         return document
     destination = Path(destination).expanduser()
     if destination.is_symlink():
@@ -226,11 +249,22 @@ def reset_stale_source_audio_semantics(
         raise SourceAudioSemanticEvidenceError(
             "Semantic migration must publish a new story-index destination"
         )
-    metadata = deepcopy(document.metadata)
-    metadata.pop("source_audio_semantics", None)
-    records = [record.to_record() for record in document.records]
-    for record in records:
-        _clear_semantic_verdict(record)
+    if stale_asr:
+        metadata.pop("source_audio_semantics", None)
+        for record in records:
+            _clear_semantic_verdict(record)
+    elif policy_changed and evidence is not None:
+        if any(
+            record.get("source_audio_semantic_evidence_entry_id") is not None
+            for record in records
+        ) and any(destination.parent == source.resolve().parent for source in origins):
+            raise SourceAudioSemanticEvidenceError(
+                "Semantic migration must preserve its source evidence directory"
+            )
+        metadata, records, _ = project_source_audio_semantics(
+            document, records, destination.parent
+        )
+        apply_main_story_source_audio_policy(metadata, records)
 
     assert_unchanged()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -665,6 +699,7 @@ def merge_source_audio_semantics(
     records = deepcopy(records)
     metadata.pop("selection_origin", None)
     metadata.pop("source_audio_semantics", None)
+    apply_main_story_source_audio_policy(metadata, records)
     for story in stories:
         for key in ("source_audio_completion", "source_audio_timing"):
             if key in story.metadata:

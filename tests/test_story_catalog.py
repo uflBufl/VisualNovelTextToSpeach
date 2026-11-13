@@ -119,15 +119,23 @@ class StoryCatalogTest(unittest.TestCase):
         ):
             self.assertIsNone(
                 storage.load(
-                    "changed", document["source_audio_semantic_evidence_sha256"], 8
+                    "changed",
+                    document["source_audio_semantic_evidence_sha256"],
+                    story_catalog_schema_version,
                 )
             )
-            self.assertIsNone(storage.load(self.first.story_index_sha256, "changed", 8))
+            self.assertIsNone(
+                storage.load(
+                    self.first.story_index_sha256,
+                    "changed",
+                    story_catalog_schema_version,
+                )
+            )
             self.assertIsNotNone(
                 storage.load(
                     self.first.story_index_sha256,
                     document["source_audio_semantic_evidence_sha256"],
-                    8,
+                    story_catalog_schema_version,
                 )
             )
 

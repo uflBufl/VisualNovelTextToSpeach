@@ -2,19 +2,10 @@
 
 ## Active - Finish original-speech qualification
 
-- [ ] Diagnose the remaining Hansel ASR mismatches before another full reading
-      run. The user confirms that in main-story stage 6TH-23 every available
-      spoken cue matches its displayed text: mismatches here are recognition or
-      matching failures, not genuine partial speech. Current pairs and
-      preparation identities:
-      `.codex/investigations/source-speech-fix-20261114/remaining-asr.json` and
-      `refresh.json`. Use this chapter as a known matching reference while
-      preserving detection of genuinely partial/different speech in other story
-      types. Fix the shared recognition/comparison path without a chapter-specific
-      override or silently marking every available cue full.
-- [ ] In the combined native run, confirm full originals remain game-only,
-      unvoiced dialogue still plays, and genuinely partial originals receive the
-      required extra speech. Chapter and ambiguous cross-chapter audio reuse
+- [ ] In the combined native run of Hansel 6TH-23, confirm all available originals
+      remain game-only under the main-story policy and unvoiced dialogue still
+      plays. Verify genuinely partial originals separately in anecdotes/character
+      stories, which retain ASR. Chapter and ambiguous cross-chapter audio reuse
       acceptance remain unfinished; continue the existing RUN-11-UI-02 gate.
 
 ## Native capture - remaining macOS qualification

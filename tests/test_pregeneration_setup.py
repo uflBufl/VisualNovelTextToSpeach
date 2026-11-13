@@ -1359,6 +1359,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             importer = Mock()
             importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_source_audio_semantics.return_value = None
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(voice_manifest=str(manifest)),
@@ -5224,6 +5225,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             manifest = root / "candidate-manifest.json"
             importer = Mock()
             importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_source_audio_semantics.return_value = None
 
             def prepare_candidates(*_args, scan_progress, **_kwargs):
                 from vntts.source_audio_progress import SourceAudioProgress
@@ -5590,6 +5592,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             plan = plans.create(job, settings, manifest_path=manifest)
             importer = Mock()
             importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.prepare_source_audio_semantics.return_value = None
             importer.prepare_voice_candidates.return_value = manifest
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(

@@ -32,7 +32,7 @@ from vntts.selected_story_snapshot import (
 )
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
     load_source_audio_semantic_evidence,
 )
 
@@ -110,6 +110,7 @@ class SelectedSnapshotPackTest(unittest.TestCase):
                 continue
             media_sha256 = hashlib.sha256(record["line_id"].encode()).hexdigest()
             entry, entry_id = semantic_evidence_entry(
+                method=BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                 line_id=record["line_id"],
                 text=record["text"],
                 displayed_text_sha256=hashlib.sha256(
@@ -129,7 +130,7 @@ class SelectedSnapshotPackTest(unittest.TestCase):
                 source_audio_duration_sample_count=int(duration * 24000),
                 source_audio_duration_decoder="synthetic",
                 source_audio_completeness="full",
-                source_audio_completeness_reason="exact-normalized-asr-transcript",
+                source_audio_completeness_reason="matched-normalized-asr-transcript",
                 source_audio_semantic_evidence_entry_id=entry_id,
             )
         entries.sort(
@@ -156,7 +157,7 @@ class SelectedSnapshotPackTest(unittest.TestCase):
             "source_audio_semantics": {
                 "evidence_id": evidence_id,
                 "evidence_sha256": sha256_file(evidence_path),
-                "method": SEMANTIC_EVIDENCE_METHOD,
+                "method": BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                 "selected_chapters": list(chapters),
                 "applied_count": len(entries),
             },

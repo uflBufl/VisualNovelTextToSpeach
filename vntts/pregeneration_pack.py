@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 from typing import Protocol, cast
 
+from r1999extractor.source_audio_policy import has_full_main_story_source_audio
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import (
     GeneratedAudioDocument,
@@ -111,7 +112,7 @@ from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
     merge_source_audio_semantics,
-    source_audio_semantics_need_migration,
+    source_audio_asr_needs_migration,
 )
 from vntts.support import record_background_operation
 from vntts.voices import load_voice_manifest
@@ -1508,8 +1509,9 @@ def _load_incremental_base(
     ):
         return None, None
     selected_ids = {record.line_id for record in selected_story.records}
-    if source_audio_semantics_need_migration(base_story) and any(
+    if source_audio_asr_needs_migration(base_story) and any(
         record.line_id not in selected_ids
+        and not has_full_main_story_source_audio(record.document)
         and record.document.get("source_audio_completeness") == "full"
         and record.document.get("source_audio_semantic_evidence_entry_id") is not None
         for record in base_story.records

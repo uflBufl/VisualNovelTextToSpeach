@@ -56,6 +56,7 @@ _PROJECTED_METADATA = frozenset(
         "source_audio_completion",
         "source_audio_timing",
         "source_audio_semantics",
+        "source_audio_completeness_policy",
     }
 )
 
