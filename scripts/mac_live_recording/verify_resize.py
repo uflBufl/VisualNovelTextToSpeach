@@ -8,11 +8,12 @@ import math
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
 
-if __package__:
+if TYPE_CHECKING or __package__:
     from .verify import validate_events
 else:
     from verify import validate_events

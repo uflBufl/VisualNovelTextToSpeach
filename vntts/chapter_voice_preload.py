@@ -356,7 +356,7 @@ class ChapterVoicePreloader:
         exact_text = _normalize_exact_text(text)
         if not exact_text:
             return None, "no-match"
-        all_candidates = self.by_exact_dialogue.get(
+        all_candidates: Sequence[ChapterDialogue] = self.by_exact_dialogue.get(
             (speaker_key, is_symbol_only_text(text), exact_text),
             (),
         )
@@ -854,15 +854,15 @@ class ChapterVoicePreloader:
                     continue
                 distance = item.evidence.prefix_distance
                 length = prepared[item.observed].alphanumeric_length
-                named = allow_speaker_evidence and (
+                has_speaker_evidence = allow_speaker_evidence and (
                     item.speaker_in_crop or speaker == _normalize(item.line.speaker)
                 )
                 canonical_length = self.matching_text[item.line].alphanumeric_length
                 enough = (
                     length >= 20
-                    or (named and length >= 12)
+                    or (has_speaker_evidence and length >= 12)
                     or (
-                        named
+                        has_speaker_evidence
                         and canonical_length <= 12
                         and length >= 3
                         and length / canonical_length >= 0.6

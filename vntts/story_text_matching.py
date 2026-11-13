@@ -192,8 +192,8 @@ def compare_text(
             safe_distance = min((item[0] for item in safe_costs), default=overflow)
             if safe_distance <= limit:
                 flags = 0
-                for cost, path_flags in safe_costs:
-                    if cost == safe_distance:
+                for path_cost, path_flags in safe_costs:
+                    if path_cost == safe_distance:
                         flags |= path_flags
                 safe_current[j] = (safe_distance, flags)
         previous, safe_previous = current, safe_current
@@ -206,13 +206,13 @@ def compare_text(
         safe_full is not None and safe_full[0] == distance and not safe_full[1] & 3
     )
     prefixes = []
-    for end, (cost, flags) in safe_previous.items():
+    for end, (path_cost, flags) in safe_previous.items():
         if not end or end == len(source) or flags:
             continue
         before, after = canonical._protected[end - 1 : end + 1]
         if before is not None and after is not None and after[1] != 0:
             continue
-        prefixes.append((cost, -end))
+        prefixes.append((path_cost, -end))
     if not prefixes:
         return TextEvidence(
             distance, complete, None, canonical.alphanumeric_length if complete else 0
