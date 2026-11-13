@@ -630,10 +630,17 @@ def _story_audio_route(
     effective = saved or record
     if not effective.speakable:
         return "non_spoken"
-    if library and library.has_entry(record.line_id, record.text_sha256):
-        return "generated"
-    if library and library.find_live_fallback(record.line_id, record.text_sha256):
-        return "live"
+    if (
+        saved is not None
+        and (record.line_id, record.text_sha256, record.speaker, record.chapter)
+        == (saved.line_id, saved.text_sha256, saved.speaker, saved.chapter)
+        and _source_audio_covers_full_line(
+            record.document,
+            completion_contract=source.metadata.get("source_audio_completion"),
+            semantic_authorized=record.line_id in source_audio_line_ids,
+        )
+    ):
+        return "original"
     completion_document = (
         pack.story if saved is not None and pack.story is not None else source
     )
@@ -646,6 +653,10 @@ def _story_audio_route(
         semantic_authorized=authorized,
     ):
         return "original"
+    if library and library.has_entry(record.line_id, record.text_sha256):
+        return "generated"
+    if library and library.find_live_fallback(record.line_id, record.text_sha256):
+        return "live"
     return "missing"
 
 

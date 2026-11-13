@@ -1668,5 +1668,185 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(result, "no-match")
 
 
+class SynthesisPreferenceTest(unittest.TestCase):
+    @staticmethod
+    def row(line_id, text, *, speaker="Ada", chapter="1", full=False):
+        return ChapterDialogue(
+            line_id,
+            chapter,
+            1,
+            speaker,
+            text,
+            hashlib.sha256(text.encode()).hexdigest(),
+            source_audio_status="available" if full else "absent",
+            source_audio_duration_seconds=1.0 if full else None,
+            source_audio_completeness="full" if full else "unknown",
+            source_audio_authoritative=full,
+        )
+
+    def test_full_original_duplicates_do_not_compete_with_synthesis(self):
+        originals = (
+            self.row("original-1", "Huh?", full=True),
+            self.row("original-2", "Huh?", chapter="3", full=True),
+        )
+        eligible = self.row("eligible", "Huh?", chapter="2")
+        preloader = ChapterVoicePreloader((*originals, eligible))
+        ids = [row.line_id for row in preloader.dialogue]
+        self.assertEqual(
+            preloader.resolve_complete_among("Ada", "Huh?", ids),
+            (None, "expected-ambiguous"),
+        )
+        self.assertEqual(
+            preloader.resolve_complete_among("Ada", "Huh?", ids, prefer_synthesis=True),
+            (eligible, "expected-exact"),
+        )
+        self.assertEqual(preloader.current_match.chapter, "2")
+
+    def test_known_original_remains_trackable_without_updating_context(self):
+        original = self.row("original", "This is already voiced.", full=True)
+        eligible = self.row("eligible", "Other dialogue.")
+        preloader = ChapterVoicePreloader((original, eligible))
+        previous = ChapterMatch("previous", 4, 1.0)
+        preloader.current_match = previous
+        match = preloader.resolve_observation_among(
+            "Ada",
+            original.text,
+            (row.line_id for row in preloader.dialogue),
+            prefer_synthesis=True,
+            update_context=False,
+        )
+        self.assertIs(match.line, original)
+        self.assertTrue(match.complete)
+        self.assertEqual(match.method, "expected-exact")
+        self.assertIs(preloader.current_match, previous)
+
+    def test_original_free_no_match_preserves_eligible_diagnostics(self):
+        row = self.row("eligible", "The gate is open.")
+        preloader = ChapterVoicePreloader((row,))
+        baseline = preloader.resolve_observation_among(
+            "Ada", "Nothing like this source.", (row.line_id,)
+        )
+        diagnostics = preloader.last_resolution_diagnostics.copy()
+        preferred = preloader.resolve_observation_among(
+            "Ada",
+            "Nothing like this source.",
+            (row.line_id,),
+            prefer_synthesis=True,
+        )
+        self.assertEqual(baseline.method, "expected-no-match")
+        self.assertEqual(preferred, baseline)
+        self.assertEqual(preloader.last_resolution_diagnostics, diagnostics)
+
+    def test_full_original_continuation_does_not_delay_complete_synthesis(self):
+        eligible = self.row("eligible", "The gate is open.")
+        original = self.row("original", "The gate is open. Follow me.", full=True)
+        preloader = ChapterVoicePreloader((eligible, original))
+        self.assertEqual(
+            preloader.resolve_complete_among(
+                "Ada", eligible.text, ("eligible", "original")
+            ),
+            (None, "expected-incomplete"),
+        )
+        self.assertEqual(
+            preloader.resolve_complete_among(
+                "Ada",
+                eligible.text,
+                ("eligible", "original"),
+                prefer_synthesis=True,
+            ),
+            (eligible, "expected-exact"),
+        )
+
+    def test_incomplete_synthesis_does_not_fall_back_to_full_original(self):
+        original = self.row("original", "The gate is open.", full=True)
+        eligible = self.row("eligible", "The gate is open. Follow me.")
+        preloader = ChapterVoicePreloader((original, eligible))
+        self.assertEqual(
+            preloader.resolve_complete_among(
+                "Ada",
+                original.text,
+                ("original", "eligible"),
+                prefer_synthesis=True,
+            ),
+            (None, "expected-incomplete"),
+        )
+        self.assertIsNone(preloader.current_match)
+
+    def test_eligible_and_original_only_ambiguity_remain_ambiguous(self):
+        for eligible_count in (0, 2):
+            with self.subTest(eligible_count=eligible_count):
+                rows = tuple(
+                    self.row(str(index), "Huh?", full=index >= eligible_count)
+                    for index in range(eligible_count + 2)
+                )
+                preloader = ChapterVoicePreloader(rows)
+                self.assertEqual(
+                    preloader.resolve_complete_among(
+                        "Ada",
+                        "Huh?",
+                        (row.line_id for row in rows),
+                        prefer_synthesis=True,
+                    ),
+                    (None, "expected-ambiguous"),
+                )
+                self.assertIsNone(preloader.current_match)
+
+    def test_named_original_prevents_different_speaker_text_only_rebinding(self):
+        original = self.row("original", "Huh?", full=True)
+        other = self.row("other", "Huh?", speaker="Bob")
+        preloader = ChapterVoicePreloader((original, other))
+        self.assertEqual(
+            preloader.resolve_complete_among(
+                "Ada", "Huh?", ("original", "other"), prefer_synthesis=True
+            ),
+            (original, "expected-exact"),
+        )
+        unnamed = preloader.resolve_observation_among(
+            "Ada",
+            "Huh?",
+            ("original", "other"),
+            prefer_synthesis=True,
+            allow_speaker_evidence=False,
+        )
+        self.assertIs(unnamed.line, other)
+
+    def test_named_original_conflict_retains_ambiguity_without_fuzzy_priority(self):
+        for original_text, count, expected in (
+            ("We are here.", 2, "expected-ambiguous"),
+            ("We are there.", 1, "expected-text-only"),
+        ):
+            with self.subTest(original_text=original_text):
+                originals = tuple(
+                    self.row(str(index), original_text, full=True)
+                    for index in range(count)
+                )
+                other = self.row("other", "We are here.", speaker="Bob")
+                preloader = ChapterVoicePreloader((*originals, other))
+                line, method = preloader.resolve_complete_among(
+                    "Ada",
+                    other.text,
+                    (row.line_id for row in preloader.dialogue),
+                    prefer_synthesis=True,
+                )
+                self.assertEqual(method, expected)
+                self.assertIs(line, other if count == 1 else None)
+
+    def test_filtered_local_original_prefix_does_not_jump_chapters(self):
+        text = "The gate is open. Follow me."
+        original = self.row("original", text, full=True)
+        elsewhere = self.row("elsewhere", text, chapter="2")
+        preloader = ChapterVoicePreloader((original, elsewhere))
+        previous = ChapterMatch("1", 1, 1.0)
+        preloader.current_match = previous
+        self.assertIsNone(
+            preloader.resolve_unique_prefix(
+                "Ada",
+                "The gate is open. Follow",
+                candidate_filter=lambda row: not row.has_full_source_audio,
+            )
+        )
+        self.assertIs(preloader.current_match, previous)
+
+
 if __name__ == "__main__":
     unittest.main()

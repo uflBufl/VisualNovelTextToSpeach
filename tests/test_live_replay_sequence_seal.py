@@ -417,6 +417,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                     line,
                     source_audio_authoritative=True,
                     source_audio_completeness="full",
+                    source_audio_duration_seconds=1.0,
                 ),
             ):
                 sealed = _sealed_dialogue(

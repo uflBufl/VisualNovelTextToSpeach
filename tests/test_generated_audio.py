@@ -138,7 +138,7 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             for policy, route_type in (
                 ("prefer-game-audio", SourceAudioRoute),
-                ("prefer-generated", GeneratedAudioRoute),
+                ("prefer-generated", SourceAudioRoute),
             ):
                 with self.subTest(policy=policy):
                     backend = GeneratedAudioFallbackBackend(
@@ -575,7 +575,7 @@ class GeneratedAudioTest(unittest.TestCase):
             library, _audio = self.create_library(Path(directory))
             for policy, expected in (
                 ("prefer-game-audio", SourceAudioRoute),
-                ("prefer-generated", GeneratedAudioRoute),
+                ("prefer-generated", SourceAudioRoute),
             ):
                 with self.subTest(policy=policy):
                     live = self.create_live_backend()
@@ -1941,6 +1941,61 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.prepared.source_audio_id, "voice-7")
         self.assertEqual(route.prepared.completion_seconds, 1.35)
         self.assertEqual(route.trace.effective_source, "game")
+        live.prepare_playback.assert_not_called()
+
+    def test_full_original_live_route_keeps_timing_and_stop_guard_for_each_policy(self):
+        for policy in ("prefer-game-audio", "prefer-generated", "live-tts-only"):
+            with self.subTest(policy=policy):
+                live = self.create_live_backend()
+                backend = GeneratedAudioFallbackBackend(
+                    live,
+                    None,
+                    self.create_resolver(
+                        source_audio_status="available",
+                        source_audio_duration_seconds=1.0,
+                        source_audio_authoritative=True,
+                    ),
+                    audio_source_policy=policy,
+                    audio_output=FakeAudioOutput(),
+                )
+                self.assertTrue(
+                    backend.will_use_source_audio_in_live_mode("Ada", "Hello.")
+                )
+                self.assertTrue(
+                    backend.has_resolved_route_in_live_mode("Ada", "Hello.")
+                )
+                backend.set_live_mode_active(True)
+                route = backend.prepare_route("Ada", "Hello.")
+                self.assertIsInstance(route, SourceAudioRoute)
+                self.assertEqual(route.prepared.completion_seconds, 1.35)
+                with patch.object(
+                    backend.playback_owner.source_audio_completion_stop, "wait"
+                ) as wait:
+                    outcome = backend.play_route(route, playback_guard=lambda: False)
+                self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+                wait.assert_not_called()
+                live.prepare_playback.assert_not_called()
+                live.play_prepared.assert_not_called()
+
+    def test_full_original_does_not_change_explicit_one_time_generated_reading(self):
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            live = self.create_live_backend()
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(
+                    source_audio_status="available",
+                    source_audio_duration_seconds=1.0,
+                    source_audio_authoritative=True,
+                ),
+                audio_source_policy="prefer-generated",
+                audio_output=FakeAudioOutput(),
+            )
+
+            route = backend.prepare_route("Ada", "Hello.")
+
+        self.assertIsInstance(route, GeneratedAudioRoute)
         live.prepare_playback.assert_not_called()
 
     def test_unknown_label_preserves_available_game_audio_before_narrator(self):

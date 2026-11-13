@@ -1087,13 +1087,7 @@ def _recovered_dialogue_record(
         "source_audio_id": line.source_audio_id,
         "source_audio_duration_seconds": line.source_audio_duration_seconds,
         "source_audio_completeness": line.source_audio_completeness,
-        "expected_source": (
-            "game"
-            if line.source_audio_status == "available"
-            and line.source_audio_authoritative
-            and line.source_audio_completeness == "full"
-            else None
-        ),
+        "expected_source": ("game" if line.has_full_source_audio else None),
         "capture_boundary": "recovered-exact-sequence",
         "story_match": "exact-recovery",
     }

@@ -70,6 +70,15 @@ class ChapterDialogue:
     source_audio_authoritative: bool = False
     story_order: int | None = None
 
+    @property
+    def has_full_source_audio(self) -> bool:
+        return (
+            self.source_audio_status == "available"
+            and self.source_audio_authoritative
+            and self.source_audio_completeness == "full"
+            and self.source_audio_duration_seconds is not None
+        )
+
 
 @dataclass(frozen=True)
 class StoryObservationMatch:
@@ -464,9 +473,14 @@ class ChapterVoicePreloader:
         line_ids: Iterable[object],
         *,
         update_context: bool = True,
+        prefer_synthesis: bool = False,
     ) -> tuple[ChapterDialogue | None, str]:
         match = self.resolve_observation_among(
-            character, text, line_ids, update_context=update_context
+            character,
+            text,
+            line_ids,
+            update_context=update_context,
+            prefer_synthesis=prefer_synthesis,
         )
         return match.line, match.method
 
@@ -498,6 +512,7 @@ class ChapterVoicePreloader:
         recover_crop_noise: bool = False,
         allow_speaker_evidence: bool = True,
         update_context: bool = True,
+        prefer_synthesis: bool = False,
     ) -> StoryObservationMatch:
         """Assess the same source coverage for canonical text and cursor ownership."""
         allowed = tuple(dict.fromkeys(str(value) for value in line_ids if value))
@@ -506,6 +521,45 @@ class ChapterVoicePreloader:
             for line_id in allowed
             if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
         )
+        if prefer_synthesis:
+            # Originals remain trackable, but cannot compete for synthesis.
+            eligible = tuple(row for row in valid if not row.has_full_source_audio)
+            originals = tuple(row for row in valid if row.has_full_source_audio)
+
+            def resolve(rows: Iterable[ChapterDialogue]) -> StoryObservationMatch:
+                return self.resolve_observation_among(
+                    character,
+                    text,
+                    (row.line_id for row in rows),
+                    allow_prefix=allow_prefix,
+                    recover_crop_noise=recover_crop_noise,
+                    allow_speaker_evidence=allow_speaker_evidence,
+                    update_context=False,
+                )
+
+            match = resolve(eligible)
+            speaker = _normalize(character) if allow_speaker_evidence else ""
+            if match.method == "expected-no-match" and originals:
+                match = resolve(originals)
+            elif (
+                match.line is not None
+                and speaker
+                and _normalize(match.line.speaker) != speaker
+            ):
+                named_originals = tuple(
+                    row for row in originals if _normalize(row.speaker) == speaker
+                )
+                if named_originals:
+                    # Filtering must not turn a known nameplate into another role.
+                    diagnostics = self.last_resolution_diagnostics.copy()
+                    canonical = resolve((*eligible, *named_originals))
+                    if canonical.line is None or canonical.line.has_full_source_audio:
+                        match = canonical
+                    else:
+                        self.last_resolution_diagnostics = diagnostics
+            if update_context and match.line is not None:
+                self.select_line_id(match.line.line_id)
+            return match
         speaker = _normalize(character) if allow_speaker_evidence else ""
         normalized = _normalize(text)
         observed = prepare_text(text)
@@ -886,11 +940,11 @@ class ChapterVoicePreloader:
         candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
     ) -> list[ChapterDialogue]:
         def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
+            return [row for row in rows if self._matches_prefix(row, observed)]
+
+        def eligible(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
             return [
-                row
-                for row in rows
-                if self._matches_prefix(row, observed)
-                and (candidate_filter is None or candidate_filter(row))
+                row for row in rows if candidate_filter is None or candidate_filter(row)
             ]
 
         if self.current_match is not None:
@@ -901,8 +955,9 @@ class ChapterVoicePreloader:
                 )
             )
             if nearby:
-                return nearby
-        return matches(self.by_speaker.get(speaker_key, ()))
+                # A filtered local owner must not make another chapter unique.
+                return eligible(nearby)
+        return eligible(matches(self.by_speaker.get(speaker_key, ())))
 
     def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:
         if not row.line_id or not row.text_sha256 or not observed.alphanumeric_length:

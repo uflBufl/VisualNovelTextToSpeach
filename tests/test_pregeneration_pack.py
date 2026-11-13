@@ -1771,6 +1771,64 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     self.assertEqual(
                         (coverage.original, coverage.missing), (original, 1 - original)
                     )
+                    document = load_story_index_document(path)
+                    record = document.records[0]
+                    library = Mock(spec=GeneratedAudioLibrary)
+                    library.find_audio_event_omission.return_value = None
+                    saved = pack_module._StoryAudioPack(
+                        manifest=None,
+                        explicit=True,
+                        story=document,
+                        records={record.line_id: record},
+                        source_audio_line_ids=(
+                            frozenset({record.line_id})
+                            if authoritative
+                            else frozenset()
+                        ),
+                        library=library,
+                    )
+                    for archived_route in ("generated", "live"):
+                        with self.subTest(archived_route=archived_route):
+                            library.has_entry.return_value = (
+                                archived_route == "generated"
+                            )
+                            library.find_live_fallback.return_value = (
+                                object() if archived_route == "live" else None
+                            )
+                            self.assertEqual(
+                                pack_module._story_audio_route(
+                                    record,
+                                    record,
+                                    document,
+                                    frozenset(),
+                                    saved,
+                                ),
+                                "original" if original else archived_route,
+                            )
+                    if original:
+                        library.has_entry.return_value = True
+                        legacy = replace(
+                            record,
+                            document=record.document
+                            | {"source_audio_completeness": "unknown"},
+                        )
+                        for fields in ({}, {"speaker": "Other"}, {"chapter": "2"}):
+                            with self.subTest(saved_owner=fields):
+                                historical = replace(legacy, **fields)
+                                self.assertEqual(
+                                    pack_module._story_audio_route(
+                                        record,
+                                        historical,
+                                        document,
+                                        frozenset({record.line_id}),
+                                        replace(
+                                            saved,
+                                            records={record.line_id: historical},
+                                            source_audio_line_ids=frozenset(),
+                                        ),
+                                    ),
+                                    "generated" if fields else "original",
+                                )
 
     def test_story_coverage_verifies_mixed_saved_routes_and_rejects_damaged_audio(self):
         with TemporaryDirectory() as directory:

@@ -966,7 +966,11 @@ class AppController:
             )
         )
         match = self.chapter_voice_preloader.resolve_observation_among(
-            character, text, line_ids, recover_crop_noise=True
+            character,
+            text,
+            line_ids,
+            recover_crop_noise=True,
+            prefer_synthesis=plan is None or self.settings.live_sequence_mode == "off",
         )
         return match.line, match.method
 
@@ -1043,6 +1047,7 @@ class AppController:
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
             text,
+            candidate_filter=lambda row: not row.has_full_source_audio,
         )
         if line is None or not backend.has_generated_line(line):
             return None
@@ -1080,17 +1085,20 @@ class AppController:
         live_name = (
             self.settings.speech_backend if live_backend is None else live_backend.name
         )
-        if policy == "live-tts-only":
+        self._refresh_prepared_audio(force=True)
+        has_original = any(
+            row.has_full_source_audio for row in self.chapter_voice_preloader.dialogue
+        )
+        if policy == "live-tts-only" and not has_original:
             self.status_handler(f"Audio policy: live TTS only ({live_name})")
             return None
-        self._refresh_prepared_audio(force=True)
         if not self.settings.story_index and not self.automatic_prepared_reading:
             self.status_handler(
                 "Audio fallback disabled: configure a story index for stable line IDs"
             )
             return None
-        library = self.prepared_audio_library
-        if policy == "prefer-generated" and library is None:
+        library = None if policy == "live-tts-only" else self.prepared_audio_library
+        if policy == "prefer-generated" and library is None and not has_original:
             self.status_handler(
                 f"Generated audio unavailable; using live TTS ({live_name})"
             )
@@ -1105,7 +1113,11 @@ class AppController:
         )
         generated_backend.voice_override = self._has_manual_voice_override
         generated_backend.progress_wait_status = self.status_handler
-        if policy == "prefer-game-audio":
+        if policy == "live-tts-only":
+            self.status_handler(
+                f"Audio policy: original game audio, then live TTS ({live_name})"
+            )
+        elif policy == "prefer-game-audio":
             suffix = (
                 ", then generated/live TTS"
                 if library is not None
@@ -1230,7 +1242,9 @@ class AppController:
                 self.chapter_voice_preloader = preloader
             if isinstance(backend, GeneratedAudioFallbackBackend):
                 backend.generated_reservations.clear()
-                backend.library = library
+                backend.library = (
+                    None if settings.audio_source_policy == "live-tts-only" else library
+                )
                 backend.line_resolver = self.chapter_voice_preloader
 
     def refresh_corrections(self) -> None:
@@ -1669,7 +1683,12 @@ class AppController:
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
             line, match = preloader.resolve_complete_among(
-                speaker, result.text, line_ids, update_context=False
+                speaker,
+                result.text,
+                line_ids,
+                update_context=False,
+                prefer_synthesis=plan is None
+                or self.settings.live_sequence_mode == "off",
             )
             if (
                 line is None
@@ -1683,6 +1702,7 @@ class AppController:
                     result.text,
                     (row.line_id for row in preloader.dialogue if row.line_id),
                     update_context=False,
+                    prefer_synthesis=True,
                 )
             if not confident and (
                 match not in {"expected-exact", "expected-text-only"}
@@ -2248,19 +2268,12 @@ class AppController:
             return "No speech (silent event)"
         if line is None:
             return "Unavailable canonical line"
+        if line.has_full_source_audio:
+            return "Original game audio"
         if self.settings.audio_source_policy == "live-tts-only":
             return (
                 "No TTS for symbols" if is_symbol_only_text(line.text) else "Live TTS"
             )
-        if (
-            self.settings.audio_source_policy == "prefer-game-audio"
-            and line.source_audio_status == "available"
-            and line.source_audio_authoritative
-            and line.source_audio_completeness == "full"
-            and line.source_audio_duration_seconds is not None
-            and not self._has_manual_voice_override(line.speaker)
-        ):
-            return "Original game audio"
         backend = getattr(self, "speech_backend", None)
         if isinstance(backend, GeneratedAudioFallbackBackend):
             library = backend.library
@@ -3856,6 +3869,7 @@ class AppController:
                 routed_text,
                 (row.line_id for row in rows if row.line_id),
                 update_context=False,
+                prefer_synthesis=True,
             )
             return reader.enqueue(
                 routed_character, routed_text, line_id=line.line_id if line else None

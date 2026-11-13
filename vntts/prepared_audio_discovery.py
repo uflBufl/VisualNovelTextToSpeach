@@ -131,7 +131,16 @@ class PreparedAudioSnapshot:
             if len({scope[0] for scope, _line in candidates}) != 1:
                 continue
             if len({_canonical_identity(line) for _scope, line in candidates}) == 1:
-                rows.append(candidates[0][1])
+                rows.append(
+                    next(
+                        (
+                            line
+                            for _scope, line in candidates
+                            if line.has_full_source_audio
+                        ),
+                        candidates[0][1],
+                    )
+                )
         return ChapterVoicePreloader(rows)
 
     def library_for(
@@ -161,6 +170,12 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
     ) -> None:
         self.sources = sources
         self.entry_filter = entry_filter
+        self.full_source_audio_lines = {
+            (source.game_id, _canonical_identity(line))
+            for source in sources
+            for line in source.preloader.dialogue
+            if line.has_full_source_audio
+        }
         self.reference_sources: dict[Path, RecordedReferenceSources] = {}
         self.invalid_reference_manifests: set[Path] = set()
         if isinstance(entry_filter, CurrentVoiceSnapshot):
@@ -220,6 +235,13 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
     def _matches(
         self, entry: GeneratedAudioEntryLike, source: PreparedAudioSource
     ) -> bool:
+        line = source.preloader.line_for_id(entry.line_id)
+        if (
+            line is not None
+            and (source.game_id, _canonical_identity(line))
+            in self.full_source_audio_lines
+        ):
+            return False
         if not isinstance(self.entry_filter, CurrentVoiceSnapshot):
             return self.entry_filter(entry)
         if source.voice_manifest in self.invalid_reference_manifests:
@@ -229,7 +251,6 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
             if source.voice_manifest is not None
             else None
         )
-        line = source.preloader.line_for_id(entry.line_id)
         voice_role = source.voice_roles.get(entry.line_id)
         if voice_role and re.fullmatch(r".+__vntts_[0-9a-f]{12}", voice_role):
             voice_role = None

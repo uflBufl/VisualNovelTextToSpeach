@@ -614,16 +614,6 @@ def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
     return source.strip()
 
 
-def _has_full_source_audio(line: ChapterDialogue | None) -> bool:
-    return bool(
-        line is not None
-        and line.source_audio_status == "available"
-        and line.source_audio_authoritative
-        and line.source_audio_completeness == "full"
-        and line.source_audio_duration_seconds is not None
-    )
-
-
 class LiveSpeechRequired(RuntimeError):
     """The selected route needs a live engine that has not been initialized."""
 
@@ -714,16 +704,13 @@ class GeneratedAudioFallbackBackend:
         """Return whether an exact line has a non-generic authorized live route."""
         current_match = getattr(self.line_resolver, "current_match", None)
         try:
-            if self.voice_override is not None and self.voice_override(character):
-                return False
             line = self.line_resolver.resolve_exact(character, text)
             if line is None or not line.line_id or not line.text_sha256:
                 return False
-            if (
-                self.audio_source_policy == "prefer-game-audio"
-                and _has_full_source_audio(line)
-            ):
+            if line.has_full_source_audio:
                 return True
+            if self.voice_override is not None and self.voice_override(character):
+                return False
             if self.library is None:
                 return False
             if (
@@ -762,16 +749,12 @@ class GeneratedAudioFallbackBackend:
                 setattr(self.line_resolver, "current_match", current_match)
 
     def _will_use_source_audio(self, character: str, text: str) -> bool:
-        if self.audio_source_policy != "prefer-game-audio":
-            return False
-        if self.voice_override is not None and self.voice_override(character):
-            return False
         line = self.line_resolver.resolve_exact(character, text)
         return bool(
             line is not None
             and line.line_id
             and line.text_sha256
-            and _has_full_source_audio(line)
+            and line.has_full_source_audio
         )
 
     def has_generated_line(self, line: ChapterDialogue) -> bool:
@@ -779,6 +762,7 @@ class GeneratedAudioFallbackBackend:
         if (
             self.library is None
             or self.speed != 1.0
+            or line.has_full_source_audio
             or not line.line_id
             or not line.text_sha256
         ):
@@ -806,10 +790,7 @@ class GeneratedAudioFallbackBackend:
             self.audio_source_policy not in {"prefer-generated", "prefer-game-audio"}
             or self.speed != 1.0
             or (self.voice_override is not None and self.voice_override(line.speaker))
-            or (
-                self.audio_source_policy == "prefer-game-audio"
-                and _has_full_source_audio(line)
-            )
+            or line.has_full_source_audio
         ):
             return False
         return self.has_generated_line(line)
@@ -828,14 +809,22 @@ class GeneratedAudioFallbackBackend:
         if not resolve_unidentified and line_id is None:
             # Admission owns identity: later discoveries cannot reclassify queued OCR.
             line, match_result = None, "unresolved-at-admission"
-        elif line_id is not None and not voice_overridden:
+        elif line_id is not None:
             line = self.line_resolver.line_for_id(line_id)
             if line is not None and (line.speaker, line.text) == (character, text):
                 match_result = "exact"
             else:
                 line, match_result = None, "line-id-mismatch"
         else:
-            line, match_result = self._resolve_line(character, text, voice_overridden)
+            line, match_result = self._resolve_line(
+                character, text, voice_overridden and not self.live_mode_active
+            )
+        if (
+            voice_overridden
+            and line is not None
+            and not (self.live_mode_active and line.has_full_source_audio)
+        ):
+            line, match_result = None, "manual-voice-override"
         if (
             line is not None
             and line.line_id
@@ -875,13 +864,12 @@ class GeneratedAudioFallbackBackend:
             and source_audio_completion is not None
             and source_audio_completeness == "partial"
         )
-        source_audio_full = _has_full_source_audio(line)
+        source_audio_full = line is not None and line.has_full_source_audio
         if (
             line is not None
             and line.line_id
             and line.text_sha256
             and self.live_mode_active
-            and self.audio_source_policy == "prefer-game-audio"
             and source_audio_full
         ):
             trace = AudioRouteTrace(

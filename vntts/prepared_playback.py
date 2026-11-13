@@ -31,11 +31,7 @@ def project_prepared_pack(
         ),
         audio_source_policy=(
             "prefer-game-audio"
-            if any(
-                line.source_audio_authoritative
-                and line.source_audio_completeness == "full"
-                for line in dialogue
-            )
+            if any(line.has_full_source_audio for line in dialogue)
             else "prefer-generated"
         ),
         force_live_narrator=False,

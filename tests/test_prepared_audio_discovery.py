@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.generated_audio import GeneratedAudioIndex
+
 from tests.story_fixtures import write_synthetic_game_pack
 from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.generated_audio import GeneratedAudioLibrary
@@ -19,6 +21,75 @@ from vntts.settings import AppSettings
 
 
 class PreparedAudioDiscoveryTests(unittest.TestCase):
+    def test_archived_tts_excludes_only_validated_full_original_audio(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            for completeness, authoritative, speaker, status, eligible in (
+                ("full", True, "Ada", "available", False),
+                ("partial", True, "Ada", "available", True),
+                ("unknown", False, "Ada", "available", True),
+                ("unknown", False, "Narrator", "absent", True),
+            ):
+                with self.subTest(completeness=completeness, speaker=speaker):
+                    line = replace(
+                        source.preloader.dialogue[0],
+                        speaker=speaker,
+                        source_audio_status=status,
+                        source_audio_completeness=completeness,
+                        source_audio_authoritative=authoritative,
+                        source_audio_duration_seconds=1.0,
+                    )
+                    snapshot = PreparedAudioSnapshot(
+                        (replace(source, preloader=type(source.preloader)((line,))),)
+                    )
+                    with patch.object(
+                        source.library,
+                        "find_with_preflight",
+                        wraps=source.library.find_with_preflight,
+                    ) as preflight:
+                        library = snapshot.library_for(lambda entry: True)
+                        self.assertEqual(
+                            library.has_entry(line_id, text_hash), eligible
+                        )
+                        self.assertEqual(bool(library.index.entries), eligible)
+                        self.assertEqual(
+                            library.find(line_id, text_hash) is not None, eligible
+                        )
+                    self.assertEqual(preflight.called, eligible)
+                    self.assertIs(snapshot.preloader.line_for_id(line_id), line)
+
+    def test_full_original_authority_survives_older_archive_metadata(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            old = discover_prepared_audio(game_pack=pack).sources[0]
+            line = replace(
+                old.preloader.dialogue[0],
+                source_audio_status="available",
+                source_audio_completeness="full",
+                source_audio_authoritative=True,
+                source_audio_duration_seconds=1.0,
+            )
+            current = replace(
+                old,
+                content_sha256="f" * 64,
+                preloader=type(old.preloader)((line,)),
+                library=GeneratedAudioLibrary(
+                    GeneratedAudioIndex(old.library.manifest_path, {}, [])
+                ),
+            )
+            for sources in ((old, current), (current, old)):
+                with self.subTest(old_first=sources[0] is old):
+                    snapshot = PreparedAudioSnapshot(sources)
+                    self.assertIs(snapshot.preloader.line_for_id(line_id), line)
+                    library = snapshot.library_for(lambda entry: True)
+                    self.assertFalse(library.has_entry(line_id, text_hash))
+                    self.assertIsNone(library.find(line_id, text_hash))
+
     def test_current_voice_matching_receives_original_reference_identity(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(

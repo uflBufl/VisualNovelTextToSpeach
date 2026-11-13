@@ -631,12 +631,7 @@ def _sealed_dialogue(
                 raise SequenceReplaySealError(
                     f"Canonical line disappeared while sealing: {line_id}"
                 )
-            if (
-                audio_source_policy == "prefer-game-audio"
-                and line.source_audio_status == "available"
-                and line.source_audio_authoritative
-                and line.source_audio_completeness == "full"
-            ):
+            if line.has_full_source_audio:
                 expected_source = "game"
             elif (
                 audio_source_policy in {"prefer-generated", "prefer-game-audio"}
