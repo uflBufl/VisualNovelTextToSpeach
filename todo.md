@@ -1,5 +1,21 @@
 # TODO
 
+## Active - Original speech duplicated in Hansel
+
+- [ ] Fix false partial-source classification before another full reading run.
+      Native session `35f5904e7ddf43a79b74e5ef8991d720` played generated audio for
+      Marcus `100631:9`, `:10` and `:11`; the user confirmed existing game speech
+      was being repeated. The semantic evidence for `:11` compares displayed
+      `would've` with transcribed `would have` and marks it partial. Inspect the
+      full set of ASR mismatches; agree a shared normalization/comparison change
+      that preserves genuinely partial or different game speech. Apply it before
+      queue construction and playback eligibility, refresh affected semantic
+      evidence and exclude obsolete generated recordings. Confirm that full
+      originals remain game-only (observed for `100631:15`), genuinely unvoiced
+      dialogue still plays, and partial originals still receive required speech.
+      The native run was stopped after the duplication; chapter and ambiguous
+      cross-chapter reuse acceptance remain unfinished.
+
 ## Native capture - remaining macOS qualification
 
 - [ ] Qualify the final macOS release distribution without developer tools:
