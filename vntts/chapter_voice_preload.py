@@ -1252,14 +1252,17 @@ def _source_audio_completeness(
     ):
         return "unknown"
     value = str(entry.get("source_audio_completeness") or "unknown").strip()
-    expected_reason = {
-        "full": "exact-normalized-asr-transcript",
-        "partial": "asr-transcript-mismatch",
+    expected_reasons = {
+        "full": (
+            "exact-normalized-asr-transcript",
+            "matched-normalized-asr-transcript",
+        ),
+        "partial": ("asr-transcript-mismatch",),
     }.get(value)
     return (
         value
-        if expected_reason is not None
-        and entry.get("source_audio_completeness_reason") == expected_reason
+        if expected_reasons is not None
+        and entry.get("source_audio_completeness_reason") in expected_reasons
         else "unknown"
     )
 

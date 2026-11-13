@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
-import unicodedata
 from copy import deepcopy
 from pathlib import Path
-from typing import Literal, TypeAlias, TypedDict, cast
+from typing import Literal, NotRequired, TypeAlias, TypedDict, cast
 
 from durable_file import atomic_write_json
+from r1999extractor.source_audio_matching import (
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
+    SOURCE_AUDIO_COMPARISON,
+    classify_source_audio_text,
+)
+from r1999extractor.source_audio_matching import (
+    normalize_semantic_text as _normalize_semantic_text,
+)
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -31,7 +37,10 @@ SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
 SEMANTIC_EVIDENCE_METHOD = "local-asr-exact-normalized-transcript"
 SEMANTIC_EVIDENCE_PREPROCESSING = "mono-pcm16-resample-poly-16000-v1"
-WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
+SEMANTIC_EVIDENCE_METHODS = (
+    SEMANTIC_EVIDENCE_METHOD,
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
+)
 
 JsonDocument: TypeAlias = dict[str, object]
 
@@ -45,8 +54,15 @@ class SourceAudioSemanticEvidenceEntry(TypedDict):
     observed_transcript: str
     normalized_observed_text_sha256: str
     verdict: Literal["full", "partial"]
-    reason: Literal["exact-normalized-asr-transcript", "asr-transcript-mismatch"]
-    method: Literal["local-asr-exact-normalized-transcript"]
+    reason: Literal[
+        "exact-normalized-asr-transcript",
+        "matched-normalized-asr-transcript",
+        "asr-transcript-mismatch",
+    ]
+    method: Literal[
+        "local-asr-exact-normalized-transcript", "local-asr-bounded-transcript-v1"
+    ]
+    normalized_expected_text: NotRequired[str]
     model_sha256: str
     source_line_ids: list[str]
 
@@ -72,10 +88,7 @@ def _semantic_document_sha256(document: object) -> str:
 
 
 def normalize_semantic_text(text: object) -> str:
-    normalized = unicodedata.normalize("NFKC", str(text or ""))
-    return " ".join(
-        token.casefold().replace("’", "'") for token in WORD_PATTERN.findall(normalized)
-    )
+    return cast(str, _normalize_semantic_text(text))
 
 
 def semantic_text_sha256(text: object) -> str:
@@ -107,7 +120,14 @@ def load_source_audio_semantic_evidence(
 
 
 def semantic_preprocessing_is_current(evidence: SourceAudioSemanticEvidence) -> bool:
-    return evidence["model"].get("preprocessing") == SEMANTIC_EVIDENCE_PREPROCESSING
+    return (
+        evidence["model"].get("preprocessing") == SEMANTIC_EVIDENCE_PREPROCESSING
+        and evidence["model"].get("comparison") == SOURCE_AUDIO_COMPARISON
+        and all(
+            entry["method"] == BOUNDED_SEMANTIC_EVIDENCE_METHOD
+            for entry in evidence["entries"]
+        )
+    )
 
 
 def _bound_semantic_evidence(
@@ -255,6 +275,11 @@ def validate_source_audio_semantic_evidence(
     keys = []
     for raw_entry in entries:
         entry = _validate_semantic_evidence_entry(raw_entry, locale, model_sha256)
+        if (
+            entry["method"] == BOUNDED_SEMANTIC_EVIDENCE_METHOD
+            and model.get("comparison") != SOURCE_AUDIO_COMPARISON
+        ):
+            raise SourceAudioSemanticEvidenceError("Semantic comparison policy changed")
         keys.append(
             (
                 entry["locale"],
@@ -301,8 +326,15 @@ def _validate_semantic_evidence_entry(
     if entry.get("normalized_observed_text_sha256") != observed_sha256:
         raise SourceAudioSemanticEvidenceError("Semantic transcript hash changed")
     verdict = entry.get("verdict")
+    method = entry.get("method")
+    if method not in SEMANTIC_EVIDENCE_METHODS:
+        raise SourceAudioSemanticEvidenceError("Semantic evidence method changed")
     expected_reason = (
-        "exact-normalized-asr-transcript"
+        (
+            "matched-normalized-asr-transcript"
+            if method == BOUNDED_SEMANTIC_EVIDENCE_METHOD
+            else "exact-normalized-asr-transcript"
+        )
         if verdict == "full"
         else "asr-transcript-mismatch"
     )
@@ -311,12 +343,22 @@ def _validate_semantic_evidence_entry(
     expected_verdict = (
         "full" if observed_sha256 == normalized_text_sha256 else "partial"
     )
+    if method == BOUNDED_SEMANTIC_EVIDENCE_METHOD:
+        expected_text = entry.get("normalized_expected_text")
+        if (
+            not isinstance(expected_text, str)
+            or not expected_text
+            or normalize_semantic_text(expected_text) != expected_text
+            or semantic_text_sha256(expected_text) != normalized_text_sha256
+        ):
+            raise SourceAudioSemanticEvidenceError("Semantic expected text changed")
+        expected_verdict, _reason = classify_source_audio_text(
+            expected_text, observed, locale=locale
+        )
     if verdict != expected_verdict:
         raise SourceAudioSemanticEvidenceError(
             "Semantic verdict contradicts transcript"
         )
-    if entry.get("method") != SEMANTIC_EVIDENCE_METHOD:
-        raise SourceAudioSemanticEvidenceError("Semantic evidence method changed")
     source_line_ids = entry.get("source_line_ids")
     if (
         not isinstance(source_line_ids, list)
@@ -359,7 +401,7 @@ def validate_story_semantic_evidence(
     if (
         metadata.get("evidence_id") != evidence["evidence_id"]
         or metadata.get("evidence_sha256") != evidence_sha256
-        or metadata.get("method") != SEMANTIC_EVIDENCE_METHOD
+        or metadata.get("method") not in SEMANTIC_EVIDENCE_METHODS
     ):
         raise SourceAudioSemanticEvidenceError(
             "Story source-audio semantic evidence binding changed"
@@ -394,6 +436,7 @@ def _story_semantic_entries(
             != semantic_text_sha256(record.get("text"))
             or entry["verdict"] != record.get("source_audio_completeness")
             or entry["reason"] != record.get("source_audio_completeness_reason")
+            or entry["method"] != story.metadata["source_audio_semantics"]["method"]
         ):
             raise SourceAudioSemanticEvidenceError(
                 f"Story semantic evidence changed for {record.get('line_id')!r}"
@@ -662,7 +705,7 @@ def merge_source_audio_semantics(
     metadata["source_audio_semantics"] = {
         "evidence_id": merged["evidence_id"],
         "evidence_sha256": sha256_file(destination),
-        "method": SEMANTIC_EVIDENCE_METHOD,
+        "method": next(iter(entries.values()))["method"],
         "selected_chapters": sorted({str(record["chapter"]) for record in projected}),
         "applied_count": sum(
             record.get("source_audio_semantic_evidence_entry_id") is not None

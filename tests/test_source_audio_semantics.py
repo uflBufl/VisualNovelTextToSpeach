@@ -19,11 +19,14 @@ from tests.story_fixtures import (
     write_verified_source_story,
 )
 from vntts.source_audio_semantics import (
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
     SEMANTIC_EVIDENCE_PREPROCESSING,
+    SOURCE_AUDIO_COMPARISON,
     SourceAudioSemanticEvidenceError,
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
     merge_source_audio_semantics,
+    normalize_semantic_text,
     project_source_audio_semantics,
     reset_stale_source_audio_semantics,
     semantic_preprocessing_is_current,
@@ -44,7 +47,14 @@ def semantic_story(root, *, current=False, partial=False, line_id="test:0"):
     evidence["model"].pop("preprocessing", None)
     if current:
         evidence["model"]["preprocessing"] = SEMANTIC_EVIDENCE_PREPROCESSING
+        evidence["model"]["comparison"] = SOURCE_AUDIO_COMPARISON
     entry = evidence["entries"][0]
+    if current:
+        entry.update(
+            method=BOUNDED_SEMANTIC_EVIDENCE_METHOD,
+            normalized_expected_text=normalize_semantic_text(story.records[0].text),
+            reason="matched-normalized-asr-transcript",
+        )
     entry["source_line_ids"] = [line_id]
     if partial:
         entry.update(
@@ -66,6 +76,7 @@ def semantic_story(root, *, current=False, partial=False, line_id="test:0"):
     metadata["source_audio_semantics"].update(
         evidence_id=evidence["evidence_id"],
         evidence_sha256=hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        method=entry["method"],
     )
     record = story.records[0].to_record()
     record.update(
@@ -109,6 +120,86 @@ def publish_semantic_story(story, evidence, records=None):
 
 
 class SourceAudioSemanticEvidenceTest(unittest.TestCase):
+    def test_bounded_evidence_reaches_game_route_for_real_asr_mismatches(self):
+        from vntts.chapter_voice_preload import ChapterVoicePreloader
+        from vntts.generated_audio import (
+            GeneratedAudioFallbackBackend,
+            SourceAudioRoute,
+        )
+
+        cases = (
+            (
+                "Madam Hofmann was calm till the end. Why? Was she not afraid?",
+                "Mother Mothman was calm till the end. Why? Was she not afraid?",
+            ),
+            (
+                "No. I just read her fear through her trembling fingers ...",
+                "No. I just fed her fear to her trembling fingers.",
+            ),
+            (
+                "But she would not show it. She knew it would've frightened me ...",
+                "But she would not show it. She knew it would have frightened me.",
+            ),
+        )
+        for expected, observed in cases:
+            with self.subTest(expected=expected), TemporaryDirectory() as directory:
+                story = semantic_story(Path(directory), current=True)
+                path = story.path.with_name("source-audio-semantic-evidence.json")
+                evidence = json.loads(path.read_text())
+                entry = evidence["entries"][0]
+                entry.update(
+                    normalized_expected_text=normalize_semantic_text(expected),
+                    displayed_text_sha256=hashlib.sha256(expected.encode()).hexdigest(),
+                    normalized_displayed_text_sha256=semantic_text_sha256(expected),
+                    observed_transcript=observed,
+                    normalized_observed_text_sha256=semantic_text_sha256(observed),
+                )
+                entry["entry_id"] = canonical_document_sha256(
+                    {
+                        k: v
+                        for k, v in entry.items()
+                        if k not in {"entry_id", "source_line_ids"}
+                    }
+                )
+                record = story.records[0].to_record()
+                record.update(
+                    text=expected,
+                    text_sha256=entry["displayed_text_sha256"],
+                    source_audio_semantic_evidence_entry_id=entry["entry_id"],
+                )
+                story, _ = publish_semantic_story(story, evidence, [record])
+                preloader = ChapterVoicePreloader.load_optional(story.path)
+                line = preloader.line_for_id("test:0")
+                self.assertTrue(line.has_full_source_audio)
+                backend = GeneratedAudioFallbackBackend(None, None, preloader)
+                backend.set_live_mode_active(True)
+                self.assertIsInstance(
+                    backend.prepare_route(line.speaker, expected, line_id=line.line_id),
+                    SourceAudioRoute,
+                )
+                entry["observed_transcript"] = "A completely different short phrase."
+                entry["normalized_observed_text_sha256"] = semantic_text_sha256(
+                    entry["observed_transcript"]
+                )
+                entry["entry_id"] = canonical_document_sha256(
+                    {
+                        k: v
+                        for k, v in entry.items()
+                        if k not in {"entry_id", "source_line_ids"}
+                    }
+                )
+                evidence["evidence_id"] = canonical_document_sha256(
+                    {
+                        k: v
+                        for k, v in evidence.items()
+                        if k not in {"evidence_id", "generated_at"}
+                    }
+                )
+                with self.assertRaisesRegex(
+                    SourceAudioSemanticEvidenceError, "contradicts"
+                ):
+                    validate_source_audio_semantic_evidence(evidence)
+
     def test_reuse_identity_survives_selection_changes_without_reading_files(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -121,6 +212,7 @@ class SourceAudioSemanticEvidenceTest(unittest.TestCase):
             evidence["entries"][0]["source_line_ids"].append("test:1")
             text = "Another line."
             extra_entry, extra_entry_id = semantic_evidence_entry(
+                method=BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                 line_id="test:2",
                 text=text,
                 displayed_text_sha256=hashlib.sha256(text.encode()).hexdigest(),
@@ -287,6 +379,7 @@ class SourceAudioSemanticEvidenceTest(unittest.TestCase):
                 text_hash = hashlib.sha256(text.encode()).hexdigest()
                 line_id = f"variant:{index}"
                 entry, entry_id = semantic_evidence_entry(
+                    method=BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                     line_id=line_id,
                     text=text,
                     displayed_text_sha256=text_hash,

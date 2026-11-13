@@ -21,8 +21,11 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.source_audio_semantics import (
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
     SEMANTIC_EVIDENCE_METHOD,
     SEMANTIC_EVIDENCE_PREPROCESSING,
+    SOURCE_AUDIO_COMPARISON,
+    normalize_semantic_text,
     semantic_text_sha256,
 )
 
@@ -42,6 +45,7 @@ def semantic_evidence_entry(
     media_id: int | None,
     media_sha256: str = "a" * 64,
     model_sha256: str = "b" * 64,
+    method: str = SEMANTIC_EVIDENCE_METHOD,
 ) -> tuple[dict[str, object], str]:
     entry: dict[str, object] = {
         "locale": "en",
@@ -52,11 +56,15 @@ def semantic_evidence_entry(
         "observed_transcript": text,
         "normalized_observed_text_sha256": semantic_text_sha256(text),
         "verdict": "full",
-        "reason": "exact-normalized-asr-transcript",
-        "method": SEMANTIC_EVIDENCE_METHOD,
+        "reason": "matched-normalized-asr-transcript"
+        if method == BOUNDED_SEMANTIC_EVIDENCE_METHOD
+        else "exact-normalized-asr-transcript",
+        "method": method,
         "model_sha256": model_sha256,
         "source_line_ids": [line_id],
     }
+    if method == BOUNDED_SEMANTIC_EVIDENCE_METHOD:
+        entry["normalized_expected_text"] = normalize_semantic_text(text)
     entry_id = canonical_document_sha256(
         {key: value for key, value in entry.items() if key != "source_line_ids"}
     )
@@ -85,6 +93,14 @@ def semantic_evidence_document(
             "device": "cpu",
             "decoding": "deterministic_greedy_default",
             **({"preprocessing": preprocessing} if preprocessing is not None else {}),
+            **(
+                {"comparison": SOURCE_AUDIO_COMPARISON}
+                if any(
+                    entry["method"] == BOUNDED_SEMANTIC_EVIDENCE_METHOD
+                    for entry in entries
+                )
+                else {}
+            ),
         },
         "entries": entries,
     }
@@ -106,6 +122,7 @@ def write_source_audio_semantic_evidence(
     snapshot: str = "synthetic",
     generated_at: str = "2026-09-14T00:00:00+00:00",
     preprocessing: str | None = SEMANTIC_EVIDENCE_PREPROCESSING,
+    method: str = SEMANTIC_EVIDENCE_METHOD,
 ) -> PublishedSemanticEvidence:
     entry, entry_id = semantic_evidence_entry(
         line_id=line_id,
@@ -114,6 +131,7 @@ def write_source_audio_semantic_evidence(
         media_id=media_id,
         media_sha256=media_sha256,
         model_sha256=model_sha256,
+        method=method,
     )
     evidence, evidence_id = semantic_evidence_document(
         [entry],

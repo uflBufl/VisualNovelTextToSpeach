@@ -854,7 +854,7 @@ class Reverse1999GameImporter:
             / "reverse1999"
             / "source-audio-semantics"
             / job.job_id
-            / "asr16k-v1"
+            / "asr16k-bounded-v1"
         )
 
     @staticmethod

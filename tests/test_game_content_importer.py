@@ -31,7 +31,7 @@ from vntts.game_content_importer import (
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.source_audio_progress import SourceAudioProgress
 from vntts.source_audio_semantics import (
-    SEMANTIC_EVIDENCE_METHOD,
+    BOUNDED_SEMANTIC_EVIDENCE_METHOD,
     SEMANTIC_EVIDENCE_PREPROCESSING,
 )
 
@@ -448,6 +448,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 )
                 evidence = write_source_audio_semantic_evidence(
                     evidence_path,
+                    method=BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                     line_id="voice:1",
                     text=text,
                     media_id=None,
@@ -457,7 +458,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 record.update(
                     source_audio_completeness="full",
                     source_audio_completeness_reason=(
-                        "exact-normalized-asr-transcript"
+                        "matched-normalized-asr-transcript"
                     ),
                     source_audio_semantic_evidence_id=evidence.evidence_id,
                     source_audio_semantic_evidence_entry_id=evidence.entry_id,
@@ -472,7 +473,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         "source_audio_semantics": {
                             "evidence_id": evidence.evidence_id,
                             "evidence_sha256": evidence.sha256,
-                            "method": SEMANTIC_EVIDENCE_METHOD,
+                            "method": BOUNDED_SEMANTIC_EVIDENCE_METHOD,
                             "selected_chapters": ["314501"],
                             "applied_count": 1,
                         },
@@ -501,7 +502,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     root, successor, job, importer, run
                 )
 
-            self.assertEqual(successor.story_index.parent.name, "asr16k-v1")
+            self.assertEqual(successor.story_index.parent.name, "asr16k-bounded-v1")
 
             self.assertEqual(source.read_bytes(), original)
             self.assertNotEqual(successor.story_index, source)
