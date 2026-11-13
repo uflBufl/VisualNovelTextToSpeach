@@ -316,20 +316,33 @@ an ambiguous live-to-prepared fixture. Reuse the completed ordinary lower-dialog
 and terminal-caption checks; do not repeat the chapter for each remaining case.
 
 - [ ] **MATCH-13-01 - Exclude fully game-voiced dialogue from synthesis and competing TTS matches.**
-      Agree the implementation plan before changing code. Reuse one shared full
-      spoken-source eligibility decision across preparation, ordinary TTS matching
-      and automatic prepared discovery; historical generated entries must not
-      restore a source-voiced line to that candidate pool. Keep complete canonical
-      rows for story navigation/original-audio tracking instead of deleting them
-      from the shared source model. Distinguish verified full narration from
-      partial reactions, effects and unverified/unavailable source metadata;
-      a voice ID or local file alone does not prove that the text is fully spoken.
-      Verify full-original/unvoiced duplicate selection, genuine unvoiced ambiguity,
-      exclusion of obsolete generated routes and unchanged source navigation.
-      Then find an accessible native fixture with an unvoiced duplicate followed
-      by a unique compatible prepared line. The proposed Cornerstone pair has
-      original audio on one occurrence with full coverage unproved; do not treat
-      our generated files as evidence that the game has no voice for it.
+      Agree the concrete implementation plan before changing code:
+      - Reuse validated ASR evidence: full means the entire normalized spoken-word
+        sequence equals displayed text. Case/punctuation may differ; missing,
+        additional or different words remain synthesis candidates. Keep existing
+        ASR/cache and evidence validation; do not introduce fuzzy source-coverage
+        thresholds, genre/speaker exceptions or per-frame ASR/WAV reads.
+      - Share the validated full-source decision across queue/voice planning,
+        ready-state publication, ordinary TTS candidate scopes and automatic
+        prepared discovery. Preserve partial/mismatching/unknown/unvoiced rows.
+        Apply eligibility before ambiguity/completeness decisions, including
+        global recovery and early-prefix consumers, rather than rejecting only
+        the final selected candidate.
+      - Keep complete canonical rows for navigation and original-audio tracking.
+        With a known source-voiced line, ordinary Read must leave playback to the
+        game; a generated-first default or an old generated WAV must not restore
+        it to synthesis/playback candidates. Preserve source completion/key timing
+        and recognition of original lines within an established chapter.
+      - Verify exact ASR match, punctuation/case variants, half-spoken/different
+        words, absent/unverified evidence and unvoiced narrator behavior. Cover
+        source-full vs unvoiced duplicates, genuine unvoiced ambiguity, archived
+        generated entries for full originals and unchanged canonical navigation.
+        Use the Cornerstone Huh? conflict as a real regression: full originals
+        314001:47/314012:16 must not compete with unvoiced 314002:44.
+      - After focused producer/consumer checks, find an accessible native fixture
+        with an unvoiced duplicate followed by a unique compatible prepared line.
+        The earlier long Cornerstone pair has original audio on one occurrence
+        with full coverage unproved; generated files do not prove game silence.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
