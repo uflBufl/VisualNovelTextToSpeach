@@ -326,8 +326,16 @@ and terminal-caption checks; do not repeat the chapter for each remaining case.
       Find an accessible unvoiced duplicate followed by a unique compatible
       prepared line. Exclude only originals with validated full ASR coverage;
       partial, mismatching, unknown and absent original speech remain eligible.
-      The earlier long Cornerstone pair has original audio on one occurrence
-      with full coverage unproved; generated files do not prove game silence.
+      Cornerstone's See You in the New World is currently unavailable in-game
+      (user confirmed); exclude it from the upcoming run. A cached story or
+      generated audio does not prove current menu access. Select a currently
+      accessible ordinary-dialogue story; book anecdotes need their own reader.
+      Main-story alternatives from extracted text: 6TH-23 Hansel and Gretel
+      (She closes her eyes.) or 7TH-02 The Blue and the Grey (Bang!). Offer
+      these concrete choices for the user to
+      confirm access. After selection, prepare the unique successor and include
+      its duplicate competitors in the actual discovery scope before native Read;
+      matching an isolated metadata scope is not native qualification.
       Remaining scenarios: a genuinely ambiguous phrase uses live
       TTS once and later unique text selects prepared audio without replaying it,
       dropping accepted speech, restarting capture or sending duplicate keys.
