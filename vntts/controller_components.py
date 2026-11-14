@@ -43,8 +43,15 @@ from vntts.generated_audio import (
 from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text, raise_playback_failure
-from vntts.ocr import OCRResult
-from vntts.ocr_worker import cancel_pending_ocr, close_ocr_worker, open_ocr_worker
+from vntts.model_assets import ModelDownloadCancelled
+from vntts.ocr import OCRPreviewCancelled, OCRResult
+from vntts.ocr_worker import (
+    cancel_pending_ocr,
+    close_ocr_worker,
+    configure_sparse_ocr,
+    open_ocr_worker,
+    warm_up_sparse_ocr,
+)
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
 from vntts.playback_observer import playback_started_context
@@ -54,6 +61,7 @@ from vntts.runtime_config import (
     get_tts_configuration,
 )
 from vntts.settings import AppSettings, preserve_loaded_runtime_settings
+from vntts.sparse_ocr import prepare_sparse_ocr_model
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.speech_backend_contract import SpeechBackendCapabilities
 from vntts.speech_worker import clear_voice_memory_caches
@@ -519,8 +527,35 @@ class RuntimeLifecycleComponent:
             load()
         return False
 
+    def _prepare_sparse_ocr(self) -> None:
+        controller = self.controller
+        configure_sparse_ocr(None)
+        if controller.settings.ocr_language.casefold() not in {"eng", "en"}:
+            return
+        controller.status_handler("Preparing short-text recognition...")
+        try:
+            path = prepare_sparse_ocr_model(
+                controller.model_assets,
+                progress=lambda _percent, message: controller.status_handler(message),
+                cancel_event=controller.shutdown_requested,
+            )
+            configure_sparse_ocr(path)
+            warm_up_sparse_ocr(controller.shutdown_requested.is_set)
+        except ModelDownloadCancelled, OCRPreviewCancelled:
+            raise
+        except Exception as error:
+            configure_sparse_ocr(None)
+            controller.error_handler(
+                RuntimeError(
+                    f"Short-text recognition is unavailable: {error}. "
+                    "Standard text recognition remains available."
+                )
+            )
+            return
+
     def _construct_live_runtime(self) -> Path:
         controller = self.controller
+        self._prepare_sparse_ocr()
         executor_specs = (
             ("capture_executor", "dialog-capture"),
             ("ocr_executor", "dialog-ocr"),
@@ -653,7 +688,10 @@ class RuntimeLifecycleComponent:
 
     def _refresh_runtime_settings(self, settings: AppSettings) -> None:
         controller = self.controller
+        previous_language = controller.settings.ocr_language
         controller.settings = settings
+        if previous_language.casefold() != settings.ocr_language.casefold():
+            self._prepare_sparse_ocr()
         with controller.speaker_announcement_lock:
             controller.last_visible_speaker_key = None
         controller.chapter_voice_preloader = ChapterVoicePreloader.load_optional(

@@ -2,32 +2,6 @@
 
 ## Active - Hansel native-run defects and original-speech qualification
 
-- [ ] **NATIVE-03: empty OCR stalls on visible short dialogue.**
-      Saved real frames contain Kakania `—!`, Isolde `...!` and Isolde `I ...`.
-      Agree the measured implementation proposal before editing product code:
-      - Keep successful Tesseract/Sauvola results. On empty dialogue OCR, isolate
-        one compact foreground line inside the established dialogue region using
-        polarity/contrast and component grouping, without game coordinates,
-        fixed symbol shapes or a manually selected crop. Discard clipped edge
-        fragments; competing foreground groups must not become arbitrary speech.
-      - Recognize that line with PP-OCRv5 English mobile through the existing
-        ONNX/RapidOCR infrastructure; prepare its model through ModelAssetManager
-        and reuse a worker-owned recognizer on macOS and Windows. Do not silently
-        apply an English model to other OCR languages. Retain the existing
-        timeout/cancellation budget and measured confidence; never timeout-skip
-        unknown text or manufacture source authority.
-      - Share the rescue between explicitly split and geometrically isolated
-        dialogue paths. Preserve captured/replayed result provenance and attempt
-        diagnostics. Remove the OCR-level ellipsis fallback only if superseded.
-        The independent visual-ellipsis check in live capture and replay remains
-        necessary for known zero-confidence/nonempty-wrong OCR cases. Remove it
-        only after the shared path qualifies those cases, speaker hints and replay
-        audit without changing unknown-text waiting.
-      - Qualify real failing frames, scale/polarity variants, ordinary dialogue,
-        background-only frames, small punctuation and letters. The prototype
-        recovers the actual failures but still confuses some synthetic isolated
-        symbols; do not claim universal punctuation recognition. Confirm bounded
-        inference, model preparation failure and cleanup before the native rerun.
 - [ ] **REVIEW-02: distinguish repeated text from repeated voice identity.**
       The quote after100631:58 really appears again, but source59 is Vertin while
       playback reused Narrator source53. Their current voices differ; the visible
@@ -38,8 +12,12 @@
       available originals remain game-only, including Communicator `Repeat.`
       (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue
       plays, sparse text progresses and the repeated quote uses the intended
-      current voice. Preserve
-      automatically changing dialogue53 ->54 ->55 without duplicate playback.
+      current voice. Preserve automatically changing dialogue53 ->54 ->55 without
+      duplicate playback. Include plain ellipsis and unknown-symbol waiting.
+      The image-level ellipsis checks in OCR/live capture/replay remain necessary
+      for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
+      Remove them only when shared recognition qualifies those same cases; the
+      sparse recognizer still confuses dots with bullets in some font controls.
       Qualify unknown-chapter cross-chapter audio reuse separately with a fresh
       context; this run reached54 after the chapter was already identified.
 - [ ] Verify genuinely partial originals separately in anecdotes/character

@@ -6,7 +6,7 @@ from threading import Event, Thread
 from time import monotonic, sleep
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from vntts import ocr_worker
 from vntts.ocr import DialogRegion, OCRRegions
@@ -44,6 +44,21 @@ def hanging_worker(connection, directory, *configuration):
     sleep(60)
 
 
+def sparse_worker(connection, directory, *configuration):
+    root = Path(directory)
+    connection.send_bytes(b"ready")
+    while connection.recv_bytes(16) == b"run":
+        request = json.loads((root / "request.json").read_text())
+        if request.get("sparse"):
+            if configuration[-1] == "hang":
+                sleep(60)
+            result = {"ok": True, "text": "I ...", "confidence": 42}
+        else:
+            result = {"ok": True, "text": "", "data": {"text": [], "conf": []}}
+        (root / "result.json").write_text(json.dumps(result))
+        connection.send_bytes(b"done")
+
+
 def crashing_worker(connection, directory, *configuration):
     connection.send_bytes(b"ready")
     connection.recv_bytes(16)
@@ -68,6 +83,74 @@ class PersistentOCRTest(unittest.TestCase):
 
     def recognize(self, **options):
         return self.owner.recognize(self.image, ocr_regions=self.regions, **options)
+
+    def sparse_image(self):
+        ImageDraw.Draw(self.image).rectangle((20, 52, 23, 75), fill="black")
+
+    def test_sparse_rgb_route_reuses_worker_and_retains_uncertain_result(self):
+        self.sparse_image()
+        self.owner.configure_sparse_model("prepared-model")
+        with patch.object(ocr_worker, "_worker_main", sparse_worker):
+            self.owner.warm_up_sparse()
+            warmed_pid = self.owner.pid
+            result = self.recognize()
+            pid = self.owner.pid
+            repeated = self.recognize()
+        self.assertEqual(result.text, "I ...")
+        self.assertEqual(result.confidence, 42)
+        self.assertFalse(result.is_readable())
+        self.assertEqual(result.profile, "ppocrv5-sparse")
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(repeated, result)
+        self.assertEqual(self.owner.pid, pid)
+        self.assertEqual(self.owner.pid, warmed_pid)
+
+    def test_timeout_during_sparse_inference_reaps_worker(self):
+        self.sparse_image()
+        self.owner.configure_sparse_model("hang")
+        with patch.object(ocr_worker, "_worker_main", sparse_worker):
+            with self.assertRaises(TimeoutError):
+                self.recognize(timeout=1)
+        self.assertIsNone(self.owner.pid)
+
+    def test_cancellation_during_sparse_inference_reaps_worker(self):
+        self.sparse_image()
+        self.owner.configure_sparse_model("hang")
+        errors = []
+
+        def read():
+            try:
+                self.recognize()
+            except Exception as error:
+                errors.append(error)
+
+        with patch.object(ocr_worker, "_worker_main", sparse_worker):
+            reader = Thread(target=read)
+            reader.start()
+            try:
+                deadline = monotonic() + 3
+                while monotonic() < deadline:
+                    directory = self.owner._directory
+                    request = (
+                        Path(directory.name) / "request.json" if directory else None
+                    )
+                    if request and request.exists():
+                        try:
+                            if json.loads(request.read_text()).get("sparse"):
+                                break
+                        except json.JSONDecodeError:
+                            pass
+                    sleep(0.01)
+                else:
+                    self.fail("Sparse inference did not start")
+                self.owner.cancel_pending()
+            finally:
+                self.owner.cancel_pending()
+                reader.join(4)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ocr_worker.OCRPreviewCancelled)
+        self.assertIsNone(self.owner.pid)
 
     def test_reuses_pid_and_preserves_parent_registry_pipeline(self):
         with patch.object(ocr_worker, "_worker_main", successful_worker):
@@ -165,6 +248,26 @@ class PersistentOCRTest(unittest.TestCase):
             ocr_worker.open_ocr_worker()
             self.assertIsNone(ocr_worker._service)
             self.assertTrue(ocr_worker._accepting)
+
+    def test_model_configuration_does_not_reopen_closed_ocr_admission(self):
+        with (
+            patch.object(ocr_worker, "_service", None),
+            patch.object(ocr_worker, "_accepting", False),
+            patch.object(ocr_worker, "_sparse_model_path", None),
+        ):
+            ocr_worker.configure_sparse_ocr("prepared-model")
+            self.assertIsNone(ocr_worker._service)
+            with self.assertRaisesRegex(RuntimeError, "shutting down"):
+                ocr_worker.recognize_dialog_image_result(self.image)
+            ocr_worker.open_ocr_worker()
+            with patch.object(
+                ocr_worker, "PersistentOCR", return_value=self.owner
+            ) as owner:
+                with patch.object(ocr_worker, "_worker_main", successful_worker):
+                    ocr_worker.recognize_dialog_image_result(
+                        self.image, ocr_regions=self.regions
+                    )
+            owner.assert_called_once_with("prepared-model")
 
     def test_runtime_start_serializes_ocr_admission_with_shutdown(self):
         from types import SimpleNamespace

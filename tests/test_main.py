@@ -221,6 +221,18 @@ def stub_live_sequence_plan(*lines):
 
 
 class MainTest(unittest.TestCase):
+    def setUp(self):
+        prepare = patch(
+            "vntts.controller_components.prepare_sparse_ocr_model",
+            return_value=Path("models/short-text.onnx"),
+        )
+        prepare.start()
+        self.addCleanup(prepare.stop)
+        for name in ("warm_up_sparse_ocr", "configure_sparse_ocr"):
+            owner = patch(f"vntts.controller_components.{name}")
+            owner.start()
+            self.addCleanup(owner.stop)
+
     def test_record_and_display_dialogue_preserves_full_long_text(self):
         dialogs = []
         controller = AppController(

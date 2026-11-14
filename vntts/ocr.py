@@ -44,6 +44,9 @@ OcrDataRecognizer = Callable[..., OcrData]
 OcrCombinedRecognizer = Callable[
     [Image.Image, str, Callable[[], float | None]], tuple[str, OcrData]
 ]
+OcrSparseRecognizer = Callable[
+    [Image.Image, Callable[[], float | None]], tuple[str, float]
+]
 _OcrValue = TypeVar("_OcrValue")
 
 
@@ -878,6 +881,7 @@ def recognize_dialog_image_result(
     cancelled: Callable[[], bool] | None = None,
     ocr_regions: OCRRegions | None = None,
     recognize_combined: OcrCombinedRecognizer | None = None,
+    recognize_sparse: OcrSparseRecognizer | None = None,
 ) -> OCRResult:
     remaining_timeout = _ocr_budget(timeout, cancelled)
     if recognize_data is None or (
@@ -911,6 +915,7 @@ def recognize_dialog_image_result(
             remaining_timeout,
             speaker=False,
             recognize_combined=recognize_combined,
+            recognize_sparse=recognize_sparse,
         )
         speaker_noise = is_speaker_ocr_noise(
             speaker.text, speaker.confidence, minimum_confidence
@@ -944,6 +949,7 @@ def recognize_dialog_image_result(
         language,
         recognize_combined,
         remaining_timeout,
+        recognize_sparse,
     )
 
 
@@ -956,6 +962,7 @@ def _recognize_isolated_region(
     *,
     speaker: bool,
     recognize_combined: OcrCombinedRecognizer | None,
+    recognize_sparse: OcrSparseRecognizer | None = None,
 ) -> OCRResult:
     has_speaker_glyphs = not speaker or speaker_glyphs_visible(image)
     remaining_timeout()
@@ -1018,7 +1025,45 @@ def _recognize_isolated_region(
         and detect_standalone_ellipsis_frame(image, dialogue_only=True)
     ):
         return replace(result, text="...")
-    return result
+    return (
+        _recover_sparse_dialogue(
+            result, image, language, remaining_timeout, recognize_sparse
+        )
+        if not speaker
+        else result
+    )
+
+
+def _recover_sparse_dialogue(
+    result: OCRResult,
+    image: Image.Image,
+    language: str,
+    remaining_timeout: Callable[[], float | None],
+    recognize_sparse: OcrSparseRecognizer | None,
+) -> OCRResult:
+    if (
+        result.text.strip()
+        or recognize_sparse is None
+        or language.casefold() not in {"eng", "en"}
+    ):
+        return result
+    from vntts.sparse_ocr import isolate_sparse_line
+
+    remaining_timeout()
+    crop = isolate_sparse_line(image)
+    remaining_timeout()
+    if crop is None:
+        return result
+    text, confidence = recognize_sparse(crop, remaining_timeout)
+    remaining_timeout()
+    return replace(
+        result,
+        text=text.strip(),
+        confidence=confidence,
+        profile="ppocrv5-sparse",
+        attempts=result.attempts + 1,
+        processed_image=crop,
+    )
 
 
 def _recognize_preprocessed_dialog(
@@ -1029,6 +1074,7 @@ def _recognize_preprocessed_dialog(
     language: str,
     recognize_combined: OcrCombinedRecognizer | None,
     remaining_timeout: Callable[[], float | None],
+    recognize_sparse: OcrSparseRecognizer | None = None,
 ) -> OCRResult:
     if recognize_combined is not None:
         recognized_text, data = recognize_combined(image, language, remaining_timeout)
@@ -1067,6 +1113,7 @@ def _recognize_preprocessed_dialog(
             image_width=image.width,
             image_height=image.height,
         )
+    dialog_image = None
     if speaker is not None:
         character, speaker_line = speaker
         dialog_image = crop_dialog_text(image, speaker_line)
@@ -1115,7 +1162,7 @@ def _recognize_preprocessed_dialog(
             lang=language,
         )
     character, text = parse_recognized_dialog(recognized_text, voice_registry)
-    return OCRResult(
+    result = OCRResult(
         character,
         text,
         calculate_ocr_confidence(data),
@@ -1123,6 +1170,21 @@ def _recognize_preprocessed_dialog(
         1,
         processed_image=image,
     )
+    if dialog_image is not None and not text.strip():
+        recovered = _recover_sparse_dialogue(
+            replace(result, character=speaker[0] if speaker else character),
+            dialog_image,
+            language,
+            remaining_timeout,
+            recognize_sparse,
+        )
+        if recovered.attempts > result.attempts:
+            return replace(
+                recovered,
+                speaker_image=image,
+                dialogue_confidence=recovered.confidence,
+            )
+    return result
 
 
 def _recognize_psm6_text_data(

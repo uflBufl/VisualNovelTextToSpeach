@@ -2,7 +2,7 @@ import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import RLock
+from threading import Event, RLock
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
@@ -12,6 +12,7 @@ from vntts.controller_components import (
     RuntimeLifecycleComponent,
 )
 from vntts.generated_audio import GeneratedAudioFallbackBackend
+from vntts.model_assets import ModelDownloadCancelled
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback_observer import observe_playback_start, playback_started_context
@@ -217,11 +218,73 @@ if __name__ == "__main__":
 
 
 class RuntimeLifecycleTest(unittest.TestCase):
+    def test_sparse_model_preparation_uses_current_language_and_shutdown_owner(self):
+        controller = SimpleNamespace(
+            settings=AppSettings(ocr_language="eng"),
+            model_assets=Mock(),
+            status_handler=Mock(),
+            error_handler=Mock(),
+            shutdown_requested=Event(),
+        )
+        lifecycle = RuntimeLifecycleComponent(controller)
+        model = Path("models/short-text.onnx")
+        with (
+            patch(
+                "vntts.controller_components.prepare_sparse_ocr_model",
+                return_value=model,
+            ) as prepare,
+            patch("vntts.controller_components.configure_sparse_ocr") as configure,
+            patch("vntts.controller_components.warm_up_sparse_ocr") as warm,
+        ):
+            lifecycle._prepare_sparse_ocr()
+            self.assertIs(prepare.call_args.args[0], controller.model_assets)
+            self.assertIs(
+                prepare.call_args.kwargs["cancel_event"], controller.shutdown_requested
+            )
+            self.assertEqual(configure.call_args.args, (model,))
+            warm.assert_called_once_with(controller.shutdown_requested.is_set)
+            prepare.reset_mock()
+            configure.reset_mock()
+            controller.settings = controller.settings.updated(ocr_language="rus")
+            lifecycle._prepare_sparse_ocr()
+            prepare.assert_not_called()
+            configure.assert_called_once_with(None)
+
+    def test_sparse_model_failure_disables_only_rescue_and_cancellation_propagates(
+        self,
+    ):
+        controller = SimpleNamespace(
+            settings=AppSettings(),
+            model_assets=Mock(),
+            status_handler=Mock(),
+            error_handler=Mock(),
+            shutdown_requested=Event(),
+        )
+        lifecycle = RuntimeLifecycleComponent(controller)
+        with (
+            patch(
+                "vntts.controller_components.prepare_sparse_ocr_model",
+                side_effect=OSError("offline"),
+            ) as prepare,
+            patch("vntts.controller_components.configure_sparse_ocr") as configure,
+        ):
+            lifecycle._prepare_sparse_ocr()
+            configure.assert_called_with(None)
+            self.assertIn("offline", str(controller.error_handler.call_args.args[0]))
+            prepare.side_effect = ModelDownloadCancelled("cancelled")
+            with self.assertRaises(ModelDownloadCancelled):
+                lifecycle._prepare_sparse_ocr()
+
     def test_startup_and_settings_refresh_wire_current_dialog_read_inputs(self):
         backend = Mock()
         reader = Mock(is_running=False)
         scheduler_factory = Mock()
         with (
+            patch(
+                "vntts.controller_components.prepare_sparse_ocr_model",
+                return_value=Path("models/short-text.onnx"),
+            ),
+            patch("vntts.controller_components.warm_up_sparse_ocr"),
             patch(
                 "vntts.controller.initialize_voice_registry",
                 return_value=CharacterVoiceRegistry(),

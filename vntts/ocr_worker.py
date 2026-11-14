@@ -44,6 +44,7 @@ def _worker_main(
     executable: str,
     tessdata: str | None,
     library: str | None,
+    sparse_model: str | None = None,
 ) -> None:
     # Set before loading native OpenMP; never throttle the application's TTS.
     os.environ["OMP_THREAD_LIMIT"] = "1"
@@ -52,6 +53,7 @@ def _worker_main(
     root = Path(directory)
     engine = None
     language = None
+    sparse_recognizer = None
     try:
         connection.send_bytes(b"ready")
         while connection.recv_bytes(16) == b"run":
@@ -67,26 +69,46 @@ def _worker_main(
                 ):
                     raise ValueError("OCR image dimensions exceed worker limit")
                 pixels = (root / "image.raw").read_bytes()
-                if len(pixels) != width * height:
+                mode = request.get("mode", "L")
+                if mode not in {"L", "RGB"} or len(pixels) != width * height * len(
+                    mode
+                ):
                     raise ValueError("Invalid OCR image payload")
-                if engine is None or language != request["language"]:
-                    if engine is not None:
-                        engine.close()
-                        engine = None
-                    engine = NativeTesseract(
-                        request["language"],
-                        executable=executable,
-                        tessdata_dir=tessdata,
-                        library=library,
+                if request.get("sparse"):
+                    if sparse_model is None:
+                        raise RuntimeError("Sparse dialogue model is not prepared")
+                    if sparse_recognizer is None:
+                        from vntts.sparse_ocr import SparseLineRecognizer
+
+                        sparse_recognizer = SparseLineRecognizer(sparse_model)
+                    text, confidence = sparse_recognizer.recognize(
+                        Image.frombytes(mode, (width, height), pixels)
                     )
-                    language = request["language"]
-                text, data = engine.recognize(
-                    Image.frombytes("L", (width, height), pixels),
-                    request["psm"],
-                    text=request["text"],
-                    data=request["data"],
-                )
-                result = {"ok": True, "text": text, "data": data, "pid": os.getpid()}
+                    result = {"ok": True, "text": text, "confidence": confidence}
+                else:
+                    if engine is None or language != request["language"]:
+                        if engine is not None:
+                            engine.close()
+                            engine = None
+                        engine = NativeTesseract(
+                            request["language"],
+                            executable=executable,
+                            tessdata_dir=tessdata,
+                            library=library,
+                        )
+                        language = request["language"]
+                    text, data = engine.recognize(
+                        Image.frombytes("L", (width, height), pixels),
+                        request["psm"],
+                        text=request["text"],
+                        data=request["data"],
+                    )
+                    result = {
+                        "ok": True,
+                        "text": text,
+                        "data": data,
+                        "pid": os.getpid(),
+                    }
             except Exception as error:
                 result = {"ok": False, "error": str(error), "pid": os.getpid()}
             payload = json.dumps(result).encode("utf-8")
@@ -105,7 +127,7 @@ def _worker_main(
 
 
 class PersistentOCR:
-    def __init__(self) -> None:
+    def __init__(self, sparse_model_path: str | Path | None = None) -> None:
         self._lock = Lock()
         self._state_lock = Lock()
         self._cancel = Event()
@@ -113,7 +135,35 @@ class PersistentOCR:
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
         self._directory: TemporaryDirectory[str] | None = None
-        self._configuration: tuple[str, str | None, str | None] | None = None
+        self._configuration: tuple[str, str | None, str | None, str | None] | None = (
+            None
+        )
+        self._sparse_model_path = str(sparse_model_path) if sparse_model_path else None
+
+    def configure_sparse_model(self, path: str | Path | None) -> None:
+        with self._lock:
+            self._sparse_model_path = str(path) if path else None
+
+    def warm_up_sparse(self, cancelled: Callable[[], bool] | None = None) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("OCR service is closed")
+            cancellation = self._cancel
+        check = _ocr_budget(
+            _DEFAULT_TIMEOUT,
+            lambda: cancellation.is_set() or (cancelled is not None and cancelled()),
+        )
+        while not self._lock.acquire(timeout=0.025):
+            check()
+        try:
+            check()
+            if self._sparse_model_path:
+                self._run_sparse(Image.new("RGB", (32, 32), "white"), check)
+        except BaseException:
+            self._discard()
+            raise
+        finally:
+            self._lock.release()
 
     @property
     def pid(self) -> int | None:
@@ -181,6 +231,7 @@ class PersistentOCR:
             str(runtime.tesseract_cmd),
             os.environ.get("TESSDATA_PREFIX"),
             os.environ.get("VNTTS_TESSERACT_LIBRARY"),
+            self._sparse_model_path,
         )
         if (
             self._process is not None
@@ -225,6 +276,34 @@ class PersistentOCR:
         modes = {tesseract_config(psm): psm for psm in (6, 7, 11)}
         if config not in modes or img.mode != "L":
             raise ValueError("Unsupported native OCR input")
+        result = self._run_request(
+            img,
+            check,
+            {"language": lang, "psm": modes[config], "text": text, "data": data},
+        )
+        if not isinstance(result.get("text"), str) or not isinstance(
+            result.get("data"), dict
+        ):
+            raise RuntimeError("Invalid OCR worker result")
+        return result["text"], result["data"]
+
+    def _run_sparse(
+        self, image: Image.Image, check: Callable[[], float | None]
+    ) -> tuple[str, float]:
+        result = self._run_request(image.convert("RGB"), check, {"sparse": True})
+        if not isinstance(result.get("text"), str) or not isinstance(
+            result.get("confidence"), (int, float)
+        ):
+            raise RuntimeError("Invalid sparse OCR worker result")
+        return result["text"], float(result["confidence"])
+
+    def _run_request(
+        self,
+        img: Image.Image,
+        check: Callable[[], float | None],
+        request: dict[str, object],
+    ) -> dict[str, Any]:
+        check()
         if img.width * img.height > _MAX_PIXELS:
             raise ValueError("OCR image exceeds worker limit")
         self._ensure_worker(check)
@@ -232,15 +311,7 @@ class PersistentOCR:
         root = Path(self._directory.name)
         (root / "image.raw").write_bytes(img.tobytes())
         (root / "request.json").write_text(
-            json.dumps(
-                {
-                    "size": img.size,
-                    "language": lang,
-                    "psm": modes[config],
-                    "text": text,
-                    "data": data,
-                }
-            )
+            json.dumps({"size": img.size, "mode": img.mode, **request})
         )
         check()
         self._connection.send_bytes(b"run")
@@ -254,11 +325,7 @@ class PersistentOCR:
             raise RuntimeError(
                 f"Native OCR failed: {result.get('error', 'invalid response') if isinstance(result, dict) else 'invalid response'}"
             )
-        if not isinstance(result.get("text"), str) or not isinstance(
-            result.get("data"), dict
-        ):
-            raise RuntimeError("Invalid OCR worker result")
-        return result["text"], result["data"]
+        return result
 
     def recognize(
         self,
@@ -322,6 +389,7 @@ class PersistentOCR:
                 ocr_regions=ocr_regions,
                 timeout=check(),
                 cancelled=is_cancelled,
+                recognize_sparse=self._run_sparse if self._sparse_model_path else None,
             )
             check()
             return result
@@ -374,6 +442,27 @@ class PersistentOCR:
 _service_lock = Lock()
 _service: PersistentOCR | None = None
 _accepting = True
+_sparse_model_path: str | Path | None = None
+
+
+def configure_sparse_ocr(model_path: str | Path | None) -> None:
+    global _sparse_model_path
+    with _service_lock:
+        _sparse_model_path = model_path
+        service = _service if _accepting else None
+    if service is not None:
+        service.configure_sparse_model(model_path)
+
+
+def warm_up_sparse_ocr(cancelled: Callable[[], bool] | None = None) -> None:
+    global _service
+    with _service_lock:
+        if not _accepting:
+            raise RuntimeError("OCR service is shutting down")
+        if _service is None:
+            _service = PersistentOCR(_sparse_model_path)
+        service = _service
+    service.warm_up_sparse(cancelled)
 
 
 def recognize_dialog_image_result(
@@ -384,7 +473,7 @@ def recognize_dialog_image_result(
         if not _accepting:
             raise RuntimeError("OCR service is shutting down")
         if _service is None:
-            _service = PersistentOCR()
+            _service = PersistentOCR(_sparse_model_path)
         service = _service
     return service.recognize(image, voice_registry, **options)
 
