@@ -2,13 +2,6 @@
 
 ## Active - Hansel native-run defects and original-speech qualification
 
-- [ ] **NATIVE-01: complete short originals incorrectly fall back to live TTS.**
-      Exact Communicator `Repeat.` (100631:13) and Marcus `Doctor ...` (100631:36)
-      are rejected as `expected-incomplete` because later same-speaker lines
-      continue those strings. Rework complete-versus-growing resolution using
-      chapter position and candidate evidence; retain genuine typewriter-prefix
-      protection. Verify the shared admission and routing consumers keep these
-      originals game-only without phrase-specific exceptions.
 - [ ] **NATIVE-03: empty OCR stalls on visible short dialogue.**
       Saved real frames contain Kakania `—!`, Isolde `...!` and Isolde `I ...`.
       Current OCR returns empty; simply changing PSM6 to PSM7/13 does not recover
@@ -23,8 +16,10 @@
       evidence before choosing a fix; do not classify legitimate repeated text as
       an unwanted duplicate or assume identical text implies equivalent audio.
 - [ ] After the fixes, rerun Hansel6TH-23 without tester advancement. Confirm
-      available originals remain game-only, unvoiced dialogue plays, sparse text
-      progresses and the repeated quote uses the intended current voice. Preserve
+      available originals remain game-only, including Communicator `Repeat.`
+      (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue
+      plays, sparse text progresses and the repeated quote uses the intended
+      current voice. Preserve
       automatically changing dialogue53 ->54 ->55 without duplicate playback.
       Qualify unknown-chapter cross-chapter audio reuse separately with a fresh
       context; this run reached54 after the chapter was already identified.

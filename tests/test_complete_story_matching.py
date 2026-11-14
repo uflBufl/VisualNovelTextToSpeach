@@ -251,6 +251,131 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             )[0]
         )
 
+    def test_expected_short_line_is_complete_despite_distant_continuation(self):
+        for text, continuation, speaker in (
+            ("Repeat.", "Repeat. This is the 24 hour countdown.", "Communicator"),
+            ("Doctor ...", "Doctor, wait! There might be another way!", "Marcus"),
+        ):
+            previous = dialogue("Previous dialogue.", "previous", sequence=10)
+            short = replace(
+                dialogue(text, "short", speaker=speaker, sequence=111),
+                story_order=12,
+                source_audio_status="available",
+                source_audio_authoritative=True,
+                source_audio_completeness="full",
+                source_audio_duration_seconds=0.5,
+            )
+            following = dialogue("Another dialogue.", "following", sequence=13)
+            longer = dialogue(continuation, "longer", speaker=speaker, sequence=16)
+            for (
+                full_continuation,
+                anchor,
+                prefer_synthesis,
+                allow_prefix,
+            ) in itertools.product(
+                (False, True), (previous, short), (False, True), (False, True)
+            ):
+                with self.subTest(
+                    text=text,
+                    full_continuation=full_continuation,
+                    anchor=anchor.line_id,
+                    prefer_synthesis=prefer_synthesis,
+                    allow_prefix=allow_prefix,
+                ):
+                    long = replace(
+                        longer,
+                        source_audio_status=short.source_audio_status,
+                        source_audio_authoritative=full_continuation,
+                        source_audio_completeness=short.source_audio_completeness,
+                        source_audio_duration_seconds=0.5,
+                    )
+                    resolver = ChapterVoicePreloader((long, short, following, previous))
+                    resolver.select_line_id(anchor.line_id)
+                    position = resolver.current_match
+                    match = resolver.resolve_observation_among(
+                        speaker,
+                        text,
+                        resolver.by_line_id,
+                        update_context=False,
+                        prefer_synthesis=prefer_synthesis,
+                        allow_prefix=allow_prefix,
+                    )
+                    self.assertIs(match.line, short)
+                    self.assertTrue(match.complete)
+                    self.assertFalse(match.prefix)
+                    self.assertIs(resolver.current_match, position)
+
+    def test_position_does_not_turn_growing_or_recovered_text_into_a_short_line(self):
+        earlier = dialogue("Earlier dialogue.", "earlier", sequence=2)
+        previous = dialogue("Previous dialogue.", "previous", sequence=10)
+        short = dialogue("Repeat.", "short", sequence=12)
+        middle = dialogue("Another dialogue.", "middle", sequence=13)
+        longer = dialogue("Repeat. This is the full message.", "longer", sequence=16)
+        for anchor, observed in (
+            (None, "Repeat."),
+            (earlier, "Repeat."),
+            (middle, "Repeat."),
+            (longer, "Repeat."),
+            (previous, "Repeot."),
+            (previous, "ae Repeat."),
+        ):
+            with self.subTest(anchor=anchor, observed=observed):
+                resolver = ChapterVoicePreloader(
+                    (earlier, previous, short, middle, longer)
+                )
+                if anchor is not None:
+                    resolver.select_line_id(anchor.line_id)
+                position = resolver.current_match
+                match = resolver.resolve_observation_among(
+                    "Ada",
+                    observed,
+                    resolver.by_line_id,
+                    recover_crop_noise=True,
+                    update_context=False,
+                )
+                self.assertIsNone(match.line)
+                self.assertEqual(match.method, "expected-incomplete")
+                self.assertIs(resolver.current_match, position)
+
+        resolver = ChapterVoicePreloader((previous, short, longer))
+        resolver.select_line_id(short.line_id)
+        match = resolver.resolve_observation_among(
+            "Ada", short.text, resolver.by_line_id, update_context=False
+        )
+        self.assertIsNone(match.line)
+        self.assertEqual(match.method, "expected-incomplete")
+
+    def test_incomplete_synthesis_cannot_select_an_unexpected_original(self):
+        original = replace(
+            dialogue("The gate is open.", "original", sequence=2),
+            source_audio_status="available",
+            source_audio_authoritative=True,
+            source_audio_completeness="full",
+            source_audio_duration_seconds=1.0,
+        )
+        longer = dialogue("The gate is opem. Follow me.", "longer", sequence=4)
+        for anchor in (None, longer):
+            with self.subTest(anchor=anchor):
+                resolver = ChapterVoicePreloader((original, longer))
+                if anchor is not None:
+                    resolver.select_line_id(anchor.line_id)
+                position = resolver.current_match
+                baseline = resolver.resolve_observation_among(
+                    "Ada", original.text, (longer.line_id,), update_context=False
+                )
+                diagnostics = resolver.last_resolution_diagnostics.copy()
+                match = resolver.resolve_observation_among(
+                    "Ada",
+                    original.text,
+                    resolver.by_line_id,
+                    prefer_synthesis=True,
+                    update_context=False,
+                )
+                self.assertEqual(match, baseline)
+                self.assertEqual(match.method, "expected-incomplete")
+                self.assertEqual(resolver.last_resolution_diagnostics, diagnostics)
+                self.assertIs(resolver.current_match, position)
+
     def test_speaker_scopes_fuzzy_margin_without_relaxing_same_speaker_competitors(
         self,
     ):

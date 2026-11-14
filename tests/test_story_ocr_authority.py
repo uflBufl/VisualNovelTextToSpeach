@@ -27,6 +27,7 @@ from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioRoute,
     PreparedGeneratedAudio,
+    SourceAudioRoute,
 )
 from vntts.live import RecognizedDialog, SpeechChunk
 from vntts.live_sequence import StoryCursorState
@@ -56,6 +57,61 @@ def observed(text, speaker="a ae Ce", dialogue_confidence=94.9):
 
 
 class StoryOCRAuthorityTest(unittest.TestCase):
+    def test_expected_short_original_keeps_game_audio_after_ocr_admission(self):
+        for text, continuation, speaker in (
+            ("Repeat.", "Repeat. This is the 24 hour countdown.", "Communicator"),
+            ("Doctor ...", "Doctor, wait! There might be another way!", "Marcus"),
+        ):
+            with self.subTest(text=text):
+                previous = story_line("Previous dialogue.", line_id="previous")
+                short = replace(
+                    story_line(text, speaker, "short"),
+                    sequence=3,
+                    source_audio_status="available",
+                    source_audio_id="native-short",
+                    source_audio_duration_seconds=0.5,
+                    source_audio_completeness="full",
+                    source_audio_authoritative=True,
+                )
+                following = replace(
+                    story_line("Next dialogue.", line_id="following"), sequence=4
+                )
+                longer = replace(
+                    story_line(continuation, speaker, "longer"), sequence=8
+                )
+                controller = self.controller((previous, short, following, longer))
+                controller.chapter_voice_preloader.select_line_id(previous.line_id)
+                live = Mock()
+                live.name = "live-test"
+                live.capabilities = SpeechBackendCapabilities(True, False, True)
+                backend = GeneratedAudioFallbackBackend(
+                    live,
+                    None,
+                    controller.chapter_voice_preloader,
+                    audio_source_policy="prefer-game-audio",
+                    audio_output=Mock(),
+                )
+                backend.set_live_mode_active(True)
+                controller.speech_backend = backend
+                raw = replace(observed(text, speaker), speaker_confidence=96)
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    actual = controller._recognize_live_frame(
+                        CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                    )
+                self.assertIsInstance(actual, RecognizedDialog)
+                route = backend.prepare_route(
+                    actual.character,
+                    actual.text,
+                    line_id=actual.line_id,
+                    resolve_unidentified=False,
+                )
+                self.assertIsInstance(route, SourceAudioRoute)
+                self.assertEqual(route.trace.line_id, short.line_id)
+                live.prepare_playback.assert_not_called()
+
     def test_named_short_dialogue_reaches_prepared_audio_despite_other_speaker_prefix(
         self,
     ):

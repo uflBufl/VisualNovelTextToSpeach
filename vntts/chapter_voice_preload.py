@@ -590,6 +590,25 @@ class ChapterVoicePreloader:
             for line_id in allowed
             if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
         )
+        expected_positions: set[tuple[str, int]] = set()
+        current = self.current_match
+        if current is not None:
+            position = _story_position(current)
+            expected_positions.add((current.chapter, position))
+            successor = next(
+                (
+                    _story_position(candidate)
+                    for candidate in self.by_chapter.get(current.chapter, ())
+                    if _story_position(candidate) > position
+                ),
+                None,
+            )
+            if successor is not None:
+                expected_positions.add((current.chapter, successor))
+
+        def expected(row: ChapterDialogue) -> bool:
+            return (row.chapter, _story_position(row)) in expected_positions
+
         if prefer_synthesis:
             # Originals remain trackable, but cannot compete for synthesis.
             eligible = tuple(row for row in valid if not row.has_full_source_audio)
@@ -610,19 +629,30 @@ class ChapterVoicePreloader:
             speaker = _normalize(character) if allow_speaker_evidence else ""
             if match.method == "expected-no-match" and originals:
                 match = resolve(originals)
-            elif (
-                match.line is not None
-                and speaker
-                and _normalize(match.line.speaker) != speaker
+            elif speaker and (
+                match.method == "expected-incomplete"
+                or (
+                    match.line is not None and _normalize(match.line.speaker) != speaker
+                )
             ):
                 named_originals = tuple(
                     row for row in originals if _normalize(row.speaker) == speaker
                 )
                 if named_originals:
-                    # Filtering must not turn a known nameplate into another role.
+                    # Synthesis filtering must not hide an expected original.
                     diagnostics = self.last_resolution_diagnostics.copy()
                     canonical = resolve((*eligible, *named_originals))
-                    if canonical.line is None or canonical.line.has_full_source_audio:
+                    if (
+                        canonical.line is not None
+                        and canonical.line.has_full_source_audio
+                        and (
+                            match.method != "expected-incomplete"
+                            or (
+                                canonical.method == "expected-exact"
+                                and expected(canonical.line)
+                            )
+                        )
+                    ) or (match.line is not None and canonical.line is None):
                         match = canonical
                     else:
                         self.last_resolution_diagnostics = diagnostics
@@ -801,6 +831,11 @@ class ChapterVoicePreloader:
                 for other in valid
             ):
                 return finish(StoryObservationMatch(None, "expected-ambiguous"))
+            expected_complete = (
+                not best.noise
+                and _normalize_exact_text(text) == _normalize_exact_text(row.text)
+                and expected(row)
+            )
             continuation = False
             for other in valid:
                 if (
@@ -808,6 +843,9 @@ class ChapterVoicePreloader:
                     or self.matching_text[other].alphanumeric_length
                     <= self.matching_text[row].alphanumeric_length
                 ):
+                    continue
+                # A distant continuation cannot veto an exact current/next line.
+                if expected_complete and not expected(other):
                     continue
                 evidence = compare(best.observed, other)
                 if (
