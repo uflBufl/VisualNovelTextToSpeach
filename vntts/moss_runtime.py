@@ -236,6 +236,11 @@ class RetainedMossRuntime:
         model_name = options.get("model_name")
         if not moss_cpp_requested(model_name):
             return self.backend_factory(registry, **options)
+        return self._native_backend_for(registry, options)
+
+    def _native_backend_for(
+        self, registry: CharacterVoiceRegistry, options: BackendOptions
+    ) -> _MossBackendLease:
         with self._operation_lock:
             self._ensure_backend(registry, options, load=True)
         return _MossBackendLease(self, registry, dict(options))
@@ -293,7 +298,7 @@ class RetainedMossRuntime:
             return create_backend(name, registry, cache_root, **options)
         options.pop("terms_accepted", None)
         options.pop("allow_gated_model_access", None)
-        return self.backend_for(registry, **options)
+        return self._native_backend_for(registry, options)
 
     def _configured_backend(
         self, lease: _MossBackendLease, *, request: SynthesisRequest | None = None

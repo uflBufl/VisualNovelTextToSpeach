@@ -41,11 +41,6 @@ from vntts.audio_store import (
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.generation_lease import GenerationLease, process_is_alive
-from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
-    write_generated_manifest_from_state,
-    write_runtime_progress_manifest_from_state,
-)
 from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_REASON,
     AUDIO_EVENT_OMISSION_SCHEMA,
@@ -219,30 +214,8 @@ class PregenerationInputStore:
                 story_path = staging / "story-index.jsonl"
                 voice_path = staging / "voice-manifest.json"
                 queue_path = staging / "queue.jsonl"
-                phase_started, cpu_started = perf_counter(), process_time()
-                routed_records = _routed_story_records(
-                    selected,
-                    effective["line_voice_characters"],
-                )
-                story_metadata, selected_records, semantic_evidence = (
-                    project_source_audio_semantics(
-                        story,
-                        routed_records,
-                        staging,
-                    )
-                )
-                story_metadata = dict(story_metadata)
-                story_metadata.pop("selection_origin", None)
-                write_story_index_document(story_path, story_metadata, selected_records)
-                if semantic_evidence is not None:
-                    load_source_audio_semantic_evidence(semantic_evidence, story_path)
-                _record_input_phase(
-                    "story-projection",
-                    phase_started,
-                    cpu_started,
-                    files_examined=1 + (1 if semantic_evidence is not None else 0),
-                    bytes_examined=_file_size(story_path)
-                    + _file_size(semantic_evidence),
+                semantic_evidence = _write_projected_story(
+                    staging, story_path, story, selected, effective
                 )
                 _raise_if_cancelled(cancellation)
                 phase_started, cpu_started = perf_counter(), process_time()
@@ -433,6 +406,40 @@ def _recording_fingerprint(path: Path) -> tuple[int, ...]:
     )
 
 
+def _write_projected_story(
+    staging: Path,
+    story_path: Path,
+    story: StoryIndexDocument,
+    selected: Sequence[StoryIndexRecord],
+    effective: EffectiveVoiceRoutes,
+) -> Path | None:
+    phase_started, cpu_started = perf_counter(), process_time()
+    routed_records = _routed_story_records(
+        selected,
+        effective["line_voice_characters"],
+    )
+    story_metadata, selected_records, semantic_evidence = (
+        project_source_audio_semantics(
+            story,
+            routed_records,
+            staging,
+        )
+    )
+    story_metadata = dict(story_metadata)
+    story_metadata.pop("selection_origin", None)
+    write_story_index_document(story_path, story_metadata, selected_records)
+    if semantic_evidence is not None:
+        load_source_audio_semantic_evidence(semantic_evidence, story_path)
+    _record_input_phase(
+        "story-projection",
+        phase_started,
+        cpu_started,
+        files_examined=1 + (1 if semantic_evidence is not None else 0),
+        bytes_examined=_file_size(story_path) + _file_size(semantic_evidence),
+    )
+    return semantic_evidence
+
+
 def _reuse_completed_audio(
     current: PregenerationInput, plan: VoicePlan, job_store: PregenerationJobStore
 ) -> None:
@@ -613,31 +620,6 @@ def _reuse_completed_audio(
             ) from error
     try:
         if not saved:
-            if (
-                existing is not None
-                and not (
-                    current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME
-                ).is_file()
-            ):
-                with GenerationLease(
-                    current.output_directory,
-                    queue_sha256,
-                    process_checker=process_is_alive,
-                ):
-                    latest = load_generation_state_from_snapshot(
-                        state_path, queue, queue_sha256, validate_files=False
-                    )
-                    if latest.get("active") is None:
-                        write_generated_manifest_from_state(
-                            latest,
-                            current.output_directory,
-                            current.output_directory / "manifest.json",
-                        )
-                        write_runtime_progress_manifest_from_state(
-                            latest,
-                            current.output_directory,
-                            current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
-                        )
             return
         with staged_directory(
             current.directory.parent, prefix=".generation-reuse-"
@@ -664,12 +646,6 @@ def _reuse_completed_audio(
                 queue,
                 queue_sha256,
                 validate_files=False,
-            )
-            write_generated_manifest_from_state(
-                state, staging, staging / "manifest.json"
-            )
-            write_runtime_progress_manifest_from_state(
-                state, staging, staging / RUNTIME_PROGRESS_MANIFEST_NAME
             )
             if existing is None:
                 rename_directory_no_replace(staging, current.output_directory)
@@ -698,16 +674,6 @@ def _reuse_completed_audio(
                     if isinstance(latest_controls, dict):
                         latest_controls.update(controls)
                     write_generation_state(state_path, latest)
-                    write_generated_manifest_from_state(
-                        latest,
-                        current.output_directory,
-                        current.output_directory / "manifest.json",
-                    )
-                    write_runtime_progress_manifest_from_state(
-                        latest,
-                        current.output_directory,
-                        current.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
-                    )
     except (AtomicPublicationError, BulkGenerationError, OSError, ValueError) as error:
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"
@@ -851,10 +817,6 @@ def initialize_audio_event_omissions(
                     changed_items=tuple(changed),
                     controls_unchanged=True,
                 )
-            write_generated_manifest_from_state(state, output, output / "manifest.json")
-            write_runtime_progress_manifest_from_state(
-                state, output, output / RUNTIME_PROGRESS_MANIFEST_NAME
-            )
     except (BulkGenerationError, OSError, ValueError) as error:
         raise PregenerationQueueError(
             f"Unable to prepare audio-event omissions: {error}"

@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from functools import lru_cache, partial
 from os import PathLike
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Protocol, TypeAlias
 
 from durable_file import atomic_write_json
@@ -59,7 +58,7 @@ from vntts.pregeneration_setup import (
     inspect_story_index,
     load_verified_story_index_document,
 )
-from vntts.source_audio_progress import SourceAudioProgress, read_source_audio_progress
+from vntts.source_audio_progress import SourceAudioProgress, SourceAudioProgressReader
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -785,15 +784,12 @@ class Reverse1999GameImporter:
             if environment is None:
                 return self._run(arguments, cancel_event)
             return self._run(arguments, cancel_event, environment=environment)
-        with TemporaryDirectory(prefix="vntts-source-audio-progress-") as directory:
-            path = Path(directory) / "progress.json"
-            return self._run(
-                (*arguments, "--progress-file", str(path)),
-                cancel_event,
-                progress_file=path,
-                scan_progress=scan_progress,
-                environment=environment,
-            )
+        return self._run(
+            (*arguments, "--progress-stdout"),
+            cancel_event,
+            scan_progress=scan_progress,
+            environment=environment,
+        )
 
     def _resolve_asr_model(
         self,
@@ -1242,7 +1238,6 @@ class Reverse1999GameImporter:
         cancel_event: Cancellation | None,
         *,
         environment: dict[str, str] | None = None,
-        progress_file: Path | None = None,
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
     ) -> tuple[str, str]:
         self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
@@ -1266,39 +1261,9 @@ class Reverse1999GameImporter:
             raise GameContentImportError(
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
-        cancelled = False
-        report_progress = self._source_audio_progress_reporter(
-            progress_file, scan_progress, started
+        stdout, stderr = self._communicate(
+            process, cancel_event, scan_progress, started
         )
-
-        try:
-            with cleanup_on_exit(
-                lambda: terminate_running_process(process),
-                description="Game importer process cleanup",
-            ):
-                while True:
-                    if (
-                        cancel_event is not None
-                        and cancel_event.is_set()
-                        and process.poll() is None
-                    ):
-                        cancelled = True
-                        raise GameContentImportCancelled("Game import was cancelled")
-                    try:
-                        stdout, stderr = process.communicate(timeout=0.1)
-                        report_progress()
-                        break
-                    except subprocess.TimeoutExpired:
-                        report_progress()
-                        continue
-        finally:
-            if cancelled:
-                self._record(
-                    "process-exit",
-                    outcome="cancelled",
-                    cancelled=True,
-                    elapsed_ms=round((time.monotonic() - started) * 1000),
-                )
         self._record(
             "process-exit",
             exit_code=process.returncode,
@@ -1325,20 +1290,73 @@ class Reverse1999GameImporter:
             )
         return stdout, stderr
 
-    def _source_audio_progress_reporter(
+    def _communicate(
         self,
-        progress_file: Path | None,
+        process: subprocess.Popen[str],
+        cancel_event: Cancellation | None,
         scan_progress: Callable[[SourceAudioProgress], None] | None,
         started: float,
-    ) -> Callable[[], None]:
+    ) -> tuple[str, str]:
+        cancelled = False
+        reader: SourceAudioProgressReader | None = None
+        report_progress = self._source_audio_progress_reporter(scan_progress, started)
+
+        try:
+            with (
+                cleanup_on_exit(
+                    lambda: reader.finish() if reader is not None else None,
+                    description="Source-audio progress reader cleanup",
+                ),
+                cleanup_on_exit(
+                    lambda: terminate_running_process(process),
+                    description="Game importer process cleanup",
+                ),
+            ):
+                if scan_progress is not None:
+                    if process.stdout is None:
+                        raise GameContentImportError("Importer stdout pipe is missing")
+                    reader = SourceAudioProgressReader(process.stdout)
+                    process.stdout = None
+                    reader.start()
+                while True:
+                    if (
+                        cancel_event is not None
+                        and cancel_event.is_set()
+                        and process.poll() is None
+                    ):
+                        cancelled = True
+                        raise GameContentImportCancelled("Game import was cancelled")
+                    try:
+                        stdout, stderr = process.communicate(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if reader is not None:
+                            reader.report(report_progress)
+        finally:
+            if cancelled:
+                self._record(
+                    "process-exit",
+                    outcome="cancelled",
+                    cancelled=True,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                )
+        if reader is not None:
+            reader.report(report_progress)
+            stdout = reader.output()
+        return stdout, stderr
+
+    def _source_audio_progress_reporter(
+        self,
+        scan_progress: Callable[[SourceAudioProgress], None] | None,
+        started: float,
+    ) -> Callable[[SourceAudioProgress], None]:
         previous_progress: SourceAudioProgress | None = None
 
-        def report_progress() -> None:
+        def report_progress(current: SourceAudioProgress) -> None:
             nonlocal previous_progress
-            if progress_file is None or scan_progress is None:
+            if scan_progress is None:
                 return
-            current = read_source_audio_progress(progress_file)
-            if current is None or current == previous_progress:
+            if current == previous_progress:
                 return
             if previous_progress is not None and (
                 current.stage == previous_progress.stage

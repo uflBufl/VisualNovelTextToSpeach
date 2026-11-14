@@ -45,9 +45,9 @@ from vntts.authoring.bulk_generation import (
     JsonDocument,
     load_generation_state,
     normalize_short_trailing_ellipsis,
-    publish_generated_manifest,
     sha256_control_path,
     snapshot_generation_control_files,
+    validate_generation_output,
 )
 from vntts.authoring.bulk_generation import (
     inspect_generated_wav as inspect_generated_wav,
@@ -79,8 +79,8 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
 )
 from vntts.authoring.generation_manifest import (
+    approved_manifest_entries,
     inspect_generated_wav_with_samples,
-    write_generated_manifest_from_state,
 )
 from vntts.authoring.generation_state import (
     decode_generation_state_snapshot,
@@ -362,6 +362,8 @@ def _copy_resume_seed_inputs(staging: Path, source: _ResumeSource) -> None:
         raise AuthoringWorkbenchError("Unable to preserve exact import manifest")
     for item in source.copied:
         relative = _safe_relative(item["path"], "Imported artifact path")
+        if relative == Path("generated-audio/manifest.json"):
+            continue
         source_path = _within(source.directory, relative, "Imported artifact")
         target = staging / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1145,11 +1147,7 @@ def create_audio_event_composition_workspace(
         )
         target_state_path = staging / "generated-audio/generation-state.sqlite3"
         write_generation_state(target_state_path, target_state)
-        write_generated_manifest_from_state(
-            target_state,
-            staging / "generated-audio",
-            staging / "generated-audio/manifest.json",
-        )
+        approved_manifest_entries(target_state, staging / "generated-audio")
         try:
             validate_audio_event_composition_workspace(staging, workspace)
             load_generation_state(target_state_path, staging / "queue.jsonl")
@@ -2215,7 +2213,7 @@ def _publish_carry_forward_staging(
 ) -> None:
     write_generation_state(target_state_path, target_state)
     try:
-        publish_generated_manifest(target_state_path)
+        validate_generation_output(target_state_path)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     if file_sha256(source.state_path, error_type=OSError) != source.state_sha256:

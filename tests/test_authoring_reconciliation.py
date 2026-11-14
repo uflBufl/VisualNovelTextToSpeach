@@ -68,6 +68,25 @@ class AuthoringReconciliationTest(unittest.TestCase):
     def create_parallel_fixture(self, root):
         return create_parallel_review_workspaces(root)
 
+    def test_reconciliation_ignores_obsolete_working_manifest(self):
+        with TemporaryDirectory() as directory:
+            (
+                _authoring,
+                workspace,
+                _state,
+                _queue_id,
+                bundles,
+                _quality,
+                _publication,
+            ) = self.create_fixture(Path(directory))
+            before = build_authoring_reconciliation(workspace, bundles).to_dict()
+            manifest = workspace / "generated-audio/manifest.json"
+            self.assertFalse(manifest.exists())
+            manifest.write_bytes(b"obsolete derived output")
+            after = build_authoring_reconciliation(workspace, bundles).to_dict()
+            self.assertEqual(after, before)
+            self.assertNotIn("manifest_sha256", after["workspaces"][0])
+
     def decide_parallel_bundle(self, publication, decisions):
         return decide_parallel_review_bundle(publication, decisions)
 

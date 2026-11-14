@@ -18,17 +18,16 @@ authors = [
 
 dependencies = [
     # Core
-    "coqui-tts[codec]>=0.27.5,<0.28",
+    "coqui-tts[codec]>=0.28,<0.29",
     "sounddevice>=0.5.6,<0.6",
     "soxr>=1.1,<2",
     "pyobjc-framework-quartz>=12.2.2,<13 ; sys_platform == 'darwin'",
     "python-xlib>=0.33 ; sys_platform == 'linux'",
     "pynput>=1.8.2,<2",
-    "torch>=2.11,<2.12",
+    "torch>=2.13,<2.14",
     "torchaudio>=2.11,<2.12",
     "torchcodec>=0.16,<0.17",
-    # Coqui XTTS 0.27.5 imports an API removed in Transformers 5.
-    "transformers>=4.57.6,<5",
+    "transformers>=5.17,<6",
     "pytesseract>=0.3.13",
     "rapidocr>=3.9.2,<4",
     "onnxruntime>=1.29,<2",
@@ -93,8 +92,8 @@ torchcodec = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "a9083839618b64359488daec901747e289a4528a" }
-reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "74be151af86b9fc6a2a3f82f779bc9aa90961cc3" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "64635e55a28d566331090a070aec376c57ee7ed7" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "dbc4091ba93d292f66ff0f85b2e06bd4fb3b2b89" }
 
 durable-file = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "0e22c629dde9de070eb7f13c87609e5905277ab9" }
 

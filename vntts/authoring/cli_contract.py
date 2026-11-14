@@ -1,11 +1,8 @@
-"""Stable semantic snapshot for argparse compatibility checks."""
+"""Preserve the established help order after command-family composition."""
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-
-from vntts.document_identity import canonical_document_sha256
 
 AUTHORING_COMMAND_ORDER = (
     "discover-legacy",
@@ -39,7 +36,6 @@ AUTHORING_COMMAND_ORDER = (
     "generate",
     "review",
     "live-fallback",
-    "publish",
     "status",
     "audio-event-review-publish",
     "audio-event-review-decide",
@@ -133,56 +129,3 @@ def preserve_command_order(
     subparsers._choices_actions[:] = [
         choice_by_name[name] for name in AUTHORING_COMMAND_ORDER
     ]
-
-
-def _normalized(value: object) -> object:
-    if isinstance(value, Path):
-        if value.is_absolute():
-            return {"kind": "absolute-path", "name": value.name}
-        return value.as_posix()
-    if isinstance(value, (list, tuple)):
-        return [_normalized(item) for item in value]
-    if isinstance(value, set):
-        return sorted((_normalized(item) for item in value), key=repr)
-    return value
-
-
-def parser_contract(parser: argparse.ArgumentParser) -> dict[str, object]:
-    subparsers = next(
-        action
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-    )
-    helps = {action.dest: action.help for action in subparsers._choices_actions}
-    commands: dict[str, object] = {}
-    for name, command_parser in subparsers.choices.items():
-        commands[name] = {
-            "help": helps.get(name),
-            "description": command_parser.description,
-            "actions": [
-                {
-                    "dest": action.dest,
-                    "options": list(action.option_strings),
-                    "required": bool(getattr(action, "required", False)),
-                    "nargs": action.nargs,
-                    "default": _normalized(action.default),
-                    "choices": _normalized(
-                        list(action.choices) if action.choices is not None else None
-                    ),
-                    "type": getattr(action.type, "__name__", None),
-                    "help": action.help,
-                    "action": type(action).__name__,
-                    "metavar": action.metavar,
-                }
-                for action in command_parser._actions
-                if action.dest != "help"
-            ],
-        }
-    return commands
-
-
-def parser_contract_sha256(parser: argparse.ArgumentParser) -> str:
-    contract = parser_contract(parser)
-    return canonical_document_sha256(
-        {"command_order": list(contract), "commands": contract}, allow_nan=True
-    )

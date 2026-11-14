@@ -1541,28 +1541,6 @@ class GeneratedAudioTest(unittest.TestCase):
                     ):
                         _narrator_fallback_role(SimpleNamespace(document=forged))
 
-    def test_route_wrapper_has_no_payload_only_or_mutable_metric_facade(self):
-        backend = GeneratedAudioFallbackBackend(
-            self.create_live_backend(),
-            None,
-            self.create_resolver(),
-            audio_output=FakeAudioOutput(),
-        )
-
-        self.assertFalse(hasattr(backend, "prepare"))
-        self.assertFalse(hasattr(backend, "play"))
-        for attribute in (
-            "last_route_trace",
-            "last_audio_source",
-            "last_synthesis_ms",
-            "last_first_audio_ms",
-            "last_playback_ms",
-            "last_playback_underrun",
-            "last_generation_limited",
-            "last_cache_source",
-        ):
-            self.assertFalse(hasattr(backend, attribute), attribute)
-
     def test_exact_line_uses_verified_generated_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

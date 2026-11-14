@@ -181,21 +181,26 @@ class VoiceImportDialogTest(unittest.TestCase):
         )
 
     def test_replacement_prompt_keeps_cancel_as_keyboard_default(self):
-        dialog = build_voice_replacement_prompt("<Marcus & 37>")
-        self.addCleanup(delete_dialog, dialog)
-        self.assertEqual(dialog.textFormat(), Qt.TextFormat.PlainText)
-        self.assertIn("<Marcus & 37>", dialog.text())
-        self.assertIn("all recordings and other names", dialog.informativeText())
-        self.assertIs(
-            dialog.defaultButton(), dialog.button(QMessageBox.StandardButton.Cancel)
-        )
         for key in (Qt.Key.Key_Escape, Qt.Key.Key_Return):
-            QTimer.singleShot(0, lambda key=key: QTest.keyClick(dialog, key))
-            self.assertEqual(dialog.exec(), QMessageBox.StandardButton.Cancel)
-        self.assertFalse(dialog.isVisible())
-        self.assertIs(
-            dialog.escapeButton(), dialog.button(QMessageBox.StandardButton.Cancel)
-        )
+            with self.subTest(key=key):
+                dialog = build_voice_replacement_prompt("<Marcus & 37>")
+                self.addCleanup(delete_dialog, dialog)
+                self.assertEqual(dialog.textFormat(), Qt.TextFormat.PlainText)
+                self.assertIn("<Marcus & 37>", dialog.text())
+                self.assertIn(
+                    "all recordings and other names", dialog.informativeText()
+                )
+                self.assertIs(
+                    dialog.defaultButton(),
+                    dialog.button(QMessageBox.StandardButton.Cancel),
+                )
+                QTimer.singleShot(0, lambda key=key: QTest.keyClick(dialog, key))
+                self.assertEqual(dialog.exec(), QMessageBox.StandardButton.Cancel)
+                self.assertFalse(dialog.isVisible())
+                self.assertIs(
+                    dialog.escapeButton(),
+                    dialog.button(QMessageBox.StandardButton.Cancel),
+                )
 
 
 class AssetManagerDialogTest(unittest.TestCase):
@@ -560,7 +565,8 @@ class AssetManagerDialogTest(unittest.TestCase):
                         "confirmed-revision",
                     )
                     self.assertEqual(
-                        dialog.voice_manifest.text(), "managed/custom/manifest.json"
+                        dialog.voice_manifest.text(),
+                        str(Path("managed/custom/manifest.json")),
                     )
                     self.assertIsNone(dialog._voice_import_draft)
                 else:

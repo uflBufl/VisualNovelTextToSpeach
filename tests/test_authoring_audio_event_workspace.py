@@ -43,10 +43,10 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    publish_generated_manifest,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import rebase_workspace_config
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -176,7 +176,6 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             }
         )
         replace_generation_state(state_path, state)
-        publish_generated_manifest(state_path)
         if outcome_merge:
             workspace_path = base / "workspace.json"
             workspace = json.loads(workspace_path.read_text())
@@ -211,7 +210,6 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 key: value for key, value in outcome_item.items() if key != "queue_id"
             }
             replace_generation_state(state_path, state)
-            publish_generated_manifest(state_path)
             fingerprint = workbench_module._workspace_config_fingerprint(
                 workspace["source"]["import_id"],
                 workspace.get("story_index"),
@@ -289,6 +287,8 @@ class AudioEventWorkspaceTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             base, queue_item, composition = self._base_and_composition(root)
+            obsolete_manifest = base / "generated-audio/manifest.json"
+            obsolete_manifest.write_bytes(b"obsolete derived output")
             state_path = base / "generated-audio/generation-state.sqlite3"
             base_state_before = state_path.read_bytes()
             base_audio = next((base / "generated-audio/audio").rglob("*.wav"))
@@ -308,9 +308,6 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             )
             result = state["items"][queue_item.queue_id]
             target = created.directory / "generated-audio" / result["path"]
-            manifest = json.loads(
-                (created.directory / "generated-audio/manifest.json").read_text()
-            )
 
             self.assertTrue(created.created)
             self.assertFalse(repeated.created)
@@ -326,7 +323,10 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             )
             self.assertEqual(target.read_bytes(), composition.audio.read_bytes())
             self.assertEqual(sha256_file(target), composition.audio_sha256)
-            self.assertEqual(manifest["entry_count"], 0)
+            self.assertFalse(
+                (created.directory / "generated-audio/manifest.json").exists()
+            )
+            self.assertEqual(obsolete_manifest.read_bytes(), b"obsolete derived output")
             self.assertEqual(inspect_workspace(created.directory).generated, 1)
             review_item = next(
                 item
@@ -343,12 +343,13 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                 "approved",
                 queue_path=created.directory / "queue.jsonl",
             )
-            approved_manifest = json.loads(
-                (created.directory / "generated-audio/manifest.json").read_text()
+            approved_state = generation_database.read_state(successor_state_path)
+            approved = approved_manifest_entries(
+                approved_state, successor_state_path.parent
             )
-            self.assertEqual(approved_manifest["entry_count"], 1)
+            self.assertEqual(len(approved), 1)
             self.assertEqual(
-                approved_manifest["entries"][0]["audio_event_composition"],
+                approved[0]["audio_event_composition"],
                 result["audio_event_composition"],
             )
             tampered_state = generation_database.read_state(successor_state_path)

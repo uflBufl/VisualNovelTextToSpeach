@@ -25,9 +25,9 @@ from vntts.rust_audio import (
     RustAudioWorker,
     _ClipPlayback,
     check_audio_runtime,
-    portaudio_library,
-    notify_audio_discovery_changed,
     notify_audio_device_changed,
+    notify_audio_discovery_changed,
+    portaudio_library,
     worker_executable,
 )
 from vntts.rust_output import RustAudioModule

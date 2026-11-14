@@ -12,6 +12,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.path_safety import read_regular_bytes
+from vntts.playback_button import PlaybackState
 from vntts.pregeneration_audition import VoiceAuditionCancelled, VoiceAuditionError
 from vntts.pregeneration_audition_ui import (
     _PrefetchVoiceAuditionPreviewer,
@@ -26,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 class StoryVoicePreview(QObject):
     statusChanged = Signal(str)
+    errorOccurred = Signal(str)
     activeChanged = Signal(bool)
+    stateChanged = Signal(str)
 
     def __init__(
         self,
@@ -48,6 +51,7 @@ class StoryVoicePreview(QObject):
         self._preparation_cleanup: tuple[QMetaObject.Connection, ...] = ()
         self.cancellation = Event()
         self.active = False
+        self.state: PlaybackState = "idle"
         if self.player is not None:
             self._connect_player()
 
@@ -131,6 +135,7 @@ class StoryVoicePreview(QObject):
             )
         self.cancellation = Event()
         self.active = True
+        self._set_state("preparing")
         self.activeChanged.emit(True)
         self.statusChanged.emit("Preparing selected voice preview...")
         try:
@@ -188,7 +193,7 @@ class StoryVoicePreview(QObject):
             if self.player.play_bytes(payload, source=str(preview.path)) is None:
                 self._failed("Unable to start voice preview playback.")
                 return
-            if self.active:
+            if self.active and self.state == "preparing":
                 self.statusChanged.emit("Starting selected voice preview...")
         except (OSError, ValueError) as failure:
             logger.exception("Unable to validate or start selected voice preview")
@@ -196,7 +201,17 @@ class StoryVoicePreview(QObject):
 
     def _playback_changed(self, state: object) -> None:
         if self.active and state == QMediaPlayer.PlaybackState.PlayingState:
+            self._set_state("playing")
             self.statusChanged.emit("Playing selected voice preview.")
+        elif (
+            self.state == "playing" and state == QMediaPlayer.PlaybackState.StoppedState
+        ):
+            self.stop()
+
+    def _set_state(self, state: PlaybackState) -> None:
+        if self.state != state:
+            self.state = state
+            self.stateChanged.emit(state)
 
     def _media_changed(self, status: object) -> None:
         if self.active and status == QMediaPlayer.MediaStatus.EndOfMedia:
@@ -207,10 +222,12 @@ class StoryVoicePreview(QObject):
         if self.active:
             self.stop()
             self.statusChanged.emit(message)
+            self.errorOccurred.emit(message)
 
     def stop(self) -> None:
         was_active = self.active
         self.active = False
+        self._set_state("idle")
         self.cancellation.set()
         self.runner.cancel()
         if self.session is not None and self.session is not self.service:

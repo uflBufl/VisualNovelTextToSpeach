@@ -1,6 +1,5 @@
 import hashlib
 import io
-import json
 import os
 import unittest
 import wave
@@ -111,7 +110,7 @@ class GeneratedWavSnapshotTest(unittest.TestCase):
             "quality": asdict(manifest.inspect_generated_wav(path, **options)),
         }
 
-    def test_trusted_manifest_uses_stored_quality_without_reading_wav(self):
+    def test_trusted_projection_uses_stored_quality_without_reading_wav(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             audio = root / "audio.wav"
@@ -131,29 +130,23 @@ class GeneratedWavSnapshotTest(unittest.TestCase):
             }
             state = {"queue_sha256": "0" * 64, "items": {"q": result}}
             audio.unlink()
-            target = root / "manifest.json"
             with patch.object(
                 manifest,
                 "validate_success_file",
                 side_effect=AssertionError("trusted projection read WAV"),
             ):
-                manifest.write_generated_manifest_from_state(
-                    state, root, target, validate_files=False
+                entries = manifest.approved_manifest_entries(
+                    state, root, validate_files=False
                 )
-            entry = json.loads(target.read_text())["entries"][0]
+            entry = entries[0]
             self.assertEqual(entry["sample_rate"], result["quality"]["sample_rate"])
             self.assertEqual(entry["sample_count"], result["quality"]["sample_count"])
             self.assertEqual(entry["synthesis_text_sha256"], "b" * 64)
-            before = target.read_bytes()
             with self.assertRaises(BulkGenerationError):
-                manifest.write_generated_manifest_from_state(state, root, target)
-            self.assertEqual(target.read_bytes(), before)
+                manifest.approved_manifest_entries(state, root)
             result["quality"]["sample_count"] = True
             with self.assertRaisesRegex(BulkGenerationError, "must be an integer"):
-                manifest.write_generated_manifest_from_state(
-                    state, root, target, validate_files=False
-                )
-            self.assertEqual(target.read_bytes(), before)
+                manifest.approved_manifest_entries(state, root, validate_files=False)
 
     def test_verified_samples_come_from_hashed_bytes_after_path_replacement(self):
         with TemporaryDirectory() as directory:

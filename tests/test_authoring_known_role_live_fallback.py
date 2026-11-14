@@ -16,7 +16,7 @@ from tests.missing_voice_reuse_fixtures import (
 )
 from vntts import generation_database
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.known_role_live_fallback import (
     create_known_role_live_fallback_workspace,
 )
@@ -125,11 +125,7 @@ class KnownRoleLiveFallbackTests(unittest.TestCase):
             },
         }
         replace_generation_state(state_path, state)
-        write_generated_manifest_from_state(
-            state,
-            evidence / "generated-audio",
-            evidence / "generated-audio/manifest.json",
-        )
+        approved_manifest_entries(state, evidence / "generated-audio")
         return base, evidence, queue_id
 
     def test_public_validation_uses_one_generation_state_snapshot(self):

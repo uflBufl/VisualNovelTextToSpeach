@@ -23,6 +23,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
     GeneratedAudioRecord,
     load_generated_audio_document,
+    parse_generated_audio_document,
 )
 
 from vntts import generation_database
@@ -364,6 +365,62 @@ def _validate_generated_audio_path(audio: Path, root: Path) -> None:
         ) from error
 
 
+def load_generated_audio_source(path: str | Path) -> GeneratedAudioDocument:
+    """Load a package index or project committed SQLite results for playback."""
+    path = Path(path).expanduser()
+    if path.suffix != ".sqlite3":
+        return load_generated_audio_document(path)
+    from vntts.authoring.generation_lease import BulkGenerationError
+    from vntts.authoring.generation_manifest import (
+        audio_event_omission_entries,
+        runtime_progress_live_fallback_entries,
+        runtime_progress_manifest_entries,
+    )
+    from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
+
+    try:
+        state = generation_database.read_state(path)
+        if (
+            state.get("schema") != STATE_SCHEMA
+            or type(state.get("schema_version")) is not int
+            or state["schema_version"] != STATE_VERSION
+        ):
+            raise ValueError("Unsupported generation working-state schema")
+        entries = runtime_progress_manifest_entries(
+            state, path.parent, validate_files=False
+        )
+        return parse_generated_audio_document(
+            path,
+            {
+                "schema": "vntts.generated-audio",
+                "schema_version": 1,
+                **{
+                    field: state[field]
+                    for field in ("game", "language")
+                    if state.get(field) is not None
+                },
+                "source_queue_sha256": state["queue_sha256"],
+                "vntts.runtime.progress": True,
+                "vntts.authoring.live_fallback": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": runtime_progress_live_fallback_entries(state),
+                },
+                "vntts.authoring.audio_event_omission": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": audio_event_omission_entries(state),
+                },
+                "entry_count": len(entries),
+                "entries": entries,
+            },
+        )
+    except (BulkGenerationError, OSError, KeyError, TypeError, ValueError) as error:
+        raise GeneratedAudioManifestError(
+            f"Unable to load generation playback state {path}: {error}"
+        ) from error
+
+
 class GeneratedAudioLibrary:
     def __init__(
         self,
@@ -423,8 +480,11 @@ class GeneratedAudioLibrary:
             }:
                 return
             try:
-                index = load_generated_audio_document(self.manifest_path)
-                if _manifest_signature(self.manifest_path) != signature:
+                index = load_generated_audio_source(self.manifest_path)
+                if (
+                    self.manifest_path.suffix != ".sqlite3"
+                    and _manifest_signature(self.manifest_path) != signature
+                ):
                     return
                 self._apply_index(index)
             except (GeneratedAudioManifestError, OSError, ValueError) as error:
@@ -446,8 +506,11 @@ class GeneratedAudioLibrary:
         if not path:
             return None
         try:
-            index = load_generated_audio_document(path)
-            return cls(index, warn=warn, cache_size=cache_size)
+            signature = _manifest_signature(Path(path).expanduser())
+            index = load_generated_audio_source(path)
+            library = cls(index, warn=warn, cache_size=cache_size)
+            library.manifest_signature = signature
+            return library
         except (GeneratedAudioManifestError, ValueError) as error:
             if warn is not None:
                 warn(f"Generated audio disabled: {error}")
@@ -1606,36 +1669,9 @@ class AudioRoutePlaybackOwner:
                         sample_count=sample_count,
                         expected_playback_ms=expected_playback_ms,
                     )
-                stream_factory = getattr(self.router.audio_output, "OutputStream", None)
-                if callable(stream_factory):
-                    with prepared_output_stream(
-                        self.router.audio_output,
-                        samplerate=sample_rate,
-                        channels=1,
-                        dtype="float32",
-                        latency=self.router.playback_latency,
-                    ) as stream:
-                        completed, underflowed = write_pcm_chunks(
-                            stream,
-                            samples,
-                            sample_rate,
-                            lambda: playback_cancelled(
-                                self.generated_audio_stop, playback_guard
-                            ),
-                            first_write=first_write,
-                            stop_requested=self.generated_audio_stop,
-                        )
-                else:
-                    audio_output = resolve_audio_output(self.router.audio_output)
-                    audio_output.play(
-                        samples,
-                        sample_rate,
-                        latency=self.router.playback_latency,
-                    )
-                    # The compatibility play API exposes submission, not PCM onset.
-                    status = audio_output.wait()
-                    underflowed = bool(getattr(status, "output_underflow", False))
-                    completed = not self.generated_audio_stop.is_set()
+                completed, underflowed = self._write_generated_pcm(
+                    samples, sample_rate, playback_guard, first_write
+                )
                 playback_status = (
                     PlaybackStatus.INTERRUPTED
                     if not completed
@@ -1682,6 +1718,45 @@ class AudioRoutePlaybackOwner:
                 )
             finally:
                 self._deactivate()
+
+    def _write_generated_pcm(
+        self,
+        samples: NDArray[np.float32],
+        sample_rate: int,
+        playback_guard: PlaybackGuard,
+        first_write: Callable[[], None],
+    ) -> tuple[bool, bool]:
+        stream_factory = getattr(self.router.audio_output, "OutputStream", None)
+        if callable(stream_factory):
+            with prepared_output_stream(
+                self.router.audio_output,
+                samplerate=sample_rate,
+                channels=1,
+                dtype="float32",
+                latency=self.router.playback_latency,
+            ) as stream:
+                completed, underflowed = write_pcm_chunks(
+                    stream,
+                    samples,
+                    sample_rate,
+                    lambda: playback_cancelled(
+                        self.generated_audio_stop, playback_guard
+                    ),
+                    first_write=first_write,
+                    stop_requested=self.generated_audio_stop,
+                )
+        else:
+            audio_output = resolve_audio_output(self.router.audio_output)
+            audio_output.play(
+                samples,
+                sample_rate,
+                latency=self.router.playback_latency,
+            )
+            # The compatibility play API exposes submission, not PCM onset.
+            status = audio_output.wait()
+            underflowed = bool(getattr(status, "output_underflow", False))
+            completed = not self.generated_audio_stop.is_set()
+        return completed, underflowed
 
     def _play_live_route(
         self,

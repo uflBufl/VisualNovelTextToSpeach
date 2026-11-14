@@ -349,7 +349,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertIsNone(f.panel._accepted_choice)
             f.decisions.remember_many.assert_not_called()
 
-    def test_browsing_middle_inventory_prepares_current_and_neighbors(self):
+    def test_selection_prepares_current_before_default_ranked_references(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             f = self.fixture(root)
@@ -359,7 +359,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             requests = f.service.prefetch.call_args.args[1]
             self.assertEqual(
                 [source for _group, source, _text in requests],
-                [candidates[index].source_id for index in (4, 5, 3)],
+                [candidates[index].source_id for index in (4, 0, 1)],
             )
             self.assertIn("Queued", self.reference_cell(f, 4, 0))
             self.assertNotIn("Not prepared", self.reference_cell(f, 7, 0))
@@ -373,22 +373,75 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertNotIn("Content not checked", self.reference_cell(f, 7, 0))
             self.assertEqual(self.selected_reference_row(f), 4)
 
-    def test_highlight_dwell_prepares_before_click_without_changing_selection(self):
+    def test_hover_and_scroll_do_not_reorder_preparation_or_change_selection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             f = self.fixture(root)
             plan, group, candidates = self.add_inventory(f, root)
             f.panel.start(plan, group_id=group.group_id)
             f.service.prefetch.reset_mock()
-            f.panel.reference_table.entered.emit(f.panel.reference_proxy.index(5, 0))
+            for row in range(1, len(candidates)):
+                index = f.panel.reference_proxy.index(row, 0)
+                f.panel.reference_table.entered.emit(index)
+                f.panel.reference_table.scrollTo(index)
             self.assertFalse(f.service.prefetch.called)
             QTest.qWait(220)
-            requests = f.service.prefetch.call_args.args[1]
-            self.assertEqual(requests[0][1], candidates[5].source_id)
-            self.assertEqual(len(requests), 3)
+            f.panel._refresh_runtime()
+            for call in f.service.prefetch.call_args_list:
+                self.assertEqual(
+                    [source for _group, source, _text in call.args[1]],
+                    [candidate.source_id for candidate in candidates[:3]],
+                )
+            f.service.generate.assert_not_called()
             self.assertEqual(self.selected_reference_row(f), 0)
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
+
+    def test_preparation_advances_in_default_order_skipping_ready_and_failed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            f = self.fixture(root)
+            plan, group, candidates = self.add_inventory(f, root)
+            f.panel.start(plan, group_id=group.group_id)
+            f.service.preparation_state.side_effect = (
+                lambda _plan, _group, source, **_: (
+                    "failed" if source == candidates[1].source_id else "not-prepared"
+                )
+            )
+            for completed in (0, 2, 3):
+                candidate = candidates[completed]
+                f.ready[candidate.source_id] = f.previews[candidate.source_id]
+                f.panel._refresh_runtime()
+                expected = [
+                    candidate.source_id
+                    for candidate in candidates
+                    if candidate.source_id not in f.ready
+                    and candidate.source_id != candidates[1].source_id
+                ][:3]
+                requests = f.service.prefetch.call_args.args[1]
+                self.assertEqual(
+                    [source for _group, source, _text in requests], expected
+                )
+                self.assertEqual(self.selected_reference_row(f), 0)
+            f.player.play_bytes.assert_not_called()
+            f.decisions.remember_many.assert_not_called()
+
+    def test_cache_completion_after_switch_to_policy_does_not_prepare_references(self):
+        with TemporaryDirectory() as directory:
+            f = self.fixture(Path(directory))
+            f.panel.start(f.plan, group_id=f.group.group_id)
+            f.panel.start_policy(
+                f.plan,
+                group_id=f.group.group_id,
+                choice_id="automatic",
+                label="Automatic",
+            )
+            f.service.prefetch.reset_mock()
+            self.drain(f)
+            f.panel._cache_finished({}, None)
+            f.service.prefetch.assert_not_called()
+            f.transcript.assert_not_called()
+            f.service.generate.assert_not_called()
 
     def test_background_preparation_and_status_keep_compact_geometry(self):
         with TemporaryDirectory() as directory:
@@ -435,7 +488,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
                     f.panel.a_original.accessibleName()
                     if original
                     else f.panel.a_play.accessibleName(),
-                    "Stop original reference" if original else "Stop voice preview",
+                    "Preparing original reference"
+                    if original
+                    else "Preparing voice preview",
                 )
                 action()
                 self.assertGreater(f.player.stop.call_count, stops)
@@ -494,7 +549,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
-    def test_cancel_stops_pending_hover_and_content_check(self):
+    def test_cancel_stops_sequential_preparation_and_content_check(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)

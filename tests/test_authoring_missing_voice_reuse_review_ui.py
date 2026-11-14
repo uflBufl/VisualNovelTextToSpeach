@@ -301,6 +301,24 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             lambda: not dialog.heard_runner.active and not dialog._pending_heard
         )
 
+    def test_primary_candidate_covers_startup_playing_and_stop(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            with patch(
+                "vntts.authoring.missing_voice_reuse_review_ui._create_audio_player"
+            ):
+                dialog = MissingVoiceReuseReviewDialog(session_path)
+            button = dialog.play_buttons["A"]
+            button.click()
+            self.assertEqual(button.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(button.property("playbackState"), "playing")
+            self.assertEqual(button.text(), "A")
+            button.click()
+            self.assertEqual(button.property("playbackState"), "idle")
+            self.assertIsNone(dialog._playing_key)
+            dialog.close()
+
     def test_both_candidates_require_completed_playback_before_choice(self):
         with TemporaryDirectory() as directory:
             session_path, _queue_id = self.create_review(
@@ -376,7 +394,7 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.finish_current_audio(dialog)
             self.assertTrue(dialog.decision_buttons[generated["label"]].isEnabled())
             self.assertIn(
-                "Replay", dialog.play_buttons[generated["label"]].accessibleName()
+                "Play", dialog.play_buttons[generated["label"]].accessibleName()
             )
 
             dialog.decision_buttons[generated["label"]].click()

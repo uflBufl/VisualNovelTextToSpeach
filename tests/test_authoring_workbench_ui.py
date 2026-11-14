@@ -174,6 +174,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         cls.media_player_patcher = patch("vntts.authoring.workbench_ui.QMediaPlayer")
         cls.media_player = cls.media_player_patcher.start()
         cls.media_player.MediaStatus = QMediaPlayer.MediaStatus
+        cls.media_player.PlaybackState = QMediaPlayer.PlaybackState
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -1993,7 +1994,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog._selected_collection_ids, expected)
             self.assertEqual(dialog.collection_selection.collection_ids, expected)
 
-    def test_consecutive_review_decisions_remain_ordered_and_manifest_is_derived(self):
+    def test_consecutive_review_decisions_remain_ordered_without_a_working_manifest(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace = self.create_workspace(root)
@@ -2015,14 +2018,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             state = generation_database.read_state(
                 workspace / "generated-audio/generation-state.sqlite3"
             )
-            manifest = json.loads(
-                (workspace / "generated-audio/manifest.json").read_text(
-                    encoding="utf-8"
-                )
-            )
             self.assertEqual(state["items"][queue_id]["status"], "generated")
             self.assertEqual(state["items"][queue_id]["review_status"], "rejected")
-            self.assertEqual(manifest["entries"], [])
+            self.assertFalse((workspace / "generated-audio/manifest.json").exists())
 
     def test_stale_visible_row_cannot_overwrite_newer_review_authority(self):
         with TemporaryDirectory() as directory:
@@ -2225,7 +2223,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 workspace / "inputs/story-index.jsonl",
                 workspace / "inputs/voice/manifest.json",
                 output / "generation-state.sqlite3",
-                output / "manifest.json",
                 output / ".generation-lease.json",
                 output / ".job-process.json",
             )
@@ -2375,6 +2372,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.refresh()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
 
+            dialog.stop_preview()
             selected.audio.write_bytes(selected.audio.read_bytes() + b"tampered")
             dialog.player.reset_mock()
             dialog.play_selected_outcome()
@@ -2673,10 +2671,20 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertLess(elapsed, 0.1)
             self.assertTrue(dialog._playback_prepare_active)
-            self.assertFalse(dialog.review_play.isEnabled())
+            self.assertTrue(dialog.review_play.isEnabled())
+            self.assertEqual(dialog.review_play.property("playbackState"), "preparing")
             release = True
             self.wait_for(lambda: not dialog._playback_prepare_active)
             self.assertIsNotNone(dialog._review_playback_buffer)
+            self.assertEqual(dialog.review_play.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(dialog.review_play.property("playbackState"), "playing")
+            caption = dialog.review_play.text()
+            dialog.review_play.click()
+            self.assertEqual(dialog.review_play.property("playbackState"), "idle")
+            self.assertEqual(dialog.review_play.text(), caption)
+            self.assertIsNone(dialog._review_playback_buffer)
+            self.assertFalse(dialog.approve.isEnabled())
 
     def test_empty_focused_retry_never_becomes_unfiltered_generation(self):
         with TemporaryDirectory() as directory:
@@ -2752,6 +2760,21 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertTrue(retained.endswith("discarded€-tail"))
             dialog.copy_diagnostic_text()
             self.assertIn(retained, QApplication.clipboard().text())
+
+    def test_reference_startup_error_keeps_error_visible_and_button_idle(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = AuthoringWorkbenchDialog(
+                self.create_workspace(root), settings=self.settings(root)
+            )
+            dialog.player = Mock()
+            dialog.player.play.side_effect = lambda: dialog._media_error(
+                None, "device unavailable"
+            )
+            dialog.play_reference()
+            self.assertEqual(dialog.reference_play.property("playbackState"), "idle")
+            self.assertFalse(dialog._preview_active)
+            self.assertIn("device unavailable", dialog.status.text())
 
     def test_open_and_play_revalidate_paths_at_click_time(self):
         with TemporaryDirectory() as directory:

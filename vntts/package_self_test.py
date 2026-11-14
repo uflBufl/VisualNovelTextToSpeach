@@ -45,6 +45,7 @@ required_modules = (
     "TTS.tts.configs.xtts_config",
     "pynput",
     "pytesseract",
+    "r1999extractor.whisper_beam_cache",
     "sounddevice",
     "soxr",
     "torch",

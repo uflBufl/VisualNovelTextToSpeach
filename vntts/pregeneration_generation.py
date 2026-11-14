@@ -20,6 +20,7 @@ from typing import Protocol, cast
 from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.authoring.bulk_generation import (
+    GenerationCancellationWitness,
     GenerationProgressEvent,
     GenerationProgressItem,
     _assert_control_files_unchanged,
@@ -31,7 +32,6 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
 )
-from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.generation_state import (
     generation_item_status,
     load_generation_state,
@@ -421,18 +421,9 @@ class OfflineGenerationWorker:
                 continue
             resume_options: list[str] = []
             if action == "safe_resume":
-                saved = resumed_items.get(selected[0], {})
-                repair = saved.get("failure_repair")
-                if generation_item_status(saved) == "cancelled" and isinstance(
-                    repair, dict
-                ):
-                    option, retries = _repair_option(str(repair["strategy"]))
-                    if repair["strategy"] == "sentence_boundary_segmentation":
-                        resume_options = ["--segment-pause-ms", str(repair["pause_ms"])]
-                    elif repair["strategy"] == "inline_pause_marker":
-                        resume_options = ["--inline-pause-ms", str(repair["pause_ms"])]
-                else:
-                    option, retries = _repair_option(action)
+                option, retries, resume_options = _cancelled_repair_options(
+                    resumed_items.get(selected[0], {}), action
+                )
             arguments = self._base_arguments(
                 generation_input,
                 voice_plan,
@@ -747,33 +738,13 @@ class OfflineGenerationWorker:
                             cancellation_error = OfflineGenerationCancelled(
                                 "Offline speech generation was cancelled"
                             )
-                            if generation_input is not None:
-                                try:
-                                    cancellation_witness = (
-                                        capture_generation_cancellation(
-                                            _generation_output(generation_input),
-                                            generation_input.queue,
-                                            generation_input.queue_sha256,
-                                            process,
-                                        )
-                                    )
-                                except (
-                                    BulkGenerationError,
-                                    OSError,
-                                    ValueError,
-                                ) as witness_error:
-                                    cancellation_error.add_note(
-                                        f"Cancellation authority unavailable: {witness_error}"
-                                    )
+                            cancellation_witness = _capture_cancelled_process(
+                                generation_input, process, cancellation_error
+                            )
                             raise cancellation_error from None
         except OfflineGenerationCancelled as error:
             if cancellation_witness is not None and terminated_owned_child:
-                try:
-                    reconcile_generation_cancellation(cancellation_witness, process)
-                except (BulkGenerationError, OSError, ValueError) as reconcile_error:
-                    error.add_note(
-                        f"Cancellation state could not be reconciled: {reconcile_error}"
-                    )
+                _reconcile_cancelled_process(cancellation_witness, process, error)
             raise
         finally:
             self._process = None
@@ -899,9 +870,9 @@ def _generation_output(generation_input: PregenerationInput) -> Path:
     return generation_input.output_directory
 
 
-def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
-    """Return the temporary manifest published while this input is generating."""
-    return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
+def runtime_generation_state_path(generation_input: PregenerationInput) -> Path:
+    """Return the transactional working state used during generation and playback."""
+    return generation_state_path(_generation_output(generation_input))
 
 
 def _progress_readiness_stamp(story_index: Path) -> tuple[tuple[int, ...] | None, ...]:
@@ -970,11 +941,11 @@ def _durable_ready_line_ids(
             generation_input.story_index, generation_input.story_index_sha256
         )
     )
-    manifest = runtime_progress_manifest_path(generation_input)
-    if not manifest.is_file():
+    state_path = runtime_generation_state_path(generation_input)
+    if not state_path.is_file():
         return tuple(sorted(ready))
     try:
-        library = GeneratedAudioLibrary.load_optional(manifest)
+        library = GeneratedAudioLibrary.load_optional(state_path)
         if (
             library is None
             or library.index.metadata.get("source_queue_sha256")
@@ -1030,8 +1001,7 @@ def _load_result(
     output: Path, generation_input: PregenerationInput
 ) -> OfflineGenerationResult:
     state_path = generation_state_path(output)
-    manifest_path = output / "manifest.json"
-    if not state_path.is_file() or not manifest_path.is_file():
+    if not state_path.is_file():
         raise OfflineGenerationError(
             "Offline generation finished without publishing its result"
         )
@@ -1051,7 +1021,6 @@ def _load_result(
     return OfflineGenerationResult(
         output=output,
         state=state_path,
-        manifest=manifest_path,
         generated=generated,
         failed=failed,
         other_terminal=other_terminal,
@@ -1105,6 +1074,59 @@ def _queue_ids(values: object) -> tuple[str, ...]:
     return tuple(sorted(result))
 
 
+def _reconcile_cancelled_process(
+    cancellation_witness: GenerationCancellationWitness,
+    process: subprocess.Popen[str],
+    error: OfflineGenerationCancelled,
+) -> None:
+    try:
+        reconcile_generation_cancellation(cancellation_witness, process)
+    except (BulkGenerationError, OSError, ValueError) as reconcile_error:
+        error.add_note(f"Cancellation state could not be reconciled: {reconcile_error}")
+
+
+def _capture_cancelled_process(
+    generation_input: PregenerationInput | None,
+    process: subprocess.Popen[str],
+    cancellation_error: OfflineGenerationCancelled,
+) -> GenerationCancellationWitness | None:
+    cancellation_witness = None
+    if generation_input is not None:
+        try:
+            cancellation_witness = capture_generation_cancellation(
+                _generation_output(generation_input),
+                generation_input.queue,
+                generation_input.queue_sha256,
+                process,
+            )
+        except (
+            BulkGenerationError,
+            OSError,
+            ValueError,
+        ) as witness_error:
+            cancellation_error.add_note(
+                f"Cancellation authority unavailable: {witness_error}"
+            )
+    return cancellation_witness
+
+
+def _cancelled_repair_options(
+    saved: Mapping[str, object],
+    action: str,
+) -> tuple[str | None, int, list[str]]:
+    resume_options: list[str] = []
+    repair = saved.get("failure_repair")
+    if generation_item_status(saved) == "cancelled" and isinstance(repair, dict):
+        option, retries = _repair_option(str(repair["strategy"]))
+        if repair["strategy"] == "sentence_boundary_segmentation":
+            resume_options = ["--segment-pause-ms", str(repair["pause_ms"])]
+        elif repair["strategy"] == "inline_pause_marker":
+            resume_options = ["--inline-pause-ms", str(repair["pause_ms"])]
+    else:
+        option, retries = _repair_option(action)
+    return option, retries, resume_options
+
+
 def _repair_option(action: str) -> tuple[str | None, int]:
     options = {
         "safe_resume": (None, 0),
@@ -1129,6 +1151,6 @@ __all__ = [
     "OfflineGenerationProgress",
     "OfflineGenerationResult",
     "OfflineGenerationWorker",
-    "runtime_progress_manifest_path",
+    "runtime_generation_state_path",
     "validate_offline_generation_result",
 ]

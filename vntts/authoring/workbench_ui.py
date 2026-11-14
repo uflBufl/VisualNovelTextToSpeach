@@ -93,6 +93,7 @@ from vntts.authoring.workbench import (
     workspace_voice_snapshot,
 )
 from vntts.json_types import decode_json
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import copy_text, shortcut_tooltip
@@ -633,7 +634,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.reference_previous = QPushButton("Previous")
         set_action_icon(self.reference_previous, "chevron-left")
         self.reference_play = QPushButton("Reference")
-        set_action_icon(self.reference_play, "play")
+        set_playback_button_state(self.reference_play, "idle", label="reference")
         self.reference_stop = QPushButton("Stop")
         set_action_icon(self.reference_stop, "square")
         self.reference_next = QPushButton("Next")
@@ -661,6 +662,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
 
         self.player = QMediaPlayer(self)
         self.player.errorOccurred.connect(self._media_error)
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
     def _layout_voice_section(self) -> None:
@@ -825,7 +827,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self.reject_button = QPushButton("Reject")
         set_action_icon(self.reject_button, "x")
         self.review_play = QPushButton("Recording")
-        set_action_icon(self.review_play, "play")
+        set_playback_button_state(self.review_play, "idle", label="recording")
         self.review_stop = QPushButton("Stop")
         set_action_icon(self.review_stop, "square")
         self.reload_authority = QPushButton("Reload workspace")
@@ -1289,7 +1291,6 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self.workspace_directory / "inputs/story-index.jsonl",
             self.workspace_directory / "inputs/voice/manifest.json",
             output / "generation-state.sqlite3",
-            output / "manifest.json",
             output / ".generation-lease.json",
             output / ".job-process.json",
         )
@@ -1965,11 +1966,19 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self._record_current_reference()
 
     def play_reference(self) -> None:
+        if self.reference_play.property("playbackState") != "idle":
+            self.stop_preview()
+            return
         if self.voice_controller is None:
             return
         token = self.voice_controller.current(self.voice_character.currentText())
         if token is None:
             return
+        if self._playback_prepare_active:
+            self._playback_runner.cancel()
+            self._playback_prepare_active = False
+            set_playback_button_state(self.review_play, "idle", label="recording")
+        set_playback_button_state(self.reference_play, "preparing", label="reference")
         try:
             current = inspect_workspace(self.workspace_directory)
             if current.voice_manifest is None:
@@ -1979,18 +1988,44 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             )
             reference = trusted.select(token.character, token.index)
         except AuthoringWorkbenchError as error:
+            set_playback_button_state(self.reference_play, "idle", label="reference")
             self.status.setText(f"BLOCKED: voice reference changed: {error}")
             return
         if current.voice_manifest != trusted.manifest_path:
+            set_playback_button_state(self.reference_play, "idle", label="reference")
             self.status.setText("BLOCKED: voice manifest selection changed")
             return
         self.voice_controller = trusted
         self._discard_review_playback_copy()
+        set_playback_button_state(self.reference_play, "preparing", label="reference")
         self.player.setSource(QUrl.fromLocalFile(str(reference.path)))
         self.player.play()
+        if self.reference_play.property("playbackState") == "idle":
+            return
         self._preview_active = True
         self.media_outcome = f"PLAYING REFERENCE: {reference.character} {reference.index + 1}/{reference.count}"
         self.status.setText(self._status_text())
+
+    def _playback_state_changed(self, state: object) -> None:
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            self._review_evidence.cancel()
+            self._preview_active = False
+            set_playback_button_state(self.reference_play, "idle", label="reference")
+            if not self._playback_prepare_active:
+                set_playback_button_state(self.review_play, "idle", label="recording")
+        elif state == QMediaPlayer.PlaybackState.PlayingState:
+            for button, label in (
+                (self.reference_play, "reference"),
+                (self.review_play, "recording"),
+            ):
+                if button.property("playbackState") == "preparing":
+                    set_playback_button_state(button, "playing", label=label)
+                    button.setToolTip(
+                        shortcut_tooltip(
+                            button.accessibleName(),
+                            *self._review_shortcut_keys.get(button, ()),
+                        )
+                    )
 
     def _media_error(self, _error: object, message: str = "") -> None:
         self._discard_review_playback_copy()
@@ -2014,6 +2049,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         self._update_review_actions(preserve_queue_id=True)
 
     def stop_preview(self) -> None:
+        self._playback_runner.cancel()
+        self._playback_prepare_active = False
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW STOPPED"
@@ -2331,6 +2368,8 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         )
 
     def _discard_review_playback_copy(self) -> None:
+        set_playback_button_state(self.reference_play, "idle", label="reference")
+        set_playback_button_state(self.review_play, "idle", label="recording")
         self.player.stop()
         self._review_evidence.cancel()
         self._review_playback_buffer = None
@@ -2466,8 +2505,14 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         heard = self._review_evidence.allows(selected)
         self.approve.setEnabled(playable and not running and heard)
         self.reject_button.setEnabled(playable and not running and heard)
-        self.review_play.setEnabled(playable)
-        self.review_stop.setEnabled(self._preview_active)
+        self.review_play.setEnabled(
+            playable
+            or self._playback_prepare_active
+            or self.review_play.property("playbackState") != "idle"
+        )
+        self.review_stop.setEnabled(
+            self._preview_active or self._playback_prepare_active
+        )
         navigation_enabled = (
             self._first_pending_row() >= 0
             and not self._review_save_active
@@ -2578,10 +2623,11 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
         )
 
     def play_selected_outcome(self) -> None:
-        if self._playback_prepare_active:
-            self.review_action_reason.setText(
-                "Preparing replay: wait for exact WAV validation"
-            )
+        if (
+            self._playback_prepare_active
+            or self.review_play.property("playbackState") != "idle"
+        ):
+            self.stop_preview()
             return
         selected = self._selected_review_item()
         if selected is None:
@@ -2591,6 +2637,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self._fail_closed("Selected review row has no exact authority snapshot")
             return
         self._playback_prepare_active = True
+        set_playback_button_state(self.review_play, "preparing", label="recording")
         self._update_review_actions(preserve_queue_id=True)
         self._playback_runner.start(
             self._playback_preparer, self.workspace_directory, selected
@@ -2624,6 +2671,7 @@ class AuthoringWorkbenchDialog(CloseGuardedDialog):
             self._fail_closed("Replay worker returned bytes with the wrong digest")
             return
         self._discard_review_playback_copy()
+        set_playback_button_state(self.review_play, "preparing", label="recording")
         playback = self.player.play_bytes(audio_bytes, "vntts-review.wav")
         if playback is None:
             self._fail_closed(

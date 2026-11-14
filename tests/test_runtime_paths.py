@@ -595,7 +595,7 @@ class RuntimePathsTest(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertFalse(result.successful)
         errors = [check for check in report["checks"] if check["status"] == "error"]
-        self.assertEqual(len(errors), 16)
+        self.assertEqual(len(errors), 17)
         self.assertIn("Import soxr", [check["name"] for check in errors])
         self.assertTrue(all(check["message"] == "probe failed" for check in errors))
         self.assertTrue(
@@ -715,6 +715,34 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertTrue(
                 any(check["name"] == "Tesseract OCR" for check in report["checks"])
             )
+            importer.assert_any_call("r1999extractor.whisper_beam_cache")
+
+    def test_package_self_test_reports_source_asr_import_failure(self):
+        module_name = "r1999extractor.whisper_beam_cache"
+
+        def importer(name):
+            if name == module_name:
+                raise ImportError("incompatible ASR dependency")
+            return Mock()
+
+        with TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            result = run_package_self_test(
+                report_path,
+                import_module=importer,
+                tesseract_probe=Mock(return_value="5.5.0"),
+            )
+            self.assertFalse(result.successful)
+            self.assertNotEqual(result.exit_code, 0)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            check = next(
+                check
+                for check in report["checks"]
+                if check["name"] == f"Import {module_name}"
+            )
+            self.assertEqual(check["status"], "error")
+            self.assertEqual(check["message"], "incompatible ASR dependency")
+            self.assertIn("ImportError", check["traceback"])
 
 
 if __name__ == "__main__":

@@ -83,6 +83,7 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
         )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
+        media_player.PlaybackState = QMediaPlayer.PlaybackState
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -142,6 +143,9 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 dialog.player.play_bytes.call_args.args,
                 (prepared.payload, f"memory:{prepared.path.name}"),
             )
+            self.assertEqual(dialog.play.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(dialog.play.property("playbackState"), "playing")
             self.assertFalse(dialog.choose.isEnabled())
             self.assertFalse(dialog.neither.isEnabled())
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
@@ -334,6 +338,9 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
 
             dialog.generate_selected_preview()
             self.assertTrue(dialog._preview_active)
+            self.assertEqual(
+                dialog.generate_preview.property("playbackState"), "preparing"
+            )
             self.assertTrue(dialog.play.isEnabled())
             self.wait_for(lambda: not dialog._preview_active)
 
@@ -342,6 +349,13 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 [(group["group_id"], candidate_id, text)],
             )
             self.assertEqual(dialog._playback_kind, "generated")
+            self.assertEqual(
+                dialog.generate_preview.property("playbackState"), "preparing"
+            )
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(
+                dialog.generate_preview.property("playbackState"), "playing"
+            )
             self.assertEqual(
                 dialog.player.play_bytes.call_args.args,
                 (_wav_payload(), "memory:generated-preview.wav"),

@@ -6,7 +6,7 @@ dependencies = [
     "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@5de7a54aa4e5e2baadb0182dde554908b48b85c2",
     "platformdirs>=4.3,<5",
     "scipy>=1.11,<2",
-    "torch==2.11.0",
+    "torch==2.13.0",
     "torchaudio==2.11.0",
     "vntts-artifacts[audio]",
 ]

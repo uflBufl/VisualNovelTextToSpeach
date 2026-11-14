@@ -30,11 +30,12 @@ class SpeechPresentationTest(unittest.TestCase):
             "Pocket TTS with voice cloning",
         )
         self.assertEqual(speech_model_label("pocket-tts"), "Pocket TTS preset-only")
-        self.assertEqual(
-            speech_model_label("moss-tts", "moss-tts-local-v1.5-mlx-int8"),
-            "MOSS Local v1.5 · 8-bit MLX",
-        )
-        self.assertEqual(speech_model_label("moss-tts", "custom/model"), "model")
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
+            self.assertEqual(
+                speech_model_label("moss-tts", "moss-tts-local-v1.5-mlx-int8"),
+                "MOSS Local v1.5 · 8-bit MLX",
+            )
+            self.assertEqual(speech_model_label("moss-tts", "custom/model"), "model")
 
     def test_compact_compute_retains_device_and_cpu_fallback_warning(self):
         raw = (
@@ -269,6 +270,10 @@ class SpeechPresentationTest(unittest.TestCase):
             patch("sys.platform", "win32"),
         ):
             for model in (None, "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"):
+                self.assertEqual(
+                    speech_model_label("moss-tts", model),
+                    "MOSS Local v1.5 · 8-bit GGUF",
+                )
                 self.assertIn(
                     "Model: moss-tts-local-1.5-q8_0.gguf",
                     engine_model_label("moss-tts", model),

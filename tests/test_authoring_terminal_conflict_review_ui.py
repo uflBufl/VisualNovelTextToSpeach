@@ -49,6 +49,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
         )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
+        media_player.PlaybackState = QMediaPlayer.PlaybackState
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
@@ -103,6 +104,36 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             completed.returncode, 0, f"{completed.stdout}\n{completed.stderr}"
         )
         return True
+
+    def test_primary_button_covers_preparation_playing_stop_and_error(self):
+        with TemporaryDirectory() as directory:
+            dialog = self.create_dialog(self.create_review(Path(directory)))
+            button = dialog.play_buttons[0]
+            caption = button.text()
+            dialog._play(0)
+            self.assertEqual(button.property("playbackState"), "preparing")
+            self.assertTrue(button.isEnabled())
+            self.wait_for(lambda: dialog._playing_candidate is not None)
+            self.assertEqual(button.property("playbackState"), "preparing")
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+            self.assertEqual(button.property("playbackState"), "playing")
+            self.assertEqual(button.text(), caption)
+            button.click()
+            self.assertEqual(button.property("playbackState"), "idle")
+            self.assertIsNone(dialog._playing_candidate)
+            self.assertFalse(dialog._heard)
+            dialog._play(0)
+            self.wait_for(lambda: dialog._playing_candidate is not None)
+            dialog._playback_error(None, "device unavailable")
+            self.assertEqual(button.property("playbackState"), "idle")
+            self.assertIn("device unavailable", dialog.status.text())
+            dialog._play(0)
+            self.wait_for(lambda: dialog._playing_candidate is not None)
+            dialog._playback_state_changed(QMediaPlayer.PlaybackState.StoppedState)
+            dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+            self.assertEqual(button.property("playbackState"), "idle")
+            self.assertFalse(dialog._heard)
+            dialog.close()
 
     def test_open_and_refresh_keep_event_loop_responsive_and_cancel_stale_load(self):
         from vntts.authoring.terminal_conflict_review import (

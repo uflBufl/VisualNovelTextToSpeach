@@ -172,9 +172,9 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
     ) -> None:
         validate_volume(volume)
         if tts_factory is None:
-            from TTS.api import TTS
+            from vntts.coqui_runtime import ManagedCoquiTTS
 
-            tts_factory = TTS
+            tts_factory = ManagedCoquiTTS
         if torch_module is None:
             torch_module = _load_torch_module()
         device = torch_module.device(

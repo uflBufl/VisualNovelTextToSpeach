@@ -48,6 +48,8 @@ from vntts.authoring.pcm_playback import (
     PlaybackSnapshot,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext, review_scroll_area
+from vntts.playback_button import PlaybackState as PlaybackButtonState
+from vntts.playback_button import set_playback_button_state
 from vntts.qt_dialogs import CloseGuardedDialog
 from vntts.ui_text import shortcut_tooltip
 
@@ -171,6 +173,82 @@ class ModelListeningDialog(CloseGuardedDialog):
     }
     stop: QPushButton
 
+    def _create_seek_controls(self) -> QHBoxLayout:
+        self.skip_back = QPushButton("-5s")
+        set_action_icon(self.skip_back, "skip-back")
+        self.skip_back.setAccessibleName("Skip anonymous sample back five seconds")
+        self.skip_back.setToolTip(self.skip_back.accessibleName())
+        self.seek = SeekSlider(Qt.Orientation.Horizontal)
+        self.seek.setAccessibleName("Anonymous sample playback position")
+        self.skip_forward = QPushButton("+5s")
+        set_action_icon(self.skip_forward, "skip-forward")
+        self.skip_forward.setAccessibleName(
+            "Skip anonymous sample forward five seconds"
+        )
+        self.skip_forward.setToolTip(self.skip_forward.accessibleName())
+        self.time = QLabel("0:00 / 0:00")
+        self.time.setAccessibleName("Anonymous sample playback time")
+        self.time.setMinimumWidth(90)
+        self.skip_back.clicked.connect(lambda: self.skip_by(-5_000))
+        self.skip_forward.clicked.connect(lambda: self.skip_by(5_000))
+        self.seek.sliderMoved.connect(self.seek_to)
+        self.seek.seek_requested.connect(self.seek_to)
+        seek_controls = QHBoxLayout()
+        seek_controls.addWidget(self.skip_back)
+        seek_controls.addWidget(self.seek, 1)
+        seek_controls.addWidget(self.skip_forward)
+        seek_controls.addWidget(self.time)
+        seek_controls.addWidget(self.stop)
+        self.seek_controls = seek_controls
+
+        return seek_controls
+
+    def _create_playback_controls(self) -> QHBoxLayout:
+        self.play_a = QPushButton("A")
+        set_action_icon(self.play_a, "play")
+        self.play_b = QPushButton("B")
+        set_action_icon(self.play_b, "play")
+        self.stop = QPushButton("Pause")
+        set_action_icon(self.stop, "pause")
+        self.play_a.setShortcut(QKeySequence("Ctrl+1"))
+        self.play_b.setShortcut(QKeySequence("Ctrl+2"))
+        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
+        self.play_a.setAccessibleName("Play anonymous sample A")
+        self.play_a.setToolTip(
+            shortcut_tooltip(self.play_a.accessibleName(), self.play_a.shortcut())
+        )
+        self.play_b.setAccessibleName("Play anonymous sample B")
+        self.play_b.setToolTip(
+            shortcut_tooltip(self.play_b.accessibleName(), self.play_b.shortcut())
+        )
+        self.stop.setAccessibleName("Control active anonymous sample")
+        self.stop.setToolTip(
+            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
+        )
+        self.play_a.setAccessibleDescription("Play anonymous sample A")
+        self.play_b.setAccessibleDescription("Play anonymous sample B")
+        self.stop.setAccessibleDescription(
+            "Pause, continue or restart the active anonymous sample"
+        )
+        width = max(
+            self.stop.fontMetrics().horizontalAdvance(label)
+            for label in ("Pause", "Resume", "Replay")
+        )
+        self.stop.setFixedWidth(width + 36)
+        self.play_a.clicked.connect(lambda: self.play("a"))
+        self.play_b.clicked.connect(lambda: self.play("b"))
+        self.stop.clicked.connect(self.toggle_playback)
+
+        self.now_playing = QLabel()
+        self.now_playing.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.now_playing.setAccessibleName("Blind sample playback status")
+        playback = QHBoxLayout()
+        playback.addWidget(self.play_a)
+        playback.addWidget(self.play_b)
+        self.playback_controls = playback
+
+        return playback
+
     def __init__(
         self,
         session_path: str | Path,
@@ -245,76 +323,8 @@ class ModelListeningDialog(CloseGuardedDialog):
         self.current_trial_card.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
-        self.play_a = QPushButton("A")
-        set_action_icon(self.play_a, "play")
-        self.play_b = QPushButton("B")
-        set_action_icon(self.play_b, "play")
-        self.stop = QPushButton("Pause")
-        set_action_icon(self.stop, "pause")
-        self.play_a.setShortcut(QKeySequence("Ctrl+1"))
-        self.play_b.setShortcut(QKeySequence("Ctrl+2"))
-        self.stop.setShortcut(QKeySequence("Ctrl+Space"))
-        self.play_a.setAccessibleName("Play anonymous sample A")
-        self.play_a.setToolTip(
-            shortcut_tooltip(self.play_a.accessibleName(), self.play_a.shortcut())
-        )
-        self.play_b.setAccessibleName("Play anonymous sample B")
-        self.play_b.setToolTip(
-            shortcut_tooltip(self.play_b.accessibleName(), self.play_b.shortcut())
-        )
-        self.stop.setAccessibleName("Control active anonymous sample")
-        self.stop.setToolTip(
-            shortcut_tooltip(self.stop.accessibleName(), self.stop.shortcut())
-        )
-        self.play_a.setAccessibleDescription("Play anonymous sample A")
-        self.play_b.setAccessibleDescription("Play anonymous sample B")
-        self.stop.setAccessibleDescription(
-            "Pause, continue or restart the active anonymous sample"
-        )
-        width = max(
-            self.stop.fontMetrics().horizontalAdvance(label)
-            for label in ("Pause", "Resume", "Replay")
-        )
-        self.stop.setFixedWidth(width + 36)
-        self.play_a.clicked.connect(lambda: self.play("a"))
-        self.play_b.clicked.connect(lambda: self.play("b"))
-        self.stop.clicked.connect(self.toggle_playback)
-
-        self.now_playing = QLabel()
-        self.now_playing.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.now_playing.setAccessibleName("Blind sample playback status")
-        playback = QHBoxLayout()
-        playback.addWidget(self.play_a)
-        playback.addWidget(self.play_b)
-        self.playback_controls = playback
-
-        self.skip_back = QPushButton("-5s")
-        set_action_icon(self.skip_back, "skip-back")
-        self.skip_back.setAccessibleName("Skip anonymous sample back five seconds")
-        self.skip_back.setToolTip(self.skip_back.accessibleName())
-        self.seek = SeekSlider(Qt.Orientation.Horizontal)
-        self.seek.setAccessibleName("Anonymous sample playback position")
-        self.skip_forward = QPushButton("+5s")
-        set_action_icon(self.skip_forward, "skip-forward")
-        self.skip_forward.setAccessibleName(
-            "Skip anonymous sample forward five seconds"
-        )
-        self.skip_forward.setToolTip(self.skip_forward.accessibleName())
-        self.time = QLabel("0:00 / 0:00")
-        self.time.setAccessibleName("Anonymous sample playback time")
-        self.time.setMinimumWidth(90)
-        self.skip_back.clicked.connect(lambda: self.skip_by(-5_000))
-        self.skip_forward.clicked.connect(lambda: self.skip_by(5_000))
-        self.seek.sliderMoved.connect(self.seek_to)
-        self.seek.seek_requested.connect(self.seek_to)
-        seek_controls = QHBoxLayout()
-        seek_controls.addWidget(self.skip_back)
-        seek_controls.addWidget(self.seek, 1)
-        seek_controls.addWidget(self.skip_forward)
-        seek_controls.addWidget(self.time)
-        seek_controls.addWidget(self.stop)
-        self.seek_controls = seek_controls
-
+        playback = self._create_playback_controls()
+        seek_controls = self._create_seek_controls()
         self.prefer_a = QPushButton("A is better")
         set_action_icon(self.prefer_a, "check")
         self.tie = QPushButton("Both acceptable")
@@ -626,8 +636,17 @@ class ModelListeningDialog(CloseGuardedDialog):
     ) -> None:
         self.playback_control_state = state
         label = side.upper() if side else None
-        self.play_a.setText("A")
-        self.play_b.setText("B")
+        for candidate, button in (("a", self.play_a), ("b", self.play_b)):
+            button_state: PlaybackButtonState = (
+                "preparing"
+                if state == "loading" and candidate == side
+                else "playing"
+                if state == "playing" and candidate == side
+                else "idle"
+            )
+            set_playback_button_state(
+                button, button_state, label=f"anonymous sample {candidate.upper()}"
+            )
         self.apply_side_button_style(self.play_a, "a")
         self.apply_side_button_style(self.play_b, "b")
         labels = {
@@ -758,13 +777,30 @@ class ModelListeningDialog(CloseGuardedDialog):
     def play(self, side: Side) -> None:
         if self.current_trial is None or not self.playback_timer.isActive():
             return
+        if side == self.active_side and self.playback_control_state in {
+            "loading",
+            "playing",
+        }:
+            self.stop_audio()
+            return
         if side == "b":
             self.auto_play_pending_b = False
         self.active_side = side
         self.active_started = False
         self.active_initial_natural = True
         clip = self.audio_clips[side]
-        self.active_token = self.playback.play(clip)
+        self.set_playback_indicator("loading", side)
+        try:
+            self.active_token = self.playback.play(clip)
+        except Exception as error:
+            self.active_token = None
+            self.auto_play_pending_b = False
+            self.set_playback_indicator("finished", side)
+            self.set_status(
+                f"Could not play {side.upper()}: {error}. Replay to retry.",
+                playback_error=True,
+            )
+            return
         self.seek.setRange(0, clip.duration_ms)
         self.seek.setValue(0)
         self.update_time_label(0, clip.duration_ms)

@@ -7,6 +7,31 @@
       plays. Verify genuinely partial originals separately in anecdotes/character
       stories, which retain ASR. Chapter and ambiguous cross-chapter audio reuse
       acceptance remain unfinished; continue the existing RUN-11-UI-02 gate.
+## Active - Windows story preparation ASR compatibility
+
+- [ ] On Windows, resume the affected new-story preparation and verify source
+      audio analysis, voice planning and synthesis complete. Verify live progress
+      and cancellation through stdout pipes for duration, semantics, references
+      and portraits, including the windowed packaged worker's inherited stdout
+      and stderr. Local Whisper inference and pipe regressions do not replace
+      this platform gate.
+      During automatic reference qualification, verify model startup, preview
+      rendering and ASR show the current character/reference counters and elapsed
+      time in the main panel, including cancel/retry and a small Windows window.
+
+## Active - SQLite runtime generation playback
+
+- [ ] Qualify native Windows background generation and simultaneous playback
+      using SQLite directly, including resume, cancellation, fallback and review.
+      Confirm committed audio appears without working JSON publication or replacing
+      an open database; local concurrency tests do not replace this native gate.
+
+## Active - Remaining CI qualification
+
+- [ ] Qualify the refactored capture, cancellation, voice and reading paths on
+      hosted Windows/Linux and packaged GPU runtimes after local gates pass.
+      Verify playback buttons distinguish preparation from actual device onset,
+      including cancellation during synthesis and rejected playback ownership.
 
 ## Native capture - remaining macOS qualification
 
@@ -1150,25 +1175,16 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       do not equate source verification with runtime compatibility or add an
       unproven ignore. Retain loaded-module provenance and actual model
       generation/voice checks for any upgrade, backport or replacement.
-- [ ] Resolve compatibility before updating root Coqui 0.27.5 (Transformers <5
-      and private generation API) or Chatterbox Nano's pinned Git package
-      (requires Transformers ==5.2.0). The supported UI/profile/CLI paths do not
-      supply remote custom_generate, but root's public Python synthesis kwargs
-      can; preserve that API while qualifying a compatible fix.
+- [ ] Qualify Coqui 0.28 with real pinned model weights and generated audio on
+      CPU/CUDA and packaged Windows. Check persisted voice reuse across upgrade;
+      tiny GPT generation and constructor/config checks do not qualify audio
+      quality, full checkpoint loading or packaged accelerator behavior.
 - [ ] Qualify the fixed candidate against MOSS Delay's trusted remote processor
       and model loading, including AutoModel's injected GenerationMixin and
       automatic custom-generation lookup. The captured default model snapshot
       has no custom_generate files; mutable/default or custom repositories are
       not a permanent reachability exemption. Preserve revision forwarding,
       CUDA/BF16 refusal, dtype/attention options and actual generated audio.
-- [ ] Qualify MOSS SoundEffect's pinned pipeline and local text-encoder forward
-      path against a compatible fixed Transformers build. Its exact model
-      snapshot has no custom_generate files and the normal pipeline does not
-      call HF generate; retain pinned source/model provenance, CUDA/BF16 and
-      audio-quality checks rather than generalizing to arbitrary custom models.
-      Qwen's remaining Accelerate, setuptools, Torch and Transformers findings
-      belong to the existing Qwen qualification task below, including this
-      custom-generation advisory.
 
 ## Validate OpenMOSS progress on Windows
 
@@ -1803,6 +1819,17 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## Deferred - Restore pre-existing repository quality gates
 
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
+- [ ] Reconcile the complexity ratchet with the unchanged live-replay seal,
+      missing-voice fallback, publication-contention and authoring-workbench code.
+      It reports new/increased findings and stale metric allowances on these
+      files at `3bee3b79`; source-progress changes introduce no new findings.
+      Inspect actual complexity before updating the baseline.
+
+- [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
+      process reports `The prepared pack was not activated`. Reproduces alone
+      on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
+      activation scheduling and fixture contract; preserve the real fresh-install
+      preparation/restart path rather than weakening its assertion.
 
 ## Qualify SQLite-only storage
 

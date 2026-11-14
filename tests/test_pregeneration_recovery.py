@@ -59,7 +59,6 @@ def inputs(root):
     result = OfflineGenerationResult(
         output,
         output / "generation-state.sqlite3",
-        output / "manifest.json",
         1,
         2,
         0,
@@ -866,9 +865,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
     def test_replans_and_never_repeats_a_queue_action_pair(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
-            second = OfflineGenerationResult(
-                first.output, first.state, first.manifest, 2, 1, 0
-            )
+            second = OfflineGenerationResult(first.output, first.state, 2, 1, 0)
             plans = iter(
                 (
                     OfflineRecoveryPlan(
@@ -904,12 +901,8 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
     def test_runs_new_action_after_replanning_same_queue(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
-            still_failed = OfflineGenerationResult(
-                first.output, first.state, first.manifest, 1, 2, 0
-            )
-            recovered = OfflineGenerationResult(
-                first.output, first.state, first.manifest, 2, 1, 0
-            )
+            still_failed = OfflineGenerationResult(first.output, first.state, 1, 2, 0)
+            recovered = OfflineGenerationResult(first.output, first.state, 2, 1, 0)
             plans = iter(
                 (
                     OfflineRecoveryPlan(
@@ -955,9 +948,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 synthesis_backend="pocket-tts",
                 synthesis_model="pocket-tts",
             )
-            final = OfflineGenerationResult(
-                first.output, first.state, first.manifest, 1, 0, 2
-            )
+            final = OfflineGenerationResult(first.output, first.state, 1, 0, 2)
             plans = iter(
                 (
                     OfflineRecoveryPlan(

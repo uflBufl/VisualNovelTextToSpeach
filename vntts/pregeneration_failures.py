@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
+
 from vntts import generation_database
 from vntts.authoring.failed_audio import failed_audio_path, read_failed_audio
 from vntts.authoring.generation_failures import normalized_failure_record
@@ -67,35 +69,11 @@ def inspect_preparation_failures(
             result.get("failure") or result.get("last_error")
         ):
             continue
-        while True:
-            for name in ("queue_id", "line_id", "text_sha256", "speaker", "text"):
-                if name in result and result[name] != getattr(item, name):
-                    raise ValueError(
-                        f"Preparation failure {name} differs from the queue"
-                    )
-            failure = normalized_failure_record(result, text=item.text)
-            if failure.get("kind") != "cancelled":
-                break
-            previous = failure.get("previous_failure")
-            if not isinstance(previous, dict):
-                result = {}
-                break
-            result = previous
+        result, failure = _completed_failure(item, result)
         if not result:
             continue
         audio = result.get("failure_audio")
-        audio_status = "unavailable"
-        if isinstance(audio, dict) and audio.get("created") is False:
-            audio_status = "not_created"
-        else:
-            try:
-                failed_audio_path(
-                    generation_input.output_directory, item.queue_id, audio
-                )
-            except OSError, ValueError:
-                pass
-            else:
-                audio_status = "available"
+        audio_status = _failure_audio_status(generation_input, item.queue_id, audio)
         details = str(result.get("last_error") or "")
         render = failure.get("render")
         if isinstance(render, dict):
@@ -113,6 +91,42 @@ def inspect_preparation_failures(
             )
         )
     return tuple(failures)
+
+
+def _failure_audio_status(
+    generation_input: PregenerationInput,
+    queue_id: str,
+    audio: object,
+) -> str:
+    audio_status = "unavailable"
+    if isinstance(audio, dict) and audio.get("created") is False:
+        audio_status = "not_created"
+    else:
+        try:
+            failed_audio_path(generation_input.output_directory, queue_id, audio)
+        except OSError, ValueError:
+            pass
+        else:
+            audio_status = "available"
+    return audio_status
+
+
+def _completed_failure(
+    item: VoiceGenerationQueueItem, result: dict[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    while True:
+        for name in ("queue_id", "line_id", "text_sha256", "speaker", "text"):
+            if name in result and result[name] != getattr(item, name):
+                raise ValueError(f"Preparation failure {name} differs from the queue")
+        failure = normalized_failure_record(result, text=item.text)
+        if failure.get("kind") != "cancelled":
+            break
+        previous = failure.get("previous_failure")
+        if not isinstance(previous, dict):
+            result = {}
+            break
+        result = previous
+    return result, failure
 
 
 def load_preparation_failure_audio(

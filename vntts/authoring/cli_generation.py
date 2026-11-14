@@ -23,7 +23,6 @@ from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
     load_generation_state,
     normalize_short_trailing_ellipsis,
-    publish_generated_manifest,
     run_bulk_generation,
     sha256_control_path,
 )
@@ -71,7 +70,6 @@ COMMANDS = frozenset(
         "generate",
         "review",
         "live-fallback",
-        "publish",
         "status",
         "failure-report",
         "specialist-failure-plan",
@@ -230,11 +228,6 @@ def _configure_live_fallback_parser(
 def _configure_state_parsers(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    publish = subparsers.add_parser(
-        "publish", help="Rebuild the approved-only manifest from generation state"
-    )
-    publish.add_argument("--state", type=Path, required=True)
-
     status = subparsers.add_parser("status", help="Inspect resumable generation state")
     status.add_argument("--state", type=Path, required=True)
     status.add_argument("--queue", type=Path)
@@ -806,12 +799,6 @@ def _handle_live_fallback(arguments: argparse.Namespace) -> int:
     return 0
 
 
-def _handle_publish(arguments: argparse.Namespace) -> int:
-    manifest = publish_generated_manifest(arguments.state)
-    print_json({"manifest": str(manifest)})
-    return 0
-
-
 def _handle_status(arguments: argparse.Namespace) -> int:
     state = load_generation_state(arguments.state, arguments.queue)
     items = state.get("items")
@@ -935,7 +922,6 @@ COMMAND_HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "generate": _generate,
     "review": _handle_review,
     "live-fallback": _handle_live_fallback,
-    "publish": _handle_publish,
     "status": _handle_status,
     "failure-report": _handle_failure_report,
     "specialist-failure-plan": _handle_specialist_failure_plan,

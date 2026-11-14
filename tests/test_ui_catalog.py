@@ -19,7 +19,7 @@ class UiCatalogTest(unittest.TestCase):
             from pathlib import Path
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QTextCursor
-            from PySide6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionButton
             from scripts.render_ui_catalog import (
                 _cohort_review_story, _close_catalog_widget, _prepare_cohort_screenshot,
                 COHORT_CATALOG_ERROR,
@@ -115,7 +115,8 @@ class UiCatalogTest(unittest.TestCase):
                         assert "deferred" in dialog.status.text().lower()
                     if state == "preparing":
                         assert dialog._playback_prepare_active
-                        assert not dialog.replay.isEnabled()
+                        assert dialog.replay.isEnabled()
+                        assert dialog.replay.property("playbackState") == "preparing"
                     if state == "playback":
                         assert dialog.stop.isEnabled() and dialog._playback_target is not None
                     if state in {"stopped", "audio-failure"}:
@@ -128,7 +129,14 @@ class UiCatalogTest(unittest.TestCase):
                         assert "leave 9 unsampled WAVs pending" in dialog.decision_help.text()
                     if state == "compact-bad-reasons":
                         for checkbox in dialog.defect_checks.values():
-                            assert checkbox.width() >= checkbox.fontMetrics().horizontalAdvance(checkbox.text()) + 26
+                            assert checkbox.width() >= checkbox.minimumSizeHint().width()
+                            assert checkbox.height() >= checkbox.minimumSizeHint().height()
+                            option = QStyleOptionButton()
+                            checkbox.initStyleOption(option)
+                            contents = checkbox.style().subElementRect(
+                                QStyle.SubElement.SE_CheckBoxContents, option, checkbox,
+                            )
+                            assert contents.width() >= checkbox.fontMetrics().horizontalAdvance(checkbox.text())
                         last = tuple(dialog.defect_checks.values())[-1]
                         assert dialog.review_scroll.viewport().rect().contains(last.mapTo(dialog.review_scroll.viewport(), last.rect().bottomRight()))
                     if state == "observation-failure":

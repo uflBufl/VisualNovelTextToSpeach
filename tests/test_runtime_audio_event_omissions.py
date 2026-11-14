@@ -15,9 +15,6 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import (
-    write_runtime_progress_manifest_from_state,
-)
 from vntts.authoring.generation_state import (
     load_generation_state,
     write_generation_state,
@@ -95,8 +92,6 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
                 Path(directory), include_omission=True
             )
             before = result.state.read_bytes()
-            runtime = result.output / "live-progress-manifest.json"
-            published = runtime.read_bytes()
 
             def change_queue(*args):
                 records = _self_service_omission_decisions(*args)
@@ -112,7 +107,6 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
             ):
                 initialize_audio_event_omissions(inputs, decided_at="resume")
             self.assertEqual(result.state.read_bytes(), before)
-            self.assertEqual(runtime.read_bytes(), published)
 
     def test_rejects_changed_outer_identity_and_foreign_omission_authority(self):
         with TemporaryDirectory() as directory:
@@ -121,8 +115,6 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
             )
             original = load_generation_state(result.state, inputs.queue)
             queue_id = items[-1]["queue_id"]
-            runtime = result.output / "live-progress-manifest.json"
-            published = runtime.read_bytes()
             for field in ("line_id", "text_sha256", "speaker"):
                 with self.subTest(field=field):
                     state = copy.deepcopy(original)
@@ -137,11 +129,12 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
                         field
                     ] = "f" * 64
                     write_generation_state(result.state, state)
+                    before = result.state.read_bytes()
                     with self.assertRaisesRegex(
                         PregenerationQueueError, "authority changed"
                     ):
                         initialize_audio_event_omissions(inputs, decided_at="resume")
-                    self.assertEqual(runtime.read_bytes(), published)
+                    self.assertEqual(result.state.read_bytes(), before)
 
     def test_generation_fallback_resume_and_pack_keep_the_same_omission(self):
         with TemporaryDirectory() as directory:
@@ -166,8 +159,7 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
                 )
                 return omission
 
-            runtime = result.output / "live-progress-manifest.json"
-            first = published_decision(runtime)
+            first = published_decision(result.state)
             initialize_audio_event_omissions(
                 inputs, decided_at="2026-09-01T00:00:00+00:00"
             )
@@ -175,9 +167,7 @@ class RuntimeAudioEventOmissionsTest(unittest.TestCase):
             self.assertEqual(
                 resumed["items"][omission_id]["audio_event_omission"], decision
             )
-            # Cancellation and recovery use the same progress writer.
-            write_runtime_progress_manifest_from_state(resumed, result.output, runtime)
-            self.assertEqual(published_decision(runtime), first)
+            self.assertEqual(published_decision(result.state), first)
             pack = OfflinePackPublisher().publish(job, inputs, result)
             self.assertEqual(
                 published_decision(pack.imported.generated_audio_manifest), first

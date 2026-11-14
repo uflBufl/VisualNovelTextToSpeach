@@ -27,7 +27,7 @@ from vntts import generation_database
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    publish_generated_manifest,
+    validate_authoring_publication_authority,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import (
@@ -42,6 +42,7 @@ from vntts.authoring.config_rebase import (
 from vntts.authoring.generation_fallback import (
     authorize_live_fallback,
 )
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_review import review_generation_item
 from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.workbench import (
@@ -759,11 +760,17 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
                 sha256_file(result.directory / "generated-audio" / item["path"]),
                 item["file_sha256"],
             )
-            manifest = publish_generated_manifest(
-                result.directory / "generated-audio" / "generation-state.sqlite3"
+            self.assertEqual(
+                len(
+                    approved_manifest_entries(
+                        state, result.directory / "generated-audio"
+                    )
+                ),
+                1,
             )
-            manifest_document = json.loads(manifest.read_text())
-            self.assertEqual(manifest_document["entry_count"], 1)
+            self.assertFalse(
+                (result.directory / "generated-audio/manifest.json").exists()
+            )
 
     def test_does_not_recursively_revalidate_authority_under_owned_lease(self):
         with TemporaryDirectory() as directory:
@@ -948,17 +955,17 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             wav = (
                 source / "generated-audio" / state["items"][fixture["queue_id"]]["path"]
             )
-            original_writer = config_rebase_module.write_generated_manifest_from_state
+            original_projection = config_rebase_module.approved_manifest_entries
 
             def mutate_after_staging(*args, **kwargs):
-                result = original_writer(*args, **kwargs)
+                result = original_projection(*args, **kwargs)
                 wav.write_bytes(wav.read_bytes() + b"changed")
                 return result
 
             try:
                 with patch.object(
                     config_rebase_module,
-                    "write_generated_manifest_from_state",
+                    "approved_manifest_entries",
                     side_effect=mutate_after_staging,
                 ):
                     with self.assertRaisesRegex(
@@ -968,7 +975,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             finally:
                 wav.write_bytes(wav.read_bytes()[: -len(b"changed")])
 
-    def test_orphaned_rebase_provenance_cannot_enter_manifest(self):
+    def test_orphaned_rebase_provenance_has_no_publication_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             fixture, source, _target = _prepare(root)
@@ -984,7 +991,7 @@ class AuthoringConfigRebaseTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 BulkGenerationError, "canonical workspace ledger"
             ):
-                publish_generated_manifest(state_path)
+                validate_authoring_publication_authority(state_path, state)
 
     def test_tampered_snapshot_invalidates_workspace(self):
         with TemporaryDirectory() as directory:

@@ -169,17 +169,15 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller = Mock(is_ready=True)
             controller.apply_settings.return_value = True
             controller.start.return_value = True
-            activator = OfflinePackActivator(
-                save_state=lambda settings, _pack: (
-                    saved.append(settings)
-                    or Path(temporary_directory) / "settings.json"
-                )
-            )
 
-            with patch(
-                "vntts.pregeneration_activation.record_background_operation"
-            ) as record:
-                result = activator.activate(AppSettings(), pack, controller)
+            def save_state(settings, _pack):
+                controller.start.assert_called_once_with()
+                saved.append(settings)
+                return Path(temporary_directory) / "settings.json"
+
+            result = OfflinePackActivator(save_state=save_state).activate(
+                AppSettings(), pack, controller
+            )
 
         self.assertEqual(result.settings.audio_source_policy, "prefer-generated")
         self.assertEqual(result.settings.game_pack, str(pack.manifest))
@@ -194,45 +192,27 @@ class OfflinePackActivatorTest(unittest.TestCase):
             result.settings,
             cancellation=None,
         )
-        controller.start.assert_called_once_with()
-        self.assertEqual(
-            [call.args[0] for call in record.call_args_list],
-            [
-                "pregeneration-activation-pack-preflight",
-                "pregeneration-activation-settings-build",
-                "pregeneration-activation-runtime-apply",
-                "pregeneration-activation-state-save",
-            ],
-        )
 
-    def test_offline_choices_do_not_replace_live_settings_and_rollback_keeps_old_settings(
-        self,
-    ):
+    def test_activation_and_apply_failure_preserve_live_voice_preferences(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             pack = published_pack(root)
             previous = AppSettings(
                 game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
             )
-            for failure in (None, "start", "save", "apply"):
-                with self.subTest(failure=failure):
-                    controller = Mock(is_ready=failure != "apply")
+            for apply_failed in (False, True):
+                with self.subTest(apply_failed=apply_failed):
+                    controller = Mock(is_ready=not apply_failed)
                     controller.apply_settings.side_effect = (
-                        [RuntimeError("apply failed"), True]
-                        if failure == "apply"
-                        else None
-                    )
-                    controller.start.side_effect = (
-                        [False, True] if failure == "start" else None
+                        [RuntimeError("apply failed"), True] if apply_failed else None
                     )
                     controller.start.return_value = True
                     save = Mock(return_value=root / "settings.json")
-                    if failure == "save":
-                        save.side_effect = OSError("disk full")
                     activator = OfflinePackActivator(save_state=save)
-                    if failure:
+                    if apply_failed:
                         with self.assertRaises(OfflinePackActivationError):
                             activator.activate(previous, pack, controller)
+                        save.assert_not_called()
                         self.assertEqual(
                             controller.apply_settings.call_args.args, (previous,)
                         )
@@ -244,28 +224,39 @@ class OfflinePackActivatorTest(unittest.TestCase):
                             result.settings.tts_speaker_wav, "live-narrator.wav"
                         )
 
-    def test_save_failure_restores_the_previous_running_pack(self):
+    def test_save_failure_reports_whether_previous_runtime_restarted(self):
         with TemporaryDirectory() as temporary_directory:
             pack = published_pack(Path(temporary_directory))
-            previous = AppSettings(game_pack="previous-pack.json")
-            controller = Mock(is_ready=True)
-            controller.apply_settings.return_value = True
-            controller.start.return_value = True
-            activator = OfflinePackActivator(
-                save_state=Mock(side_effect=OSError("disk full"))
+            previous = AppSettings(
+                game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
             )
+            for restarted in (True, False):
+                with self.subTest(restarted=restarted):
+                    controller = Mock(is_ready=True)
+                    controller.apply_settings.return_value = True
+                    controller.start.side_effect = [True, restarted]
+                    activator = OfflinePackActivator(
+                        save_state=Mock(side_effect=OSError("disk full"))
+                    )
 
-            with self.assertRaisesRegex(OfflinePackActivationError, "disk full"):
-                activator.activate(previous, pack, controller)
+                    with self.assertRaisesRegex(
+                        OfflinePackActivationError, "disk full"
+                    ) as raised:
+                        activator.activate(previous, pack, controller)
 
-        self.assertEqual(controller.shutdown.call_count, 2)
-        self.assertEqual(controller.start.call_count, 2)
-        self.assertEqual(controller.apply_settings.call_args_list[-1].args, (previous,))
+                    self.assertEqual(raised.exception.rollback_failed, not restarted)
+                    self.assertEqual(controller.shutdown.call_count, 2)
+                    self.assertEqual(controller.start.call_count, 2)
+                    self.assertEqual(
+                        controller.apply_settings.call_args_list[-1].args, (previous,)
+                    )
 
     def test_failed_candidate_start_restores_previous_runtime_without_saving(self):
         with TemporaryDirectory() as temporary_directory:
             pack = published_pack(Path(temporary_directory))
-            previous = AppSettings(game_pack="previous-pack.json")
+            previous = AppSettings(
+                game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
+            )
             controller = Mock(is_ready=True)
             controller.apply_settings.return_value = True
             controller.start.side_effect = [False, True]

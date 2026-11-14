@@ -1679,19 +1679,9 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 validate_files=False,
             )
             self.assertEqual(len(saved["items"]), 4)
-            (current.output_directory / "manifest.json").unlink()
-            (current.output_directory / "live-progress-manifest.json").unlink()
-            with (
-                patch(
-                    "vntts.pregeneration_queue.write_generated_manifest_from_state",
-                    side_effect=OSError("publication failed"),
-                ),
-                self.assertRaisesRegex(PregenerationQueueError, "Unable to reuse"),
-            ):
-                store.materialize(job, revised)
             self.assertEqual(store.materialize(job, revised), current)
             library = GeneratedAudioLibrary.load_optional(
-                current.output_directory / "live-progress-manifest.json"
+                generation_state_path(current.output_directory)
             )
             self.assertIsNotNone(library)
             self.assertEqual(
@@ -1925,8 +1915,12 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 generation_state_path(result.output_directory), result.queue
             )["items"][queue_by_line["pure-event"]]
             self.assertEqual(omission["status"], "omitted")
-            self.assertTrue(
-                (result.output_directory / "live-progress-manifest.json").is_file()
+            library = GeneratedAudioLibrary.load_optional(
+                generation_state_path(result.output_directory)
+            )
+            self.assertIsNotNone(library)
+            self.assertIsNotNone(
+                library.find_audio_event_omission("pure-event", omission["text_sha256"])
             )
             original = jobs.catalog.input_document(result.directory)
             self.assertIsNotNone(original)

@@ -7,21 +7,13 @@ import hashlib
 import io
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from durable_file import atomic_write_json
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     Pcm16MonoWavError,
     read_pcm16_mono_wav,
-)
-from vntts_artifacts.generated_audio import (
-    GENERATED_AUDIO_SCHEMA,
-    GENERATED_AUDIO_SCHEMA_VERSION,
-    GeneratedAudioManifestError,
-    write_generated_audio_manifest,
 )
 from vntts_artifacts.voice_manifest import (
     normalize_character_name,
@@ -71,8 +63,6 @@ class RecordedVoice(TypedDict):
 _JsonObject: TypeAlias = dict[str, object]
 _GenerationResult: TypeAlias = _JsonObject
 _GenerationState: TypeAlias = _JsonObject
-
-RUNTIME_PROGRESS_MANIFEST_NAME = "live-progress-manifest.json"
 
 
 class _Pcm16MonoWavInfo(Protocol):
@@ -379,98 +369,6 @@ def audio_event_omission_entries(state: _GenerationState) -> list[dict[str, obje
     return sorted(entries, key=lambda entry: (entry["line_id"], entry["text_sha256"]))
 
 
-def write_generated_manifest_from_state(
-    state: _GenerationState,
-    output_directory: Path | str,
-    manifest_path: Path | str,
-    *,
-    entries: list[dict[str, object]] | None = None,
-    validate_files: bool = True,
-) -> None:
-    """Atomically publish the approved-only projection of one generation state."""
-    entries = (
-        approved_manifest_entries(
-            state, output_directory, validate_files=validate_files
-        )
-        if entries is None
-        else entries
-    )
-    _write_generated_manifest(
-        state,
-        manifest_path,
-        entries,
-        validate_files=validate_files,
-    )
-
-
-def write_runtime_progress_manifest_from_state(
-    state: _GenerationState,
-    output_directory: Path | str,
-    manifest_path: Path | str,
-    *,
-    validate_files: bool = True,
-) -> None:
-    """Atomically publish complete WAVs for playback while generation continues."""
-    entries = runtime_progress_manifest_entries(
-        state,
-        output_directory,
-        validate_files=validate_files,
-    )
-    live_fallbacks = runtime_progress_live_fallback_entries(state)
-    _write_generated_manifest(
-        state,
-        manifest_path,
-        entries,
-        validate_files=validate_files,
-        metadata={
-            "vntts.runtime.progress": True,
-            "vntts.authoring.live_fallback": {
-                "schema_version": 1,
-                "mode": "explicit",
-                "entries": live_fallbacks,
-            },
-        },
-    )
-
-
-def _write_generated_manifest(
-    state: _GenerationState,
-    manifest_path: Path | str,
-    entries: list[dict[str, object]],
-    *,
-    validate_files: bool,
-    metadata: dict[str, object] | None = None,
-) -> None:
-    document_metadata = {
-        "game": state.get("game"),
-        "language": state.get("language"),
-        "source_queue_sha256": state["queue_sha256"],
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "vntts.authoring.audio_event_omission": {
-            "schema_version": 1,
-            "mode": "explicit",
-            "entries": audio_event_omission_entries(state),
-        },
-        **(metadata or {}),
-    }
-    try:
-        if validate_files:
-            write_generated_audio_manifest(manifest_path, document_metadata, entries)
-        else:
-            atomic_write_json(
-                manifest_path,
-                {
-                    **document_metadata,
-                    "schema": GENERATED_AUDIO_SCHEMA,
-                    "schema_version": GENERATED_AUDIO_SCHEMA_VERSION,
-                    "entry_count": len(entries),
-                    "entries": entries,
-                },
-            )
-    except GeneratedAudioManifestError as error:
-        raise BulkGenerationError(str(error)) from error
-
-
 def validate_success_file(
     queue_id: str, result: _GenerationResult, audio: Path
 ) -> AudioQuality:
@@ -608,7 +506,6 @@ def _nonnegative_int(value: object, label: str) -> int:
 
 
 __all__ = [
-    "RUNTIME_PROGRESS_MANIFEST_NAME",
     "AudioQuality",
     "approved_manifest_entries",
     "audio_event_omission_entries",
@@ -620,6 +517,4 @@ __all__ = [
     "safe_generation_relative_path",
     "validate_success_file",
     "validate_success_file_with_speech_quality",
-    "write_generated_manifest_from_state",
-    "write_runtime_progress_manifest_from_state",
 ]

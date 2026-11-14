@@ -1,6 +1,5 @@
 """Coherent terminal review reads and late authority failure boundaries."""
 
-import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +15,7 @@ from tests.terminal_conflict_fixtures import (
 )
 from vntts.authoring.authority import AuthoringAuthorityError
 from vntts.authoring.bulk_generation import load_generation_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.terminal_conflict_resolution import (
     publish_terminal_conflict_resolution,
 )
@@ -241,6 +241,8 @@ class TerminalConflictSessionTest(unittest.TestCase):
         return primary, secondary, successor, queue_ids
 
     def _assert_exact_approved_merge(self, primary, merged, queue_ids, source_state):
+        for workspace in (primary, merged):
+            self.assertFalse((workspace / "generated-audio/manifest.json").exists())
         workspace_document = load_workspace_authority(merged)[1]
         self.assertEqual(
             workspace_document["terminal_conflict_merge"]["sources"][0][
@@ -264,13 +266,13 @@ class TerminalConflictSessionTest(unittest.TestCase):
             for queue_id, item in merged_state["items"].items()
         }
         self.assertEqual(expected_state, source_state)
-        manifest = json.loads(
-            (merged / "generated-audio/manifest.json").read_text(encoding="utf-8")
+        merged_entries = approved_manifest_entries(
+            merged_state, merged / "generated-audio"
         )
-        entries = {entry["queue_id"]: entry for entry in manifest["entries"]}
+        entries = {entry["queue_id"]: entry for entry in merged_entries}
         self.assertEqual(set(entries), queue_ids)
-        source_manifest = json.loads(
-            (primary / "generated-audio/manifest.json").read_text(encoding="utf-8")
+        source_entries = approved_manifest_entries(
+            source_state, primary / "generated-audio"
         )
         self.assertEqual(
             [
@@ -279,9 +281,9 @@ class TerminalConflictSessionTest(unittest.TestCase):
                     for key, value in entry.items()
                     if key != "terminal_conflict_resolution"
                 }
-                for entry in manifest["entries"]
+                for entry in merged_entries
             ],
-            source_manifest["entries"],
+            source_entries,
         )
         for queue_id in queue_ids:
             item = merged_state["items"][queue_id]

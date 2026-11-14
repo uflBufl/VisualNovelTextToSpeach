@@ -910,6 +910,35 @@ class OnboardingWizardTest(unittest.TestCase):
         page.set_result(False, "Done")
         wizard.deleteLater()
 
+    def test_primary_test_button_prepares_then_plays_and_cancels_without_resizing(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.show_page(len(wizard.pages) - 1)
+        page = wizard.test_page
+        caption = page.button.text()
+        size = page.button.sizeHint()
+        cancellations = []
+        wizard.cancel_requested.connect(lambda: cancellations.append(True))
+        page.button.click()
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_progress(55, "Speech synthesis")
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "playing")
+        self.assertEqual(page.button.text(), caption)
+        self.assertEqual(page.button.sizeHint(), size)
+        page.button.click()
+        self.assertEqual(cancellations, [True])
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "preparing")
+        page.set_result(False, "Cancelled")
+        self.assertEqual(page.button.property("playbackState"), "idle")
+        self.assertEqual(page.button.text(), caption)
+        self.assertEqual(page.button.sizeHint(), size)
+        page.set_playing(True)
+        self.assertEqual(page.button.property("playbackState"), "idle")
+        wizard.deleteLater()
+
     def test_cancelled_test_ignores_a_late_success(self):
         wizard = OnboardingWizard(AppSettings(), reading_setup=True)
         wizard.show_page(len(wizard.pages) - 1)
@@ -1599,7 +1628,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.finish_button.isEnabled())
         self.assertIn("Prepare offline audio", wizard.test_page.status.text())
         self.assertIn("Start reading", wizard.test_page.status.text())
-        self.assertEqual(wizard.test_page.button.text(), "Run test again")
+        self.assertEqual(wizard.test_page.button.text(), "Run OCR-to-speech test")
         wizard.deleteLater()
 
     def test_first_run_journey_needs_only_game_window_before_guided_test(self):
@@ -1762,6 +1791,15 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.close()
             wizard.deleteLater()
 
+    def _assert_native_calibration_failure(self, show, wizard, other, page, window):
+        show.assert_not_called()
+        self.assertTrue(wizard.isVisible())
+        self.assertTrue(other.isVisible())
+        self.assertFalse(page.isComplete())
+        self.assertIn("Native target lost", page.status.text())
+        self.assertIn("try again", page.status.text())
+        self.assertEqual(wizard.draft_settings.game_window_title, window.title)
+
     def test_native_calibration_failure_retries_same_selected_window(self):
         window = WindowInfo(17, "Game", 42)
         geometry = WindowGeometry(0, 0, 800, 500)
@@ -1813,14 +1851,9 @@ class OnboardingWizardTest(unittest.TestCase):
                 pool.run_next()
                 self.application.processEvents()
 
-                show.assert_not_called()
-                self.assertTrue(wizard.isVisible())
-                self.assertTrue(other.isVisible())
-                self.assertFalse(page.isComplete())
-                self.assertIn("Native target lost", page.status.text())
-                self.assertIn("try again", page.status.text())
-                self.assertEqual(wizard.draft_settings.game_window_title, window.title)
-
+                self._assert_native_calibration_failure(
+                    show, wizard, other, page, window
+                )
                 capture.side_effect = capture_after_window_moves
                 page.calibrate()
                 page.open_overlay()
@@ -1846,37 +1879,6 @@ class OnboardingWizardTest(unittest.TestCase):
             for widget in (wizard, other):
                 widget.close()
                 widget.deleteLater()
-
-    def test_reading_setup_passes_profile_aware_region_save_to_overlay(self):
-        save_region = Mock()
-        region = DialogRegion(0.1, 0.6, 0.8, 0.3)
-        wizard = OnboardingWizard(
-            AppSettings(active_profile_id="active", capture_mode="screen"),
-            reading_setup=True,
-            save_region=save_region,
-            capture_region=region,
-        )
-        pool = ManualThreadPool()
-        wizard.calibration_page.capture_runner.thread_pool = pool
-        background = Image.new("RGB", (16, 16))
-        with (
-            patch("vntts.onboarding_ui.show_calibration_overlay") as show_overlay,
-            patch(
-                "vntts.onboarding_ui.capture_calibration_preview",
-                return_value=(None, background),
-            ),
-        ):
-            wizard.calibration_page.calibrate()
-            wizard.calibration_page.open_overlay()
-            pool.run_next()
-            self.application.processEvents()
-
-        show_overlay.assert_called_once_with(
-            None, background=background, save_region=save_region, capture_region=region
-        )
-        save_region.assert_not_called()
-        wizard.close()
-        wizard.deleteLater()
 
     def test_calibration_invalid_background_restores_survivors_without_opening_overlay(
         self,

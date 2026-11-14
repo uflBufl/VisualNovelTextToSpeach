@@ -33,6 +33,7 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_decision,
     write_cohort_review_plan,
 )
+from vntts.authoring.generation_manifest import approved_manifest_entries
 
 
 class AuthoringCohortReviewTest(unittest.TestCase):
@@ -1081,7 +1082,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
                 json.loads(decision_path.read_text(encoding="utf-8")),
             )
 
-    def test_terminal_decision_projects_exact_state_and_manifest_provenance(self):
+    def test_terminal_decision_preserves_exact_state_and_playback_provenance(self):
         with TemporaryDirectory() as directory:
             workspace, state_path, queue_id = self.create_pending_workspace(
                 Path(directory)
@@ -1097,7 +1098,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
             result = apply_cohort_review_decision(workspace, plan, decision)
             state = generation_database.read_state(state_path)
-            manifest = json.loads((state_path.parent / "manifest.json").read_text())
+            entries = approved_manifest_entries(state, state_path.parent)
 
         self.assertEqual(result.queue_ids, (queue_id,))
         self.assertEqual(result.review_status, "approved")
@@ -1109,9 +1110,9 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             provenance["target_audio_sha256"],
             cohort["items"][0]["audio_sha256"],
         )
-        self.assertEqual(len(manifest["entries"]), 1)
+        self.assertEqual(len(entries), 1)
         self.assertEqual(
-            manifest["entries"][0]["cohort_review"]["decision_id"],
+            entries[0]["cohort_review"]["decision_id"],
             decision.decision_id,
         )
 
@@ -1224,7 +1225,7 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
                 self.assertFalse((workspace / "cohort-reviews").exists())
 
-    def test_rejection_revokes_manifest_before_state_commit(self):
+    def test_rejection_failed_commit_preserves_state(self):
         with TemporaryDirectory() as directory:
             workspace, state_path, queue_id = self.create_pending_workspace(
                 Path(directory)
@@ -1234,34 +1235,32 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             decision = build_cohort_review_decision(
                 plan, cohort_id, "rejected", reviewed_queue_ids=[queue_id]
             )
-            manifest_path = state_path.parent / "manifest.json"
-            original_replace = __import__("os").replace
-
-            def fail_state_commit(source, destination):
-                if Path(destination).resolve() == state_path.resolve():
-                    raise OSError("injected state commit failure")
-                return original_replace(source, destination)
-
+            state_before = state_path.read_bytes()
             with (
                 patch(
-                    "vntts.authoring.generation_review.os.replace",
-                    side_effect=fail_state_commit,
+                    "vntts.authoring.generation_review.write_generation_state",
+                    side_effect=OSError("injected state commit failure"),
                 ),
-                self.assertRaisesRegex(CohortReviewError, "remains fail-closed"),
+                self.assertRaisesRegex(
+                    CohortReviewError, "injected state commit failure"
+                ),
             ):
                 apply_cohort_review_decision(workspace, plan, decision)
 
             state = generation_database.read_state(state_path)
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(state_path.read_bytes(), state_before)
             self.assertEqual(
                 state["items"][queue_id]["review_status"], "pending_review"
             )
             self.assertNotIn(
                 queue_id,
-                {entry["queue_id"] for entry in manifest["entries"]},
+                {
+                    entry["queue_id"]
+                    for entry in approved_manifest_entries(state, state_path.parent)
+                },
             )
 
-    def test_wav_change_during_staging_blocks_both_state_and_manifest(self):
+    def test_wav_change_before_commit_preserves_state(self):
         with TemporaryDirectory() as directory:
             workspace, state_path, queue_id = self.create_pending_workspace(
                 Path(directory)
@@ -1277,27 +1276,24 @@ class AuthoringCohortReviewTest(unittest.TestCase):
             state = generation_database.read_state(state_path)
             audio = state_path.parent / state["items"][queue_id]["path"]
             state_before = state_path.read_bytes()
-            manifest_path = state_path.parent / "manifest.json"
-            manifest_before = manifest_path.read_bytes()
             from vntts.authoring import generation_review
 
-            original = generation_review._write_generated_manifest_from_state
+            original = generation_review._validate_cohort_approved_wavs
 
-            def mutate_after_staging(*args, **kwargs):
+            def mutate_after_validation(*args, **kwargs):
                 original(*args, **kwargs)
-                audio.write_bytes(audio.read_bytes() + b"changed-during-staging")
+                audio.write_bytes(audio.read_bytes() + b"changed-after-validation")
 
             with (
                 patch(
-                    "vntts.authoring.generation_review._write_generated_manifest_from_state",
-                    side_effect=mutate_after_staging,
+                    "vntts.authoring.generation_review._validate_cohort_approved_wavs",
+                    side_effect=mutate_after_validation,
                 ),
                 self.assertRaisesRegex(CohortReviewError, "authority changed"),
             ):
                 apply_cohort_review_decision(workspace, plan, decision)
 
             self.assertEqual(state_path.read_bytes(), state_before)
-            self.assertEqual(manifest_path.read_bytes(), manifest_before)
 
     def test_recomputed_decision_cannot_forge_reviewed_wav_evidence(self):
         with TemporaryDirectory() as directory:

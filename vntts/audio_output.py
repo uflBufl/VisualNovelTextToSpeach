@@ -19,6 +19,7 @@ from vntts.playback import (
     PreparedPlayback,
     outcome_for_prepared,
 )
+from vntts.playback_observer import playback_started_context
 
 AudioData: TypeAlias = NDArray[np.float32]
 
@@ -181,7 +182,10 @@ def resolve_audio_output(
         audio_output, "__name__", None
     ) == "sounddevice" and _supports_streaming_output(audio_output):
         return _LoggedAudioOutput(audio_output)
-    if pcm_admission_context.get() is not None and any(
+    if (
+        pcm_admission_context.get() is not None
+        or playback_started_context.get() is not None
+    ) and any(
         callable(getattr(audio_output, name, None)) for name in ("OutputStream", "play")
     ):
         return _LoggedAudioOutput(cast(AudioOutput, audio_output))
@@ -216,6 +220,7 @@ class _LoggedOutputStream:
         self.fields = fields
         self.context = context
         self.admission = pcm_admission_context.get()
+        self.playback_started = playback_started_context.get()
 
     def _record(self, operation: str, outcome: str, reason: str) -> None:
         record_audio_lifecycle(
@@ -257,7 +262,19 @@ class _LoggedOutputStream:
 
     def write(self, audio: object) -> object:
         _admit_pcm(audio, self.admission or pcm_admission_context.get())
-        return self.stream.write(audio)
+        result = self.stream.write(audio)
+        if self.playback_started is not None and np.asarray(audio).size:
+            from vntts.rust_output import RustOutputStream
+            from vntts.system_audio import _SystemStream
+
+            native = (
+                self.stream.native
+                if isinstance(self.stream, _SystemStream)
+                else self.stream
+            )
+            if not isinstance(native, RustOutputStream):
+                self.playback_started()
+        return result
 
     def abort(self) -> object:
         self._record("abort", "requested", "caller-request")

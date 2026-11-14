@@ -27,7 +27,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
     REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -383,9 +383,7 @@ def _mutate_rejection_state(
     write_generation_state(
         staged.output / "generation-state.sqlite3", staged.target_state
     )
-    write_generated_manifest_from_state(
-        staged.target_state, staged.output, staged.output / "manifest.json"
-    )
+    approved_manifest_entries(staged.target_state, staged.output)
     workspace = copy.deepcopy(selection.base_document)
     workspace.update(
         {

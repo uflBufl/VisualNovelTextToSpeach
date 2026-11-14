@@ -26,6 +26,8 @@ from vntts.generated_audio import (
     GeneratedAudioReference,
     PreparedGeneratedAudio,
 )
+from vntts.generation_database import require_registered_output
+from vntts.generation_database import state_path as generation_state_path
 from vntts.path_safety import contained_path, read_regular_bytes, safe_relative_path
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
@@ -402,6 +404,8 @@ def discover_prepared_audio(
         voice_manifest_sha256: str | None = None,
     ) -> None:
         manifest = manifest.absolute()
+        if manifest.suffix == ".sqlite3":
+            require_registered_output(manifest.parent)
         watched.update((story, manifest))
         if manifest in sources:
             return
@@ -615,10 +619,8 @@ def discover_prepared_audio(
                     continue
                 if directory.name != f"generation-input-{identity[:16]}":
                     continue
-                manifest = (
-                    directory.parent
-                    / f"generation-output-{identity[:16]}"
-                    / "live-progress-manifest.json"
+                manifest = generation_state_path(
+                    directory.parent / f"generation-output-{identity[:16]}"
                 )
                 watched.add(manifest)
                 if (

@@ -1173,6 +1173,52 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.reject()
             dialog.deleteLater()
 
+    def _assert_initial_voice_confirmation(self, dialog, portraits):
+        self.assertTrue(dialog._awaiting_voice_confirmation)
+        self.assertEqual(dialog.work_summary.text(), dialog.summary.text())
+        self.assertFalse(dialog.show_all_voice_routes.isChecked())
+        self.assertTrue(
+            all(
+                not dialog.voice_routes.item(index)
+                .data(Qt.ItemDataRole.AccessibleTextRole)
+                .startswith("Narrator ->")
+                for index in range(dialog.voice_routes.count())
+            )
+        )
+        self.assertEqual(
+            dialog.voice_routes.count(),
+            sum(group.character != "Narrator" for group in dialog._voice_plan.groups),
+        )
+        dialog.show_all_voice_routes.setChecked(True)
+        self.assertLessEqual(
+            dialog.voice_routes.count(), len(dialog._voice_plan.groups) - 1
+        )
+        for index in range(dialog.voice_routes.count()):
+            item = dialog.voice_routes.item(index)
+            self.assertTrue(item.icon().isNull())
+        (portraits / "10.png").unlink()
+        dialog._render_voice_routes(dialog._voice_plan)
+        self.assertTrue(
+            all(
+                dialog.voice_routes.item(index).icon().isNull()
+                for index in range(dialog.voice_routes.count())
+            )
+        )
+        dialog.show_all_voice_routes.setChecked(False)
+        self.assertIn("Step 2", dialog.step.text())
+        self.assertEqual(dialog.engine_choice.currentData(), "pocket-tts")
+        self.assertIn("Pocket TTS", dialog._full_narrator_configuration())
+        dialog.copy_narrator_details.click()
+        self.assertIn("Model:", self.application.clipboard().text())
+        self.assertNotIn("Model:", dialog.voice_configuration.text())
+        self.assertIn(
+            "Voice or model changes may require new recordings",
+            dialog.voice_configuration.text(),
+        )
+        self.assertFalse(dialog.audition_service._closed)
+        self.assertEqual(dialog.continue_button.text(), "Generate with these voices")
+        self.assertFalse(dialog.generation_runner.active)
+
     def test_game_narrator_and_routes_are_confirmed_before_generation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1203,54 +1249,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool.tasks.pop(0).run()
             self.application.processEvents()
 
-            self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertEqual(dialog.work_summary.text(), dialog.summary.text())
-            self.assertFalse(dialog.show_all_voice_routes.isChecked())
-            self.assertTrue(
-                all(
-                    not dialog.voice_routes.item(index)
-                    .data(Qt.ItemDataRole.AccessibleTextRole)
-                    .startswith("Narrator ->")
-                    for index in range(dialog.voice_routes.count())
-                )
-            )
-            self.assertEqual(
-                dialog.voice_routes.count(),
-                sum(
-                    group.character != "Narrator" for group in dialog._voice_plan.groups
-                ),
-            )
-            dialog.show_all_voice_routes.setChecked(True)
-            self.assertLessEqual(
-                dialog.voice_routes.count(), len(dialog._voice_plan.groups) - 1
-            )
-            for index in range(dialog.voice_routes.count()):
-                item = dialog.voice_routes.item(index)
-                self.assertTrue(item.icon().isNull())
-            (portraits / "10.png").unlink()
-            dialog._render_voice_routes(dialog._voice_plan)
-            self.assertTrue(
-                all(
-                    dialog.voice_routes.item(index).icon().isNull()
-                    for index in range(dialog.voice_routes.count())
-                )
-            )
-            dialog.show_all_voice_routes.setChecked(False)
-            self.assertIn("Step 2", dialog.step.text())
-            self.assertEqual(dialog.engine_choice.currentData(), "pocket-tts")
-            self.assertIn("Pocket TTS", dialog._full_narrator_configuration())
-            dialog.copy_narrator_details.click()
-            self.assertIn("Model:", self.application.clipboard().text())
-            self.assertNotIn("Model:", dialog.voice_configuration.text())
-            self.assertIn(
-                "Voice or model changes may require new recordings",
-                dialog.voice_configuration.text(),
-            )
-            self.assertFalse(dialog.audition_service._closed)
-            self.assertEqual(
-                dialog.continue_button.text(), "Generate with these voices"
-            )
-            self.assertFalse(dialog.generation_runner.active)
+            self._assert_initial_voice_confirmation(dialog, portraits)
             choices = {
                 dialog.narrator_choice.itemData(index)
                 for index in range(dialog.narrator_choice.count())
@@ -1394,6 +1393,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             content = inspect_story_index(write_content(root / "content"))
             jobs = PregenerationJobStore(root / "jobs")
             importer = Mock()
+            importer.prepare_source_audio_semantics.return_value = None
             importer.prepare_voice_candidates.side_effect = GameContentImportError(
                 "Voice catalog is broken"
             )
@@ -1425,6 +1425,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             jobs = PregenerationJobStore(root / "jobs")
             importer = Mock()
+            importer.prepare_source_audio_semantics.return_value = None
             importer.availability.return_value = Mock(
                 available=True, message="Available"
             )
@@ -1570,6 +1571,18 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             finally:
                 dialog.reject()
 
+    def _assert_player_facing_preparation_copy(self, visible_text):
+        player_copy = " ".join(visible_text).casefold()
+        for authoring_term in (
+            "workspace",
+            "queue id",
+            "manifest",
+            "checksum",
+            "seed",
+            "per-line review",
+        ):
+            self.assertNotIn(authoring_term, player_copy)
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with (
             TemporaryDirectory() as temporary_directory,
@@ -1601,17 +1614,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(dialog.recovery_result().live_fallbacks, 1)
             self.assertEqual(dialog.pack_result().approved, 1)
             self.assertEqual(dialog.pack_result().live_fallbacks, 1)
-            player_copy = " ".join(visible_text).casefold()
-            for authoring_term in (
-                "workspace",
-                "queue id",
-                "manifest",
-                "checksum",
-                "seed",
-                "per-line review",
-            ):
-                self.assertNotIn(authoring_term, player_copy)
-
+            self._assert_player_facing_preparation_copy(visible_text)
             saved_settings = root / "settings.json"
             playback = PreparedPlaybackStore(root / "playback.json")
             controller = Mock(is_ready=False)
@@ -1915,7 +1918,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             output = first.generation_input().directory.parent / (
                 f"generation-output-{interrupted_input_id[:16]}"
             )
-            (output / "manifest.json").unlink()
+            self.assertFalse((output / "manifest.json").exists())
             first.reject()
             first.deleteLater()
 

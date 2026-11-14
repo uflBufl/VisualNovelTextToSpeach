@@ -215,7 +215,6 @@ def fixture(
     result = OfflineGenerationResult(
         output,
         generated.state,
-        generated.manifest,
         1,
         0,
         1 + int(include_omission and omission_source_audio_status != "unknown"),

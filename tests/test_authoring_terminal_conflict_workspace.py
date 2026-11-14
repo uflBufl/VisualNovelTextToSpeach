@@ -20,11 +20,12 @@ from vntts.authoring.bulk_generation import (
     _GenerationLease,
     load_generation_state,
     process_is_alive,
-    publish_generated_manifest,
+    validate_authoring_publication_authority,
     validate_terminal_conflict_publication_authority,
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.cohort_review import _load_bound_review_workspace
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.reconciliation import build_authoring_reconciliation
 from vntts.authoring.terminal_conflict_resolution import (
     publish_terminal_conflict_resolution,
@@ -159,18 +160,17 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
                 )
                 self.assertEqual((item["status"], item["review_status"]), expected)
                 self.assertIn("terminal_conflict_resolution", item)
-                manifest = json.loads(
-                    (created.directory / "generated-audio/manifest.json").read_text(
-                        encoding="utf-8"
-                    )
+                entries = approved_manifest_entries(
+                    state, created.directory / "generated-audio"
                 )
-                manifest_ids = {entry["queue_id"] for entry in manifest["entries"]}
+                self.assertFalse(
+                    (created.directory / "generated-audio/manifest.json").exists()
+                )
+                manifest_ids = {entry["queue_id"] for entry in entries}
                 self.assertEqual(queue_id in manifest_ids, authority == "approved")
                 if authority == "approved":
                     manifest_item = next(
-                        entry
-                        for entry in manifest["entries"]
-                        if entry["queue_id"] == queue_id
+                        entry for entry in entries if entry["queue_id"] == queue_id
                     )
                     self.assertEqual(
                         manifest_item["terminal_conflict_resolution"],
@@ -377,7 +377,7 @@ class TerminalConflictWorkspaceTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 BulkGenerationError, "merge ledger is missing or malformed"
             ):
-                publish_generated_manifest(state_path)
+                validate_authoring_publication_authority(state_path, state)
 
     def test_malformed_terminal_provenance_is_rejected_by_state_loader(self):
         with TemporaryDirectory() as directory:

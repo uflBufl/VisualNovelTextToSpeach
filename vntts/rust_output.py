@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import queue
 from collections.abc import Callable
+from contextvars import copy_context
 from math import isfinite
 from threading import Event, Lock, RLock, Thread
 from time import monotonic
@@ -17,6 +18,7 @@ import numpy as np
 from vntts.audio_lifecycle import record_audio_lifecycle
 from vntts.audio_output import playback_pause_context
 from vntts.cleanup import attempt_cleanup
+from vntts.playback_observer import playback_started_context
 from vntts.rust_audio import RustAudioWorker
 
 _QUERY_PHASES = frozenset(
@@ -271,8 +273,9 @@ class RustAudioModule:
                 if self.convenience_stop is cancelled:
                     self.convenience_error = error
 
+        context = copy_context()
         self.convenience = Thread(
-            target=play, name="vntts-rust-convenience", daemon=True
+            target=lambda: context.run(play), name="vntts-rust-convenience", daemon=True
         )
         self.convenience.start()
 
@@ -332,6 +335,7 @@ class RustOutputStream:
         self.underflow_count = self.producer_starvation_count = 0
         self.admitted_frames = self.sent_frames = 0
         self.summary: dict[str, Any] | None = None
+        self.playback_started = playback_started_context.get()
 
     def start(self) -> None:
         if self.closed or self.aborted.is_set():
@@ -412,7 +416,7 @@ class RustOutputStream:
                     raise RuntimeError("Rust stream returned invalid counters")
                 setattr(self, key, max(getattr(self, key), value))
         if event["event"] == "first_callback":
-            self.first_callback = int(event.get("frames_written", 0)) > 0
+            self._first_callback(event)
         if event["event"] == "finished":
             self._validate_finished(event)
             self.summary = event
@@ -427,6 +431,14 @@ class RustOutputStream:
             if event.get("outcome") == "failed":
                 raise RuntimeError(str(event.get("error", "Rust output failed")))
         return event
+
+    def _first_callback(self, event: dict[str, Any]) -> None:
+        frames = event.get("frames_written")
+        if type(frames) is not int or not 0 <= frames <= self.sent_frames:
+            raise RuntimeError("Rust stream returned an invalid first buffer")
+        self.first_callback = frames > 0
+        if self.first_callback and self.playback_started is not None:
+            self.playback_started()
 
     def _validate_finished(self, event: dict[str, Any]) -> None:
         if event.get("outcome") not in {"complete", "interrupted", "failed"}:
@@ -526,6 +538,13 @@ class RustOutputStream:
         if self.opened:
             raise RuntimeError("Cannot replace an active PCM stream with a clip")
         worker = self._worker_for_open()
+
+        def started() -> None:
+            if self.playback_started is not None:
+                self.playback_started()
+            if first_write is not None:
+                first_write()
+
         try:
             return worker.play_buffer(
                 samples,
@@ -533,7 +552,7 @@ class RustOutputStream:
                 self.channels,
                 self.latency,
                 lambda: self.aborted.is_set() or cancelled(),
-                first_write,
+                started,
                 stop_requested,
                 pause=self.pause,
             )

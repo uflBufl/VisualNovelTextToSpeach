@@ -1,4 +1,3 @@
-import json
 import os
 import sqlite3
 import subprocess
@@ -12,9 +11,8 @@ from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
-from vntts_artifacts.audio import PCM16_MONO_WAV_FORMAT, write_pcm16_wav
+from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.story_index import write_story_index_document
 
@@ -151,21 +149,6 @@ def cold_progress_inputs(root):
     output.mkdir()
     audio = output / "line.wav"
     write_pcm16_wav(audio, np.linspace(-0.1, 0.1, 120, dtype=np.float32), 24_000)
-    write_generated_audio_manifest(
-        output / "live-progress-manifest.json",
-        {"source_queue_sha256": inputs.queue_sha256, "vntts.runtime.progress": True},
-        [
-            {
-                "line_id": "saved",
-                "text_sha256": text_sha256(text),
-                "audio": "line.wav",
-                "audio_format": PCM16_MONO_WAV_FORMAT,
-                "audio_sha256": sha256_file(audio),
-                "sample_rate": 24_000,
-                "sample_count": 120,
-            }
-        ],
-    )
     state = {
         "schema": STATE_SCHEMA,
         "schema_version": STATE_VERSION,
@@ -176,6 +159,13 @@ def cold_progress_inputs(root):
                 "review_status": "approved",
                 "line_id": "saved",
                 "text_sha256": text_sha256(text),
+                "path": audio.name,
+                "file_sha256": sha256_file(audio),
+                "provider": "synthetic",
+                "model": "synthetic-v1",
+                "prompt_sha256": "a" * 64,
+                "seed": 1,
+                "quality": {"sample_rate": 24_000, "sample_count": 120},
             }
         },
         "active": None,
@@ -241,7 +231,6 @@ class OfflineGenerationSessionTest(unittest.TestCase):
         result = OfflineGenerationResult(
             output,
             output / "generation-state.sqlite3",
-            output / "manifest.json",
             3,
             0,
             0,
@@ -415,14 +404,6 @@ class OfflineGenerationSessionTest(unittest.TestCase):
                 self.lease()
         self.assertEqual(len(self.backends), 1)
 
-    def test_default_custom_factory_keeps_per_call_backend_ownership(self):
-        custom = Mock(return_value=object())
-        worker = OfflineGenerationWorker(backend_factory=custom)
-        with worker.generation_session(self.generation_input, self.plan):
-            self.assertIsNone(worker._backend_session)
-            self.assertIs(worker.backend_factory, custom)
-        custom.assert_not_called()
-
     def test_native_backend_keeps_existing_factory_and_per_call_shutdown(self):
         self.cpp.return_value = True
         with self.worker.generation_session(self.generation_input, self.plan):
@@ -504,7 +485,6 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             result = OfflineGenerationResult(
                 output,
                 output / "generation-state.sqlite3",
-                output / "manifest.json",
                 0,
                 0,
                 0,
@@ -593,6 +573,8 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 f"generation-output-{inputs.identity[:16]}"
             )
             output.mkdir()
+            audio = output / "generated.wav"
+            write_pcm16_wav(audio, [0.1, -0.1] * 60, 24000)
             replace_generation_state(
                 output / "generation-state.sqlite3",
                 {
@@ -605,31 +587,17 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                             "review_status": "pending_review",
                             "line_id": "generated",
                             "text_sha256": text_sha256("Prepared now."),
+                            "path": audio.name,
+                            "file_sha256": sha256_file(audio),
+                            "provider": "synthetic",
+                            "model": "synthetic-v1",
+                            "prompt_sha256": "a" * 64,
+                            "seed": 1,
+                            "quality": {"sample_rate": 24_000, "sample_count": 120},
                         }
                     },
                     "active": None,
                 },
-            )
-
-            audio = output / "generated.wav"
-            write_pcm16_wav(audio, [0.1, -0.1] * 60, 24000)
-            write_generated_audio_manifest(
-                output / "live-progress-manifest.json",
-                {
-                    "source_queue_sha256": inputs.queue_sha256,
-                    "vntts.runtime.progress": True,
-                },
-                [
-                    {
-                        "line_id": "generated",
-                        "text_sha256": text_sha256("Prepared now."),
-                        "audio": audio.name,
-                        "audio_format": PCM16_MONO_WAV_FORMAT,
-                        "audio_sha256": sha256_file(audio),
-                        "sample_rate": 24000,
-                        "sample_count": 120,
-                    }
-                ],
             )
 
             with patch(
@@ -820,23 +788,23 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         for failure in (
             "missing",
             "corrupt",
-            "foreign-manifest",
-            "malformed-manifest",
+            "foreign-text",
+            "malformed-record",
             "changed-story",
         ):
             with self.subTest(failure=failure), TemporaryDirectory() as directory:
-                inputs, audio, _state = cold_progress_inputs(Path(directory))
-                manifest = inputs.output_directory / "live-progress-manifest.json"
+                inputs, audio, state = cold_progress_inputs(Path(directory))
                 if failure == "missing":
                     audio.unlink()
                 elif failure == "corrupt":
                     audio.write_bytes(b"modified WAV")
-                elif failure == "foreign-manifest":
-                    value = json.loads(manifest.read_text())
-                    value["source_queue_sha256"] = "f" * 64
-                    manifest.write_text(json.dumps(value))
-                elif failure == "malformed-manifest":
-                    manifest.write_text("not JSON")
+                elif failure in {"foreign-text", "malformed-record"}:
+                    state["items"]["saved"]["text_sha256"] = (
+                        "f" * 64 if failure == "foreign-text" else "invalid hash"
+                    )
+                    replace_generation_state(
+                        inputs.output_directory / "generation-state.sqlite3", state
+                    )
                 else:
                     inputs.story_index.write_text("changed story")
                 progress = OfflineGenerationWorker(
@@ -1096,7 +1064,6 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "items": {},
                 },
             )
-            (output / "manifest.json").write_text("{}", encoding="utf-8")
             popen = Mock(return_value=FinishedProcess())
             worker = OfflineGenerationWorker(
                 command=("vntts-worker",), popen_factory=popen
@@ -1158,7 +1125,6 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "items": {},
                 },
             )
-            (output / "manifest.json").write_text("{}", encoding="utf-8")
             popen = Mock()
             state = {
                 "items": {
@@ -1192,9 +1158,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 audio_event_omission_queue_ids=("pure-event",),
             )
             worker = OfflineGenerationWorker(command=("worker",))
-            partial = OfflineGenerationResult(
-                Path(directory), Path(directory), Path(directory), 2, 0, 1
-            )
+            partial = OfflineGenerationResult(Path(directory), Path(directory), 2, 0, 1)
             completed = replace(partial, generated=3)
             generated = Mock()
             with (
@@ -1218,7 +1182,6 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             expected = OfflineGenerationResult(
                 output,
                 output / "generation-state.sqlite3",
-                output / "manifest.json",
                 3,
                 0,
                 0,
@@ -1733,11 +1696,9 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "items": {},
                 },
             )
-            (output / "manifest.json").write_text("{}", encoding="utf-8")
             generation_result = OfflineGenerationResult(
                 output,
                 output / "generation-state.sqlite3",
-                output / "manifest.json",
                 1,
                 2,
                 0,
@@ -1796,7 +1757,6 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             output = root / f"generation-output-{generation_input.identity[:16]}"
             output.mkdir()
             state = output / "generation-state.sqlite3"
-            manifest = output / "manifest.json"
             replace_generation_state(
                 state,
                 {
@@ -1806,8 +1766,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "items": {},
                 },
             )
-            manifest.write_text("{}", encoding="utf-8")
-            result = OfflineGenerationResult(output, state, manifest, 1, 2, 0)
+            result = OfflineGenerationResult(output, state, 1, 2, 0)
             popen = Mock(return_value=FinishedProcess())
             worker = OfflineGenerationWorker(command=("worker",), popen_factory=popen)
 

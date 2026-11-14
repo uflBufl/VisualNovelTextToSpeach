@@ -1,5 +1,7 @@
 import json
+import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,10 +13,6 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.generation_fallback import (
     authorize_live_fallback,
-)
-from vntts.authoring.generation_manifest import (
-    RUNTIME_PROGRESS_MANIFEST_NAME,
-    write_runtime_progress_manifest_from_state,
 )
 from vntts.authoring.missing_voice_live_fallback import (
     MissingVoiceLiveFallbackError,
@@ -33,15 +31,7 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
             )
             state_path = workspace / "generated-audio/generation-state.sqlite3"
             queue_path = workspace / "queue.jsonl"
-            progress_path = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
-            write_runtime_progress_manifest_from_state(
-                load_generation_state(state_path, queue_path),
-                state_path.parent,
-                progress_path,
-                validate_files=False,
-            )
-            progress_before = progress_path.read_bytes()
-            runtime = GeneratedAudioLibrary.load_optional(progress_path)
+            runtime = GeneratedAudioLibrary.load_optional(state_path)
             self.assertIsNotNone(runtime)
             before = state_path.read_bytes()
 
@@ -49,7 +39,6 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
                 workspace, binding, "Aderyn"
             )
             after_preflight = state_path.read_bytes()
-            self.assertEqual(progress_path.read_bytes(), progress_before)
             applied = authorize_missing_voice_live_fallback(
                 workspace,
                 binding,
@@ -57,7 +46,6 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
                 accept_known_role_narrator_fallback=True,
             )
             after_apply = state_path.read_bytes()
-            progress_after_apply = progress_path.read_bytes()
             repeated = authorize_missing_voice_live_fallback(
                 workspace,
                 binding,
@@ -65,7 +53,6 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
                 accept_known_role_narrator_fallback=True,
             )
             repeated_unchanged = after_apply == state_path.read_bytes()
-            self.assertEqual(progress_path.read_bytes(), progress_after_apply)
             state = load_generation_state(state_path, queue_path)
             item = state["items"][queue_id]
             decision = item["live_fallback"]
@@ -84,6 +71,45 @@ class AuthoringMissingVoiceLiveFallbackTest(unittest.TestCase):
         self.assertEqual(decision["evidence"]["batch_id"], applied.batch_id)
         self.assertIsNotNone(fallback)
         self.assertEqual(fallback.requested_voice_character, "Aderyn")
+
+    def test_fallback_commit_updates_existing_database_reader(self):
+        for missing_voice_batch in (False, True):
+            with (
+                self.subTest(missing_voice_batch=missing_voice_batch),
+                TemporaryDirectory() as directory,
+            ):
+                workspace, binding, queue_id = (
+                    create_missing_voice_live_fallback_fixture(Path(directory))
+                )
+                state_path = workspace / "generated-audio/generation-state.sqlite3"
+                with closing(sqlite3.connect(state_path)) as reader:
+                    self.assertNotEqual(
+                        reader.execute(
+                            "SELECT status FROM items WHERE queue_id=?", (queue_id,)
+                        ).fetchone(),
+                        ("live_fallback",),
+                    )
+                    if missing_voice_batch:
+                        authorize_missing_voice_live_fallback(
+                            workspace,
+                            binding,
+                            "Aderyn",
+                            accept_known_role_narrator_fallback=True,
+                        )
+                    else:
+                        authorize_live_fallback(
+                            state_path,
+                            workspace / "queue.jsonl",
+                            queue_id,
+                            reason="reference_unavailable_after_audit",
+                            model="pocket-tts",
+                        )
+                    self.assertEqual(
+                        reader.execute(
+                            "SELECT status FROM items WHERE queue_id=?", (queue_id,)
+                        ).fetchone(),
+                        ("live_fallback",),
+                    )
 
     def test_wrong_role_stale_authority_and_partial_scope_fail_closed(self):
         with TemporaryDirectory() as directory:

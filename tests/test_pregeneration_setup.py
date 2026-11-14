@@ -2455,6 +2455,47 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
 
+    def _assert_compact_story_layout_at_font_sizes(self, dialog, dashboard):
+        default_font = dashboard.font()
+        for large_text in (False, True):
+            font = dashboard.font()
+            font.setPointSize(22 if large_text else default_font.pointSize())
+            dashboard.setFont(font)
+            for expanded in (False, True):
+                with self.subTest(large_text=large_text, expanded=expanded):
+                    dialog.selection_settings_toggle.setChecked(expanded)
+                    dialog.selection_details_toggle.setChecked(expanded)
+                    if expanded:
+                        dialog._set_resume_error(
+                            "Unable to save preparation", "unbroken-error-" * 30
+                        )
+                    else:
+                        dialog._clear_resume_error()
+                    dashboard.resize(480, 340)
+                    self.application.processEvents()
+                    row_height = dialog.stories.visualItemRect(
+                        dialog.stories.topLevelItem(0)
+                    ).height()
+                    self.assertGreaterEqual(
+                        dialog.stories.viewport().height(), 5 * row_height
+                    )
+                    for widget in (
+                        dialog.stories,
+                        dialog.select_all_button,
+                        dialog.select_none_button,
+                        dialog.buttons,
+                    ):
+                        self.assertTrue(widget.isVisibleTo(dashboard))
+                        origin = widget.mapTo(dashboard, QPoint(0, 0))
+                        self.assertGreaterEqual(origin.x(), 0)
+                        self.assertGreaterEqual(origin.y(), 0)
+                        self.assertLessEqual(
+                            origin.x() + widget.width(), dashboard.width()
+                        )
+                        self.assertLessEqual(
+                            origin.y() + widget.height(), dashboard.height()
+                        )
+
     def test_story_controls_are_compact_and_copy_full_details(self):
         from vntts.dashboard_ui import ControlDashboard
 
@@ -2537,45 +2578,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 f"Unable to save preparation: {error}",
             )
 
-            default_font = dashboard.font()
-            for large_text in (False, True):
-                font = dashboard.font()
-                font.setPointSize(22 if large_text else default_font.pointSize())
-                dashboard.setFont(font)
-                for expanded in (False, True):
-                    with self.subTest(large_text=large_text, expanded=expanded):
-                        dialog.selection_settings_toggle.setChecked(expanded)
-                        dialog.selection_details_toggle.setChecked(expanded)
-                        if expanded:
-                            dialog._set_resume_error(
-                                "Unable to save preparation", "unbroken-error-" * 30
-                            )
-                        else:
-                            dialog._clear_resume_error()
-                        dashboard.resize(480, 340)
-                        self.application.processEvents()
-                        row_height = dialog.stories.visualItemRect(
-                            dialog.stories.topLevelItem(0)
-                        ).height()
-                        self.assertGreaterEqual(
-                            dialog.stories.viewport().height(), 5 * row_height
-                        )
-                        for widget in (
-                            dialog.stories,
-                            dialog.select_all_button,
-                            dialog.select_none_button,
-                            dialog.buttons,
-                        ):
-                            self.assertTrue(widget.isVisibleTo(dashboard))
-                            origin = widget.mapTo(dashboard, QPoint(0, 0))
-                            self.assertGreaterEqual(origin.x(), 0)
-                            self.assertGreaterEqual(origin.y(), 0)
-                            self.assertLessEqual(
-                                origin.x() + widget.width(), dashboard.width()
-                            )
-                            self.assertLessEqual(
-                                origin.y() + widget.height(), dashboard.height()
-                            )
+            self._assert_compact_story_layout_at_font_sizes(dialog, dashboard)
 
     def test_story_rows_and_actions_stay_visible_when_details_scroll(self):
         with TemporaryDirectory() as temporary_directory:
@@ -3262,6 +3265,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.run_next_task(pool)
             self.assertEqual(dialog.stories.item(0).text(1), "Partially prepared")
 
+    def _assert_live_ready_story_controls(self, dialog):
+        self.assertIn("Ready with live speech", dialog.stories.item(0).text(1))
+        self.assertIn("live speech: 1", dialog.story_audio_status.text())
+        self.assertIn(
+            "Checked the active Reading pack", dialog.story_audio_status.text()
+        )
+        self.assertEqual(dialog.continue_button.text(), "Start reading")
+        self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
+
     def test_checked_story_readiness_updates_list_and_primary_without_preparing(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3317,13 +3329,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             ):
                 dialog.check_story_audio.click()
                 self.run_next_task(pool)
-            self.assertIn("Ready with live speech", dialog.stories.item(0).text(1))
-            self.assertIn("live speech: 1", dialog.story_audio_status.text())
-            self.assertIn(
-                "Checked the active Reading pack", dialog.story_audio_status.text()
-            )
-            self.assertEqual(dialog.continue_button.text(), "Start reading")
-            self.assertEqual(dialog.continue_button.property("vnttsActionIcon"), "play")
+            self._assert_live_ready_story_controls(dialog)
             with (
                 patch.object(
                     dialog,
@@ -4014,7 +4020,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation_result = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "generation-manifest.json",
                 generated=2,
                 failed=0,
                 other_terminal=0,
@@ -4583,7 +4588,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._generation_input = Mock(progress_items=3)
             dialog.generating = True
             result = OfflineGenerationResult(
-                root / "output", root / "state.json", root / "manifest.json", 2, 1, 0
+                root / "output", root / "state.json", 2, 1, 0
             )
             dialog._generation_finished(result, None)
             self.assertEqual(dialog.progress_phase.text(), "Recovering failed lines")
@@ -4646,7 +4651,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "Generation processed; final checks may still be needed."
             )
             result = OfflineGenerationResult(
-                root / "output", root / "state.json", root / "manifest.json", 3, 0, 0
+                root / "output", root / "state.json", 3, 0, 0
             )
             dialog.show()
 
@@ -4938,7 +4943,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             final = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "generation-manifest.json",
                 generated=2,
                 failed=0,
                 other_terminal=1,
@@ -5058,7 +5062,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation = OfflineGenerationResult(
                 root / "output",
                 root / "state.json",
-                root / "manifest.json",
                 generated=2,
                 failed=1,
                 other_terminal=0,
@@ -5253,7 +5256,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             def match_voices(*_args, **_kwargs):
                 dialog.decoderProgress.emit("Checking preview speech for Tennant...")
                 self.assertEqual(
-                    dialog.progress_phase.text(), "Matching character voices"
+                    dialog.progress_phase.text(),
+                    "Checking preview speech for Tennant...",
                 )
                 return voice_plan
 
@@ -5292,28 +5296,56 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIs(voice_plan_store.create.call_args.args[1], effective_settings)
             dialog.deleteLater()
 
-    def test_reverse1999_stage_asr_is_captured_before_voice_worker_starts(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            content = inspect_story_index(
-                write_story_index(root / "content"), provider_id="reverse1999"
-            )
-            importer = Mock(provider_id="reverse1999", display_name="Reverse: 1999")
-            importer.availability.return_value = ImporterAvailability(True, "Ready")
+    def test_voice_preparation_shows_current_action_and_elapsed_time_until_cancelled(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
-                importer=importer,
                 job_store=PregenerationJobStore(root / "jobs"),
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
-
-            dialog.stories.item(0).setCheckState(0, Qt.CheckState.Checked)
-            dialog._save_selection()
-
-        self.assertTrue(pool.tasks[-1].function.args[2])
+            updates = []
+            dialog.phaseChanged.connect(updates.append)
+            with patch("vntts.pregeneration_ui.monotonic", return_value=100):
+                dialog.select_all_button.click()
+                dialog.continue_button.click()
+            self.assertTrue(dialog.progress_timer.isActive())
+            self.assertFalse(dialog.progress_timing.isHidden())
+            message = (
+                "Checking voice 2 of 17: Tennant. Reference 1 of 3: "
+                "Starting the preview model. First use also loads its weights..."
+            )
+            with patch("vntts.pregeneration_ui.monotonic", return_value=120):
+                dialog.decoderProgress.emit(message)
+            self.assertEqual(dialog.progress_phase.text(), message)
+            self.assertEqual(updates[-1], message)
+            self.assertIn("20s elapsed", dialog.progress_timing.text())
+            self.assertIn("Last update 0s ago", dialog.progress_timing.text())
+            self.assertEqual(dialog.progress_bar.maximum(), 0)
+            self.assertTrue(dialog.progress_phase.wordWrap())
+            with patch("vntts.pregeneration_ui.monotonic", return_value=190):
+                dialog._poll_generation_progress()
+            self.assertIn("90s elapsed", dialog.progress_timing.text())
+            self.assertIn("Last update 70s ago", dialog.progress_timing.text())
+            with patch("vntts.pregeneration_ui.monotonic", return_value=195):
+                dialog.decoderProgress.emit(
+                    "Checking voice 2 of 17: Tennant. Generating preview audio..."
+                )
+            self.assertIn("Last update 0s ago", dialog.progress_timing.text())
+            dialog._cancel_or_reject()
+            phase = dialog.progress_phase.text()
+            dialog.decoderProgress.emit("Late progress after cancel")
+            self.assertEqual(dialog.progress_phase.text(), phase)
+            dialog._voice_plan_finished(None, PregenerationVoiceCancelled("cancelled"))
+            self.assertFalse(dialog.progress_timer.isActive())
+            self.assertTrue(dialog.progress_timing.isHidden())
+            dialog.voice_runner.cancel()
 
     def test_semantic_successor_replaces_job_only_after_voice_plan_succeeds(self):
         with TemporaryDirectory() as temporary_directory:

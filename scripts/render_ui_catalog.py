@@ -602,6 +602,27 @@ def _authoring_workbench_story(
     _set_long_authoring_review(dialog, state)
     if process is not None:
         _stop_authoring_catalog_process(dialog, state)
+    _set_authoring_workbench_state(dialog, state, resources)
+    if state in {
+        "compact",
+        "compact-actions",
+        "review-long-names",
+        "review-long-names-second",
+        "review-long-names-details",
+        "review-long-names-second-details",
+    }:
+        font = dialog.font()
+        font.setPointSize(max(font.pointSize() + 3, 16))
+        dialog.setFont(font)
+        dialog.resize(dialog.minimumSize())
+    if enlarged:
+        dialog.resize(dialog.minimumSize())
+    return dialog
+
+
+def _set_authoring_workbench_state(
+    dialog: AuthoringWorkbenchDialog, state: str, resources: ExitStack
+) -> None:
     if state in {"filtered-empty", "filters-reset"}:
         dialog.review_status.setCurrentText("Awaiting review")
         if state == "filters-reset":
@@ -624,21 +645,6 @@ def _authoring_workbench_story(
             "Generation completed: 1 saved recording awaits review.\n"
             "Review decisions revalidate the exact recording before saving.\n"
         )
-    if state in {
-        "compact",
-        "compact-actions",
-        "review-long-names",
-        "review-long-names-second",
-        "review-long-names-details",
-        "review-long-names-second-details",
-    }:
-        font = dialog.font()
-        font.setPointSize(max(font.pointSize() + 3, 16))
-        dialog.setFont(font)
-        dialog.resize(dialog.minimumSize())
-    if enlarged:
-        dialog.resize(dialog.minimumSize())
-    return dialog
 
 
 def _prepare_authoring_screenshot(
@@ -1367,6 +1373,8 @@ def _voice_audition_story(
 
 
 def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
+    from vntts.qt_audio import QtPcmPlayer
+
     panel.a_original.click()
     panel.original_runner._task_finished(
         panel.original_runner._serial,
@@ -1378,6 +1386,7 @@ def _voice_original_playback_story(panel: VoiceAuditionPanel) -> None:
         None,
     )
     assert panel._playing_source == "original"
+    panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
 
 
 def _voice_preview_playback_story(
@@ -1387,6 +1396,7 @@ def _voice_preview_playback_story(
     write_sample: Callable[[Path], None],
 ) -> None:
     from vntts.document_identity import sha256_file
+    from vntts.qt_audio import QtPcmPlayer
 
     preview = (
         Path(resources.enter_context(temporary_directory(prefix="vntts-ui-catalog-")))
@@ -1400,6 +1410,7 @@ def _voice_preview_playback_story(
         None,
     )
     assert panel.a_play.isEnabled()
+    panel._playback_state_changed(QtPcmPlayer.PlaybackState.PlayingState)
     assert panel.a_play.accessibleName() == "Stop voice preview"
     if state == "preview-ready":
         panel.a_play.click()

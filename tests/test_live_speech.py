@@ -1,9 +1,8 @@
 import unittest
 from unittest.mock import Mock
 
-from vntts.live_speech import TypedPlaybackBackend, play_typed_text
+from vntts.live_speech import play_typed_text
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
-from vntts.playback import TypedPlaybackBackend as SharedTypedPlaybackBackend
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -46,14 +45,6 @@ class TypedLiveSpeechTests(unittest.TestCase):
                 self.assertTrue(play_typed_text(backend, "Ada", text))
                 backend.prepare_playback.assert_called_once_with("Ada", text)
                 backend.play_prepared.assert_called_once()
-
-    def test_live_protocol_reexports_shared_runtime_contract(self):
-        self.assertIs(TypedPlaybackBackend, SharedTypedPlaybackBackend)
-        self.assertIsInstance(
-            StubBackend(PlaybackOutcome(PlaybackStatus.COMPLETED, 10.0)),
-            TypedPlaybackBackend,
-        )
-        self.assertNotIsInstance(object(), TypedPlaybackBackend)
 
     def test_completed_and_interrupted_outcomes_remain_distinct(self):
         self.assertTrue(

@@ -115,11 +115,59 @@ class PreparationFailuresPanelTest(unittest.TestCase):
     def test_playback_uses_validated_bytes_and_collapse_stops_it(self):
         self.panel.play.click()
         self.assertTrue(self.panel.stop_button.isEnabled())
-        self.assertFalse(self.panel.play.isEnabled())
+        self.assertTrue(self.panel.play.isEnabled())
+        self.assertEqual(self.panel.play.property("playbackState"), "preparing")
         self.drain()
         self.assertEqual(self.player.played, [b"validated WAV"])
+        self.assertEqual(self.panel.play.property("playbackState"), "playing")
         self.panel.toggle.click()
         self.assertFalse(self.player.playing)
+
+    def test_loading_remains_preparing_until_player_starts_and_primary_stops(self):
+        self.player.play_bytes = Mock()
+        caption = self.panel.play.text()
+        size = self.panel.play.sizeHint()
+        self.panel.play.click()
+        self.drain()
+        self.assertEqual(self.panel.play.property("playbackState"), "preparing")
+        self.player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.PlayingState)
+        self.assertEqual(self.panel.play.property("playbackState"), "playing")
+        self.assertEqual(self.panel.play.text(), caption)
+        self.assertEqual(self.panel.play.sizeHint(), size)
+        self.panel.play.click()
+        self.assertEqual(self.panel.play.property("playbackState"), "idle")
+        self.assertFalse(self.panel.stop_button.isEnabled())
+
+    def test_primary_cancels_wait_for_reading_stop_and_rejects_late_start(self):
+        starts = []
+        self.panel.before_playback = starts.append
+        self.panel.play.click()
+        self.assertEqual(self.panel.play.property("playbackState"), "preparing")
+        self.assertTrue(self.panel.stop_button.isEnabled())
+        self.panel.play.click()
+        starts[0]()
+        self.drain()
+        self.assertEqual(self.player.played, [])
+        self.assertEqual(self.panel.play.property("playbackState"), "idle")
+
+    def test_rejected_playback_clears_preparing_and_preserves_player_error(self):
+        for player_error in (None, "Device disconnected"):
+            with self.subTest(player_error=player_error):
+
+                def reject(_payload, *, source):
+                    if player_error is not None:
+                        self.player.errorOccurred.emit(object(), player_error)
+                    return None
+
+                self.player.play_bytes = Mock(side_effect=reject)
+                self.panel.play.click()
+                self.drain()
+                self.assertEqual(self.panel.play.property("playbackState"), "idle")
+                self.assertFalse(self.panel.stop_button.isEnabled())
+                self.assertIn(
+                    player_error or "Unable to start diagnostic audio playback",
+                    self.panel.audio_status.text(),
+                )
 
     def test_old_read_cannot_play_after_input_changes(self):
         self.panel.play.click()
@@ -144,6 +192,8 @@ class PreparationFailuresPanelTest(unittest.TestCase):
         self.assertEqual(self.player.played, [])
         self.assertIn("checksum changed", self.panel.audio_status.text())
         self.assertEqual(self.panel.phrase.toPlainText(), self.failure.text)
+        self.player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.StoppedState)
+        self.assertIn("checksum changed", self.panel.audio_status.text())
 
     def test_empty_older_snapshot_does_not_drop_final_refresh(self):
         self.inspector.side_effect = [(), (self.failure,)]

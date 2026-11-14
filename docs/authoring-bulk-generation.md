@@ -125,20 +125,20 @@ one attempt (`--retries 0`), sends `seed=None` to the backend and records
 `seed_applied=false`. The integer state `seed` remains the monotonic attempt
 identity used by authoring; it is not represented as an applied model seed.
 
-Review, recover a manifest and inspect state:
+Review and inspect the authoritative SQLite state:
 
 ```sh
 uv run vntts-pregenerate review \
-  --state /path/to/generated-audio/generation-state.json \
+  --state /path/to/generated-audio/generation-state.sqlite3 \
   QUEUE_ID approved
 
-uv run vntts-pregenerate publish \
-  --state /path/to/generated-audio/generation-state.json
-
 uv run vntts-pregenerate status \
-  --state /path/to/generated-audio/generation-state.json \
+  --state /path/to/generated-audio/generation-state.sqlite3 \
   --queue /path/to/generation-queue.jsonl
 ```
+
+Generation and review do not create an adjacent `manifest.json`. Package
+publication projects its generated-audio index directly from SQLite.
 
 Config-addressed resume workspaces use repeated `--queue-id` arguments for an
 exact focused retry. Their child process also supplies expected voice-control

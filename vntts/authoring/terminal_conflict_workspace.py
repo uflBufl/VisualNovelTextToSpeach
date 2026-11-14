@@ -18,7 +18,7 @@ from vntts.authoring.authority import (
     capture_authority_file,
 )
 from vntts.authoring.bulk_generation import BulkGenerationError, process_is_alive
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_review import ReviewAuthority, assert_review_authorities
 from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
@@ -725,9 +725,7 @@ def _stage_terminal_conflict_workspace(
     )
     atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
     try:
-        write_generated_manifest_from_state(
-            target_state, output, output / "manifest.json"
-        )
+        approved_manifest_entries(target_state, output)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     import_snapshot = load_workspace_json(

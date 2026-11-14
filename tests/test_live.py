@@ -848,6 +848,16 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             ]
             self.assertEqual(len(timeout_events), 1)
 
+    def test_completion_only_frame_change_runs_ocr_without_a_stable_route(self):
+        harness = AutoAdvanceFakeFrameHarness()
+        harness.start()
+        self.addCleanup(harness.stop)
+        harness.push("Ada", "Same line.", background="first")
+        harness.push("Ada", "Same line.", background="with-cue", complete=True)
+
+        self.assertEqual(len(harness.recognized_frames), 2)
+        self.assertEqual(harness.errors, [])
+
 
 class AdaptiveSpeechBackpressureTest(unittest.TestCase):
     def test_underflow_serializes_until_a_clean_cooldown_has_elapsed(self):

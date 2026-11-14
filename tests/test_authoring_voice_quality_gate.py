@@ -31,16 +31,6 @@ from vntts.authoring.workbench import create_resume_workspace
 
 
 class AuthoringVoiceQualityGateTest(unittest.TestCase):
-    def test_cohort_compatibility_api_is_public(self):
-        self.assertIs(
-            voice_quality_gate_module.inspect_voice_quality_cohort,
-            inspect_voice_quality_cohort,
-        )
-        self.assertIs(
-            voice_quality_gate_module.VoiceQualityCohortCompatibility,
-            voice_quality_gate_module.VoiceQualityCohortCompatibility,
-        )
-
     def test_gate_binds_controls_but_not_story_seed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

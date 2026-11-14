@@ -146,12 +146,7 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
                         for path in (self.output / "interrupted").iterdir()
                     ],
                 )
-                self.assertEqual(
-                    json.loads((self.output / "manifest.json").read_text())[
-                        "entry_count"
-                    ],
-                    0,
-                )
+                self.assertFalse((self.output / "manifest.json").exists())
                 audit = state["interrupted_attempts"][0]
                 self.assertEqual(
                     audit["cancellation"]["lease_id"], witness.lease["lease_id"]
@@ -206,10 +201,10 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
         self.assertEqual(before["failure"]["kind"], "missed_eos_audio_limit")
         self.assertTrue(state["interrupted_attempts"][0]["attempt_counted"])
 
-    def test_committed_success_race_preserves_approved_wav_and_publishes_it(self):
-        result = self.generate(
-            SyntheticRenderer(), retries=0, approve_validated_audio=True
-        )
+    def test_committed_success_race_preserves_approved_wav_and_ignores_legacy_index(
+        self,
+    ):
+        self.generate(SyntheticRenderer(), retries=0, approve_validated_audio=True)
         before = load_generation_state(self.state_path, self.queue)
         record = before["items"][self.item["queue_id"]]
         audio = self.output / record["path"]
@@ -220,7 +215,7 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
         self.finish_cancel(witness)
         self.assertEqual(load_generation_state(self.state_path, self.queue), before)
         self.assertEqual(audio.read_bytes(), payload)
-        self.assertEqual(json.loads(result.manifest.read_text())["entry_count"], 1)
+        self.assertEqual(json.loads((self.output / "manifest.json").read_text()), {})
 
     def test_new_lease_owner_unconfirmed_exit_and_queue_change_do_not_rewrite_state(
         self,

@@ -123,7 +123,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                         self.service.reference_audio.assert_called_once()
                     else:
                         self.service.generate.assert_called_once()
-                    self.panel._stop_playback()
+                    self.panel.stop_playback()
 
     def test_cached_previews_also_wait_for_host(self):
         self.configure_current()
@@ -132,7 +132,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 play = self.panel.play_current if current_voice else self.panel.play_a
                 play()
                 self.run_tasks()
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 continuations = []
                 self.panel.before_playback = continuations.append
                 self.service.reset_mock()
@@ -143,7 +143,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 continuations[0]()
                 self.panel.player.play_bytes.assert_called_once()
                 self.service.generate.assert_not_called()
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 self.panel.before_playback = None
 
     def test_pending_playback_is_invalidated_by_selection_change_or_cancel(self):
@@ -251,7 +251,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
                     self.panel._playing_source,
                     "preview" if first_current else "current-preview",
                 )
-                self.panel._stop_playback()
+                self.panel.stop_playback()
                 self.panel._previews.clear()
                 self.panel.player.reset_mock()
 
@@ -434,7 +434,7 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertTrue(self.panel.status.isHidden())
         self.assertEqual(self.panel.status.toPlainText(), "")
         self.assertTrue(self.panel.recommendation.isHidden())
-        self.assertEqual(self.panel.a_box.title(), "")
+        self.assertFalse(self.panel.a_box.inherits("QGroupBox"))
         self.assertNotIn("Voice:", self.panel.a_reason.text())
         self.assertNotIn("Original spoken text:", self.panel.a_reason.text())
         for row in range(self.panel.reference_model.rowCount()):
@@ -517,9 +517,10 @@ class CharacterVoicePanelTest(unittest.TestCase):
             candidate_inventory=(candidate,),
         )
         self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        self.assertEqual(self.panel._game_phrases, phrases)
+        expected = (phrases[0], phrases[1], phrases[3], phrases[4], phrases[2])
+        self.assertEqual(self.panel._game_phrases, expected)
         self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        for text in (*phrases[1:], phrases[0]):
+        for text in (*expected[1:], expected[0]):
             self.panel.game_phrase_button.click()
             self.assertEqual(self.panel.preview_text.toPlainText(), text)
             self.assertEqual(self.panel._sample_text, text)

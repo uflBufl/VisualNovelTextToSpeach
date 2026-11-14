@@ -165,6 +165,36 @@ class LiveUnheardReplacementTest(unittest.TestCase):
         self.assertIsNone(pcm_admission_context.get())
         self.assertIn(old.generation, reader.pcm_admitted_generations)
 
+    def block_replacement(self, reader, old, barrier):
+        attributes = {
+            "pause": ("paused", True),
+            "emergency": ("emergency_stopped", True),
+            "suppressed": ("suppressed_generation", old.generation),
+            "run": ("run_id", "other-run"),
+            "owner": ("stable_frame_owner", lambda: "other"),
+            "focus": ("focus_probe", lambda: False),
+        }
+        if barrier in attributes:
+            name, value = attributes[barrier]
+            setattr(reader, name, value)
+        elif barrier == "stop":
+            reader.stop_event.set()
+        elif barrier == "sealed":
+            reader.sealed_generations.add(old.generation)
+        elif barrier == "epoch":
+            reader.frame_route_epoch += 1
+        elif barrier == "frame":
+            reader.latest_frame_fingerprint = "other"
+            reader.latest_frame = "other"
+        elif barrier == "pcm":
+            reader.current_chunk = old
+            self.assertTrue(reader.claim_first_pcm(old))
+        elif barrier == "replay":
+            reader.unheard_candidate = None
+            self.assertFalse(
+                reader.allow_unheard_replacement(replace(old, explicit_replay=True))
+            )
+
     def test_stop_pause_replay_and_admitted_or_stale_owners_cannot_be_replaced(self):
         for barrier in (
             "stop",
@@ -183,37 +213,7 @@ class LiveUnheardReplacementTest(unittest.TestCase):
         ):
             with self.subTest(barrier=barrier):
                 reader, tracker, old, authority, *_ = self.candidate()
-                if barrier == "stop":
-                    reader.stop_event.set()
-                elif barrier == "pause":
-                    reader.paused = True
-                elif barrier == "emergency":
-                    reader.emergency_stopped = True
-                elif barrier == "suppressed":
-                    reader.suppressed_generation = old.generation
-                elif barrier == "sealed":
-                    reader.sealed_generations.add(old.generation)
-                elif barrier == "run":
-                    reader.run_id = "other-run"
-                elif barrier == "epoch":
-                    reader.frame_route_epoch += 1
-                elif barrier == "frame":
-                    reader.latest_frame_fingerprint = "other"
-                    reader.latest_frame = "other"
-                elif barrier == "owner":
-                    reader.stable_frame_owner = lambda: "other"
-                elif barrier == "focus":
-                    reader.focus_probe = lambda: False
-                elif barrier == "pcm":
-                    reader.current_chunk = old
-                    self.assertTrue(reader.claim_first_pcm(old))
-                elif barrier == "replay":
-                    reader.unheard_candidate = None
-                    self.assertFalse(
-                        reader.allow_unheard_replacement(
-                            replace(old, explicit_replay=True)
-                        )
-                    )
+                self.block_replacement(reader, old, barrier)
                 if barrier == "rewrite":
                     result = reader._replace_unheard_candidate(
                         tracker, authority, "Someone else", FULL

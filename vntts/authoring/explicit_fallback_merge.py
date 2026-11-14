@@ -27,7 +27,7 @@ from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
 from vntts.authoring.generation_lease import GenerationLease
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -362,7 +362,7 @@ def _mutate_explicit_fallback_merge(
         target_items[queue_id] = copied
     target_state["active"] = None
     write_generation_state(output / "generation-state.sqlite3", target_state)
-    write_generated_manifest_from_state(target_state, output, output / "manifest.json")
+    approved_manifest_entries(target_state, output)
     workspace = copy.deepcopy(plan.base_document)
     workspace.update(
         {

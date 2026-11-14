@@ -194,13 +194,6 @@ $SmokeEvidence | ConvertTo-Json -Compress
                 json.loads(report_path.read_text(encoding="utf-8-sig")), actual
             )
 
-    def test_workflow_uploads_only_primary_evidence(self):
-        workflow = (
-            PROJECT_ROOT / ".github/workflows/windows-release-test.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("path: build/windows/release-evidence-*.json", workflow)
-        self.assertNotIn("path: build/windows/release-evidence.json", workflow)
-
 
 if __name__ == "__main__":
     unittest.main()

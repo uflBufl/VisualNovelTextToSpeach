@@ -10,8 +10,12 @@ from unittest.mock import Mock, patch
 
 from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
+from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
 from tests.story_fixtures import write_synthetic_game_pack
+from vntts import generation_database
+from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.current_voice import CurrentVoiceSnapshot
+from vntts.document_identity import sha256_file
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
@@ -162,12 +166,14 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 self.assertTrue(library.has_entry(line_id, text_hash))
                 self.assertEqual(voices.matches.call_args.kwargs["role"], expected)
 
-    def test_catalog_packs_and_new_progress_are_discovered_without_full_import(self):
+    def test_catalog_packs_and_fresh_sqlite_audio_are_discovered_without_full_import(
+        self,
+    ):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             assets = root / "assets"
             assets.mkdir()
-            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(assets)
+            pack, line_id, text, text_hash, _wav = write_synthetic_game_pack(assets)
             bindings = json.loads(pack.read_text())["components"]
             story = assets / bindings["story_index"]["path"]
             content = inspect_story_index(story, game_id="synthetic-game")
@@ -189,12 +195,16 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 assets / bindings["voice_manifest"]["path"],
                 directory / "voice-manifest.json",
             )
+            item = queue_item("prepared", character="Ada", text=text)
+            item["line_id"] = line_id
+            item["queue_id"] = f"{line_id}:{text_hash[:16]}"
+            queue = write_queue(directory / "queue.jsonl", [item])
             store.catalog.save_input(
                 job.job_id,
                 {
                     "identity": identity,
                     "job_id": job.job_id,
-                    "queue_sha256": "c" * 64,
+                    "queue_sha256": sha256_file(queue),
                     "story_index_sha256": bindings["story_index"]["sha256"],
                     "voice_manifest_sha256": bindings["voice_manifest"]["sha256"],
                 },
@@ -204,11 +214,15 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             self.assertEqual(len(snapshot.sources), 1)
             self.assertFalse(snapshot.changed())
             output = directory.parent / ("generation-output-" + identity[:16])
-            output.mkdir()
-            progress = json.loads((assets / "generated-audio.json").read_text())
-            progress["source_queue_sha256"] = "c" * 64
-            progress["vntts.runtime.progress"] = True
-            (output / "live-progress-manifest.json").write_text(json.dumps(progress))
+            generated = run_bulk_generation(
+                queue,
+                output,
+                SyntheticRenderer(),
+                provider="synthetic",
+                model="synthetic-v1",
+            )
+            self.assertFalse((output / "live-progress-manifest.json").exists())
+            self.assertFalse((output / "manifest.json").exists())
             self.assertTrue(snapshot.changed())
             refreshed = discover_prepared_audio(store)
             self.assertEqual(len(refreshed.sources), 2)
@@ -219,8 +233,29 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             self.assertTrue(
                 refreshed.library_for(lambda entry: True).has_entry(line_id, text_hash)
             )
-            progress_path = output / "live-progress-manifest.json"
-            progress_path.write_text(progress_path.read_text() + "\n")
+            progress_source = next(
+                source for source in refreshed.sources if source.pack_manifest is None
+            )
+            self.assertEqual(progress_source.library.manifest_path, generated.state)
+            with patch(
+                "vntts.generated_audio.read_regular_bytes",
+                side_effect=AssertionError("Discovery must not read WAVs"),
+            ):
+                progress = discover_prepared_audio(store)
+                borrowed = (
+                    PreparedAudioSnapshot((progress_source,))
+                    .library_for(lambda entry: True)
+                    .reserve(line_id, text_hash)
+                )
+            self.assertIsNotNone(borrowed)
+            prepared, _status = borrowed.load()
+            self.assertIsNotNone(prepared)
+            self.assertTrue(prepared.audio_path.is_relative_to(output.resolve()))
+            self.assertEqual(len(progress.sources), 2)
+            updated = generation_database.read_state(generated.state)
+            updated["updated_at"] = "new committed progress"
+            generation_database.write_state(generated.state, updated)
+            self.assertTrue(refreshed.changed())
             with patch(
                 "vntts.prepared_audio_discovery.read_regular_bytes",
                 side_effect=AssertionError("unchanged story reread"),

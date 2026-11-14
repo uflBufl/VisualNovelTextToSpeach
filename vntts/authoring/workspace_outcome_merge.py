@@ -28,7 +28,7 @@ from vntts.authoring.generation_lease import (
     GenerationLease,
     process_is_alive,
 )
-from vntts.authoring.generation_manifest import write_generated_manifest_from_state
+from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import write_generation_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -550,11 +550,7 @@ def _write_outcome_merge_workspace(
     )
     atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
     try:
-        write_generated_manifest_from_state(
-            target_state,
-            output,
-            output / "manifest.json",
-        )
+        approved_manifest_entries(target_state, output)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     import_snapshot = _load_json(
