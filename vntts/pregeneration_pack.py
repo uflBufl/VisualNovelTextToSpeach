@@ -140,6 +140,7 @@ class OfflinePackResult:
     live_fallbacks: int
     story_lines: int = 0
     omissions: int = 0
+    ready_line_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1982,11 +1983,10 @@ def _load_existing(
         game_version is not None and imported.pack.game_version != game_version
     ):
         raise OfflinePackError("Existing offline pack game identity changed")
-    story_lines = len(
-        load_verified_story_index_document(
-            imported.story_index, imported.pack.story_index.sha256
-        ).records
+    story = load_verified_story_index_document(
+        imported.story_index, imported.pack.story_index.sha256
     )
+    story_lines = len(story.records)
     declared_story_lines = extension.get("story_line_count", story_lines)
     if type(declared_story_lines) is not int or declared_story_lines != story_lines:
         raise OfflinePackError("Existing offline pack coverage changed")
@@ -2002,6 +2002,21 @@ def _load_existing(
     ):
         if type(declared) is not int or declared != actual:
             raise OfflinePackError("Existing offline pack route counts changed")
+    source_audio_line_ids = _validated_source_audio_line_ids(imported.story_index, story)
+    pack = _StoryAudioPack(
+        imported.pack.manifest_path,
+        True,
+        story,
+        {record.line_id: record for record in story.records},
+        source_audio_line_ids,
+        library,
+    )
+    ready_line_ids = tuple(
+        record.line_id
+        for record in story.records
+        if _story_audio_route(record, record, story, source_audio_line_ids, pack)
+        in {"original", "generated", "non_spoken", "omitted"}
+    )
     return OfflinePackResult(
         identity=identity,
         directory=destination,
@@ -2011,6 +2026,7 @@ def _load_existing(
         live_fallbacks=live_fallbacks,
         story_lines=story_lines,
         omissions=omissions,
+        ready_line_ids=ready_line_ids,
     )
 
 

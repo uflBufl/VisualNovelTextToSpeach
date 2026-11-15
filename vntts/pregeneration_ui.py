@@ -3763,7 +3763,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if notice:
             self._set_phase_detail(self.resume_status.text() + " " + notice)
         self.progress_bar.hide()
-        self._render_completed_story_readiness(live=live_fallbacks)
+        self._render_progress_story_readiness()
         coverage_rows = [
             ("Original game audio", f"{original} in this selection"),
             ("Prepared", f"{approved} in the saved pack"),
@@ -4099,7 +4099,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_audio_status.setToolTip(str(coverage.manifest or ""))
 
     def _story_readiness_counts(self, line_ids: Sequence[str]) -> tuple[int, int, int]:
-        ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
+        ready = set(
+            self._pack_result.ready_line_ids
+            if self._pack_result is not None
+            else getattr(self._progress_snapshot, "ready_line_ids", ())
+        )
         ready_count = sum(line_id in ready for line_id in line_ids)
         ready_prefix = 0
         start = (
@@ -4205,7 +4209,9 @@ class OfflineAudioPreparationDialog(QDialog):
         for selection in content.selections:
             if selection.selection_id not in selected:
                 continue
-            if self._job is not None and self._progress_snapshot is not None:
+            if self._job is not None and (
+                self._pack_result is not None or self._progress_snapshot is not None
+            ):
                 _status, detail = self._preparation_story_status(selection)
                 ready, consecutive, start = self._story_readiness_counts(
                     selection.line_ids
@@ -4246,8 +4252,6 @@ class OfflineAudioPreparationDialog(QDialog):
     def _set_story_readiness_rows(
         self,
         rows: list[tuple[StorySelection, str, str, str]],
-        *,
-        completed: bool = False,
     ) -> None:
         selections = tuple(row[0] for row in rows)
         if selections != self._progress_story_selections:
@@ -4268,7 +4272,7 @@ class OfflineAudioPreparationDialog(QDialog):
             item.setToolTip(0, _story_title(selection))
         for key, chapters in groups.items():
             self._update_readiness_story_group(
-                self._progress_story_groups[key], chapters, completed=completed
+                self._progress_story_groups[key], chapters
             )
         visible = bool(rows)
         self.progress_story_readiness_label.setVisible(visible)
@@ -4305,7 +4309,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _update_readiness_story_group(
-        self, item: QTreeWidgetItem, chapters: list[StorySelection], *, completed: bool
+        self, item: QTreeWidgetItem, chapters: list[StorySelection]
     ) -> None:
         line_ids = tuple(
             dict.fromkeys(
@@ -4313,10 +4317,8 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
         detail = "Readiness covers only the selected chapters. Expand to inspect each chapter."
-        if completed or self._progress_snapshot is not None:
+        if self._pack_result is not None or self._progress_snapshot is not None:
             ready, consecutive, start = self._story_readiness_counts(line_ids)
-            if completed:
-                ready = len(line_ids)
             count = f"{ready}/{len(line_ids)}"
             continuity = _readiness_continuity(
                 ready, len(line_ids), consecutive, start, grouped=True
@@ -4334,26 +4336,6 @@ class OfflineAudioPreparationDialog(QDialog):
             item.setText(column, value)
             item.setToolTip(column, title if column == 0 else detail)
             item.setData(column, Qt.ItemDataRole.AccessibleDescriptionRole, detail)
-
-    def _render_completed_story_readiness(self, *, live: int) -> None:
-        content = self.current_content()
-        if content is None or self._job is None:
-            return
-        selected = set(self._job.selected_story_ids)
-        suffix = "Ready with live speech" if live else "Ready in saved audio"
-        self._set_story_readiness_rows(
-            [
-                (
-                    selection,
-                    f"{selection.line_count}/{selection.line_count}",
-                    "All lines",
-                    suffix,
-                )
-                for selection in content.selections
-                if selection.selection_id in selected
-            ],
-            completed=True,
-        )
 
     def _saved_story_status(
         self,

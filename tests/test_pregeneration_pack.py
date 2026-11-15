@@ -34,7 +34,7 @@ from tests.bulk_generation_fixtures import audio_samples
 from tests.generation_state_fixtures import replace_generation_state
 from tests.pregeneration_fixtures import fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
-from tests.story_fixtures import write_source_audio_semantic_evidence
+from tests.story_fixtures import write_content, write_source_audio_semantic_evidence
 from vntts import pregeneration_pack as pack_module
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
@@ -2034,6 +2034,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(first.approved, 1)
             self.assertEqual(first.live_fallbacks, 1)
+            self.assertEqual(first.ready_line_ids, (items[0]["line_id"],))
             generated = library.find(items[0]["line_id"], items[0]["text_sha256"])
             self.assertEqual(generated.sample_rate, 16_000)
             np.testing.assert_allclose(
@@ -2043,6 +2044,52 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 (items[1]["line_id"], items[1]["text_sha256"]),
                 library.live_fallbacks,
             )
+
+    def test_published_and_reopened_readiness_tracks_each_playable_route(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, inputs, result, items = fixture(root / "prepared", include_omission=True)
+            story = load_story_index_document(inputs.story_index)
+            source = load_story_index_document(write_content(root / "source"))
+            original = source.records[0].to_record()
+            original.pop("collection_id")
+            template = story.records[0].to_record()
+            write_story_index_document(
+                inputs.story_index,
+                story.metadata
+                | {
+                    key: source.metadata[key]
+                    for key in ("source_audio_completion", "source_audio_semantics")
+                },
+                [record.to_record() for record in story.records]
+                + [
+                    original | {"sequence": 4},
+                    template
+                    | {"line_id": "pack:non-spoken", "sequence": 5, "speakable": False},
+                    template | {"line_id": "pack:missing", "sequence": 6},
+                ],
+            )
+            evidence = source.path.parent / "source-audio-semantic-evidence.json"
+            checksum = sha256_file(inputs.story_index)
+            inputs = replace(
+                inputs,
+                story_index_sha256=checksum,
+                source_audio_semantic_evidence=evidence,
+                source_audio_semantic_evidence_sha256=sha256_file(evidence),
+            )
+            job = replace(job, story_index_sha256=checksum)
+
+            published = OfflinePackPublisher().publish(job, inputs, result)
+            reopened = load_saved_pack(published.manifest)
+
+            expected = (
+                items[0]["line_id"],
+                items[-1]["line_id"],
+                original["line_id"],
+                "pack:non-spoken",
+            )
+            self.assertEqual(published.ready_line_ids, expected)
+            self.assertEqual(reopened.ready_line_ids, expected)
 
     def test_published_pack_uses_the_state_bytes_hashed_for_its_identity(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2481,6 +2528,13 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 current_job,
                 current_input,
                 current_result,
+            )
+            expected_ready = tuple(
+                sorted((current_items[0]["line_id"], base_items[-1]["line_id"]))
+            )
+            self.assertEqual(successor.ready_line_ids, expected_ready)
+            self.assertEqual(
+                load_saved_pack(successor.manifest).ready_line_ids, expected_ready
             )
             successor_story = load_story_index_document(successor.imported.story_index)
             library = GeneratedAudioLibrary.load_optional(

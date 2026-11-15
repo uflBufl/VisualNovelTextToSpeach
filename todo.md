@@ -350,10 +350,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree how to establish full speech coverage for supplemental voice
-candidates before changing reading. The user deferred that fix and ASR changes;
-resource-family classification alone cannot suppress narration. Reuse the recorded
-Hansel chapter; do not repeat it for each case. Windows acceptance needs its own host.
+Next action: recheck the recorded failures under Repair failing regression tests
+on the current code before choosing the next repair. Supplemental voice coverage
+and ASR changes remain deferred; resource classification cannot suppress narration.
+Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -378,19 +378,6 @@ Hansel chapter; do not repeat it for each case. Windows acceptance needs its own
       playback guard. Gate: the real cue59 excludes generation and prepared reuse
       for that occurrence, respects original completion, and produces no overlap;
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
-
-- [ ] **GEN-16-01 - Show actual readiness after a live fallback.** The real
-      Agon of the Ages preparation left315612:93 for live synthesis after a
-      quality rejection, yet its final table says100/100 and All selected lines
-      under Read without waiting. `_render_completed_story_readiness` and
-      `_update_readiness_story_group` force completed selections to fully ready.
-      Proposed change, pending agreement: use actual per-line original/prepared/
-      non-spoken/omitted availability for completed rows and their consecutive prefix;
-      keep live fallback eligible for reading without counting it as audio ready
-      without waiting. Share that calculation between chapter and story rows;
-      preserve the failure explanation and diagnostic preview. Gate: the observed
-      live-fallback selection stops at that line, and a fully prepared selection
-      still reports all lines ready; cover both chapter and grouped story rows.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.

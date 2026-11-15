@@ -3514,7 +3514,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(parent.text(2), "1 from current line")
             parent.setExpanded(False)
-            dialog._render_completed_story_readiness(live=0)
+            dialog._pack_result = Mock(
+                spec=OfflinePackResult,
+                ready_line_ids=first.line_ids + second.line_ids,
+            )
+            dialog._render_progress_story_readiness()
             self.assertIs(tree.topLevelItem(0), parent)
             self.assertFalse(parent.isExpanded())
             self.assertEqual(parent.text(1), "3/3")
@@ -3522,6 +3526,61 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(parent.child(0).text(1), "2/2")
             dialog.generating = False
             dialog.close()
+
+    def test_completed_readiness_uses_published_routes_not_the_last_progress_poll(self):
+        for live in (1, 0):
+            with self.subTest(live=live), TemporaryDirectory() as directory:
+                content, dialog = self._nested_stage_dialog(Path(directory))
+                first, second = content.selections
+                dialog._job = dialog.job_store.create_or_resume(
+                    content,
+                    tuple(chapter.selection_id for chapter in content.selections),
+                )
+                ready = (
+                    (first.line_ids[0], second.line_ids[0])
+                    if live
+                    else first.line_ids + second.line_ids
+                )
+                dialog._progress_snapshot = (
+                    OfflineGenerationProgress(
+                        ready_line_ids=first.line_ids + second.line_ids
+                    )
+                    if live
+                    else None
+                )
+                dialog._pack_result = Mock(
+                    spec=OfflinePackResult,
+                    imported=Mock(pack=Mock(extensions={})),
+                    ready_line_ids=ready,
+                )
+
+                dialog._show_final_handoff(
+                    original=0,
+                    approved=len(ready),
+                    live_fallbacks=live,
+                    story_lines=3,
+                    omissions=0,
+                )
+
+                parent = dialog.progress_story_readiness.topLevelItem(0)
+                self.assertEqual(parent.text(1), f"{len(ready)}/3")
+                self.assertEqual(
+                    parent.text(2),
+                    "1 from selected start" if live else "All selected lines",
+                )
+                self.assertEqual(parent.child(0).text(1), "1/2" if live else "2/2")
+                self.assertEqual(
+                    parent.child(0).text(2), "1 from start" if live else "All lines"
+                )
+                self.assertEqual(parent.child(1).text(1), "1/1")
+                self.assertEqual(parent.child(1).text(2), "All lines")
+                dialog.readingLineObserved.emit(second.line_ids[0], "unused")
+                self.application.processEvents()
+                self.assertEqual(
+                    parent.text(2),
+                    "1 from current line" if live else "All selected lines",
+                )
+                dialog.close()
 
     def test_generation_error_keeps_one_progress_view_and_an_explicit_settings_action(
         self,
@@ -4774,7 +4833,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 content, dialog.selected_story_ids()
             )
             dialog._pack_result = Mock(
-                spec=OfflinePackResult, imported=Mock(pack=Mock(extensions={}))
+                spec=OfflinePackResult,
+                imported=Mock(pack=Mock(extensions={})),
+                ready_line_ids=(),
             )
             dialog._show_final_handoff(
                 original=1, approved=2, live_fallbacks=0, story_lines=3, omissions=0
