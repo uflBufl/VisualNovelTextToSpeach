@@ -393,11 +393,16 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                 self.assertEqual(
                     (chunk.character, chunk.text, chunk.line_id), ("Ada", text, "A")
                 )
+                self.assertIsNone(harness.reader.fully_observed_dialog())
                 harness.push("Ada", text, background="full", complete=True)
+                self.assertEqual(harness.reader.fully_observed_dialog().line_id, "A")
                 harness.finish_playback()
+                self.assertEqual(harness.reader.fully_observed_dialog().line_id, "A")
                 harness.fire_advance()
                 self.assertEqual(harness.advance_calls, [1])
                 self.assertEqual(len(harness.played), 1)
+                harness.reader.clear_queue()
+                self.assertIsNone(harness.reader.fully_observed_dialog())
                 self.assertEqual(harness.speech_executor.jobs, [])
                 self.assertEqual(harness.errors, [])
             finally:

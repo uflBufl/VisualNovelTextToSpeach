@@ -345,6 +345,123 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         self.assertIsNone(match.line)
         self.assertEqual(match.method, "expected-incomplete")
 
+    def test_fully_observed_current_line_does_not_veto_exact_short_successor(self):
+        current = dialogue(
+            "I know this is what you want.", "current", speaker="Isolde", sequence=108
+        )
+        successor = dialogue("I ...", "next", speaker="Isolde", sequence=109)
+        resolver = ChapterVoicePreloader((current, successor))
+        resolver.select_line_id(current.line_id)
+        position = resolver.current_match
+        for speaker in ("Isolde", ""):
+            with self.subTest(speaker=speaker):
+                selected, method = resolver.resolve_complete_among(
+                    speaker,
+                    successor.text,
+                    resolver.by_line_id,
+                    update_context=False,
+                )
+                self.assertIsNone(selected)
+                self.assertEqual(method, "expected-incomplete")
+                selected, method = resolver.resolve_complete_among(
+                    speaker,
+                    successor.text,
+                    resolver.by_line_id,
+                    update_context=False,
+                    fully_observed_line_id=current.line_id,
+                )
+                self.assertIs(selected, successor)
+                self.assertEqual(
+                    method, "expected-exact" if speaker else "expected-text-only"
+                )
+                for allow_prefix in (False, True):
+                    match = resolver.resolve_observation_among(
+                        speaker,
+                        successor.text,
+                        resolver.by_line_id,
+                        allow_prefix=allow_prefix,
+                        update_context=False,
+                        fully_observed_line_id=current.line_id,
+                    )
+                    self.assertIs(match.line, successor)
+                    self.assertTrue(match.complete)
+                    self.assertFalse(match.prefix)
+                self.assertIs(resolver.current_match, position)
+
+    def test_completion_evidence_must_identify_the_current_line(self):
+        current = dialogue("I know this is what you want.", "current", sequence=108)
+        successor = dialogue("I ...", "next", sequence=109)
+        foreign = replace(current, chapter="other", line_id="foreign")
+        resolver = ChapterVoicePreloader((current, successor, foreign))
+        resolver.select_line_id(current.line_id)
+        position = resolver.current_match
+        for observed_line_id in (successor.line_id, foreign.line_id, "absent"):
+            with self.subTest(observed_line_id=observed_line_id):
+                match = resolver.resolve_observation_among(
+                    "Ada",
+                    successor.text,
+                    resolver.by_line_id,
+                    fully_observed_line_id=observed_line_id,
+                    update_context=False,
+                )
+                self.assertIsNone(match.line)
+                self.assertEqual(match.method, "expected-incomplete")
+                self.assertIs(resolver.current_match, position)
+
+    def test_completion_evidence_does_not_authorize_backward_or_unknown_position(self):
+        current = dialogue("I know this is what you want.", "current", sequence=108)
+        successor = dialogue("I ...", "next", sequence=109)
+        for candidate, position in (
+            (replace(successor, sequence=107, story_order=107), None),
+            (successor, ChapterMatch("chapter", 108, 1.0, 999)),
+        ):
+            with self.subTest(candidate=candidate, position=position):
+                resolver = ChapterVoicePreloader((current, candidate))
+                resolver.select_line_id(current.line_id)
+                if position is not None:
+                    resolver.current_match = position
+                position = resolver.current_match
+                match = resolver.resolve_observation_among(
+                    "Ada",
+                    candidate.text,
+                    resolver.by_line_id,
+                    fully_observed_line_id=current.line_id,
+                    update_context=False,
+                )
+                self.assertIsNone(match.line)
+                self.assertEqual(match.method, "expected-incomplete")
+                self.assertIs(resolver.current_match, position)
+
+    def test_completion_evidence_keeps_current_line_and_inexact_successor_guards(self):
+        current = dialogue("Repeat. This is the full message.", "current", sequence=108)
+        successor = dialogue("Repeat.", "next", sequence=109)
+        resolver = ChapterVoicePreloader((current, successor))
+        resolver.select_line_id(current.line_id)
+        position = resolver.current_match
+        for observed in ("Repeot.", "ae Repeat.", "Repea"):
+            with self.subTest(observed=observed):
+                match = resolver.resolve_observation_among(
+                    "Ada",
+                    observed,
+                    resolver.by_line_id,
+                    recover_crop_noise=True,
+                    fully_observed_line_id=current.line_id,
+                    update_context=False,
+                )
+                self.assertIsNone(match.line)
+                self.assertFalse(match.complete)
+                self.assertIs(resolver.current_match, position)
+        selected, method = resolver.resolve_complete_among(
+            "Ada",
+            current.text,
+            resolver.by_line_id,
+            fully_observed_line_id=current.line_id,
+            update_context=False,
+        )
+        self.assertIs(selected, current)
+        self.assertEqual(method, "expected-exact")
+        self.assertIs(resolver.current_match, position)
+
     def test_incomplete_synthesis_cannot_select_an_unexpected_original(self):
         original = replace(
             dialogue("The gate is open.", "original", sequence=2),

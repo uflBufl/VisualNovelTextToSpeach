@@ -403,6 +403,12 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
     def test_unrecognized_latest_replacing_source_during_ocr_stays_stale(self):
         anchor, source, latest = self.frame(), self.frame(), self.frame()
         result = OCRResult("Ada", "Visible dialogue.", 95, "balanced", 1)
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader((
+            ChapterDialogue(
+                "line", "chapter", 1, result.character, result.text,
+                text_sha256(result.text),
+            ),
+        ))
         self.recognize(anchor, result)
         self.reader.routed_frame = anchor
         self.reader.latest_frame = source
@@ -427,6 +433,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
             )
 
         self.assertIsNone(observation)
+        self.assertIsNone(self.reader.fully_observed_dialog())
         recognize.assert_called_once()
         policy.observe.assert_not_called()
         self.assertTrue(self.reader.frame_equivalent(anchor, source))

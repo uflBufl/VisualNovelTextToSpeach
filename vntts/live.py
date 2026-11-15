@@ -588,6 +588,7 @@ class LiveDialogReader:
         self.pending_transition_text = ""
 
     def _reset_frame_observations(self) -> None:
+        self._fully_observed_dialog: RecognizedDialog | None = None
         self._layout_context = ("dialogue", "dialogue", True)
         self.reading_session: ReadingSession | None = None
         self.observation_uncertain = False
@@ -609,6 +610,7 @@ class LiveDialogReader:
         if context == self._layout_context:
             return
         self._layout_context = context
+        self._fully_observed_dialog = None
         self.frame_route_epoch += 1
         self.dialog_ready_generation = None
         self.routed_frame = None
@@ -821,6 +823,7 @@ class LiveDialogReader:
             ):
                 return False
             self.stop_event.set()
+            self._fully_observed_dialog = None
             self.frame_route_epoch += 1
             self.paused = False
             self.playback_pause.set_paused(False)
@@ -995,6 +998,7 @@ class LiveDialogReader:
         cancelled_at = monotonic()
         self.frame_route_epoch += 1
         self.queue_epoch += 1
+        self._fully_observed_dialog = None
         self.suppressed_generation = self.active_generation
         futures = tuple(self.speech_futures)
         for future in self.prepared_results:
@@ -1234,6 +1238,11 @@ class LiveDialogReader:
                 and self.suppressed_generation != chunk.generation
                 and chunk.playback_id not in self.cancelled_chunk_ids
             )
+
+    def fully_observed_dialog(self) -> RecognizedDialog | None:
+        """Return fresh full OCR evidence, independent of early or finished audio."""
+        with self.state_lock:
+            return self._fully_observed_dialog
 
     def current_canonical_chunk(self) -> SpeechChunk | None:
         """Keep current dialogue identity available after its audio has completed."""
@@ -1896,6 +1905,15 @@ class LiveDialogReader:
                 self.dialog_ready_generation = None
                 self._cancel_auto_advance_locked()
             previous_epoch = self.frame_route_epoch
+            if (
+                canonical is not None
+                and (character, text) == (canonical.dialog.character, canonical.dialog.text)
+                and self._recognition_state_refusal_locked(
+                    canonical.epoch, canonical.run_id, True, frame
+                ) is None
+            ):
+                # Routing may advance the story owner; OCR was validated before it.
+                self._fully_observed_dialog = canonical.dialog
             self._accept_routed_frame_locked(fingerprint, frame)
             canonical = (
                 replace(canonical, epoch=self.frame_route_epoch)

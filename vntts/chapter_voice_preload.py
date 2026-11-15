@@ -543,6 +543,7 @@ class ChapterVoicePreloader:
         *,
         update_context: bool = True,
         prefer_synthesis: bool = False,
+        fully_observed_line_id: str | None = None,
     ) -> tuple[ChapterDialogue | None, str]:
         match = self.resolve_observation_among(
             character,
@@ -550,6 +551,7 @@ class ChapterVoicePreloader:
             line_ids,
             update_context=update_context,
             prefer_synthesis=prefer_synthesis,
+            fully_observed_line_id=fully_observed_line_id,
         )
         return match.line, match.method
 
@@ -582,6 +584,7 @@ class ChapterVoicePreloader:
         allow_speaker_evidence: bool = True,
         update_context: bool = True,
         prefer_synthesis: bool = False,
+        fully_observed_line_id: str | None = None,
     ) -> StoryObservationMatch:
         """Assess the same source coverage for canonical text and cursor ownership."""
         allowed = tuple(dict.fromkeys(str(value) for value in line_ids if value))
@@ -623,6 +626,7 @@ class ChapterVoicePreloader:
                     recover_crop_noise=recover_crop_noise,
                     allow_speaker_evidence=allow_speaker_evidence,
                     update_context=False,
+                    fully_observed_line_id=fully_observed_line_id,
                 )
 
             match = resolve(eligible)
@@ -844,8 +848,17 @@ class ChapterVoicePreloader:
                     <= self.matching_text[row].alphanumeric_length
                 ):
                     continue
-                # A distant continuation cannot veto an exact current/next line.
-                if expected_complete and not expected(other):
+                # Fully seen current text cannot still be typing its exact successor.
+                if expected_complete and (
+                    not expected(other)
+                    or (
+                        current is not None
+                        and other.line_id == fully_observed_line_id
+                        and other.chapter == current.chapter == row.chapter
+                        and _story_position(other) == _story_position(current)
+                        and _story_position(row) > _story_position(current)
+                    )
+                ):
                     continue
                 evidence = compare(best.observed, other)
                 if (

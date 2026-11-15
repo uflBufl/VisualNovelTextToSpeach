@@ -13,6 +13,7 @@ from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioRoute,
     PreparedGeneratedAudio,
+    SourceAudioRoute,
 )
 from vntts.live import RecognizedDialog
 
@@ -62,6 +63,92 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
             return controller._recognize_live_frame(
                 CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
             )
+
+    def test_full_observation_allows_short_original_while_previous_audio_is_pending(self):
+        previous = replace(
+            authority.story_line(
+                "I know this is what you want. Now, I can finally make your dream "
+                "come true ...",
+                "Isolde",
+                "previous",
+            ),
+            sequence=108,
+            source_audio_status="available",
+            source_audio_id="original-previous",
+            source_audio_duration_seconds=6.0,
+            source_audio_completeness="full",
+            source_audio_authoritative=True,
+        )
+        short = replace(
+            previous, line_id="short", sequence=109, text="I ...",
+            text_sha256=authority.story_line("I ...").text_sha256,
+            source_audio_id="original-short",
+        )
+        foreign = authority.story_line("I ...", "Other", "foreign", "other-chapter")
+        for speaker in ("Isolde", "Narrator"):
+            with self.subTest(speaker=speaker):
+                controller, harness, library = self.ordinary((previous, short, foreign))
+                controller.chapter_voice_preloader.select_line_id(previous.line_id)
+                controller.speech_backend.set_live_mode_active(True)
+
+                def recognize(frame):
+                    return self.recognize(
+                        controller,
+                        replace(
+                            authority.observed(frame["text"], frame["character"], 95),
+                            speaker_confidence=95,
+                        ),
+                    )
+
+                harness.reader.recognize_frame = recognize
+                harness.reader.accept_chunk = controller._accept_live_chunk
+                harness.reader.prepare_chunk = controller._prepare_live_chunk
+                harness.start()
+                try:
+                    harness.push("Isolde", previous.text, background="previous")
+                    self.assertEqual(controller._fully_observed_line_id(), previous.line_id)
+                    self.assertEqual(harness.played, [])
+                    resolution = {}
+                    controller._resolve_story_ocr_result(
+                        authority.observed("I", speaker, 95), resolution=resolution
+                    )
+                    self.assertIsNone(resolution.get("line"))
+                    harness.push(
+                        speaker, short.text, background="next",
+                        expected=("Isolde", short.text),
+                    )
+                    self.assertEqual(controller._fully_observed_line_id(), short.line_id)
+                    self.assertTrue(any(
+                        chunk.line_id == short.line_id
+                        for chunk in harness.reader.accepted_chunks.values()
+                    ))
+                    self.assertIsInstance(
+                        controller.speech_backend.prepare_route(
+                            short.speaker, short.text, line_id=short.line_id,
+                            resolve_unidentified=False,
+                        ),
+                        SourceAudioRoute,
+                    )
+                    library.find_with_preflight.assert_not_called()
+                    self.assertEqual(harness.errors, [])
+                finally:
+                    harness.stop()
+
+    def test_selected_or_queued_full_text_is_not_a_full_visual_observation(self):
+        previous = replace(
+            authority.story_line("I know what you want.", "Isolde", "previous"),
+            sequence=108,
+        )
+        short = replace(authority.story_line("I ...", "Isolde", "short"), sequence=109)
+        controller, harness, _library = self.ordinary((previous, short), owner=previous)
+        controller.chapter_voice_preloader.select_line_id(previous.line_id)
+        self.assertIsNotNone(harness.reader.current_canonical_chunk())
+        self.assertIsNone(controller._fully_observed_line_id())
+        resolution = {}
+        controller._resolve_story_ocr_result(
+            authority.observed(short.text, "Narrator", 95), resolution=resolution
+        )
+        self.assertIsNone(resolution.get("line"))
 
     def test_first_low_confidence_named_line_uses_metadata_before_preparation(self):
         previous = authority.story_line(

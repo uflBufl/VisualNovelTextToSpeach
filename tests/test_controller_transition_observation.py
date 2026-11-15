@@ -436,6 +436,34 @@ class ControllerTransitionObservationTest(unittest.TestCase):
         controller._auto_advance_dialog = Mock(return_value=True)
         return harness
 
+    def test_single_full_sequence_frame_allows_its_short_successor(self):
+        controller, lines = self.controller(("I know what you want.", "I ..."))
+        harness = self.reader_harness(controller)
+
+        def recognize(frame, *_args, result_resolver, **_kwargs):
+            result = result_resolver(
+                OCRResult(frame["character"], frame["text"], 95, "fixture", 1)
+            )
+            return result.character, result.text
+
+        with patch("vntts.controller.recognize_live_frame", side_effect=recognize):
+            harness.start()
+            try:
+                harness.push("Ada", lines[0].text, background="previous")
+                self.assertEqual(controller._fully_observed_line_id(), lines[0].line_id)
+                harness.push("Ada", lines[1].text, background="short-successor")
+                self.assertEqual(
+                    controller.story_cursor.snapshot().current_line_id, lines[1].line_id
+                )
+                self.assertEqual(controller._fully_observed_line_id(), lines[1].line_id)
+                self.assertTrue(any(
+                    chunk.line_id == lines[1].line_id
+                    for chunk in harness.reader.accepted_chunks.values()
+                ))
+                self.assertEqual(harness.errors, [])
+            finally:
+                harness.stop()
+
     def test_real_reader_recognizes_new_lines_during_playback_and_never_guesses_skipped_speech(
         self,
     ):

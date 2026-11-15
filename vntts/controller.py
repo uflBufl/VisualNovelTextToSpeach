@@ -1553,6 +1553,30 @@ class AppController:
             observation_is_current=is_current,
         )
 
+    def _fully_observed_line_id(self) -> str | None:
+        reader = self.live_reader
+        observed = (
+            reader.fully_observed_dialog()
+            if isinstance(reader, LiveDialogReader)
+            else None
+        )
+        line = (
+            self.chapter_voice_preloader.line_for_id(observed.line_id)
+            if observed is not None
+            else None
+        )
+        current = self.chapter_voice_preloader.current_match
+        return (
+            line.line_id
+            if line is not None
+            and observed is not None
+            and (line.speaker, line.text) == (observed.character, observed.text)
+            and current is not None
+            and (line.chapter, line.sequence, line.story_order)
+            == (current.chapter, current.sequence, current.story_order)
+            else None
+        )
+
     def _resolve_story_ocr_result(
         self, result: OCRResult, *, resolution: dict[str, object] | None = None
     ) -> OCRResult:
@@ -1689,6 +1713,7 @@ class AppController:
                     else preloader.by_chapter.get(preloader.current_match.chapter, ())
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
+            fully_observed_line_id = self._fully_observed_line_id()
             line, match = preloader.resolve_complete_among(
                 speaker,
                 result.text,
@@ -1699,10 +1724,22 @@ class AppController:
                     and preloader.current_match is None
                     and confirmation_line_id is None
                 ),
+                fully_observed_line_id=fully_observed_line_id,
             )
             if (
                 line is None
                 and match != "expected-ambiguous"
+                and not (
+                    match == "expected-incomplete"
+                    and fully_observed_line_id is not None
+                    and (
+                        not speaker
+                        or _normalize_story_text(speaker)
+                        == _normalize_story_text(
+                            preloader.by_line_id[fully_observed_line_id].speaker
+                        )
+                    )
+                )
                 and confident
                 and self.automatic_prepared_reading
                 and plan is None
@@ -1714,6 +1751,7 @@ class AppController:
                     (row.line_id for row in preloader.dialogue if row.line_id),
                     update_context=False,
                     prefer_synthesis=True,
+                    fully_observed_line_id=fully_observed_line_id,
                 )
             if not confident and (
                 match not in {"expected-exact", "expected-text-only"}
@@ -2346,7 +2384,11 @@ class AppController:
         if line is None:
             return None, match
         line, match = self.chapter_voice_preloader.resolve_complete_among(
-            character, text, line_ids, update_context=False
+            character,
+            text,
+            line_ids,
+            update_context=False,
+            fully_observed_line_id=self._fully_observed_line_id(),
         )
         if match not in {
             "expected-exact",
@@ -2428,6 +2470,7 @@ class AppController:
                         candidate_line_ids,
                         allow_prefix=True,
                         recover_crop_noise=True,
+                        fully_observed_line_id=self._fully_observed_line_id(),
                     )
 
                 expected = self._expected_sequence_prefix_line_locked()
@@ -3896,6 +3939,7 @@ class AppController:
                 (row.line_id for row in rows if row.line_id),
                 update_context=False,
                 prefer_synthesis=match is None,
+                fully_observed_line_id=self._fully_observed_line_id(),
             )
             return reader.enqueue(
                 routed_character, routed_text, line_id=line.line_id if line else None
