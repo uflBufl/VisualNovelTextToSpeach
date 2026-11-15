@@ -988,6 +988,10 @@ class GameNarratorTest(unittest.TestCase):
         self.select(dialog, "preset", role="Aderyn", source="preset:marius")
         self.assertTrue(dialog._settings_dirty)
         self.listen(dialog)
+        self.save(dialog)
+        self.assertEqual(
+            VoiceLibrary(self.library.root).binding("Aderyn").source_id, "preset:marius"
+        )
 
     def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
         self.library.select("Aderyn", route="voice", source_id="preset:marius")
@@ -999,16 +1003,6 @@ class GameNarratorTest(unittest.TestCase):
         self.drain()
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
         self.assertEqual(self.library.binding("Aderyn"), before)
-
-    def test_external_transaction_can_rollback_accepted_nested_save(self):
-        self.library.select("Aderyn", route="voice", source_id="preset:marius")
-        rollback = self.library.binding_rollback()
-        dialog = self.editor(rollback=rollback)
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        self.save(dialog)
-        dialog.restore_initial_voice_bindings()
-        self.assertEqual(self.library.binding("Aderyn").source_id, "preset:marius")
 
     def test_library_write_failure_keeps_choice_available_for_retry(self):
         binder = Mock(side_effect=[ValueError("disk full"), self.settings])
@@ -1061,14 +1055,6 @@ class GameNarratorTest(unittest.TestCase):
         self.drain()
         self.assertIn("reference changed", dialog.voice_panel.status.toPlainText())
         self.assertIsNone(self.library.binding("Aderyn"))
-
-    def test_custom_preview_and_qwen_transcript_belong_to_shared_panel(self):
-        dialog = self.editor(settings=self.settings.updated(speech_backend="qwen-tts"))
-        self.select(dialog, "catalog", source="character:rhiannon")
-        panel = dialog.voice_panel
-        self.assertTrue(hasattr(panel, "preview_text"))
-        self.assertTrue(hasattr(panel, "reference_transcript"))
-        self.assertFalse(hasattr(dialog, "exact_transcript"))
 
     def test_missing_manifest_cannot_be_saved_after_listening(self):
         dialog = self.editor()

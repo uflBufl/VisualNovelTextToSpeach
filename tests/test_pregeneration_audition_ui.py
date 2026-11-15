@@ -233,7 +233,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(replace(plan, groups=(group,)), group_id=group.group_id)
-            self.assertFalse(hasattr(panel, "voice_reference"))
             self.assertEqual(panel.reference_model.rowCount(), 500)
             self.assertGreaterEqual(panel.reference_table.minimumHeight(), 200)
             selected = panel._current_entry()[0].source_id
@@ -1725,6 +1724,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertTrue(reference_text(panel).startswith("1"))
             self.assertEqual(preview_service.generate.call_count, 1)
             self._assert_audition_replay_cycle(panel, pool, player, preview_service)
+            for index in range(panel.reference_model.rowCount()):
+                select_reference(panel, index)
+            select_reference(panel, 1)
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+            self.assertTrue(panel.isVisible())
             panel.a_use.click()
             self.assertIn("Saving", panel.status.toPlainText())
             pool.tasks.pop().run()
@@ -1732,7 +1738,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             self.assertEqual(completed.call_count, 1)
             self.assertEqual(
-                decisions.choice_for(group.group_id, group.decision_context_sha256),
+                VoiceDecisionStore(decisions.path).choice_for(
+                    group.group_id, group.decision_context_sha256
+                ),
                 "character:centurion",
             )
             self.assertEqual(preview_service.generate.call_count, 2)
@@ -2077,29 +2085,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel._play_original()
             player.play_bytes.assert_not_called()
 
-    def test_rejecting_all_candidates_does_not_save_a_rejected_voice(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            plan, group = with_second_candidate(plan, group)
-            decisions = Mock()
-            service = Mock()
-            service.generate.return_value = generated_preview(root)
-            pool = ManualThreadPool()
-            panel = VoiceAuditionPanel(
-                decisions, preview_service=service, thread_pool=pool, player=Mock()
-            )
-            self.addCleanup(panel.deleteLater)
-            self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            for index in range(panel.reference_model.rowCount()):
-                select_reference(panel, index)
-            decisions.remember_many.assert_not_called()
-            self.assertTrue(panel.isVisible())
-
     def test_second_phrase_is_generated_only_when_requested(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2287,9 +2272,8 @@ class VoiceAuditionPanelTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            plan, _group = with_second_candidate(plan, group)
-            decisions = Mock()
-            decisions.remember_many.side_effect = OSError("disk unavailable")
+            plan, group = with_second_candidate(plan, group)
+            decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
             preview_service.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
@@ -2299,20 +2283,38 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            completed = Mock()
+            panel.completed.connect(completed)
             panel.start(plan, group_id=plan.groups[0].group_id)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
 
-            panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            with patch.object(
+                decisions, "remember_many", side_effect=OSError("disk unavailable")
+            ):
+                panel.a_use.click()
+                self.finish_task(pool.tasks.pop())
 
             self.assertIn("Unable to save", panel.status.toPlainText())
             self.assertTrue(panel.retry_save_button.isEnabled())
             self.assertTrue(panel.isVisible())
-            panel.shutdown()
-            panel.deleteLater()
+            completed.assert_not_called()
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+            panel.retry_save_button.click()
+            self.finish_task(pool.tasks.pop())
+            self.assertEqual(
+                VoiceDecisionStore(decisions.path).choice_for(
+                    group.group_id, group.decision_context_sha256
+                ),
+                group.candidates[0].source_id,
+            )
+            completed.assert_called_once_with()
+            self.assertTrue(panel.isHidden())
 
     def test_back_during_save_finishes_the_choice_before_returning(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2609,6 +2611,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog._voice_plan = plan
             dialog._show_voice_confirmation(plan)
             dialog.game_narrator_chooser = Mock(return_value=None)
+            dialog.apply_narrator_settings = Mock()
             bindings = dialog.voice_library.bindings()
             dialog.inspect_character_voice.click()
             self.assertTrue(dialog.cancel_button.isEnabled())
@@ -2617,6 +2620,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertTrue(dialog.continue_button.isDefault())
             self.assertTrue(dialog.cancel_button.autoDefault())
             self.assertEqual(dialog.voice_library.bindings(), bindings)
+            dialog.apply_narrator_settings.assert_not_called()
             self.assertIsNone(
                 decisions.choice_for(group.group_id, group.decision_context_sha256)
             )

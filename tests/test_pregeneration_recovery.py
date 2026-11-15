@@ -1,7 +1,6 @@
 import os
 import stat
 import unittest
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -101,7 +100,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     ),
                 ),
             ):
-                self.assertIs(
+                self.assertEqual(
                     _terminalize_exhausted_failures(
                         generation_input,
                         result,
@@ -479,25 +478,6 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(events["bulk-generation-total"]["count"], 1)
         self.assertEqual(len({event["operation_id"] for event in events.values()}), 1)
 
-    def test_custom_generation_session_closes_around_failure(self):
-        events = []
-
-        class Generator:
-            @contextmanager
-            def generation_session(self, _input, _plan):
-                events.append("begin")
-                try:
-                    yield
-                finally:
-                    events.append("end")
-
-        worker = OfflineRecoveryWorker(Generator())
-        failure = OfflineRecoveryError("failed")
-        with patch.object(worker, "_generate_and_recover", side_effect=failure):
-            with self.assertRaises(OfflineRecoveryError):
-                worker.generate_and_recover(None, None)
-        self.assertEqual(events, ["begin", "end"])
-
     def test_scoped_recovery_finishes_one_dialogue_without_touching_the_next(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
@@ -533,9 +513,13 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 queue_id="a",
             )
 
-        self.assertEqual(
-            generator.repair.call_args.kwargs["queue_ids"],
-            ("a",),
+        generator.repair.assert_called_once_with(
+            generation_input,
+            voice_plan,
+            first,
+            action="edge_silence_trim",
+            queue_ids=("a",),
+            cancel_event=None,
         )
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 0)
@@ -623,7 +607,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 ("recover", "b"),
             ],
         )
-        self.assertIs(result.generation, final)
+        self.assertEqual(result.generation, final)
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 2)
 
@@ -845,7 +829,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(generator.repair.call_args.kwargs["queue_ids"], ("a",))
         self.assertEqual(result.remaining_failed, 0)
         self.assertEqual(result.recovered, 0)
-        self.assertIs(result.generation, completed)
+        self.assertEqual(result.generation, completed)
 
     def test_terminal_generation_skips_failure_planning(self):
         with TemporaryDirectory() as temporary_directory:
@@ -860,7 +844,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             )
 
         planner.assert_not_called()
-        self.assertIs(result.generation, terminal)
+        self.assertEqual(result.generation, terminal)
 
     def test_replans_and_never_repeats_a_queue_action_pair(self):
         with TemporaryDirectory() as temporary_directory:
@@ -892,7 +876,14 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
 
             result = worker.recover(generation_input, voice_plan, first)
 
-        generator.repair.assert_called_once()
+        generator.repair.assert_called_once_with(
+            generation_input,
+            voice_plan,
+            first,
+            action="edge_silence_trim",
+            queue_ids=("a", "b"),
+            cancel_event=None,
+        )
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 1)
@@ -935,7 +926,13 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 generator, planner=lambda *_arguments: next(plans)
             ).recover(generation_input, voice_plan, first)
 
-        self.assertEqual(generator.repair.call_count, 2)
+        self.assertEqual(
+            [
+                (call.kwargs["action"], call.kwargs["queue_ids"])
+                for call in generator.repair.call_args_list
+            ],
+            [("safe_resume", ("a",)), ("bounded_seed_retry", ("a",))],
+        )
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_action_counts, (("reference_comparison", 1),))

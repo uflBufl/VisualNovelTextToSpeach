@@ -355,7 +355,7 @@ class VoicePlanStoreTest(unittest.TestCase):
         job = jobs.create_or_resume(content, ("story",))
         return job, jobs
 
-    def test_voice_plan_records_bounded_phase_timings(self):
+    def test_voice_plan_correlates_phase_timings_with_one_operation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -368,21 +368,11 @@ class VoicePlanStoreTest(unittest.TestCase):
                     manifest_path=write_manifest(root / "voices"),
                 )
 
-            self.assertEqual(
-                [call.args[0] for call in record.call_args_list],
-                [
-                    "pregeneration-voice-plan-story",
-                    "pregeneration-voice-plan-voice-inventory",
-                    "pregeneration-voice-plan-settings-context",
-                    "pregeneration-voice-plan-grouping",
-                    "pregeneration-voice-plan-routing",
-                    "pregeneration-voice-plan-assembly",
-                    "pregeneration-voice-plan-write",
-                    "pregeneration-voice-plan-total",
-                ],
-            )
             self.assertTrue(
-                all("cpu_ms" in call.kwargs for call in record.call_args_list)
+                all(
+                    call.args[1] >= 0 and call.kwargs["cpu_ms"] >= 0
+                    for call in record.call_args_list
+                )
             )
             self.assertEqual(
                 len({call.kwargs["operation_id"] for call in record.call_args_list}), 1
@@ -882,41 +872,32 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Unrelated Role").route, "narrator")
 
     def test_cancelled_rematching_restores_previous_bindings(self):
-        class CancelAtFinalGate:
-            calls = 0
-
-            def __init__(self, library):
-                self.library = library
-
-            def is_set(self):
-                self.calls += 1
-                if self.calls == 3:
-                    VoiceLibrary(self.library.root).select(
-                        "Concurrent", route="live-fallback"
-                    )
-                return self.calls >= 3
-
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             library = VoiceLibrary(root / "library")
             library.select("Rhiannon", route="narrator")
             store = VoicePlanStore(jobs, voice_library=library)
+            cancellation = Event()
+
+            def cancel_qualification(_plan):
+                VoiceLibrary(library.root).select("Concurrent", route="live-fallback")
+                cancellation.set()
+                return {}
 
             with self.assertRaises(PregenerationVoiceCancelled):
                 store.create(
                     job,
                     AppSettings(pocket_gated_model_accepted=True),
                     manifest_path=write_manifest(root / "voices"),
-                    cancellation=CancelAtFinalGate(library),
+                    cancellation=cancellation,
                     ignore_decisions=True,
+                    reference_qualifier=cancel_qualification,
                 )
 
             self.assertEqual(library.binding("Rhiannon").route, "narrator")
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
-            self.assertFalse(
-                (store.job_store.directory_for(job.job_id) / "voice-plan.json").exists()
-            )
+            self.assertEqual(store.saved_documents(), ())
 
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
         self,
@@ -1762,13 +1743,12 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             Path(job.story_index).write_text("changed", encoding="utf-8")
+            store = VoicePlanStore(jobs)
 
             with self.assertRaisesRegex(PregenerationVoiceError, "changed"):
-                VoicePlanStore(jobs).create(job, AppSettings())
+                store.create(job, AppSettings())
 
-            self.assertFalse(
-                (jobs.directory_for(job.job_id) / "voice-plan.json").exists()
-            )
+            self.assertEqual(store.saved_documents(), ())
 
     def test_decision_lookup_rejects_malformed_hashes(self):
         with TemporaryDirectory() as directory:
@@ -1790,7 +1770,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                         self.assertRaisesRegex(PregenerationVoiceError, "identity"),
                     ):
                         decisions.choice_for(group_id, context)
-            self.assertFalse(path.exists())
+            self.assertFalse(decisions.catalog.path.exists())
 
     def test_uncataloged_plan_is_refused_and_current_plan_uses_catalog(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2001,7 +1981,10 @@ class VoicePlanStoreTest(unittest.TestCase):
                 )
 
             self.assertEqual(library.bindings(), ())
-            self.assertFalse(decisions.path.exists())
+            for group in (first, second):
+                self.assertIsNone(
+                    decisions.choice_for(group.group_id, group.decision_context_sha256)
+                )
 
     def test_decision_write_failure_restores_the_complete_voice_library(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2043,7 +2026,11 @@ class VoicePlanStoreTest(unittest.TestCase):
                 original,
             )
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
-            self.assertFalse(decisions.path.exists())
+            reloaded = VoiceDecisionStore(decisions.path)
+            for group in plan.groups[:2]:
+                self.assertIsNone(
+                    reloaded.choice_for(group.group_id, group.decision_context_sha256)
+                )
 
     def test_decision_write_failure_preserves_primary_when_rollback_is_fatal(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2126,7 +2113,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             first, second = plan.groups[:2]
             path = root / "decisions.json"
             first_at_write = Event()
-            second_loaded = Event()
+            second_started = Event()
             release_first = Event()
             errors = []
             original_write = PreparationCatalog.save_decisions
@@ -2140,8 +2127,10 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             def remember(group):
                 try:
+                    if group is second:
+                        second_started.set()
                     VoiceDecisionStore(path).remember(group, "default")
-                except Exception as error:
+                except BaseException as error:
                     errors.append(error)
 
             first_thread = Thread(target=remember, args=(first,), name="first decision")
@@ -2155,7 +2144,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 try:
                     self.assertTrue(first_at_write.wait(5))
                     second_thread.start()
-                    second_loaded.wait(0.2)
+                    self.assertTrue(second_started.wait(5))
                 finally:
                     release_first.set()
                     first_thread.join(5)

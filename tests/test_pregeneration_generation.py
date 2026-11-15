@@ -27,6 +27,7 @@ from vntts.authoring.bulk_generation import (
     _generation_progress_event,
     run_bulk_generation,
 )
+from vntts.authoring.cli_generation import create_generation_parser
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
 from vntts.pregeneration_generation import (
@@ -1088,21 +1089,23 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 result = worker.generate(generation_input, plan)
 
         self.assertEqual(popen.call_count, 2)
-        ordinary_arguments = popen.call_args_list[0].args[0]
+        parser = create_generation_parser()
+        ordinary = parser.parse_args(popen.call_args_list[0].args[0][1:])
         arguments = popen.call_args_list[1].args[0]
-        self.assertNotIn("--audio-event-spoken-projection", ordinary_arguments)
+        projected = parser.parse_args(arguments[1:])
+        self.assertIsNone(ordinary.audio_event_spoken_projection_queue_ids)
         self.assertEqual(arguments[:2], ("vntts-worker", "generate"))
-        self.assertIn(str(generation_input.queue), arguments)
-        self.assertIn("model-id", arguments)
-        self.assertIn("2", arguments)
-        cache_option = arguments.index("--cache-directory")
+        self.assertEqual(projected.queue, generation_input.queue)
+        self.assertEqual(projected.voice_manifest, generation_input.voice_manifest)
+        self.assertEqual(projected.output, output)
+        self.assertEqual(projected.model, "model-id")
+        self.assertEqual(projected.retries, 2)
+        self.assertEqual(projected.cache_directory, root / "synthesis-cache")
+        self.assertEqual(projected.narrator_fallback_roles, ["Hotelier", "Poacher"])
+        self.assertEqual(projected.queue_ids, ["mixed-event"])
         self.assertEqual(
-            arguments[cache_option + 1],
-            str(root / "synthesis-cache"),
+            projected.audio_event_spoken_projection_queue_ids, ["mixed-event"]
         )
-        self.assertEqual(arguments.count("--narrator-fallback-role"), 2)
-        projection = arguments.index("--audio-event-spoken-projection")
-        self.assertEqual(arguments[projection + 1], "mixed-event")
         self.assertEqual(result.generated, 1)
         self.assertEqual(result.failed, 1)
         self.assertEqual(result.other_terminal, 1)
@@ -1724,29 +1727,34 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 )
 
         self.assertEqual(popen.call_count, 2)
-        ordinary, projection = (call.args[0] for call in popen.call_args_list)
-        self.assertEqual(ordinary.count("--queue-id"), 1)
-        self.assertNotIn("--audio-event-spoken-projection", ordinary)
-        self.assertEqual(projection.count("--queue-id"), 1)
-        self.assertIn("--audio-event-spoken-projection", projection)
-        for arguments in (ordinary, projection):
-            self.assertEqual(arguments.count("--sentence-segment-failed"), 1)
-            self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
-            self.assertNotIn("--regenerate-existing", arguments)
-            self.assertIn("--approve-validated-audio", arguments)
+        parser = create_generation_parser()
+        ordinary, projection = (
+            parser.parse_args(call.args[0][1:]) for call in popen.call_args_list
+        )
+        self.assertEqual(ordinary.queue_ids, ["one"])
+        self.assertIsNone(ordinary.audio_event_spoken_projection_queue_ids)
+        self.assertEqual(projection.queue_ids, ["two"])
+        self.assertEqual(projection.audio_event_spoken_projection_queue_ids, ["two"])
+        for arguments, selected in ((ordinary, "one"), (projection, "two")):
+            self.assertEqual(arguments.sentence_segment_failed, [selected])
+            self.assertEqual(arguments.retries, 0)
+            self.assertFalse(arguments.regenerate_existing)
+            self.assertTrue(arguments.approve_validated_audio)
 
-    def test_cancellation_terminates_only_the_owned_worker(self):
+    def test_pre_cancelled_generation_does_not_start_a_worker(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, plan = generation_inputs(Path(temporary_directory))
             process = RunningProcess()
+            popen = Mock(return_value=process)
             cancellation = Event()
             cancellation.set()
 
             with self.assertRaises(OfflineGenerationCancelled):
                 OfflineGenerationWorker(
-                    command=("worker",), popen_factory=Mock(return_value=process)
+                    command=("worker",), popen_factory=popen
                 ).generate(generation_input, plan, cancellation)
 
+        popen.assert_not_called()
         self.assertFalse(process.terminated)
         self.assertFalse(process.killed)
 
@@ -1786,18 +1794,25 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     queue_ids=("a", "b"),
                 )
 
-        arguments = popen.call_args.args[0]
-        self.assertEqual(arguments.count("--offline-fallback-failed"), 2)
-        self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
+        arguments = create_generation_parser().parse_args(popen.call_args.args[0][1:])
+        self.assertEqual(arguments.queue_ids, ["a", "b"])
+        self.assertEqual(arguments.offline_fallback_failed, ["a", "b"])
+        self.assertEqual(arguments.retries, 0)
 
     def test_running_cancellation_terminates_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, plan = generation_inputs(Path(temporary_directory))
             process = RunningProcess()
-            cancellation = Mock()
-            cancellation.is_set.side_effect = (False, True)
+            cancellation = Event()
 
-            with self.assertRaises(OfflineGenerationCancelled) as raised:
+            def cancel_while_waiting(timeout=None):
+                cancellation.set()
+                return RunningProcess.communicate(process, timeout)
+
+            with (
+                patch.object(process, "communicate", side_effect=cancel_while_waiting),
+                self.assertRaises(OfflineGenerationCancelled) as raised,
+            ):
                 OfflineGenerationWorker(
                     command=("worker",), popen_factory=Mock(return_value=process)
                 ).generate(generation_input, plan, cancellation)

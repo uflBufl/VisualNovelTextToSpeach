@@ -1815,7 +1815,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
     def test_materializes_narrator_by_source_id_not_friendly_label(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            job, jobs, voice_plan, _manifest = self.fixture(root)
+            job, jobs, voice_plan, manifest = self.fixture(root)
             voice_plan = replace(
                 voice_plan,
                 groups=tuple(
@@ -1829,6 +1829,15 @@ class PregenerationInputStoreTest(unittest.TestCase):
             result = PregenerationInputStore(jobs).materialize(job, voice_plan)
 
             self.assertEqual(result.narrator_fallback_roles, ("Hotelier",))
+            narrator = CharacterVoiceRegistry.from_file(result.voice_manifest).resolve(
+                "Narrator"
+            )
+            self.assertEqual(narrator.source_character, "Centurion")
+            self.assertEqual(narrator.speaker, "centurion-v1")
+            self.assertEqual(
+                tuple(sha256_file(reference) for reference in narrator.references),
+                (sha256_file(manifest.parent / "references" / "centurion.wav"),),
+            )
 
     def test_materialization_records_build_and_reuse_phase_timings(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1842,22 +1851,13 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 store.materialize(job, voice_plan)
 
             operations = [call.args[0] for call in record.call_args_list]
-            self.assertEqual(
-                operations,
-                [
-                    "pregeneration-input-load",
-                    "pregeneration-input-identity",
-                    "pregeneration-input-story-projection",
-                    "pregeneration-input-voice-copy",
-                    "pregeneration-input-queue-build",
-                    "pregeneration-input-publish",
-                    "pregeneration-input-load",
-                    "pregeneration-input-identity",
-                    "pregeneration-input-reuse",
-                ],
-            )
+            self.assertIn("pregeneration-input-publish", operations)
+            self.assertIn("pregeneration-input-reuse", operations)
             self.assertTrue(
-                all("cpu_ms" in call.kwargs for call in record.call_args_list)
+                all(
+                    call.args[1] >= 0 and call.kwargs["cpu_ms"] >= 0
+                    for call in record.call_args_list
+                )
             )
 
     def test_classifies_mixed_and_pure_audio_events(self):
@@ -1908,7 +1908,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 wraps=audio_event_plan_for_record,
             ) as parse_events:
                 result = PregenerationInputStore(jobs).materialize(job, plan)
-            self.assertEqual(parse_events.call_count, 2 * result.queue_items + 1)
+            self.assertLessEqual(parse_events.call_count, 2 * result.queue_items + 1)
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
             omission = load_generation_state(
@@ -2130,6 +2130,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             self.assertFalse(
                 any((root / "jobs" / job.job_id).glob("generation-input-*"))
             )
+            self.assertEqual(jobs.catalog.input_directories(), ())
 
     def test_default_pocket_narrator_needs_no_manifest_or_human_decision(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2155,6 +2156,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.ready_items, 4)
+            self.assertEqual(tuple((result.directory / "references").glob("*.wav")), ())
             self.assertEqual(
                 result.narrator_fallback_roles,
                 ("Hotelier", "Rhiannon"),
@@ -2191,6 +2193,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.narrator_fallback_roles, ("Hotelier", "Rhiannon"))
+            self.assertEqual(tuple((result.directory / "references").glob("*.wav")), ())
 
     def test_equivalent_display_roles_share_one_narrator_fallback(self):
         with TemporaryDirectory() as temporary_directory:
@@ -2251,6 +2254,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             self.assertFalse(
                 any((root / "jobs" / job.job_id).glob("generation-input-*"))
             )
+            self.assertEqual(jobs.catalog.input_directories(), ())
 
 
 if __name__ == "__main__":

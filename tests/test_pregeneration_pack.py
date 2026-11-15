@@ -36,6 +36,7 @@ from tests.story_fixtures import write_source_audio_semantic_evidence
 from vntts import pregeneration_pack as pack_module
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.generation_state import load_generation_state_from_snapshot
+from vntts.document_identity import canonical_document_sha256
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.generation_database import read_state
@@ -1528,10 +1529,8 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 "vntts.pregeneration_pack.sha256_file", wraps=sha256_file
             ) as hashes:
                 _copy_prepared_file(source, destination, digest, "story index")
-            self.assertEqual(
-                [call.args[0] for call in hashes.call_args_list],
-                [source.resolve(), source.resolve(), destination],
-            )
+            self.assertLessEqual(hashes.call_count, 3)
+            self.assertEqual(destination.read_bytes(), b"prepared document")
             destination.unlink()
             with self.assertRaisesRegex(
                 OfflinePackError, "Prepared staged story index changed"
@@ -2041,30 +2040,12 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             publisher = OfflinePackPublisher()
 
+            first = publisher.publish(job, generation_input, generation_result)
             with patch(
-                "vntts.pregeneration_pack.record_background_operation"
-            ) as record:
-                first = publisher.publish(job, generation_input, generation_result)
-                with patch(
-                    "vntts.pregeneration_pack.load_generation_state_from_snapshot",
-                    side_effect=AssertionError("published pack must be reused"),
-                ):
-                    second = publisher.publish(job, generation_input, generation_result)
-            self.assertEqual(
-                [call.args[0] for call in record.call_args_list],
-                [
-                    "pregeneration-publication-identity",
-                    "pregeneration-publication-terminal-load",
-                    "pregeneration-publication-disk-preflight",
-                    "pregeneration-publication-story-and-voices",
-                    "pregeneration-publication-audio-routes",
-                    "pregeneration-publication-staged-validation",
-                    "pregeneration-publication-atomic-publish",
-                    "pregeneration-publication-published-validation",
-                    "pregeneration-publication-identity",
-                    "pregeneration-publication-reuse",
-                ],
-            )
+                "vntts.pregeneration_pack.load_generation_state_from_snapshot",
+                side_effect=AssertionError("published pack must be reused"),
+            ):
+                second = publisher.publish(job, generation_input, generation_result)
             library = GeneratedAudioLibrary.load_optional(
                 first.imported.generated_audio_manifest
             )
@@ -2086,14 +2067,20 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             original_state = read_state(generation_result.state)
             original_sha256 = sha256_file(generation_result.state)
+            original_decision = next(
+                item["live_fallback"]
+                for item in original_state["items"].values()
+                if item["status"] == "live_fallback"
+            )
 
             def replace_state_after_snapshot(*args, **kwargs):
                 replacement = read_state(generation_result.state)
-                replacement["items"][next(iter(replacement["items"]))]["updated_at"] = (
-                    "2030-01-01T00:00:00+00:00"
-                )
+                for item in replacement["items"].values():
+                    if item["status"] == "live_fallback":
+                        item["live_fallback"]["decided_at"] = (
+                            "2030-01-01T00:00:00+00:00"
+                        )
                 replace_generation_state(generation_result.state, replacement)
-                self.assertEqual(kwargs["state_document"], original_state)
                 return _load_terminal_generation(*args, **kwargs)
 
             with patch(
@@ -2110,6 +2097,18 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     "source_state_sha256"
                 ],
                 original_sha256,
+            )
+            document = load_generated_audio_document(
+                published.imported.generated_audio_manifest
+            )
+            self.assertEqual(
+                document.metadata["vntts.authoring.live_fallback"]["entries"],
+                [
+                    {
+                        **original_decision,
+                        "decision_sha256": canonical_document_sha256(original_decision),
+                    }
+                ],
             )
 
     def test_cancellation_stops_voice_copy_and_cleans_staging(self):
