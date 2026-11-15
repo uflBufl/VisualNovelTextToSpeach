@@ -1,37 +1,33 @@
 # TODO
 
-## Active - Hansel native-run defects and original-speech qualification
+## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] **RUN-15-01: native qualification of the short-original transition.**
-      Replay Hansel100631:108 `I know...` ->109 `I ...` and confirm109 remains
-      game-owned after a full observation of108, including missing name OCR.
-      Qualify automatic changes while previous audio plays; no empty frame or
-      playback completion should be needed. Preserve waiting for actual growing
-      prefixes and uncertain truncation, plus genuine chapter re-identification.
-      Name loss is not reproduced on the saved video frames: offline OCR reads
-      Isolde. If it recurs, retain the native frame, selected speaker region,
-      glyph-gate result and raw name OCR before choosing an image-processing fix.
+- [ ] Capture native evidence of the missed visible Isolde name at
+      Hansel100631:109 `I ...`: the latest video shows the name, but raw OCR
+      returns Narrator. Short-original routing now correctly keeps game audio.
+      Retain the native frame, selected speaker region, glyph-gate result and raw
+      name OCR; offline OCR of rescaled video frames already reads Isolde, so
+      those frames alone do not establish the failing image-processing stage.
       Preserve Narrator when a name is actually absent; do not substitute hidden
       resource speakers merely to remove ambiguity.
 - [ ] **RUN-15-02: native qualification of empty OCR recovery.**
-      Confirm transient recognition loss does not repeat unchanged dialogue,
-      including a short raw line returning with Narrator instead of its name.
+      Qualify an already spoken raw/unindexed line losing recognition and
+      returning unchanged, including a short line returning with Narrator
+      instead of its name. The Hansel rerun only naturally exercised empty OCR
+      on silent punctuation; local tracker/live-loop regressions cover spoken
+      recovery, but do not replace this native gate.
       Navigation must wait for fresh text, while in-flight speech continues.
       Include an automatic dialogue change, explicit replay and a later genuine
       repetition after another line. Compare any recurrence with the saved video,
       OCR timeline and process-audio clip; do not infer a transition from blank OCR.
-- [ ] After these fixes, rerun Hansel6TH-23 without tester advancement. Confirm
-      available originals remain game-only, including Communicator `Repeat.`
-      (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue
-      plays and sparse text progresses. Preserve automatically changing
-      dialogue53 ->54 ->55 without duplicate playback. Include plain ellipsis and
-      unknown-symbol waiting.
+- [ ] Qualify plain ellipsis and unknown-symbol waiting separately: the latest
+      Hansel rerun exercised `—!` and `...!`, not these remaining cases.
       The image-level ellipsis checks in OCR/live capture/replay remain necessary
       for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
       Remove them only when shared recognition qualifies those same cases; the
       sparse recognizer still confuses dots with bullets in some font controls.
-      Qualify unknown-chapter cross-chapter audio reuse separately with a fresh
-      context; this run reached54 after the chapter was already identified.
+- [ ] Qualify unknown-chapter cross-chapter audio reuse with a fresh context;
+      the Hansel rerun reached54 after the chapter was already identified.
 - [ ] Verify genuinely partial originals separately in anecdotes/character
       stories, which retain ASR. Continue the unfinished RUN-11-UI-02 gate.
 
@@ -392,17 +388,18 @@ for each remaining case. Windows recording acceptance needs its own host.
 
 - [ ] **RUN-11-UI-02 - Qualify automatic prepared Read in the combined live run.**
       Find an accessible unvoiced duplicate followed by a unique compatible
-      prepared line. Exclude only originals with validated full ASR coverage;
-      partial, mismatching, unknown and absent original speech remain eligible.
+      prepared line. Main-story originals are full coverage when audio exists;
+      anecdotes/character stories require validated full ASR coverage. Partial,
+      mismatching, unknown and absent original speech remain eligible there.
       Cornerstone's See You in the New World is currently unavailable in-game
       (user confirmed); exclude it from the upcoming run. A cached story or
       generated audio does not prove current menu access. Select a currently
       accessible ordinary-dialogue story; book anecdotes need their own reader.
       User opened 6TH-23 Hansel and Gretel. Its canonical duplicate candidates
       100631:54/101014:96 are registered for actual discovery; current-voice audio
-      for unique successor 100631:55 is prepared. Native Read has not started.
-      First verify actual visibility of the short repeated phrase: ROI-only
-      setup navigation reached its successor without retaining that frame.
+      for unique successor 100631:55 is prepared. Native ordinary Read reached
+      both lines, but the chapter was already identified; fresh-context reuse
+      remains unqualified. Begin the targeted check on the short repeated phrase.
       7TH-02 The Blue and the Grey (Bang!) remains a metadata-only alternative.
       Prepare the repeated phrase only from the other chapter
       and verify reuse without anchoring there, followed by unique identification
