@@ -94,6 +94,7 @@ class IncrementalDialogTracker:
         self.latest_text = ""
         self.committed_text = ""
         self.conflicting_observation = False
+        self.observation_missing = False
         self.transition_expected = False
         self.last_change_at = 0.0
         self.stable_text = ""
@@ -122,11 +123,21 @@ class IncrementalDialogTracker:
         self.admission_reason = "waiting-stability"
 
         if not text:
-            if self.latest_text:
-                self._clear_dialog()
+            self.observation_missing = True
+            self.history.clear()
+            self.stable_text = ""
+            self.last_stable_change_at = None
+            self._clear_pending_dialog()
             self.admission_reason = "empty"
             return []
 
+        if (
+            self.observation_missing
+            and self.committed_text
+            and self._comparison_key(text) == self._comparison_key(self.committed_text)
+            and self._is_speaker_noise_over_committed_text(character, text)
+        ):
+            character = self.character or character
         if self._observation_is_blocked(character, text):
             return []
 
@@ -138,7 +149,7 @@ class IncrementalDialogTracker:
 
         self._clear_pending_dialog()
         self.conflicting_observation = False
-        if text != self.latest_text:
+        if text != self.latest_text or self.observation_missing:
             self.last_change_at = now
         self.character = character
         self.latest_text = text
@@ -147,6 +158,7 @@ class IncrementalDialogTracker:
         if len(self.history) < self.stability_frames:
             return []
 
+        self.observation_missing = False
         stable_text = os.path.commonprefix(list(self.history))
         if stable_text != self.stable_text:
             self.stable_text = stable_text
@@ -196,6 +208,7 @@ class IncrementalDialogTracker:
             )
             and character == self.character
             and not self.transition_expected
+            and not self.observation_missing
         ):
             self._clear_pending_dialog()
             self.conflicting_observation = False
@@ -228,6 +241,7 @@ class IncrementalDialogTracker:
         return False
 
     def observe_silent(self, event_id: str) -> bool:
+        self.observation_missing = False
         self.admission_reason = "silent"
         if self.silent_event_id == event_id:
             return False
@@ -262,6 +276,7 @@ class IncrementalDialogTracker:
             and self._texts_are_related(self.committed_text or self.latest_text, text)
         ):
             # Recognition supplies identity for words already accepted from OCR.
+            self.observation_missing = False
             self._clear_pending_dialog()
             self.canonical_line_id = line_id
             self.accepted_line_ids.add(line_id)
@@ -304,6 +319,7 @@ class IncrementalDialogTracker:
     def observe_canonical(
         self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
+        self.observation_missing = False
         if self.canonical_line_id == line_id:
             self._clear_pending_dialog()
             self.conflicting_observation = False
@@ -331,7 +347,11 @@ class IncrementalDialogTracker:
         ]
 
     def flush(self) -> list[SpeechChunk]:
-        if not self.latest_text or self.conflicting_observation:
+        if (
+            self.observation_missing
+            or not self.latest_text
+            or self.conflicting_observation
+        ):
             self.admission_reason = (
                 "committed-conflict" if self.conflicting_observation else "empty"
             )
@@ -339,7 +359,11 @@ class IncrementalDialogTracker:
         return self._emit(self.latest_text, flush=True)
 
     def is_idle_complete(self) -> bool:
-        if self.pending_history or self.conflicting_observation:
+        if (
+            self.observation_missing
+            or self.pending_history
+            or self.conflicting_observation
+        ):
             return False
         if self.silent_event_id is not None:
             return True
@@ -393,6 +417,11 @@ class IncrementalDialogTracker:
             return False
         committed_key = self._comparison_key(self.committed_text)
         text_key = self._comparison_key(text)
+        if committed_key == text_key and (
+            character.casefold() == "narrator"
+            or (self.character or "").casefold() == "narrator"
+        ):
+            return True
         if len(committed_key) < 4 or not text_key:
             return False
         if self.early_dialogue_prefix is not None and not self.transition_expected:
@@ -463,6 +492,7 @@ class IncrementalDialogTracker:
         self.latest_text = ""
         self.committed_text = ""
         self.conflicting_observation = False
+        self.observation_missing = False
         self.transition_expected = False
         self.last_change_at = 0.0
         self.stable_text = ""

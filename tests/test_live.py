@@ -360,6 +360,93 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_empty_ocr_withholds_advance_without_replaying_returning_text(self):
+        for reject_empty in (False, True):
+            with self.subTest(reject_empty=reject_empty):
+                harness = AutoAdvanceFakeFrameHarness(
+                    dialog_observed=lambda _speaker, text: bool(text) or not reject_empty,
+                    tracker_options={"complete_dialogue_only": True},
+                )
+                text = "I ..."
+                with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+                    harness.start()
+                    try:
+                        for _ in range(3):
+                            harness.clock.advance(0.2)
+                            harness.push("Narrator", text, background="same-dialogue")
+                        harness.finish_playback()
+                        generation = harness.reader.active_generation
+                        pending = harness.timer_scheduler.pending("_run_auto_advance")
+                        self.assertTrue(pending)
+                        harness.push("Narrator", "", background="empty-ocr")
+                        self.assertEqual(harness.reader.active_generation, generation)
+                        self.assertIsNone(harness.reader.dialog_ready_generation)
+                        self.assertFalse(pending[0].fire())
+                        self.assertEqual(harness.advance_calls, [])
+                        self.assertTrue(harness.reader.repeat_last())
+                        harness.finish_playback()
+                        self.assertIsNone(harness.reader.dialog_ready_generation)
+                        for _ in range(3):
+                            harness.clock.advance(0.2)
+                            harness.push("Narrator", text, background="same-dialogue")
+                        self.assertEqual(harness.speech_executor.jobs, [])
+                        self.assertEqual([chunk.text for chunk, _ in harness.played], [text, text])
+                        harness.fire_advance()
+                        self.assertEqual(harness.advance_calls, [generation])
+                        self.assertEqual(harness.errors, [])
+                    finally:
+                        harness.stop()
+
+    def test_empty_ocr_during_playback_keeps_speech_and_accepts_next_dialogue(self):
+        harness = AutoAdvanceFakeFrameHarness(
+            tracker_options={"complete_dialogue_only": True}
+        )
+        started, release = Event(), Event()
+
+        def play(chunk, prepared):
+            if chunk.text == "The first reply.":
+                started.set()
+                self.assertTrue(release.wait(timeout=2))
+            return harness._play(chunk, prepared)
+
+        harness.reader.play_prepared = play
+        worker = None
+        harness.start()
+        try:
+            for _ in range(3):
+                harness.clock.advance(0.2)
+                harness.push("Ada", "The first reply.", background="first")
+            harness.speech_executor.run_next()
+            worker = Thread(target=harness.playback_executor.run_next)
+            worker.start()
+            self.assertTrue(started.wait(timeout=1))
+            current = harness.reader.current_chunk
+            harness.push("Narrator", "", background="empty-ocr")
+            self.assertIs(harness.reader.current_chunk, current)
+            self.assertTrue(harness.reader.is_playback_current(current))
+            for _ in range(3):
+                harness.clock.advance(0.2)
+                harness.push("Ada", "The first reply.", background="first")
+            self.assertEqual(harness.speech_executor.jobs, [])
+            for _ in range(3):
+                harness.clock.advance(0.2)
+                harness.push("Ada", "A different answer.", background="next")
+            self.assertTrue(harness.reader.is_playback_current(current))
+            release.set()
+            worker.join(timeout=1)
+            self.assertFalse(worker.is_alive())
+            harness.finish_playback()
+            self.assertEqual(
+                [chunk.text for chunk, _ in harness.played],
+                ["The first reply.", "A different answer."],
+            )
+            self.assertEqual(harness.errors, [])
+        finally:
+            release.set()
+            if worker is not None:
+                worker.join(timeout=1)
+            harness.stop()
+
     def test_early_identity_keeps_one_playback_and_advance_through_partial_noise(self):
         text = "These old accounts contradict the promise you just made."
         prefix = "These old accounts contradict"
@@ -1069,13 +1156,14 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         self.assertEqual(tracker.last_change_at, self.clock())
         self.assertEqual(tracker.last_stable_change_at, self.clock())
         self.assertEqual(tracker.observe("Bea", ""), [])
-        self.assertEqual(tracker.generation, 3)
+        self.assertEqual(tracker.generation, 2)
+        self.assertEqual(tracker.committed_text, "Next line.")
         self.assertEqual(tracker.history.maxlen, 2)
         self.assertEqual(tuple(tracker.history), ())
         self.assertIsNone(tracker.last_stable_change_at)
-        self.assertEqual(tracker.next_chunk_ordinal, 1)
+        self.assertEqual(tracker.next_chunk_ordinal, 2)
         self.assertTrue(tracker.observe_silent("silent"))
-        self.assertEqual(tracker.generation, 4)
+        self.assertEqual(tracker.generation, 3)
         self.assertTrue(tracker.is_idle_complete())
 
     def test_punctuation_boundaries_preserve_decimals_ellipsis_and_clauses(self):
@@ -1399,15 +1487,93 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
             [SpeechChunk(2, "Bea", "Come inside.")],
         )
 
-    def test_empty_dialog_invalidates_previous_generation(self):
+    def test_empty_ocr_preserves_spoken_text_but_revokes_confirmation(self):
         tracker = self.create_tracker()
 
-        tracker.observe("Alice", "Hello")
+        tracker.observe("Alice", "Hello.")
+        self.assertTrue(tracker.observe("Alice", "Hello."))
         first_generation = tracker.generation
         self.assertEqual(tracker.observe("Narrator", ""), [])
 
-        self.assertGreater(tracker.generation, first_generation)
-        self.assertEqual(tracker.latest_text, "")
+        self.assertEqual(tracker.generation, first_generation)
+        self.assertEqual(tracker.committed_text, "Hello.")
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.observe("Alice", "Hello."), [])
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertEqual(tracker.observe("Alice", "Hello."), [])
+        self.clock.advance(0.8)
+        self.assertTrue(tracker.is_idle_complete())
+        self.assertEqual(tracker.generation, first_generation)
+
+    def test_returning_short_raw_text_with_missing_name_is_not_read_again(self):
+        tracker = self.create_tracker(complete_dialogue_only=True)
+        tracker.observe("Isolde", "I ...")
+        tracker.observe("Isolde", "I ...")
+        self.clock.advance(0.8)
+        self.assertTrue(tracker.observe("Isolde", "I ..."))
+        generation = tracker.generation
+        tracker.observe("Narrator", "")
+        for _ in range(tracker.stability_frames + 2):
+            self.assertEqual(tracker.observe("Narrator", "I ..."), [])
+        self.clock.advance(0.8)
+        self.assertTrue(tracker.is_idle_complete())
+        self.assertEqual(tracker.generation, generation)
+
+    def test_empty_ocr_does_not_hide_another_named_speakers_short_reply(self):
+        tracker = self.create_tracker()
+        tracker.observe("Ada", "Yes.")
+        tracker.observe("Ada", "Yes.")
+        tracker.observe("Narrator", "")
+        self.assertEqual(tracker.observe("Bea", "Yes."), [])
+        self.assertEqual(
+            [(chunk.character, chunk.text) for chunk in tracker.observe("Bea", "Yes.")],
+            [("Bea", "Yes.")],
+        )
+
+    def test_empty_ocr_does_not_flush_an_unconfirmed_tail(self):
+        tracker = self.create_tracker()
+        text = "Hello. Still typing"
+        tracker.observe("Ada", text)
+        self.assertEqual(
+            [chunk.text for chunk in tracker.observe("Ada", text)], ["Hello."]
+        )
+        tracker.observe("Narrator", "")
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.observe("Ada", text), [])
+        self.assertEqual(tracker.observe("Ada", text), [])
+        self.clock.advance(0.8)
+        self.assertEqual(
+            [chunk.text for chunk in tracker.observe("Ada", text)], ["Still typing"]
+        )
+
+    def test_empty_ocr_resets_pending_stability_without_banning_later_repeats(self):
+        tracker = self.create_tracker()
+        tracker.observe("Ada", "Hello.")
+        tracker.observe("Ada", "Hello.")
+        self.assertEqual(tracker.observe("Ada", "Goodbye."), [])
+        tracker.observe("Narrator", "")
+        self.assertEqual(tracker.observe("Ada", "Goodbye."), [])
+        self.assertEqual(
+            [chunk.text for chunk in tracker.observe("Ada", "Goodbye.")], ["Goodbye."]
+        )
+        self.assertEqual(tracker.observe("Ada", "Hello."), [])
+        self.assertEqual(
+            [chunk.text for chunk in tracker.observe("Ada", "Hello.")], ["Hello."]
+        )
+
+    def test_canonical_and_silent_confirmation_recover_after_empty_ocr(self):
+        tracker = self.create_tracker()
+        tracker.observe_canonical("Ada", "Hello.", "line")
+        tracker.observe("Narrator", "")
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertEqual(tracker.observe_canonical("Ada", "Hello.", "line"), [])
+        self.assertTrue(tracker.is_idle_complete())
+        tracker.observe_silent("silent")
+        tracker.observe("Narrator", "")
+        self.assertFalse(tracker.is_idle_complete())
+        self.assertFalse(tracker.observe_silent("silent"))
+        self.assertTrue(tracker.is_idle_complete())
 
     def test_flush_speaks_remaining_partial_text_once(self):
         tracker = self.create_tracker()

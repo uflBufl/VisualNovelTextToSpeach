@@ -13,14 +13,13 @@
       glyph-gate result and raw name OCR before choosing an image-processing fix.
       Preserve Narrator when a name is actually absent; do not substitute hidden
       resource speakers merely to remove ambiguity.
-- [ ] **RUN-15-02: a transient empty OCR repeats an already spoken raw line.**
-      One continuous visible100631:109 `I ...` produced two identical captured
-      TTS outputs. An empty OCR between them cleared tracker state and the same
-      text was emitted under a new generation. Preserve spoken-line ownership
-      across uncertain/empty observations until a real transition is established;
-      retain explicit replay and legitimate later repetitions. Verify with the
-      saved video, raw OCR timeline and process-audio clip as regression evidence,
-      then qualify the change in native replay.
+- [ ] **RUN-15-02: native qualification of empty OCR recovery.**
+      Confirm transient recognition loss does not repeat unchanged dialogue,
+      including a short raw line returning with Narrator instead of its name.
+      Navigation must wait for fresh text, while in-flight speech continues.
+      Include an automatic dialogue change, explicit replay and a later genuine
+      repetition after another line. Compare any recurrence with the saved video,
+      OCR timeline and process-audio clip; do not infer a transition from blank OCR.
 - [ ] After these fixes, rerun Hansel6TH-23 without tester advancement. Confirm
       available originals remain game-only, including Communicator `Repeat.`
       (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue

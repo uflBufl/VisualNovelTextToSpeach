@@ -1741,6 +1741,11 @@ class LiveDialogReader:
                     character,
                     text,
                 )
+                if not text:
+                    self._ocr_callback(
+                        "tracking-empty", tracker.observe, character or "Narrator", ""
+                    )
+                    self._update_dialog_ready(tracker, self.active_generation)
                 routed_observation = self._ocr_callback(
                     "routing-observation", self._report_observation, character, text
                 )

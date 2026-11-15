@@ -142,9 +142,9 @@ class TrackerAdmissionDiagnosticsTests(unittest.TestCase):
         self.assertEqual(tracker.admission_reason, "waiting-stability")
         self.assertEqual(tracker.observe("Ada", ""), [])
         self.assertEqual(tracker.admission_reason, "empty")
-        self.assertEqual(tracker.generation, 3)
+        self.assertEqual(tracker.generation, 2)
         self.assertEqual(tracker.observe("Ada", ""), [])
-        self.assertEqual(tracker.generation, 3)
+        self.assertEqual(tracker.generation, 2)
 
     def test_punctuation_only_admission_is_silent_and_then_unchanged(self):
         tracker = self.tracker()
