@@ -2,16 +2,23 @@
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] **RUN-15-02: native qualification of empty OCR recovery.**
-      Qualify an already spoken raw/unindexed line losing recognition and
-      returning unchanged, including a short line returning with Narrator
-      instead of its name. The Hansel rerun only naturally exercised empty OCR
-      on silent punctuation; local tracker/live-loop regressions cover spoken
-      recovery, but do not replace this native gate.
-      Navigation must wait for fresh text, while in-flight speech continues.
-      Include an automatic dialogue change, explicit replay and a later genuine
-      repetition after another line. Compare any recurrence with the saved video,
-      OCR timeline and process-audio clip; do not infer a transition from blank OCR.
+- [ ] **RUN-15-02: fix auto-advance after committed text returns without its name.**
+      Implementation plan awaiting agreement: share the tracker's exact committed
+      text / named-to-Narrator fallback comparison with raw route identity checks.
+      `_bind_observed_route` currently treats that accepted speaker fallback as
+      a changed identity on every frame, cancelling both the timer and its fresh
+      OCR request. Preserve raw OCR, different named speakers, changed text and
+      canonical line-ID invalidation; blank must still revoke navigation readiness.
+      Add a live-loop regression with a named short line, empty OCR, Narrator
+      return and the fresh OCR recheck after the visible-auto-advance timer fires.
+      Extra unchanged frames must preserve the timer, produce no new speech and
+      allow one advance. Retain genuine speaker changes and later repetitions.
+      Finish native qualification through the owned window and normal controller:
+      anonymous same-text return, automatic next dialogue during speech, explicit
+      replay and A/B/A repetition. The captured blank already preserves ongoing
+      speech without duplicate playback; restoring the rendered name gives a
+      positive native Space control. Do not close this gate until the remaining
+      scenarios pass after the repair. Record evidence and close owned processes.
 - [ ] Qualify plain ellipsis and unknown-symbol waiting separately: the latest
       Hansel rerun exercised `—!` and `...!`, not these remaining cases.
       The image-level ellipsis checks in OCR/live capture/replay remain necessary
