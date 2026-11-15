@@ -27,6 +27,7 @@ from vntts.ocr import (
 )
 from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.tesseract_config import tesseract_config
+from vntts.tesseract_native import NativeTesseract
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -42,6 +43,64 @@ class SplitOCRTest(unittest.TestCase):
         image = Image.new("RGB", (1000, 300))
         ImageDraw.Draw(image).text((120, 35), name, fill=fill)
         return image
+
+    def test_light_gray_name_background_does_not_gain_a_dark_frame(self):
+        fixture = (
+            Path(__file__).parent / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
+        )
+        with Image.open(fixture) as source:
+            image = source.convert("RGB")
+        for inverted in (False, True):
+            with self.subTest(inverted=inverted):
+                data = Mock(
+                    side_effect=[
+                        {"text": ["Isolde"], "conf": [96]},
+                        {"text": ["I ..."], "conf": [95]},
+                    ]
+                )
+                recognize_dialog_image_result(
+                    ImageOps.invert(image) if inverted else image,
+                    recognize_text=Mock(return_value="I ..."),
+                    recognize_data=data,
+                )
+                padded = data.call_args_list[0].args[0]
+                interior = padded.crop((10, 10, padded.width - 10, padded.height - 10))
+                histogram = interior.histogram()
+                self.assertGreater(sum(histogram[128:]), sum(histogram[:128]))
+                self.assertGreater(histogram[0], histogram[255])
+                self.assertEqual(padded.getpixel((0, 0)), 255)
+                self.assertEqual(
+                    padded.getpixel((padded.width - 1, padded.height - 1)), 255
+                )
+
+    @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
+    def test_native_ocr_keeps_isolde_on_light_gray_name_background(self):
+        fixture = (
+            Path(__file__).parent / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
+        )
+        with Image.open(fixture) as source:
+            image = source.convert("RGB")
+        engine = NativeTesseract("eng")
+
+        def recognize_data(processed, **options):
+            return engine.recognize(
+                processed, int(options["config"].split()[1]), text=False, data=True
+            )[1]
+
+        try:
+            for inverted in (False, True):
+                with self.subTest(inverted=inverted):
+                    result = recognize_dialog_image_result(
+                        ImageOps.invert(image) if inverted else image,
+                        recognize_data=recognize_data,
+                        recognize_combined=lambda processed, language, remaining: engine.recognize(
+                            processed, 6, text=True, data=True
+                        ),
+                    )
+                    self.assertEqual(result.character, "Isolde")
+                    self.assertGreaterEqual(result.speaker_confidence, 60)
+        finally:
+            engine.close()
 
     def test_regions_validate_bounds_types_and_nonoverlap(self):
         self.assertEqual(OCRRegions.from_mapping(self.regions.to_json()), self.regions)

@@ -968,10 +968,8 @@ def _recognize_isolated_region(
     remaining_timeout()
     processed = preprocess_dialog_image(image)
     if speaker:
-        histogram = processed.histogram()
-        processed = ImageOps.expand(
-            processed, border=10, fill=255 if histogram[255] > histogram[0] else 0
-        )
+        # Preprocessing already normalizes the background to light polarity.
+        processed = ImageOps.expand(processed, border=10, fill=255)
         data = _call_ocr(
             recognize_data,
             processed,

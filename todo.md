@@ -2,20 +2,11 @@
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] Fix the wrong speaker-padding polarity after implementation-plan approval.
-      Original native Hansel captures reproduce empty Isolde OCR with the current
-      black padding; the same processed pixels with white padding read Isolde.
-      `preprocess_dialog_image` already normalizes the background to light, but
-      the padding chooses polarity from counts of exactly black/white pixels,
-      mistaking dark glyphs on a light-gray background for a dark background.
-      Use white padding in the shared Tesseract speaker path and remove that
-      histogram heuristic; no new OCR pass, scale change or matching exception.
-      Add a native-image regression and preserve opposite-polarity names and
-      genuinely empty/scenery name bands. Run the changed-test selector first,
-      then related OCR consumers and saved-corpus comparison. Finish with a short
-      native check that the visible name reaches raw OCR; full chapter repetition
-      is unnecessary for this gate. Short-original routing already keeps game
-      audio even when name OCR fails.
+- [ ] Finish the short native check of speaker-padding polarity: capture a
+      visible game name through the normal window/persistent OCR path and confirm
+      it reaches raw OCR. Saved native Isolde frames, opposite-polarity regression
+      and related OCR consumers pass with white padding; full chapter repetition
+      is unnecessary for this remaining gate.
       Preserve Narrator when a name is actually absent; do not substitute hidden
       resource speakers merely to remove ambiguity.
 - [ ] **RUN-15-02: native qualification of empty OCR recovery.**
@@ -60,6 +51,10 @@
 
 ## Active - Remaining CI qualification
 
+- [ ] Repair the stale `runtime_progress_manifest_path` import/use in
+      `tests.test_pregeneration_setup`, then rerun the changed-test gate. The
+      production symbol was removed; the unchanged test module fails to import.
+      The runner reports this as no discovered tests before executing its shards.
 - [ ] Investigate preparation/reading source ownership after closing preparation:
       `tests.test_preparation_reading_lifecycle` fails source-reuse and playback
       preference assertions both on baseline4b005cb3 and after the matching fix.
