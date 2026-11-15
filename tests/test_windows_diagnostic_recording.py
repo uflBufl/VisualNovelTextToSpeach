@@ -10,6 +10,7 @@ from unittest.mock import Mock, call, patch
 
 import psutil
 
+from vntts import native_capture
 from vntts.diagnostic_recording import (
     NativeDiagnosticRecording,
     _run_checked,
@@ -105,7 +106,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
         worker = self.root / "vntts-capture-worker.exe"
         with (
             patch("vntts.diagnostic_recording.sys.platform", "win32"),
-            patch("vntts.native_capture.worker_executable", return_value=worker),
+            patch.object(native_capture, "worker_executable", return_value=worker),
             patch("vntts.diagnostic_recording._run_checked") as checked,
         ):
             self.assertEqual(
