@@ -15,6 +15,7 @@ from vntts.hotkeys import (
 )
 from vntts.macos import get_macos_permission_status
 from vntts.model_assets import ModelAssetManager
+from vntts.native_capture import SOURCE_BUILD_COMMAND, probe_capture_worker
 from vntts.release_backends import packaged_speech_backend_available
 from vntts.runtime_preparation import (
     Cancellation,
@@ -57,12 +58,14 @@ class OnboardingDiagnostics:
         *,
         tesseract_probe: Callable[[], object] | None = None,
         audio_probe: Callable[[], object] | None = None,
+        capture_worker_probe: Callable[[], object] | None = None,
         model_path_resolver: Callable[[str], str | Path] | None = None,
         permission_status_provider: Callable[[], Mapping[str, bool | None]]
         | None = None,
     ) -> None:
         self.tesseract_probe = tesseract_probe
         self.audio_probe = audio_probe or probe_audio_output
+        self.capture_worker_probe = capture_worker_probe
         self.model_path_resolver = model_path_resolver or get_model_cache_path
         self.permission_status_provider = (
             permission_status_provider or get_macos_permission_status
@@ -71,10 +74,22 @@ class OnboardingDiagnostics:
     def run(
         self, settings: AppSettings, *, cancellation: Cancellation = None
     ) -> tuple[DiagnosticResult, ...]:
-        results = []
+        check_runtime_cancelled(cancellation)
+        results = [self._check_hotkeys(settings, cancellation=cancellation)]
+        check_runtime_cancelled(cancellation)
+        capture_component = self._check_capture_worker(cancellation=cancellation)
+        results.append(capture_component)
         for probe in (
-            lambda: self._check_hotkeys(settings, cancellation=cancellation),
-            lambda: self._check_capture_source(settings, cancellation=cancellation),
+            lambda: (
+                self._check_capture_source(settings, cancellation=cancellation)
+                if capture_component.passed
+                else DiagnosticResult(
+                    "Capture source",
+                    "warning",
+                    "Not checked because the capture component is unavailable. "
+                    "Fix Capture component and run checks again.",
+                )
+            ),
             lambda: self._check_tesseract(cancellation=cancellation),
             lambda: self._check_audio(cancellation=cancellation),
             lambda: self._check_model(settings, cancellation=cancellation),
@@ -88,7 +103,7 @@ class OnboardingDiagnostics:
         )
         check_runtime_cancelled(cancellation)
         if permission_result is not None:
-            results.insert(2, permission_result)
+            results.insert(3, permission_result)
         return tuple(results)
 
     def moss_installation_space(
@@ -206,6 +221,38 @@ class OnboardingDiagnostics:
             logging.getLogger(__name__).exception("Readiness hotkey validation failed")
             return DiagnosticResult("Hotkeys", "error", str(error), "settings")
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
+
+    def _check_capture_worker(
+        self, *, cancellation: Cancellation = None
+    ) -> DiagnosticResult:
+        try:
+            check_runtime_cancelled(cancellation)
+            command = (
+                probe_capture_worker(cancellation=cancellation)
+                if self.capture_worker_probe is None
+                else self.capture_worker_probe()
+            )
+            check_runtime_cancelled(cancellation)
+        except Exception as error:
+            check_runtime_cancelled(cancellation)
+            logging.getLogger(__name__).exception(
+                "Readiness capture component probe failed"
+            )
+            message = str(error)
+            if SOURCE_BUILD_COMMAND not in message:
+                message += f" From the project directory run: {SOURCE_BUILD_COMMAND}."
+            return DiagnosticResult(
+                "Capture component",
+                "error",
+                f"{message} "
+                "VNTTS starts the capture worker automatically; then run checks again.",
+                "external-capture-runtime",
+            )
+        return DiagnosticResult(
+            "Capture component",
+            "ok",
+            f"Launch and capture protocol are ready: {command}",
+        )
 
     def _check_capture_source(
         self, settings: AppSettings, *, cancellation: Cancellation = None

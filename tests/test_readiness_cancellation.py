@@ -25,6 +25,7 @@ class ReadinessCancellationTest(unittest.TestCase):
 
     def diagnostics(self, **overrides):
         probes = {
+            "capture_worker_probe": Mock(return_value="capture-worker"),
             "tesseract_probe": Mock(return_value="5.5"),
             "audio_probe": Mock(return_value="Speakers"),
             "model_path_resolver": Mock(return_value=Path.cwd()),
@@ -48,12 +49,14 @@ class ReadinessCancellationTest(unittest.TestCase):
         self.display_target.assert_not_called()
         self.window_target.assert_not_called()
         diagnostics.tesseract_probe.assert_not_called()
+        diagnostics.capture_worker_probe.assert_not_called()
         diagnostics.audio_probe.assert_not_called()
         diagnostics.model_path_resolver.assert_not_called()
         diagnostics.permission_status_provider.assert_not_called()
 
     def test_cancellation_during_failed_probe_does_not_log_installation_error(self):
         for probe_name, failure in (
+            ("capture_worker_probe", RuntimeError("Capture worker is shutting down")),
             ("tesseract_probe", RuntimeError("OCR service is shutting down")),
             ("audio_probe", AudioRuntimeUnavailable("Audio service is shutting down")),
             ("audio_probe", RuntimeError("Audio service is shutting down")),
@@ -73,6 +76,24 @@ class ReadinessCancellationTest(unittest.TestCase):
                 ):
                     diagnostics.run(self.settings(), cancellation=cancelled)
                 diagnostics.permission_status_provider.assert_not_called()
+
+    def test_default_capture_probe_receives_cancellation_token(self):
+        cancelled = Event()
+        diagnostics = self.diagnostics(capture_worker_probe=None)
+
+        def probe(*, cancellation):
+            self.assertIs(cancellation, cancelled)
+            cancelled.set()
+            raise RuntimeError("Capture worker is shutting down")
+
+        with (
+            patch("vntts.onboarding.probe_capture_worker", side_effect=probe),
+            self.assertNoLogs("vntts.onboarding", level="ERROR"),
+            self.assertRaises(RuntimePreparationCancelled),
+        ):
+            diagnostics.run(self.settings(), cancellation=cancelled)
+        self.display_target.assert_not_called()
+        diagnostics.audio_probe.assert_not_called()
 
     def test_cancelled_successful_probe_stops_before_next_probe(self):
         cancelled = Event()

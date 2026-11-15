@@ -132,7 +132,7 @@ from vntts.prepared_sequence_status import (
 from vntts.preview_content_advisor import PreviewContentAdvisor
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
-from vntts.settings import AppSettings
+from vntts.settings import AppSettings, restart_required_setting_changes
 from vntts.source_audio_progress import SourceAudioProgress
 from vntts.source_audio_semantics import source_audio_semantics_need_migration
 from vntts.speech_presentation import (
@@ -872,6 +872,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.play_ready_button.clicked.connect(lambda: self.readingRequested.emit(True))
         self._layout_progress_panel()
 
+    def set_reading_status(self, message: str) -> None:
+        self.reading_status.setText(message)
+        self.reading_status.setVisible(bool(message))
+
     def _build_progress_story_readiness(self) -> None:
         self.progress_story_readiness_label = QLabel("Ready to read")
         self.progress_story_readiness_label.setToolTip(
@@ -1253,6 +1257,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_panel.hide()
 
     def _build_buttons(self) -> None:
+        self.reading_status = QLabel()
+        self.reading_status.setWordWrap(True)
+        self.reading_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.reading_status.setAccessibleName("Reading status")
+        self.reading_status.hide()
         self.buttons = QDialogButtonBox()
         self.buttons.addButton(
             self.play_ready_button, QDialogButtonBox.ButtonRole.ActionRole
@@ -1375,6 +1384,7 @@ class OfflineAudioPreparationDialog(QDialog):
         shell.addWidget(self.copy_resume_error)
         self.progress_cancel_consequence.hide()
         shell.addWidget(self.progress_cancel_consequence)
+        shell.addWidget(self.reading_status)
         shell.addWidget(self.buttons)
         self._configure_text_accessibility()
 
@@ -1898,9 +1908,12 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> None:
         if self.has_pending_work():
             return
+        previous = resolve_pregeneration_settings(self.settings)
+        selected = resolve_pregeneration_settings(settings)
         if not voice_changed and (
-            settings.updated(last_main_section=self.settings.last_main_section)
-            == self.settings
+            not restart_required_setting_changes(previous, selected)
+            and selected.tts_profile == previous.tts_profile
+            and selected.xtts_terms_accepted == previous.xtts_terms_accepted
         ):
             self.settings = settings
             self._refresh_narrator_status()

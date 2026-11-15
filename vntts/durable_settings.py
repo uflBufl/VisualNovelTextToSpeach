@@ -60,6 +60,7 @@ class DurableSettingsMixin:
         onboarding_wizard: _OnboardingWizard | None
         onboarding_cancel_event: Event
         _onboarding_preview_settings: AppSettings | None
+        _onboarding_reading_settings: AppSettings | None
         _shutting_down: bool
         _settings_path: Path
         _settings_revision: bytes | None
@@ -72,7 +73,17 @@ class DurableSettingsMixin:
 
         def _apply_controller_action_state(self) -> None: ...
 
+        def _onboarding_runtime_settings(self, settings: AppSettings) -> AppSettings: ...
+
+        def _retain_preparation_reading(self, settings: AppSettings) -> None: ...
+
+        def _bind_preparation_callbacks(self) -> None: ...
+
+        def prepare_reading(self, *, reading_settings: AppSettings) -> None: ...
+
         def set_status(self, message: str | None) -> None: ...
+
+        def _set_reading_status(self, message: str) -> None: ...
 
         def set_ready(self, ready: bool) -> None: ...
 
@@ -152,7 +163,8 @@ class DurableSettingsMixin:
         self.onboarding_wizard = None
 
         if result != QDialog.DialogCode.Accepted:
-            self.set_status("Setup required")
+            self._onboarding_reading_settings = None
+            self._set_reading_status("Reading setup cancelled. Select Read to try again.")
             wizard.deleteLater()
             self.show_dashboard()
             self._restore_onboarding_runtime()
@@ -164,16 +176,26 @@ class DurableSettingsMixin:
         try:
             path = self._save_settings_candidate(candidate)
         except OSError as error:
+            self._onboarding_reading_settings = None
             self.set_status("Setup required")
             self.show_error(f"Unable to save setup settings: {error}")
+            self._set_reading_status(
+                f"Unable to save Reading setup: {error}. Select Read to try again."
+            )
             wizard.deleteLater()
             self.show_dashboard()
             self._restore_onboarding_runtime()
             return
         self._onboarding_preview_settings = None
         self.settings = candidate
+        reading_settings = None
+        if self._onboarding_reading_settings is not None:
+            reading_settings = self._onboarding_runtime_settings(candidate)
+            self._retain_preparation_reading(reading_settings)
+            self._onboarding_reading_settings = None
+            self._bind_preparation_callbacks()
         self._update_auto_advance_action()
-        # The successful setup test already applied and started this draft.
+        # A recorded-audio test can succeed before the live reader is initialized.
         self.dashboard.set_configuration(candidate)
         self._refresh_preparation_settings()
         self.set_ready(self.controller.is_ready)
@@ -181,11 +203,13 @@ class DurableSettingsMixin:
         self.show_dashboard()
         self.dashboard.show_reading()
         self.dashboard.live_button.setFocus()
-        self.set_status(
+        self._set_reading_status(
             "Reading setup saved. Click Start reading when ready. "
             f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
+        if reading_settings is not None:
+            self.prepare_reading(reading_settings=reading_settings)
 
     def _restore_onboarding_runtime(self) -> None:
         preview_settings = self._onboarding_preview_settings

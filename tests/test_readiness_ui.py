@@ -62,6 +62,28 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertTrue(dialog.remediation_button.isHidden())
         dialog.close()
 
+    def test_missing_capture_component_opens_full_build_instructions(self):
+        pool = ManualThreadPool()
+        diagnostics = Mock()
+        instruction = "Run uv run --no-project python scripts/build.py"
+        diagnostics.run.return_value = (
+            DiagnosticResult(
+                "Capture component", "error", instruction, "external-capture-runtime"
+            ),
+        )
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.select_check("Capture component")
+        self.assertTrue(dialog.details_toggle.isChecked())
+        self.assertEqual(
+            dialog.selected_details.toPlainText(),
+            f"ERROR | Capture component\n{instruction}",
+        )
+        self.assertIn("automatically", dialog.remediation_reason.text())
+        self.assertTrue(dialog.remediation_button.isHidden())
+        dialog.close()
+
     def test_invalid_non_macos_hotkey_still_offers_settings(self):
         settings = AppSettings(read_hotkey="<ctrl>+<alt>+<delete>")
         with (

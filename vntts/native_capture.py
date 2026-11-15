@@ -24,11 +24,16 @@ from uuid import uuid4
 
 from PIL import Image
 
+from vntts.cleanup import cleanup_on_exit
+from vntts.runtime_preparation import Cancellation, check_runtime_cancelled
+from vntts.subprocess_utils import terminate_process
+
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PIXELS = 32 * 1024 * 1024
 MAX_PAYLOAD_BYTES = MAX_PIXELS * 4
 PROTOCOL_VERSION = 2
 BACKENDS = {"macos_screencapturekit", "windows_graphics_capture", "linux_x11_composite"}
+SOURCE_BUILD_COMMAND = "uv run --no-project python scripts/build.py"
 
 
 class CaptureError(RuntimeError):
@@ -60,35 +65,145 @@ def worker_executable() -> Path:
         raise CaptureError(
             "Native capture requires macOS or Windows.", code="unsupported_platform"
         )
-    build = (
-        "scripts/build-macos-capture.sh"
-        if sys.platform == "darwin"
-        else "powershell -File scripts/build-windows-capture.ps1"
-    )
     if not path.is_file() or (sys.platform != "win32" and not os.access(path, os.X_OK)):
         raise CaptureError(
             "Native capture worker is missing or not executable. "
             + (
                 "Check VNTTS_CAPTURE_WORKER."
                 if explicit
-                else f"Build it from the project directory: {build}"
+                else f"Build it from the project directory: {SOURCE_BUILD_COMMAND}"
             ),
             code="worker_unavailable",
         )
     return path
 
 
-def worker_command() -> list[str]:
+def worker_command(*, require_capture: bool = True) -> list[str]:
     if sys.platform.startswith("linux") and not os.environ.get("VNTTS_CAPTURE_WORKER"):
-        from vntts.window_capture import ensure_screen_capture_supported
+        if require_capture:
+            from vntts.window_capture import ensure_screen_capture_supported
 
-        ensure_screen_capture_supported()
+            ensure_screen_capture_supported()
         return (
             [sys.executable, "--x11-capture-worker"]
             if getattr(sys, "frozen", False)
             else [sys.executable, "-m", "vntts.x11_capture_worker"]
         )
     return [str(worker_executable())]
+
+
+def probe_capture_worker(
+    *, cancellation: Cancellation = None, timeout: float = 15
+) -> str:
+    """Check launch and protocol without opening a capture source or shared memory."""
+    check_runtime_cancelled(cancellation)
+    if not _time(timeout) or timeout == 0:
+        raise ValueError("timeout must be positive")
+    command = worker_command(require_capture=False)
+    # An incompatible version is rejected before capture APIs or permissions are used.
+    request = (
+        json.dumps(
+            {
+                "version": 0,
+                "id": 1,
+                "op": "close",
+                "session_id": "00000000-0000-0000-0000-000000000001",
+            }
+        ).encode()
+        + b"\n"
+    )
+    input_bytes: bytes | None = request
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=output,
+            stderr=errors,
+            creationflags=(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                if sys.platform == "win32"
+                else 0
+            ),
+        )
+        assert process.stdin is not None
+        with (
+            process.stdin,
+            cleanup_on_exit(
+                lambda: (
+                    terminate_process(process, timeout=1)
+                    if process.poll() is None
+                    else None
+                ),
+                description="Capture component probe cleanup",
+            ),
+        ):
+            deadline = monotonic() + timeout
+            while True:
+                check_runtime_cancelled(cancellation)
+                if any(
+                    os.fstat(stream.fileno()).st_size > MAX_HEADER_BYTES
+                    for stream in (output, errors)
+                ):
+                    raise CaptureError(
+                        "Capture component exceeded the protocol output limit",
+                        code="protocol_error",
+                    )
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise CaptureError(
+                        "Capture component startup/protocol check timed out",
+                        code="worker_timeout",
+                    )
+                try:
+                    process.communicate(input_bytes, timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    input_bytes = None
+            check_runtime_cancelled(cancellation)
+            if os.fstat(errors.fileno()).st_size > MAX_HEADER_BYTES:
+                raise CaptureError(
+                    "Capture component exceeded the protocol output limit",
+                    code="protocol_error",
+                )
+            if process.returncode:
+                errors.seek(0, os.SEEK_END)
+                errors.seek(max(0, errors.tell() - 4000))
+                details = errors.read().decode("utf-8", errors="replace").strip()
+                raise CaptureError(
+                    f"Capture component exited with code {process.returncode}: {details}",
+                    code="worker_unavailable",
+                )
+            output.seek(0)
+            response_bytes = output.read(MAX_HEADER_BYTES + 1)
+    _validate_probe_response(response_bytes)
+    return " ".join(command)
+
+
+def _validate_probe_response(response_bytes: bytes) -> None:
+    try:
+        if len(response_bytes) > MAX_HEADER_BYTES:
+            raise ValueError("Capture response exceeds limit")
+        response = json.loads(response_bytes)
+        if not isinstance(response, dict):
+            raise ValueError("Expected a capture response object")
+        error = response.get("error")
+        if (
+            type(response.get("version")) is not int
+            or response["version"] != PROTOCOL_VERSION
+            or type(response.get("id")) is not int
+            or response["id"] not in {0, 1}
+            or response.get("ok") is not False
+            or type(response.get("frame_bytes")) is not int
+            or response["frame_bytes"] != 0
+            or not isinstance(error, dict)
+            or error.get("code") not in ("protocol_version", "unsupported_version")
+        ):
+            raise ValueError("Worker did not reject the incompatible protocol")
+    except (ValueError, UnicodeDecodeError) as error:
+        raise CaptureError(
+            "Capture component returned an incompatible protocol response",
+            code="protocol_error",
+        ) from error
 
 
 def capture_cancelled(cancel: Event | Callable[[], bool] | None) -> bool:

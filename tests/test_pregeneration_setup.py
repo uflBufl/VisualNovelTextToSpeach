@@ -3802,18 +3802,58 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 synthesis_backend="pocket-tts", synthesis_model="pocket-tts"
             )
             prepared_input = object()
+            configuration = (settings, "Narrator")
             dialog._voice_plan = plan
             dialog._generation_input = prepared_input
+            dialog._generation_configuration = configuration
             dialog._awaiting_voice_confirmation = True
             dialog.voice_confirmation.show()
             dialog.selection_panel.hide()
-            dialog.apply_narrator_settings(settings.updated(last_main_section="voices"))
+            dialog.apply_narrator_settings(settings.updated(
+                last_main_section="voices",
+                onboarding_completed=True,
+                capture_mode="window",
+                game_window_title="Game",
+                speech_rate_percent=125,
+                audio_source_policy="live-tts-only",
+            ))
             self.assertIs(dialog.voice_plan(), plan)
             self.assertIs(dialog.generation_input(), prepared_input)
+            self.assertIs(dialog._generation_configuration, configuration)
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertFalse(dialog.voice_confirmation.isHidden())
             self.assertTrue(dialog.selection_panel.isHidden())
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+
+    def test_voice_generation_changes_invalidate_completed_preparation(self):
+        changes = (
+            {"offline_speech_backend": "moss-tts"},
+            {"offline_tts_model": "another-model"},
+            {"offline_tts_profile": "natural"},
+            {"narrator_speaker": "another-speaker"},
+            {"tts_speaker_wav": "another-reference.wav"},
+            {"xtts_terms_accepted": True},
+            {"pocket_gated_model_accepted": True},
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            settings = AppSettings(offline_speech_backend="coqui-xtts", offline_tts_profile="stable")
+            for change in changes:
+                with self.subTest(change=change):
+                    dialog = OfflineAudioPreparationDialog(
+                        settings,
+                        discovery=lambda: ContentDiscovery((content,)),
+                        job_store=PregenerationJobStore(root / "jobs"),
+                    )
+                    self.addCleanup(dialog.deleteLater)
+                    dialog._voice_plan = object()
+                    dialog._generation_input = object()
+                    dialog._generation_configuration = (settings, "Narrator")
+                    dialog.apply_narrator_settings(settings.updated(**change))
+                    self.assertIsNone(dialog.voice_plan())
+                    self.assertIsNone(dialog.generation_input())
+                    self.assertIsNone(dialog._generation_configuration)
 
     def test_saved_settings_refresh_story_readiness_without_changing_active_job_snapshot(
         self,

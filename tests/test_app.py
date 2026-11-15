@@ -52,8 +52,8 @@ from vntts.app import (  # noqa: E402
     main,
 )
 from vntts.async_ui import LatestTaskRunner  # noqa: E402
-from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.audio_output import PcmAdmissionRejected, pcm_admission_context  # noqa: E402
+from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import AppController, LiveSequenceStatus  # noqa: E402
 from vntts.controller_components import LiveSessionComponent  # noqa: E402
@@ -11183,7 +11183,10 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertIsNone(tray_application.onboarding_wizard)
         self.assertTrue(tray_application.dashboard.isVisible())
-        self.assertEqual(tray_application.status_action.text(), "Setup required")
+        self.assertEqual(
+            tray_application.status_action.text(),
+            "Reading setup cancelled. Select Read to try again.",
+        )
         tray_application.shutdown()
 
     def test_onboarding_voice_editor_returns_to_unsaved_game_window(self):

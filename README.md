@@ -118,46 +118,39 @@ respectively. Linux X11 capture is best effort.
 
 ### Run from source
 
-From the project directory, install Python dependencies and build the audio worker:
+From the project directory, prepare the complete source application:
 
 ```sh
-uv sync --no-dev
-cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml
+uv run --no-project python scripts/build.py
 ```
 
-Build the capture helper for your platform before starting the app:
+The same command works on Windows, macOS and Linux. It installs the locked Python
+dependencies, builds the Rust audio worker and runs the platform capture builder
+(Swift/C on macOS, Rust on Windows). Linux X11 uses python-xlib and needs no
+separate capture build. Install the system tools listed in Developer setup first;
+the build does not install compilers, Tesseract, eSpeak-NG or model weights.
+Speech-engine environments and models are prepared when selected in the app.
+Then launch:
 
 ```sh
-# macOS 14+ (Xcode command line tools / Swift required)
-scripts/build-macos-capture.sh
+uv run --no-sync vntts-app
 ```
 
-```powershell
-# Windows 10 build 19041+ (Rust MSVC toolchain and Windows SDK required)
-powershell -File scripts/build-windows-capture.ps1
-```
-
-Linux X11 uses python-xlib and needs no separate capture build. Then launch:
-
-```sh
-uv run vntts-app
-```
-
-`uv sync` does not build either native worker. Rebuild the capture helper after
-updating its source or protocol. `VNTTS_CAPTURE_WORKER` can select a separately
-built capture executable on macOS or Windows; packaged builds include it.
+Repeat the source-build command after updating the project. `uv sync` alone does
+not build the native workers. `VNTTS_CAPTURE_WORKER` can select a separately built
+capture executable on macOS or Windows.
 
 Without the Rust audio worker, voice previews and reading
-cannot play audio. Build it on the machine where you run VNTTS, and repeat the
-Cargo command after updating the worker or its protocol. VNTTS starts and stops
+cannot play audio. Build on the machine where you run VNTTS. VNTTS starts and stops
 the worker automatically; you do not need to launch a separate audio process.
 If you use a custom Cargo target directory, set `VNTTS_AUDIO_WORKER` to the built
 `vntts-audio-worker` executable (`vntts-audio-worker.exe` on Windows).
 
 If audio is unavailable, the application reports the installation problem at
-startup and when playback is requested. **Check readiness -> Audio output** shows
-the full error and instructions. Fix the installation and retry playback; for an
-output-device error, check your selected device instead.
+startup and when playback is requested. **Check readiness** checks the capture
+component without taking a screenshot, then the selected capture source, OCR and
+audio output. It reports missing or incompatible native components with the
+source-build command. For an output-device error, check your selected device.
 
 The compact controls and non-modal reading warnings are excluded from screen
 capture by default so VNTTS cannot OCR its own interface. To make those floating
@@ -921,12 +914,12 @@ uv run --no-dev --group notebook jupyter lab
 ### Rust audio output
 
 All application audio output runs in independent Rust processes: prepared clips,
-live TTS, announcements and authoring previews. Build it with Rust/Cargo and the platform
-linker installed:
+live TTS, announcements and authoring previews. The source-build command prepares
+it along with the Python dependencies and capture component:
 
 ```sh
-cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml
-uv run vntts-app
+uv run --no-project python scripts/build.py
+uv run --no-sync vntts-app
 ```
 
 `VNTTS_AUDIO_WORKER` can select an explicitly built worker executable;

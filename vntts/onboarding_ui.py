@@ -1230,6 +1230,10 @@ class DiagnosticsPage(QWizardPage):
             )
             self.remediation_button.hide()
             return
+        if result.remediation == "external-capture-runtime":
+            self.remediation_reason.setText(result.message)
+            self.remediation_button.hide()
+            return
         self.remediation_reason.setText(result.message)
         labels = {
             "settings": "Open setup options",
