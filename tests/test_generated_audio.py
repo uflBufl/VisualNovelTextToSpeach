@@ -1267,13 +1267,14 @@ class GeneratedAudioTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
                 clock=clock,
             )
-            pending = backend.prepare_route("Ada", "Hello.")
+            pending = backend.prepare_route("Ada", "Hello.", first_observed_at=9.5)
             self.assertIsInstance(pending, PendingGeneratedAudioRoute)
-            self.assertAlmostEqual(pending.source_audio_lead_deadline, 11.6)
+            self.assertAlmostEqual(pending.source_audio_lead_deadline, 11.1)
             clock.return_value = 10.25
             self.create_library(root)
 
             resolved = backend.resolved_pending_route(pending)
+            clock.return_value = 10.75
             with patch.object(
                 backend.playback_owner.source_audio_completion_stop,
                 "wait",
@@ -1282,9 +1283,10 @@ class GeneratedAudioTest(unittest.TestCase):
                 outcome = backend.play_route(resolved)
 
         self.assertIsInstance(resolved, GeneratedAudioRoute)
-        self.assertAlmostEqual(resolved.source_audio_lead_seconds, 1.35)
+        self.assertAlmostEqual(resolved.source_audio_lead_seconds, 0.85)
+        self.assertAlmostEqual(resolved.source_audio_lead_deadline, 11.1)
         self.assertIs(outcome.status, PlaybackStatus.INTERRUPTED)
-        self.assertAlmostEqual(wait.call_args.args[0], 1.35)
+        self.assertAlmostEqual(wait.call_args.args[0], 0.35)
 
     def test_pending_partial_source_cue_expired_before_fallback_does_not_wait_again(
         self,
@@ -2225,6 +2227,115 @@ class GeneratedAudioTest(unittest.TestCase):
         outcome = backend.play_route(route)
         self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
         self.assertIsNotNone(outcome.playback_ms)
+
+    def test_original_completion_uses_observation_deadline_after_queue_delay(self):
+        for observed_at, played_at, expected_wait in (
+            (10.0, 11.1, 0.25),
+            (10.0, 13.0, 0.0),
+            (None, 13.0, 1.35),
+            (13.0, 13.5, 0.85),
+        ):
+            with self.subTest(observed_at=observed_at, played_at=played_at):
+                now = [observed_at if observed_at is not None else 11.0]
+                backend = GeneratedAudioFallbackBackend(
+                    self.create_live_backend(),
+                    None,
+                    self.create_resolver(
+                        source_audio_status="available",
+                        source_audio_duration_seconds=1.0,
+                        source_audio_authoritative=True,
+                    ),
+                    audio_source_policy="prefer-game-audio",
+                    audio_output=FakeAudioOutput(),
+                    clock=lambda: now[0],
+                )
+                backend.set_live_mode_active(True)
+                route = backend.prepare_route(
+                    "Ada", "Hello.", first_observed_at=observed_at
+                )
+                self.assertEqual(route.prepared.completion_seconds, 1.35)
+                self.assertEqual(
+                    route.prepared.completion_source,
+                    "first-text-observation+indexed-duration+postroll"
+                    if observed_at is not None
+                    else "story-index+conservative-postroll",
+                )
+                now[0] = played_at
+                with patch.object(
+                    backend.playback_owner.source_audio_completion_stop,
+                    "wait",
+                    return_value=False,
+                ) as wait:
+                    outcome = backend.play_route(route)
+                self.assertAlmostEqual(wait.call_args.args[0], expected_wait)
+                self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
+                self.assertIsNone(outcome.first_audio_at)
+                self.assertEqual(outcome.onset_provenance, "unobserved")
+                self.assertEqual(outcome.end_provenance, "estimated")
+
+    def test_partial_source_deadline_survives_preparation_and_queue_delay(self):
+        for route_type in (GeneratedAudioRoute, LiveFallbackRoute, LiveTTSRoute):
+            with (
+                self.subTest(route=route_type.__name__),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                live = self.create_live_backend()
+                live.name = "pocket-tts"
+                live.model_identity = None
+                live.model_name = "pocket-tts"
+                live.generation_profile = "default"
+                if route_type is GeneratedAudioRoute:
+                    library, _audio = self.create_library(root)
+                elif route_type is LiveFallbackRoute:
+                    library = self.create_live_fallback_library(root)
+                else:
+                    library = None
+                now = [10.5]
+                backend = GeneratedAudioFallbackBackend(
+                    live,
+                    library,
+                    self.create_resolver(
+                        source_audio_status="available",
+                        source_audio_duration_seconds=1.25,
+                        source_audio_completeness="partial",
+                        source_audio_authoritative=True,
+                    ),
+                    audio_source_policy="prefer-game-audio",
+                    audio_output=FakeAudioOutput(),
+                    clock=lambda: now[0],
+                )
+                route = backend.prepare_route("Ada", "Hello.", first_observed_at=10.0)
+                self.assertIsInstance(route, route_type)
+                self.assertAlmostEqual(route.source_audio_lead_deadline, 11.6)
+                for played_at, expected_wait in ((11.0, 0.6), (12.0, None)):
+                    now[0] = played_at
+                    with (
+                        patch.object(
+                            backend.playback_owner.source_audio_completion_stop,
+                            "wait",
+                            return_value=False,
+                        ) as wait,
+                        patch(
+                            "vntts.audio_lifecycle.record_audio_lifecycle"
+                        ) as lifecycle,
+                    ):
+                        outcome = backend.play_route(route)
+                    self.assertTrue(outcome.successful)
+                    if expected_wait is None:
+                        wait.assert_not_called()
+                    else:
+                        self.assertAlmostEqual(wait.call_args.args[0], expected_wait)
+                    if route_type is GeneratedAudioRoute:
+                        source = next(
+                            call
+                            for call in lifecycle.call_args_list
+                            if call.args[0] == "prepared-source"
+                        )
+                        self.assertAlmostEqual(
+                            source.kwargs["source_audio_lead_ms"],
+                            (expected_wait or 0.0) * 1000,
+                        )
 
     def test_partial_source_cue_waits_then_routes_the_full_line_to_tts(self):
         live = self.create_live_backend()

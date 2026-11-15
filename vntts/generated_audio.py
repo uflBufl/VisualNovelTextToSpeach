@@ -111,6 +111,7 @@ class PreparedSourceAudioPassThrough:
     source_audio_id: str | None = None
     completion_seconds: float | None = None
     completion_source: str | None = None
+    completion_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +181,7 @@ class GeneratedAudioRoute:
     first_audio_ms: float | None = None
     cache_source: str | None = "generated-audio"
     source_audio_lead_seconds: float = 0.0
+    source_audio_lead_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +225,7 @@ class LiveFallbackRoute:
     first_audio_ms: float | None
     cache_source: str | None = None
     source_audio_lead_seconds: float = 0.0
+    source_audio_lead_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,7 @@ class LiveTTSRoute:
     first_audio_ms: float | None
     cache_source: str | None = None
     source_audio_lead_seconds: float = 0.0
+    source_audio_lead_deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -924,6 +928,7 @@ class GeneratedAudioFallbackBackend:
         line_id: str | None = None,
         resolve_unidentified: bool = True,
         prepared_audio: GeneratedAudioReference | None = None,
+        first_observed_at: float | None = None,
     ) -> RouteDecision:
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
@@ -975,6 +980,12 @@ class GeneratedAudioFallbackBackend:
             if source_audio_completion is not None
             else None
         )
+        # shortcut: text estimates voice onset; revisit if game runs expose delayed speech.
+        source_audio_deadline = (
+            first_observed_at + source_audio_wait
+            if first_observed_at is not None and source_audio_wait is not None
+            else None
+        )
         source_audio_completeness = (
             line.source_audio_completeness if line is not None else "unknown"
         )
@@ -1009,7 +1020,10 @@ class GeneratedAudioFallbackBackend:
                     line.text_sha256,
                     line.source_audio_id,
                     source_audio_wait,
-                    "story-index+conservative-postroll",
+                    "first-text-observation+indexed-duration+postroll"
+                    if source_audio_deadline is not None
+                    else "story-index+conservative-postroll",
+                    source_audio_deadline,
                 ),
                 trace,
             )
@@ -1070,6 +1084,9 @@ class GeneratedAudioFallbackBackend:
                     source_audio_lead_seconds=(
                         source_audio_wait or 0.0 if source_audio_partial else 0.0
                     ),
+                    source_audio_lead_deadline=(
+                        source_audio_deadline if source_audio_partial else None
+                    ),
                 )
             fallback_reasons.append(artifact_preflight_state)
         if (
@@ -1108,6 +1125,7 @@ class GeneratedAudioFallbackBackend:
                     replace(
                         generated_route,
                         source_audio_lead_seconds=source_audio_wait or 0.0,
+                        source_audio_lead_deadline=source_audio_deadline,
                     )
                     if source_audio_partial
                     else generated_route
@@ -1162,7 +1180,11 @@ class GeneratedAudioFallbackBackend:
                     "generation-in-progress",
                 ),
                 source_audio_lead_deadline=(
-                    self.clock() + (source_audio_wait or 0.0)
+                    (
+                        source_audio_deadline
+                        if source_audio_deadline is not None
+                        else self.clock() + (source_audio_wait or 0.0)
+                    )
                     if source_audio_partial
                     else None
                 ),
@@ -1184,6 +1206,9 @@ class GeneratedAudioFallbackBackend:
                 source_audio_lead_seconds=(
                     source_audio_wait or 0.0 if source_audio_partial else 0.0
                 ),
+                source_audio_lead_deadline=(
+                    source_audio_deadline if source_audio_partial else None
+                ),
             )
         return self._live_tts_route(
             synthesis_character(character),
@@ -1200,6 +1225,9 @@ class GeneratedAudioFallbackBackend:
             source_audio_lead_seconds=(
                 source_audio_wait or 0.0 if source_audio_partial else 0.0
             ),
+            source_audio_lead_deadline=(
+                source_audio_deadline if source_audio_partial else None
+            ),
         )
 
     def _live_tts_route(
@@ -1209,6 +1237,7 @@ class GeneratedAudioFallbackBackend:
         trace: AudioRouteTrace,
         *,
         source_audio_lead_seconds: float = 0.0,
+        source_audio_lead_deadline: float | None = None,
     ) -> LiveTTSRoute:
         prepared = prepare_silent_playback(text)
         if prepared is None:
@@ -1222,6 +1251,7 @@ class GeneratedAudioFallbackBackend:
             prepared.first_audio_ms,
             prepared.cache_source,
             source_audio_lead_seconds,
+            source_audio_lead_deadline,
         )
 
     def _live_fallback_route(
@@ -1231,6 +1261,7 @@ class GeneratedAudioFallbackBackend:
         text: str,
         trace: AudioRouteTrace,
         source_audio_lead_seconds: float = 0.0,
+        source_audio_lead_deadline: float | None = None,
     ) -> LiveFallbackRoute:
         if self.live_backend is None:
             raise LiveSpeechRequired(trace)
@@ -1267,6 +1298,7 @@ class GeneratedAudioFallbackBackend:
             prepared.first_audio_ms,
             prepared.cache_source,
             source_audio_lead_seconds,
+            source_audio_lead_deadline,
         )
 
     def _resolve_line(
@@ -1339,6 +1371,7 @@ class GeneratedAudioFallbackBackend:
                     artifact_preflight_state="generated-audio-entry-ready",
                 ),
                 source_audio_lead_seconds=self._remaining_source_audio_lead(route),
+                source_audio_lead_deadline=route.source_audio_lead_deadline,
             )
         live_fallback = self.library.find_live_fallback(
             route.line_id, route.text_sha256
@@ -1360,18 +1393,30 @@ class GeneratedAudioFallbackBackend:
                     fallback_reason=";".join(dict.fromkeys(filter(None, reasons))),
                 ),
                 source_audio_lead_seconds=self._remaining_source_audio_lead(route),
+                source_audio_lead_deadline=route.source_audio_lead_deadline,
             )
         return self._live_fallback_route(
             live_fallback,
             text=route.text,
             trace=route.trace,
             source_audio_lead_seconds=self._remaining_source_audio_lead(route),
+            source_audio_lead_deadline=route.source_audio_lead_deadline,
         )
 
-    def _remaining_source_audio_lead(self, route: PendingGeneratedAudioRoute) -> float:
-        if route.source_audio_lead_deadline is None:
-            return 0.0
-        return max(0.0, route.source_audio_lead_deadline - self.clock())
+    def _remaining_source_audio_lead(
+        self,
+        route: PendingGeneratedAudioRoute
+        | GeneratedAudioRoute
+        | LiveFallbackRoute
+        | LiveTTSRoute,
+    ) -> float:
+        if route.source_audio_lead_deadline is not None:
+            return max(0.0, route.source_audio_lead_deadline - self.clock())
+        return (
+            0.0
+            if isinstance(route, PendingGeneratedAudioRoute)
+            else route.source_audio_lead_seconds
+        )
 
     def prime(self, character: str) -> object:
         prime = getattr(self.live_backend, "prime", None)
@@ -1557,7 +1602,9 @@ class AudioRoutePlaybackOwner:
                 return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
             try:
                 interrupted = self.source_audio_completion_stop.wait(
-                    prepared.completion_seconds
+                    max(0.0, prepared.completion_deadline - self.router.clock())
+                    if prepared.completion_deadline is not None
+                    else prepared.completion_seconds
                 )
                 status = (
                     PlaybackStatus.INTERRUPTED
@@ -1604,7 +1651,8 @@ class AudioRoutePlaybackOwner:
                 audio_line_id=route.prepared.line_id,
                 source_sha256=route.prepared.audio_sha256,
                 source_sample_rate=route.prepared.sample_rate,
-                source_audio_lead_ms=route.source_audio_lead_seconds * 1000,
+                source_audio_lead_ms=self.router._remaining_source_audio_lead(route)
+                * 1000,
             )
             retain_diagnostic_source(
                 route.prepared.line_id,
@@ -1834,7 +1882,7 @@ class AudioRoutePlaybackOwner:
         route: GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute,
         playback_guard: PlaybackGuard,
     ) -> bool:
-        seconds = route.source_audio_lead_seconds
+        seconds = self.router._remaining_source_audio_lead(route)
         if seconds <= 0:
             return playback_guard is None or bool(playback_guard())
         if not self._activate("game", clear=self.source_audio_completion_stop):

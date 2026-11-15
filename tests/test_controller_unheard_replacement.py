@@ -33,6 +33,32 @@ def prepared():
 
 
 class ControllerUnheardReplacementTest(unittest.TestCase):
+    def test_route_receives_observation_time_except_on_explicit_replay(self):
+        for replay in (False, True):
+            with self.subTest(replay=replay):
+                controller = self.controller()
+                backend = Mock(spec=GeneratedAudioFallbackBackend)
+                backend.live_backend = SimpleNamespace(name="test")
+                backend.prepare_route.return_value = LiveTTSRoute(
+                    prepared(), trace(), None, None
+                )
+                controller.speech_backend = backend
+                controller._materialize_live_route = lambda route, _chunk: route
+                controller._prepare_speaker_announcement = Mock(
+                    return_value=(None, None)
+                )
+                controller._record_pipeline_route = Mock()
+                controller._publish_live_sequence_status = Mock()
+                controller._refresh_diagnostic_metrics = Mock()
+                chunk = SpeechChunk(
+                    1, "Ada", "Hello.", first_observed_at=10.0, explicit_replay=replay
+                )
+                controller._prepare_live_chunk(chunk)
+                self.assertEqual(
+                    backend.prepare_route.call_args.kwargs["first_observed_at"],
+                    None if replay else 10.0,
+                )
+
     def controller(self):
         controller = AppController(AppSettings(audio_source_policy="prefer-generated"))
         controller.error_handler = Mock()

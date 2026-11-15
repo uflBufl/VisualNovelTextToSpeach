@@ -4330,6 +4330,12 @@ class LiveDialogReaderTest(unittest.TestCase):
             def __init__(self):
                 self.observations = 0
 
+            def record_observation(self, _character, _text, _observed_at):
+                pass
+
+            def expect_new_dialog(self):
+                pass
+
             def observe(self, _character, _text):
                 self.observations += 1
                 if self.observations == 1:

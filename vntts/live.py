@@ -1715,6 +1715,16 @@ class LiveDialogReader:
                 self._record_route_observation(
                     frame, recognition_version, recognition_capture_at, route_kind
                 )
+                if awaiting_post_advance_dialog:
+                    self._ocr_callback("tracking-transition", tracker.expect_new_dialog)
+                _, observed_at = _frame_capture_evidence(frame)
+                if observed_at is None:
+                    observed_at = recognition_capture_at
+                if observed_at is None:
+                    observed_at = monotonic()
+                tracker.record_observation(
+                    character or "Narrator", text, observed_at
+                )
                 self._ocr_progress("routing")
                 if (
                     cached_canonical is not None
@@ -1813,6 +1823,9 @@ class LiveDialogReader:
                     tracker = session.coalesce(text, canonical_id)
                     if tracker is not previous_tracker:
                         character = tracker.character or character
+                        tracker.record_observation(
+                            character or "Narrator", text, observed_at
+                        )
                 if not frame_already_routed:
                     self._ocr_callback(
                         "publishing-route",
@@ -1844,7 +1857,6 @@ class LiveDialogReader:
                         character,
                         text,
                         cached_canonical,
-                        awaiting_post_advance_dialog,
                         line_id,
                     )
                 admission.observe(
@@ -1933,7 +1945,6 @@ class LiveDialogReader:
         character: str | None,
         text: str,
         canonical: _CanonicalRecognition | None,
-        awaiting_post_advance_dialog: bool,
         line_id: str | None,
     ) -> list[SpeechChunk] | None:
         if (
@@ -1982,9 +1993,6 @@ class LiveDialogReader:
             else:
                 return None
         elif line_id is None:
-            expect_new_dialog = getattr(tracker, "expect_new_dialog", None)
-            if callable(expect_new_dialog) and awaiting_post_advance_dialog:
-                self._ocr_callback("tracking-transition", expect_new_dialog)
             tracker_character = "Narrator" if character is None else character
             return self._ocr_callback(
                 "tracking-dialogue",

@@ -803,34 +803,17 @@ callers and focused regressions together when changing these contracts.
       speech, stale/blank-frame recovery or restart after Stop/cancel. Distinguish
       this action from unrecognized text and an explicit position-picker choice.
 
-- [ ] **R6 - Investigate: account for elapsed original speech before completion.**
-      Native reference 47 ends 148093.107, route selection 148093.559, completion timer
-      fires 148094.402 and key 148094.765. Identify a trustworthy onset/elapsed basis
-      before replacing the late full-duration+350ms wait in the shared route owner.
-      A new prepared/MOSS Mac run correlates original68's waveform at about.964:
-      its digital clip starts199678.777, route199679.773, timer199679.809,
-      clip ends199680.435, key199682.288. The full-duration timer restarts late.
-      Do not simply subtract time since the first visible glyph: original47's text
-      is visible by199521.9 but its voice starts199522.041, so that timestamp is
-      not a safe upper bound on audio onset. Establish an authoritative per-game
-      onset/completion observation or bounded onset contract first. Carry it frozen
-      with occurrence/run/epoch and capture identity through chunk/route ownership;
-      stale/future/unknown evidence must preserve conservative completion, and
-      explicit replay must not reuse an old live deadline. Inspect both full source
-      pass-through and partial-source lead waits in the shared route owner.
-      Distinguish observed completion, conservative estimated remainder and unknown
-      duration; retain partial-source lead and focus/visual guards. Gate: a known
-      already-ended original does not restart its whole duration, active source
-      speech is never cut off, and unknown timing cannot be declared measured.
-      Source inspection found no existing runtime onset/end authority: cue/render
-      quiet are text evidence; the index binds exact media duration, not playback
-      start. Plan the smallest source-end observer first, using explicit owning-
-      application digital audio plus checksum-bound source PCM. Confirm an actual
-      already-ended occurrence rather than extrapolating a future deadline from
-      onset; reject repeated/ambiguous clips, other-window mix, mute, discontinuity,
-      stale run/epoch/lease and missing exact source references. Observer-only native
-      comparison on47/68 must pass before it may shorten either full/partial/pending
-      source waits. Unknown evidence must retain the conservative existing route.
+- [ ] **R6 - Qualify original-audio waiting from the first OCR fragment in-game.**
+      In the next native chapter run, compare the earliest recognized fragment's
+      capture time, original game audio completion and automatic transition.
+      Confirm the new occurrence-bound deadline reduces late full-duration waits
+      without cutting off originals or dispatching another key. Include typing
+      before canonical identification and queued originals; partial-source lead
+      qualification belongs to the anecdote/character-story acceptance above.
+      Missing timing and explicit replay retain conservative waiting. This is an
+      estimated deadline, not measured voice onset: retained original47 starts
+      at least141ms after visible text. Check the existing350ms margin on actual
+      speech before accepting this native gate.
 - [ ] **R7 - Validate shared Read once lifecycle on Mac.** Natural finish,
       failure, Stop, cancel and recovery must clear Speaking/Stop in Reading,
       compact and tray controls. A displayed Stop and direct controller toggle must

@@ -6,6 +6,60 @@ from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 
 
 class IdentifiedDialogTransitionsTest(unittest.TestCase):
+    def test_identification_keeps_first_fragment_capture_time(self):
+        now = [10.0]
+        tracker = IncrementalDialogTracker(
+            complete_dialogue_only=True, clock=lambda: now[0]
+        )
+        tracker.record_observation("Ada", "The garden", 8.0)
+        tracker.observe("Ada", "The garden")
+        now[0] = 11.0
+        tracker.observe("Ada", "The garden is quiet")
+        now[0] = 12.0
+        chunks = tracker.observe_identified(
+            "Ada", "The garden is quiet today.", "A", exact=True
+        )
+        self.assertEqual(chunks[0].first_observed_at, 8.0)
+        self.assertEqual(chunks[0].line_id, "A")
+
+        now[0] = 15.0
+        tracker.expect_new_dialog()
+        tracker.record_observation("Bea", "Please", 14.0)
+        tracker.observe("Bea", "Please")
+        now[0] = 16.0
+        following = tracker.observe_canonical("Bea", "Please come in.", "B")
+        self.assertEqual(following[0].first_observed_at, 14.0)
+        self.assertEqual(chunks[0].first_observed_at, 8.0)
+
+    def test_pending_typing_keeps_first_observation_when_admitted(self):
+        now = [1.0]
+        tracker = IncrementalDialogTracker(clock=lambda: now[0])
+        tracker.observe_canonical("Ada", "The meeting is over.", "A")
+        tracker.expect_new_dialog()
+        now[0] = 3.0
+        tracker.observe("Bea", "Come")
+        now[0] = 4.0
+        tracker.observe("Bea", "Come inside.")
+        now[0] = 5.0
+        chunks = tracker.observe("Bea", "Come inside.")
+        self.assertEqual(chunks[0].first_observed_at, 3.0)
+        self.assertGreater(chunks[0].generation, 1)
+
+    def test_next_occurrence_does_not_inherit_time_from_its_common_opening(self):
+        now = [1.0]
+        tracker = IncrementalDialogTracker(clock=lambda: now[0])
+        tracker.observe_canonical("Ada", "The train arrives before sunrise.", "A")
+        tracker.expect_new_dialog()
+        now[0] = 8.0
+        tracker.observe("Ada", "The")
+        now[0] = 9.0
+        tracker.observe("Ada", "The children are")
+        now[0] = 10.0
+        chunks = tracker.observe_identified(
+            "Ada", "The children are already waiting.", "B", exact=True
+        )
+        self.assertEqual(chunks[0].first_observed_at, 8.0)
+
     def test_early_identity_survives_noisy_partial_speakers_and_full_confirmation(self):
         text = "These old accounts contradict the promise you just made."
         line = ChapterDialogue("A", "chapter", 1, "Ada", text, None)

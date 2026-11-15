@@ -6,6 +6,36 @@ from vntts.live import RecognizedDialog
 
 
 class IdentifiedReadingTest(unittest.TestCase):
+    def test_routing_held_fragment_keeps_capture_time_through_playback_and_replay(self):
+        complete = "The garden is quiet today."
+        harness = AutoAdvanceFakeFrameHarness(
+            dialog_observed=lambda _speaker, text: text == complete,
+            tracker_options={"complete_dialogue_only": True},
+        )
+        harness.reader.recognize_frame = lambda frame: (
+            RecognizedDialog("Ada", complete, "A", exact_match=True)
+            if frame["text"] == complete
+            else ("Ada", frame["text"])
+        )
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            try:
+                harness.push("Ada", "The garden", background="typing", captured_at=10.0)
+                self.assertFalse(harness.speech_executor.jobs)
+                harness.push("Ada", complete, background="full", captured_at=12.0)
+                harness.finish_playback()
+                chunk = harness.played[0][0]
+                self.assertEqual(chunk.first_observed_at, 10.0)
+                self.assertEqual(chunk.line_id, "A")
+                self.assertTrue(harness.reader.repeat_last())
+                harness.finish_playback()
+                replay = harness.played[1][0]
+                self.assertTrue(replay.explicit_replay)
+                self.assertIsNone(replay.first_observed_at)
+                self.assertEqual(harness.errors, [])
+            finally:
+                harness.stop()
+
     def harness(self, *, exact=True):
         harness = AutoAdvanceFakeFrameHarness(
             tracker_options={"complete_dialogue_only": True}

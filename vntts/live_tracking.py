@@ -51,6 +51,7 @@ class SpeechChunk:
     prepared_audio: "GeneratedAudioReference | None" = field(
         default=None, compare=False, repr=False
     )
+    first_observed_at: float | None = field(default=None, compare=False)
 
     @property
     def chunk_id(self) -> str | None:
@@ -109,6 +110,36 @@ class IncrementalDialogTracker:
         self.early_dialogue_prefix: str | None = None
         self.accepted_line_ids: set[str] = set()
         self.admission_reason = "empty"
+        self.first_observation: tuple[str, str, float] | None = None
+
+    def record_observation(
+        self, character: str, text: str, observed_at: float
+    ) -> None:
+        """Retain text timing even while routing waits for a complete match."""
+        if not text:
+            return
+        previous = self.first_observation
+        if (
+            previous is not None
+            and character == previous[0]
+            and self._texts_are_related(previous[1], text)
+            and (
+                previous[:2] != (self.character, self.latest_text)
+                or not self._is_new_dialog(character, text)
+            )
+        ):
+            observed_at = previous[2]
+        self.first_observation = character, text, observed_at
+
+    def _first_observed_at(self, character: str, text: str) -> float | None:
+        observation = self.first_observation
+        if (
+            observation is not None
+            and character == observation[0]
+            and self._texts_are_related(observation[1], text)
+        ):
+            return observation[2]
+        return None
 
     @property
     def committed_position(self) -> int:
@@ -120,6 +151,7 @@ class IncrementalDialogTracker:
 
     def observe(self, character: str, text: str) -> list[SpeechChunk]:
         now = self.clock()
+        self.record_observation(character, text, now)
         self.admission_reason = "waiting-stability"
 
         if not text:
@@ -246,6 +278,7 @@ class IncrementalDialogTracker:
         if self.silent_event_id == event_id:
             return False
         self._clear_dialog()
+        self.first_observation = None
         self.last_stable_change_at = self.clock()
         self.silent_event_id = event_id
         return True
@@ -253,6 +286,7 @@ class IncrementalDialogTracker:
     def observe_identified(
         self, character: str, text: str, line_id: str, *, exact: bool
     ) -> list[SpeechChunk]:
+        self.record_observation(character, text, self.clock())
         if line_id in self.accepted_line_ids:
             if self.canonical_line_id == line_id:
                 return self.observe_canonical(character, text, line_id)
@@ -319,6 +353,7 @@ class IncrementalDialogTracker:
     def observe_canonical(
         self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
+        self.record_observation(character, text, self.clock())
         self.observation_missing = False
         if self.canonical_line_id == line_id:
             self._clear_pending_dialog()
@@ -343,6 +378,7 @@ class IncrementalDialogTracker:
                 text,
                 ordinal=1,
                 line_id=line_id,
+                first_observed_at=self._first_observed_at(character, text),
             )
         ]
 
@@ -554,6 +590,9 @@ class IncrementalDialogTracker:
                     self.character or "Narrator",
                     sentence,
                     ordinal=self.next_chunk_ordinal,
+                    first_observed_at=self._first_observed_at(
+                        self.character or "Narrator", sentence
+                    ),
                 )
             )
             self.next_chunk_ordinal += 1

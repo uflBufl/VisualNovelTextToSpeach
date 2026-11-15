@@ -4413,6 +4413,9 @@ class AppController:
                         line_id=chunk.line_id,
                         resolve_unidentified=not self.automatic_prepared_reading,
                         prepared_audio=chunk.prepared_audio,
+                        first_observed_at=(
+                            None if chunk.explicit_replay else chunk.first_observed_at
+                        ),
                     )
                     if isinstance(self.speech_backend, GeneratedAudioFallbackBackend)
                     else prepare_route(chunk.character, chunk.text)
@@ -4508,6 +4511,9 @@ class AppController:
         source_audio_lead_seconds = float(
             getattr(audio, "source_audio_lead_seconds", 0.0) or 0.0
         )
+        source_audio_lead_deadline = getattr(audio, "source_audio_lead_deadline", None)
+        if source_audio_lead_deadline is not None:
+            source_audio_lead_seconds = max(0.0, source_audio_lead_deadline - monotonic())
         source_audio_lead_ms = (
             round(source_audio_lead_seconds * 1000)
             if source_audio_lead_seconds > 0
