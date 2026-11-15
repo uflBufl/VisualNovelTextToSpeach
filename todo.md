@@ -2,12 +2,20 @@
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] Capture native evidence of the missed visible Isolde name at
-      Hansel100631:109 `I ...`: the latest video shows the name, but raw OCR
-      returns Narrator. Short-original routing now correctly keeps game audio.
-      Retain the native frame, selected speaker region, glyph-gate result and raw
-      name OCR; offline OCR of rescaled video frames already reads Isolde, so
-      those frames alone do not establish the failing image-processing stage.
+- [ ] Fix the wrong speaker-padding polarity after implementation-plan approval.
+      Original native Hansel captures reproduce empty Isolde OCR with the current
+      black padding; the same processed pixels with white padding read Isolde.
+      `preprocess_dialog_image` already normalizes the background to light, but
+      the padding chooses polarity from counts of exactly black/white pixels,
+      mistaking dark glyphs on a light-gray background for a dark background.
+      Use white padding in the shared Tesseract speaker path and remove that
+      histogram heuristic; no new OCR pass, scale change or matching exception.
+      Add a native-image regression and preserve opposite-polarity names and
+      genuinely empty/scenery name bands. Run the changed-test selector first,
+      then related OCR consumers and saved-corpus comparison. Finish with a short
+      native check that the visible name reaches raw OCR; full chapter repetition
+      is unnecessary for this gate. Short-original routing already keeps game
+      audio even when name OCR fails.
       Preserve Narrator when a name is actually absent; do not substitute hidden
       resource speakers merely to remove ambiguity.
 - [ ] **RUN-15-02: native qualification of empty OCR recovery.**
