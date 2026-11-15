@@ -336,9 +336,29 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the completed-preparation readiness fix below before changing
-product code. Reuse the completed Hansel chapter run; do not repeat the chapter
+Next action: agree the original-speech cue fix below before changing product
+code. Reuse the recorded Hansel chapter; do not repeat the chapter
 for each remaining case. Windows recording acceptance needs its own host.
+
+- [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
+      The user heard game speech overlap our narration after She closes her eyes.
+      The recorded second quote100631:59, `What really scared me...`, has blank
+      primary voice metadata but an installed spoken story cue610018168. Its exact
+      WEM correlates with game PCM and offline ASR matches the displayed quote.
+      Our reused Narrator recording53 overlaps it for about5.284s. Safe automatic
+      key timing and successful source correlation did not detect this duplicate.
+      Root cause: extractor resolves story_audio_cues separately, but source-audio
+      eligibility, duration and generation policy consider only the primary voice.
+      Proposed change, pending agreement: classify actual dialogue-voice cues in
+      extraction, project their availability/media/duration into the shared original
+      speech contract, and apply it consistently to preparation, discovery and Read.
+      Preserve ordinary sound-effect cues; the newspaper/magic cues53/55 must not
+      suppress narration. Refresh the derived catalog/preparation while reusing
+      compatible audio;59 must use the game voice while53 remains unvoiced/eligible.
+      Do not infer an unseen speaker, change fuzzy matching or add a line-specific
+      playback guard. Gate: the real cue59 excludes generation and prepared reuse
+      for that occurrence, respects original completion, and produces no overlap;
+      retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
 - [ ] **GEN-16-01 - Show actual readiness after a live fallback.** The real
       Agon of the Ages preparation left315612:93 for live synthesis after a
