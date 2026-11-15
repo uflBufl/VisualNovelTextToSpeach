@@ -44,12 +44,6 @@
 
 ## Active - Remaining CI qualification
 
-- [ ] Investigate preparation/reading source ownership after closing preparation:
-      `tests.test_preparation_reading_lifecycle` fails source-reuse and playback
-      preference assertions both on baseline4b005cb3 and after the matching fix.
-      Establish whether these expectations match automatic prepared reading,
-      then repair the actual ownership defect or outdated fixtures. Keep current
-      progress callbacks and reading-after-close behavior covered.
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on
       hosted Windows/Linux and packaged GPU runtimes after local gates pass.
       Verify playback buttons distinguish preparation from actual device onset,

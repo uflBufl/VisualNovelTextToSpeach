@@ -208,7 +208,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.assertIn("Preparation is stopped", description())
 
     def test_stop_then_start_reuses_selected_source_after_close(self):
-        tray, controller, panel, _saved = self._tray()
+        tray, controller, panel, saved = self._tray()
         self._read(tray, controller)
         selected = controller.settings
         self._close(tray, panel)
@@ -226,7 +226,8 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         controller.apply_settings.reset_mock()
         candidate, available = tray._reading_source_choice()
         self.assertTrue(available)
-        self.assertEqual(candidate or tray._runtime_settings(), selected)
+        self.assertEqual(candidate, saved)
+        self.assertEqual(tray._runtime_settings(), selected)
         self.assertTrue(tray._runtime_control_state().ready)
         with patch.object(
             tray, "_start_live_with_available_scope", return_value=True
@@ -245,7 +246,8 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         controller.apply_settings.reset_mock()
         candidate, available = tray._reading_source_choice()
         self.assertTrue(available)
-        self.assertEqual(candidate or tray._runtime_settings(), selected)
+        self.assertEqual(candidate, saved)
+        self.assertEqual(tray._runtime_settings(), selected)
         self.assertTrue(tray._runtime_control_state().ready)
         controller.apply_settings.assert_not_called()
         controller.is_live_running = False
@@ -276,7 +278,8 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.assertEqual(panel.observations, [])
         candidate, available = tray._reading_source_choice()
         self.assertTrue(available)
-        self.assertEqual(candidate or tray._runtime_settings(), selected)
+        self.assertEqual(candidate, saved)
+        self.assertEqual(tray._runtime_settings(), selected)
         self.assertTrue(tray._runtime_control_state().ready)
 
     def test_reopening_selected_job_reconnects_callbacks_without_handoff(self):
@@ -306,7 +309,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self._close(tray, panel)
         for update in (
             {"output_volume_percent": 37},
-            {"audio_source_policy": "prefer-generated"},
+            {"audio_source_policy": "live-tts-only"},
         ):
             with self.subTest(update=update):
                 tray.settings = saved.updated(**update)
