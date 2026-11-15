@@ -2,8 +2,7 @@
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] Qualify plain ellipsis and unknown-symbol waiting separately: the latest
-      Hansel rerun exercised `—!` and `...!`, not these remaining cases.
+- [ ] Qualify unknown-symbol waiting separately from recognized punctuation.
       The image-level ellipsis checks in OCR/live capture/replay remain necessary
       for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
       Remove them only when shared recognition qualifies those same cases; the
@@ -79,12 +78,10 @@
       Measure backlog and phrase delay; verify Pause, Clear, explicit replay and
       Stop/Read recovery. Keep this gate until real capture and audible playback
       confirm the deterministic queue and controller checks.
-- [ ] **REC-27-01: qualify concurrent metadata updates in the next native run.**
-      Under Reading and real background generation, verify continuous video and
-      both process-audio recordings while session metadata is atomically replaced.
-      Refresh history during recording: size remains available without false
-      missing-file errors. Retain full capture, bounded-stop and size-limit
-      evidence; do not replace this native gate with unit-test results.
+- [ ] **REC-27-01: qualify history refresh during native recording.** Under
+      Reading and real background generation, refresh history during recording:
+      size must remain available without false missing-file errors. Keep this
+      interaction separate from recording continuity and finalization.
 - [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
       First route for314001:6 used live MOSS/no-match despite later exact canonical
       OCR; audio open then failed with output-stream-construction. No first PCM
@@ -119,10 +116,11 @@
       MOSS/stable/seed0, retries0, отдельная очередь314501: один WAV получил
       speech_silence / sentence_boundary_pause_candidate, пауза3.44..5.04с.
       Проверка качества сработала, это не сбой воспроизведения главы314001.
-      В Stories прослушать последний реально отклонённый WAV, проверить остановку
-      активного чтения перед ним и диагностического звука при закрытии.
-      Проверить отмену автоматического повтора и итоговый экран с live fallback перед
-      активацией. Диагностическое аудио не должно попадать в готовый пакет.
+      В Stories проверить остановку активного чтения перед диагностическим
+      прослушиванием и диагностического звука при закрытии; проверить отмену
+      автоматического повтора. Диагностическое аудио не должно попадать в готовый
+      пакет. Доступный реальный пример:315612:93, Gardener,
+      `Lady Hedone? Lady Hedone?`, internal pause / live fallback.
       Новые действия повтора, смены референса/движка и ручного принятия не добавлять.
 - [ ] **GEN-25-02: проверить лимит реплики314501:85 в общем прогоне.**
       MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
@@ -197,15 +195,6 @@
 - [ ] Verify the affected Windows installation after the user's manual cleanup and regeneration. Activate a prepared story, save ordinary preferences, remove prepared audio and restart: preferences/profiles must remain intact, source stories must remain available, and missing prepared playback must be logged without breaking startup.
 
 ## Active - Finish diagnostic-session native acceptance
-
-- [ ] In the next combined game run, verify recording coverage through the
-      chapter under background generation. If another input-clock gap occurs,
-      check the recorded interval and continued audio afterward; the session
-      must remain explicitly incomplete. The original upstream gap's cause is
-      unknown; do not infer a playback defect or claim lost samples were restored.
-      Use the bounded native recovery evidence in
-      `.codex/investigations/recorder-gap-20261116/`; it exercises an actual
-      process-tap gap and continued PCM, not heavy game/load qualification.
 
 - [ ] **D1 - Finish recorder turnover and bounded-stop qualification.**
       After forced Rust-worker exit, the repaired session retains a partial segment,
@@ -347,10 +336,22 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: qualify automatic prepared Read in the combined native run below,
-including equivalent speech without chapter ownership. Reuse the completed
-ordinary lower-dialogue and terminal-caption checks; do not repeat the chapter
+Next action: agree the completed-preparation readiness fix below before changing
+product code. Reuse the completed Hansel chapter run; do not repeat the chapter
 for each remaining case. Windows recording acceptance needs its own host.
+
+- [ ] **GEN-16-01 - Show actual readiness after a live fallback.** The real
+      Agon of the Ages preparation left315612:93 for live synthesis after a
+      quality rejection, yet its final table says100/100 and All selected lines
+      under Read without waiting. `_render_completed_story_readiness` and
+      `_update_readiness_story_group` force completed selections to fully ready.
+      Proposed change, pending agreement: use actual per-line original/prepared/
+      non-spoken/omitted availability for completed rows and their consecutive prefix;
+      keep live fallback eligible for reading without counting it as audio ready
+      without waiting. Share that calculation between chapter and story rows;
+      preserve the failure explanation and diagnostic preview. Gate: the observed
+      live-fallback selection stops at that line, and a fully prepared selection
+      still reports all lines ready; cover both chapter and grouped story rows.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
@@ -800,17 +801,12 @@ callers and focused regressions together when changing these contracts.
       speech, stale/blank-frame recovery or restart after Stop/cancel. Distinguish
       this action from unrecognized text and an explicit position-picker choice.
 
-- [ ] **R6 - Qualify original-audio waiting from the first OCR fragment in-game.**
-      In the next native chapter run, compare the earliest recognized fragment's
-      capture time, original game audio completion and automatic transition.
-      Confirm the new occurrence-bound deadline reduces late full-duration waits
-      without cutting off originals or dispatching another key. Include typing
-      before canonical identification and queued originals; partial-source lead
-      qualification belongs to the anecdote/character-story acceptance above.
-      Missing timing and explicit replay retain conservative waiting. This is an
-      estimated deadline, not measured voice onset: retained original47 starts
-      at least141ms after visible text. Check the existing350ms margin on actual
-      speech before accepting this native gate.
+- [ ] **R6 - Qualify waiting for a queued original in-game.** Retain the first
+      related OCR fragment's capture timestamp while an earlier accepted line
+      drains; compare the queued original's actual game-audio completion and
+      automatic transition. Explicit replay and missing timestamps must retain
+      conservative waiting. Partial-source lead qualification belongs to the
+      separate anecdote/character-story acceptance above.
 - [ ] **R7 - Validate shared Read once lifecycle on Mac.** Natural finish,
       failure, Stop, cancel and recovery must clear Speaking/Stop in Reading,
       compact and tray controls. A displayed Stop and direct controller toggle must
