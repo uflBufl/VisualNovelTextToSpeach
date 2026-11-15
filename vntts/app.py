@@ -5456,10 +5456,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._reported_diagnostic_failure = session_id
         message = (
-            "Diagnostic media recording is incomplete. Reading logs continue until "
-            "Stop or the session deadline; open Support to inspect the capture failure."
+            "Diagnostic media recording is incomplete. Available media streams and "
+            "Reading logs continue until Stop or the session deadline; open Support "
+            "to inspect missing intervals or capture errors."
             if status.get("status") == "recording"
-            else "Diagnostic media recording is incomplete; open Support to inspect the capture failure."
+            else "Diagnostic media recording is incomplete; open Support to inspect missing intervals or capture errors."
         )
         self.support_log.add(
             "diagnostic-recording",

@@ -26,10 +26,23 @@ _WASAPI_DATA_DISCONTINUITY = 1
 _WASAPI_TIMESTAMP_ERROR = 4
 
 
-class _CaptureAudio(NamedTuple):
-    path: Path
+class _CaptureSpan(NamedTuple):
+    first_frame: int
+    last_frame: int
     offset: float
     residual_ms: float
+    frame_shift: int
+
+
+class _CaptureClock(NamedTuple):
+    rate: float
+    spans: tuple[_CaptureSpan, ...]
+    gaps: tuple[dict, ...]
+
+
+class _CaptureAudio(NamedTuple):
+    path: Path
+    clock: _CaptureClock
     frames: int
     pid: int
 
@@ -104,6 +117,8 @@ def _audio(
     last: int | None = None,
     cancelled: Event | None = None,
     started: float | None = None,
+    frame_bounds: tuple[int, int] | None = None,
+    frame_shift: int = 0,
 ) -> np.ndarray:
     with open_regular_binary(path) as source, sf.SoundFile(source) as audio:
         if (
@@ -113,7 +128,7 @@ def _audio(
         ):
             raise ValueError("Unsupported or oversized diagnostic audio")
         rate, frames = audio.samplerate, audio.frames
-        total = round(frames * RATE / rate)
+        total = round((frames + frame_shift) * RATE / rate)
         last = total if last is None else min(total, last)
         if first < 0 or last < first or last - first > RATE * (30 + MAX_SOURCE_SECONDS):
             raise ValueError("Diagnostic audio window exceeds its memory budget")
@@ -130,13 +145,27 @@ def _audio(
             end = min(begin + RATE, last)
             # An input multiple of down starts on the file's global output phase.
             start = max(0, begin * down // up - context) // down * down
-            stop = min(frames, math.ceil((end - 1) * down / up) + context + 1)
-            audio.seek(start)
-            chunk = audio.read(stop - start, dtype="float32", always_2d=True).mean(
-                axis=1
+            stop = min(
+                frames + frame_shift, math.ceil((end - 1) * down / up) + context + 1
             )
+            read_start = (
+                max(start - frame_shift, frame_bounds[0]) if frame_bounds else start
+            )
+            read_stop = (
+                min(stop - frame_shift, frame_bounds[1]) if frame_bounds else stop
+            )
+            audio.seek(read_start)
+            chunk = audio.read(
+                read_stop - read_start, dtype="float32", always_2d=True
+            ).mean(axis=1)
             if not len(chunk) or not np.isfinite(chunk).all():
                 raise ValueError("Nonfinite or incomplete diagnostic audio")
+            if frame_bounds:
+                # Zero extension keeps the resampling filter inside this acquired span.
+                chunk = np.pad(
+                    chunk,
+                    (read_start + frame_shift - start, stop - read_stop - frame_shift),
+                )
             converted = resample_poly(chunk, up, down)
             offset = begin - start * up // down
             result[begin - first : end - first] = converted[
@@ -152,13 +181,21 @@ def _match_audio(
     template: np.ndarray,
     started: float,
     cancelled: Event | None,
+    frame_bounds: tuple[int, int] | None = None,
+    frame_shift: int = 0,
 ) -> tuple[int, float] | None:
     best = None
     for first in range(left, max(left, right - len(template) + 1), MATCH_STEP):
         _check(started, cancelled)
         last = min(right, first + MATCH_STEP + len(template) - 1)
         window = _audio(
-            path, first=first, last=last, started=started, cancelled=cancelled
+            path,
+            first=first,
+            last=last,
+            started=started,
+            cancelled=cancelled,
+            frame_bounds=frame_bounds,
+            frame_shift=frame_shift,
         )
         match = normalized_match(window, template)
         if match is not None and (best is None or match[1] > best[1]):
@@ -268,14 +305,23 @@ def _capture_clock(
     started: float | None = None,
     cancelled: Event | None = None,
     audio_path: Path | None = None,
-) -> tuple[float, float]:
+) -> _CaptureClock:
     metadata, rate = _capture_metadata(directory)
     windows = (
         metadata.get("mechanism")
         == "WASAPI ActivateAudioInterfaceAsync process loopback"
     )
     frames = 0
+    span_first = 0
+    missing_frames = 0.0
+    spans: list[_CaptureSpan] = []
+    declared_gaps = metadata.get("acquisition_gaps", [])
+    if not isinstance(declared_gaps, list) or len(declared_gaps) > 16:
+        raise ValueError("Invalid capture acquisition gaps")
+    gap_index = 0
+    pending_gap: dict | None = None
     previous_sample: float | None = None
+    previous_count = 0
     previous_host = float("-inf")
     offsets: list[float] = []
     minimum_offset, maximum_offset = float("inf"), float("-inf")
@@ -283,6 +329,20 @@ def _capture_clock(
     for event in _journal(
         directory / "audio.jsonl", started=started, cancelled=cancelled
     ):
+        if event.get("kind") == "gap":
+            if (
+                pending_gap is not None
+                or previous_sample is None
+                or gap_index >= len(declared_gaps)
+                or event != declared_gaps[gap_index]
+                or event.get("reason") != "source_sample_gap"
+                or type(event.get("file_frame_start")) is not int
+                or event["file_frame_start"] != frames
+            ):
+                raise ValueError("Invalid capture gap declaration")
+            pending_gap = event
+            gap_index += 1
+            continue
         if event.get("kind") != "audio":
             continue
         count, start = event.get("frame_count"), event.get("file_frame_start")
@@ -310,10 +370,42 @@ def _capture_clock(
             or start != frames
         ):
             raise ValueError("Invalid capture callback timeline")
-        if previous_sample is not None and (
-            abs(sample - previous_sample) >= 0.5 or host <= previous_host
-        ):
-            raise ValueError("Discontinuous capture callback timeline")
+        if previous_sample is not None:
+            if pending_gap is None:
+                if abs(sample - previous_sample) >= 0.5 or host <= previous_host:
+                    raise ValueError("Discontinuous capture callback timeline")
+            else:
+                missing = _number(pending_gap.get("sample_delta_frames"))
+                gap_start = _number(pending_gap.get("started_monotonic_s"))
+                gap_end = _number(pending_gap.get("ended_monotonic_s"))
+                if (
+                    missing < 0.5
+                    or abs(sample - previous_sample - missing) >= 0.5
+                    or gap_end <= gap_start
+                    or abs(gap_start - previous_host - previous_count / rate) * rate
+                    >= 0.5
+                    or abs(gap_end - host) * rate >= 0.5
+                    or abs((host - previous_host) * rate - previous_count - missing)
+                    >= 0.5
+                ):
+                    raise ValueError(
+                        "Capture gap differs from adjacent callback clocks"
+                    )
+                spans.append(
+                    _CaptureSpan(
+                        span_first,
+                        frames,
+                        float(np.median(offsets)),
+                        (maximum_offset - minimum_offset) * 1000,
+                        round(missing_frames),
+                    )
+                )
+                missing_frames += missing
+                span_first = frames
+                offsets = []
+                minimum_offset, maximum_offset = float("inf"), float("-inf")
+                callback_count = 0
+                pending_gap = None
         offset = host - frames / rate
         minimum_offset = min(minimum_offset, offset)
         maximum_offset = max(maximum_offset, offset)
@@ -322,9 +414,12 @@ def _capture_clock(
             offsets.append(offset)
         callback_count += 1
         frames += count
+        previous_count = count
         previous_sample, previous_host = sample + count, host
     if (
         not offsets
+        or pending_gap is not None
+        or gap_index != len(declared_gaps)
         or metadata.get("frames") != frames
         or type(metadata.get("peak")) not in (int, float)
         or not 0 < metadata["peak"] < float("inf")
@@ -347,7 +442,16 @@ def _capture_clock(
             or audio.channels != metadata.get("channels")
         ):
             raise ValueError("Recorded PCM differs from the callback timeline")
-    return float(np.median(offsets)), float((maximum_offset - minimum_offset) * 1000)
+    spans.append(
+        _CaptureSpan(
+            span_first,
+            frames,
+            float(np.median(offsets)),
+            (maximum_offset - minimum_offset) * 1000,
+            round(missing_frames),
+        )
+    )
+    return _CaptureClock(rate, tuple(spans), tuple(declared_gaps))
 
 
 def _source_path(
@@ -527,11 +631,11 @@ def _recording_evidence(directory: Path) -> tuple[dict, list, dict[str, dict]]:
     if not isinstance(recording, dict):
         raise ValueError("Invalid recording evidence")
     gaps = recording.get("acquisition_gaps", [])
-    if not isinstance(gaps, list) or len(gaps) > 16:
-        raise ValueError("Acquisition gap count exceeds analysis budget")
     recorded_captures = recording.get("captures", [])
     if not isinstance(recorded_captures, list) or len(recorded_captures) > 10:
         raise ValueError("Capture count exceeds analysis budget")
+    if not isinstance(gaps, list) or len(gaps) > 16 * (len(recorded_captures) + 1):
+        raise ValueError("Acquisition gap count exceeds analysis budget")
     capture_records = {
         value["directory"]: value
         for value in recorded_captures
@@ -556,7 +660,7 @@ def _capture_audio_evidence(
     audio_path = diagnostic_audio_path(
         capture / "process.caf", cancelled=cancelled, deadline=started + 120
     )
-    offset, residual = _capture_clock(
+    clock = _capture_clock(
         capture, started=started, cancelled=cancelled, audio_path=audio_path
     )
     with (
@@ -567,7 +671,7 @@ def _capture_audio_evidence(
             raise ValueError("Unsupported or oversized diagnostic audio")
         audio_frames = round(captured_audio.frames * RATE / captured_audio.samplerate)
     capture_pid = int(capture.name.split("-")[1])
-    return _CaptureAudio(audio_path, offset, residual, audio_frames, capture_pid)
+    return _CaptureAudio(audio_path, clock, audio_frames, capture_pid)
 
 
 def _route_capture_evidence(
@@ -616,6 +720,7 @@ def _correlate_route_capture(
     directory: Path,
     capture: Path,
     audio: _CaptureAudio,
+    span: _CaptureSpan,
     evidence: _RouteCapture,
     route: dict,
     end: float,
@@ -626,28 +731,44 @@ def _correlate_route_capture(
     started: float,
     cancelled: Event | None,
 ) -> dict[str, object] | None:
-    audio_path, offset, residual, audio_frames, _capture_pid = audio
+    audio_path = audio.path
+    # Keep the original resampling phase after missing input frames.
+    offset = span.offset - span.frame_shift / audio.clock.rate
+    residual = span.residual_ms
     entry, dispatch, source_lead, identity_verified = evidence
+    left = max(
+        math.ceil((span.first_frame + span.frame_shift) * RATE / audio.clock.rate),
+        math.ceil((dispatch - offset) * RATE),
+    )
+    right = min(
+        math.floor((span.last_frame + span.frame_shift) * RATE / audio.clock.rate),
+        math.floor((end - offset) * RATE),
+    )
+    if right <= left:
+        return None
     source = _audio(
         _source_path(directory, entry, started=started, cancelled=cancelled),
         seconds=MAX_SOURCE_SECONDS,
         cancelled=cancelled,
         started=started,
     )
-    left = max(0, math.ceil((dispatch - offset) * RATE))
-    right = min(
-        audio_frames,
-        math.floor((end - offset) * RATE),
-    )
-    if right <= left:
-        return None
+    bounds = (span.first_frame, span.last_frame) if len(audio.clock.spans) > 1 else None
     full_source = lifetime_complete and right - left >= len(source)
     template_source = (
         source
         if full_source
         else source[: min(len(source), RATE // 2, max(0, (right - left) // 2))]
     )
-    match = _match_audio(audio_path, left, right, template_source, started, cancelled)
+    match = _match_audio(
+        audio_path,
+        left,
+        right,
+        template_source,
+        started,
+        cancelled,
+        frame_bounds=bounds,
+        frame_shift=span.frame_shift,
+    )
     if match is None or (not full_source and match[1] < 0.9):
         return None
     position, score = match
@@ -681,6 +802,8 @@ def _correlate_route_capture(
                 last=hi,
                 started=started,
                 cancelled=cancelled,
+                frame_bounds=bounds,
+                frame_shift=span.frame_shift,
             ),
             template,
         )
@@ -849,14 +972,32 @@ def analyze_session(
             audio = _capture_audio_evidence(
                 directory, capture, record, started, cancelled
             )
-            _audio_path, offset, residual, audio_frames, _capture_pid = audio
+            clock = audio.clock
+            for gap in clock.gaps:
+                if not any(
+                    entry.get("capture") == capture.name
+                    and entry.get("file_frame_start") == gap["file_frame_start"]
+                    for entry in gaps
+                ):
+                    gaps.append({"capture": capture.name, **gap})
             captures.append(
                 {
                     "capture": capture.name,
                     "status": "captured-unqualified",
-                    "clock_residual_ms": residual,
-                    "monotonic_start": offset,
-                    "duration_seconds": audio_frames / RATE,
+                    "clock_residual_ms": max(span.residual_ms for span in clock.spans),
+                    "monotonic_start": clock.spans[0].offset,
+                    "duration_seconds": audio.frames / RATE,
+                    "continuous_spans": [
+                        {
+                            "file_frame_start": span.first_frame,
+                            "frame_count": span.last_frame - span.first_frame,
+                            "monotonic_start": span.offset
+                            + span.first_frame / clock.rate,
+                            "monotonic_end": span.offset + span.last_frame / clock.rate,
+                            "clock_residual_ms": span.residual_ms,
+                        }
+                        for span in clock.spans
+                    ],
                 }
             )
             for index, route in enumerate(routes):
@@ -884,19 +1025,32 @@ def analyze_session(
                 unmatched_reasons[index] = lifetime_reason
                 if end is None:
                     continue
-                result = _correlate_route_capture(
-                    directory,
-                    capture,
-                    audio,
-                    evidence,
-                    route,
-                    end,
-                    lifetime_complete,
-                    lifetime_reason,
-                    dispatch_times.get(key, []),
-                    admission_times.get((key, entry["audio_sha256"]), []),
-                    started,
-                    cancelled,
+                candidates = []
+                for span in clock.spans:
+                    candidate = _correlate_route_capture(
+                        directory,
+                        capture,
+                        audio,
+                        span,
+                        evidence,
+                        route,
+                        end,
+                        lifetime_complete,
+                        lifetime_reason,
+                        dispatch_times.get(key, []),
+                        admission_times.get((key, entry["audio_sha256"]), []),
+                        started,
+                        cancelled,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
+                result = max(
+                    candidates,
+                    key=lambda candidate: (
+                        candidate["status"] == "correlated",
+                        candidate["correlation"],
+                    ),
+                    default=None,
                 )
                 if result is not None:
                     if result["status"] == "correlated":

@@ -198,17 +198,14 @@
 
 ## Active - Finish diagnostic-session native acceptance
 
-- [ ] Diagnose simultaneous process-tap sample-time discontinuities under live
-      chapter generation. Both game and Rust taps stopped around 114 seconds while
-      Reading continued, each reporting `Sample-time discontinuity`. Preserve the
-      previous expected and current sample/host timestamps and device-change
-      evidence at the failure. Do not infer playback underrun from recorder failure;
-      qualify recovery/coverage in a fresh uninterrupted native run.
-      In diagnostic `4cda5996f1fb4238be9ff45ab0375852`, the game-audio tap alone
-      failed with a sample-time discontinuity while video/own-playback capture
-      continued. Preserve that distinction and the expected/current sample times
-      in `.codex/investigations/story-region-20261110/live-issues.md`; do not
-      infer a playback glitch from a recording discontinuity.
+- [ ] In the next combined game run, verify recording coverage through the
+      chapter under background generation. If another input-clock gap occurs,
+      check the recorded interval and continued audio afterward; the session
+      must remain explicitly incomplete. The original upstream gap's cause is
+      unknown; do not infer a playback defect or claim lost samples were restored.
+      Use the bounded native recovery evidence in
+      `.codex/investigations/recorder-gap-20261116/`; it exercises an actual
+      process-tap gap and continued PCM, not heavy game/load qualification.
 
 - [ ] **D1 - Finish recorder turnover and bounded-stop qualification.**
       After forced Rust-worker exit, the repaired session retains a partial segment,

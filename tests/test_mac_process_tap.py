@@ -61,6 +61,7 @@ class ProcessTapRecorderTest(unittest.TestCase):
         self.assertIn("controlled Stop metadata", result.stdout)
         self.assertIn("bounded capture diagnostics", result.stdout)
         self.assertIn("clock failure boundary", result.stdout)
+        self.assertIn("forward source-gap continuation", result.stdout)
         self.assertIn("phase timing context", result.stdout)
         self.assertIn("zero/partial CAF finalization", result.stdout)
         self.assertIn("five-second duration buffer", result.stdout)

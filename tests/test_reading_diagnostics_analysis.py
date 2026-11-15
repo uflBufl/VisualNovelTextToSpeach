@@ -186,6 +186,107 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         )
         return capture, digest
 
+    def declare_capture_gap(self, capture, at_seconds, missing_frames=2132):
+        path = capture / "process.caf"
+        samples, rate = sf.read(path, dtype="float32", always_2d=True)
+        cut = round(at_seconds * rate)
+        samples = np.concatenate((samples[:cut], samples[cut + missing_frames :]))
+        sf.write(path, samples, rate, subtype="FLOAT")
+        rows = []
+        step = rate // 100
+        for frame in range(0, len(samples), step):
+            source_frame = frame + (missing_frames if frame >= cut else 0)
+            rows.append(
+                dict(
+                    kind="audio",
+                    file_frame_start=frame,
+                    frame_count=min(step, len(samples) - frame),
+                    sample_time=1000 + source_frame,
+                    monotonic_s=10 + source_frame / rate,
+                )
+            )
+        index = next(i for i, row in enumerate(rows) if row["file_frame_start"] == cut)
+        gap = dict(
+            kind="gap",
+            reason="source_sample_gap",
+            file_frame_start=cut,
+            sample_delta_frames=missing_frames,
+            started_monotonic_s=10 + cut / rate,
+            ended_monotonic_s=10 + (cut + missing_frames) / rate,
+        )
+        rows.insert(index, gap)
+        self.journal(capture / "audio.jsonl", rows)
+        metadata = json.loads((capture / "session.json").read_text())
+        metadata.update(frames=len(samples), acquisition_gaps=[gap])
+        self.write_json(capture / "session.json", metadata)
+        return gap, rows
+
+    def test_declared_gap_preserves_qualified_clips_on_either_side(self):
+        root = self.root
+        for cut in (0.1, 1.2):
+            with self.subTest(cut=cut):
+                self.root = root / str(cut)
+                self.root.mkdir()
+                capture, _ = self.fixture(capture_rate=44100)
+                gap, _ = self.declare_capture_gap(capture, cut)
+                clock = _capture_clock(capture)
+                self.assertEqual(len(clock.spans), 2)
+                self.assertAlmostEqual(clock.spans[0].offset, 10)
+                self.assertAlmostEqual(clock.spans[1].offset, 10 + 2132 / 44100)
+                report = analyze_session(self.root)
+                self.assertEqual(report["qualification"], "unqualified")
+                self.assertEqual(report["coverage"]["correlated_routes"], 1)
+                self.assertAlmostEqual(
+                    report["clips"][0]["candidate_onset_monotonic"], 10.25, places=3
+                )
+                self.assertEqual(
+                    report["acquisition_gaps"][0]["file_frame_start"],
+                    gap["file_frame_start"],
+                )
+
+    def test_clip_crossing_a_declared_gap_cannot_qualify(self):
+        capture, _ = self.fixture(capture_rate=44100)
+        self.declare_capture_gap(capture, 0.5)
+        report = analyze_session(self.root)
+        self.assertEqual(report["qualification"], "unqualified")
+        self.assertEqual(report["coverage"]["correlated_routes"], 0)
+        self.assertTrue(report["unmatched_routes"])
+        self.assertNotEqual(report["captures"][0]["status"], "unavailable")
+
+    def test_gap_requires_matching_metadata_and_adjacent_clocks(self):
+        capture, _ = self.fixture(capture_rate=44100)
+        gap, rows = self.declare_capture_gap(capture, 0.1)
+        metadata = json.loads((capture / "session.json").read_text())
+        for change in (
+            {"sample_delta_frames": 1},
+            {"ended_monotonic_s": 11},
+            {"started_monotonic_s": 10},
+        ):
+            with self.subTest(change=change):
+                changed = dict(gap, **change)
+                self.write_json(
+                    capture / "session.json", dict(metadata, acquisition_gaps=[changed])
+                )
+                self.journal(
+                    capture / "audio.jsonl",
+                    [changed if row is gap else row for row in rows],
+                )
+                with self.assertRaisesRegex(ValueError, "adjacent callback clocks"):
+                    _capture_clock(capture)
+        self.journal(capture / "audio.jsonl", rows)
+        self.write_json(capture / "session.json", dict(metadata, acquisition_gaps=[]))
+        with self.assertRaisesRegex(ValueError, "gap declaration"):
+            _capture_clock(capture)
+
+    def test_span_resampling_does_not_include_pcm_across_the_gap(self):
+        samples = np.zeros(882, dtype=np.float32)
+        samples[441] = 1
+        path = self.root / "boundary.wav"
+        sf.write(path, samples, 44100, subtype="FLOAT")
+        isolated = _audio(path, first=0, last=160, frame_bounds=(0, 441))
+        np.testing.assert_array_equal(isolated, np.zeros(160))
+        self.assertGreater(np.max(np.abs(_audio(path, first=0, last=160))), 0)
+
     def test_windows_capture_clock_accepts_explicit_process_tree_evidence(self):
         capture, _ = self.fixture(windows=True)
         metadata_path = capture / "session.json"
@@ -194,9 +295,10 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         packets = [json.loads(line) for line in journal.read_text().splitlines()]
         packets[0]["flags"] = 1
         self.journal(journal, packets)
-        offset, drift = _capture_clock(capture)
-        self.assertAlmostEqual(offset, 10)
-        self.assertAlmostEqual(drift, 0)
+        clock = _capture_clock(capture)
+        self.assertEqual(len(clock.spans), 1)
+        self.assertAlmostEqual(clock.spans[0].offset, 10)
+        self.assertAlmostEqual(clock.spans[0].residual_ms, 0)
 
         for changes in (
             {"scope": "system_loopback"},
@@ -882,9 +984,9 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                     for row in original
                 ]
                 self.journal(path, rows)
-                offset, residual = _capture_clock(capture)
-                self.assertAlmostEqual(offset, 10)
-                self.assertAlmostEqual(residual, 0)
+                clock = _capture_clock(capture)
+                self.assertAlmostEqual(clock.spans[0].offset, 10)
+                self.assertAlmostEqual(clock.spans[0].residual_ms, 0)
                 for delta in (-1, 1):
                     with self.subTest(delta=delta):
                         changed = [dict(row) for row in rows]
@@ -1073,9 +1175,9 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
         with (capture / "audio.jsonl").open("wb") as journal:
             journal.write(b'{"kind":"status"}\n' * 100001)
             journal.write(rows)
-        offset, residual = _capture_clock(capture)
-        self.assertAlmostEqual(offset, 10)
-        self.assertLess(residual, 0.001)
+        clock = _capture_clock(capture)
+        self.assertAlmostEqual(clock.spans[0].offset, 10)
+        self.assertLess(clock.spans[0].residual_ms, 0.001)
         with (capture / "audio.jsonl").open("a") as journal:
             journal.write(
                 json.dumps(

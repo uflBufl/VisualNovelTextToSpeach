@@ -301,6 +301,7 @@ class NativeDiagnosticRecording:
         self._failed_stop_started: dict[str, float] = {}
         self._identities: dict[str, dict[str, object]] = {}
         self._failures: dict[str, dict[str, object]] = {}
+        self._native_gaps: dict[str, list[dict[str, object]]] = {}
         self._worker_lifetimes: list[dict[str, object]] = []
         self._arming = Condition()
         self._worker_arms: dict[tuple[object, ...], str] = {}
@@ -390,7 +391,9 @@ class NativeDiagnosticRecording:
                 return
             deadline = self._start_target_captures(video, audio, deadline)
             self._record_workers(audio, deadline)
-            self.status = "degraded" if self.error_type else "stopping"
+            self.status = (
+                "degraded" if self.error_type or self._native_gaps else "stopping"
+            )
             requested = self.cancelled.requested_monotonic
             self.stop_reason = (
                 "requested_stop"
@@ -411,7 +414,13 @@ class NativeDiagnosticRecording:
                     self._verify_final_captures(deadline)
             except Exception as error:
                 self.error_type, self.error_message = type(error).__name__, str(error)
-            self.status = "failed" if self.error_type or self._arm_gaps else "stopped"
+            self.status = (
+                "failed"
+                if self.error_type or self._arm_gaps
+                else "degraded"
+                if self._native_gaps
+                else "stopped"
+            )
             self._finished.set()
             with self._arming:
                 self._arming.notify_all()
@@ -487,7 +496,7 @@ class NativeDiagnosticRecording:
             ready = self._check_capture_readiness()
             if ready and self.ready_monotonic is None:
                 self.ready_monotonic = monotonic()
-                self.status = "recording"
+                self.status = "degraded" if self._native_gaps else "recording"
             if monotonic() - last_budget_check >= 1:
                 self._check_media_budget()
                 last_budget_check = monotonic()
@@ -627,6 +636,7 @@ class NativeDiagnosticRecording:
             metadata = _session(output)
         except FileNotFoundError:
             metadata = {}
+        self._observe_capture_gaps(output, metadata)
         expected = "succeeded" if output.name == "window" else "captured_unqualified"
         if (
             metadata.get("status") in {"failed", "incomplete"}
@@ -643,6 +653,36 @@ class NativeDiagnosticRecording:
         if not observed and monotonic() - self._launched_at[output.name] > 10:
             raise RuntimeError(f"Recorder readiness unverified for {output.name}")
         return observed
+
+    def _observe_capture_gaps(self, output: Path, metadata: dict) -> None:
+        gaps = metadata.get("acquisition_gaps", [])
+        if not isinstance(gaps, list) or len(gaps) > 16:
+            raise ValueError("Invalid native acquisition gaps")
+        for gap in gaps:
+            if (
+                output.name == "window"
+                or not isinstance(gap, dict)
+                or gap.get("kind") != "gap"
+                or gap.get("reason") != "source_sample_gap"
+                or type(gap.get("file_frame_start")) is not int
+                or gap["file_frame_start"] < 0
+                or any(
+                    type(gap.get(name)) not in (int, float)
+                    or not math.isfinite(gap[name])
+                    for name in (
+                        "sample_delta_frames",
+                        "started_monotonic_s",
+                        "ended_monotonic_s",
+                    )
+                )
+                or gap["sample_delta_frames"] <= 0
+                or gap["started_monotonic_s"] < 0
+                or gap["ended_monotonic_s"] <= gap["started_monotonic_s"]
+            ):
+                raise ValueError("Invalid native acquisition gap")
+        if gaps:
+            self._native_gaps[output.name] = gaps
+            self.status = "degraded"
 
     def _update_capture_arming(
         self,
@@ -685,6 +725,7 @@ class NativeDiagnosticRecording:
                 continue
             try:
                 metadata = _session(output)
+                self._observe_capture_gaps(output, metadata)
                 expected = (
                     "succeeded" if output.name == "window" else "captured_unqualified"
                 )
@@ -877,10 +918,13 @@ class NativeDiagnosticRecording:
             "qualification": "failed"
             if self.error_type or arm_gaps
             else "partial"
-            if self.cancelled.requested_monotonic is not None
-            and (
-                self.deadline is None
-                or self.cancelled.requested_monotonic < self.deadline
+            if self._native_gaps
+            or (
+                self.cancelled.requested_monotonic is not None
+                and (
+                    self.deadline is None
+                    or self.cancelled.requested_monotonic < self.deadline
+                )
             )
             else "pending"
             if not captures or self.status in {"preparing", "starting"}
@@ -888,7 +932,15 @@ class NativeDiagnosticRecording:
             if self.status in {"recording", "stopping"}
             else "captured-unqualified",
             "captures": captures,
-            "acquisition_gaps": [*self._failures.values(), *arm_gaps],
+            "acquisition_gaps": [
+                *self._failures.values(),
+                *arm_gaps,
+                *(
+                    {**gap, "capture": name, **self._identities.get(name, {})}
+                    for name, gaps in list(self._native_gaps.items())
+                    for gap in gaps
+                ),
+            ],
             "worker_lifetimes": list(self._worker_lifetimes),
             "limitation": "Digital process output, not physical speakers; source correlation and video verification required",
         }

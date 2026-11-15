@@ -20,6 +20,7 @@
 #define BUFFER_SECONDS 5u
 #define MAX_FRAMES 8192u
 #define CHANNELS 2u
+#define MAX_SOURCE_GAPS 16u
 
 typedef enum { PhaseIdle, PhaseConsume, PhaseCAFWrite, PhaseJSONSerialize, PhaseJSONWrite,
     PhaseIdentity, PhaseStop, PhaseCAFFinalize, PhaseWait, PhaseCount } ConsumerPhase;
@@ -37,6 +38,7 @@ typedef struct {
     uint64_t observed;
     ClockBlock previous, current;
 } ClockFailure;
+typedef struct { ClockBlock previous, current; } SourceGap;
 typedef struct {
     UInt32 frames;
     uint64_t received, frameStart, ioCycle, completed;
@@ -55,6 +57,9 @@ typedef struct {
     ClockBlock previousClock;
     bool previousClockPresent;
     ClockFailure clockFailure;
+    double sampleRate;
+    unsigned gapCount;
+    SourceGap gaps[MAX_SOURCE_GAPS];
     bool planar;
     unsigned capacity;
     uint64_t nextFrame;
@@ -239,10 +244,19 @@ static double seconds(uint64_t ticks);
 static void require_clock_continuity(Queue *q, Block *b, uint64_t fileFrame, uint64_t observed) {
     if (!q->previousClockPresent) return;
     double expected = q->previousClock.timestamp.mSampleTime + q->previousClock.frames;
-    // Keep the existing half-frame tolerance and source-host comparison unchanged.
     double previousHost = seconds(q->previousClock.timestamp.mHostTime);
+    double currentHost = seconds(b->timestamp.mHostTime);
     bool sampleFailure = !(fabs(b->timestamp.mSampleTime - expected) < 0.5);
-    bool hostFailure = !(seconds(b->timestamp.mHostTime) > previousHost);
+    bool hostFailure = !(currentHost > previousHost);
+    double delta = b->timestamp.mSampleTime - expected;
+    if (sampleFailure && delta > 0 && !hostFailure && q->sampleRate > 0 &&
+        currentHost > previousHost + q->previousClock.frames / q->sampleRate &&
+        fabs((currentHost - previousHost) * q->sampleRate -
+            (b->timestamp.mSampleTime - q->previousClock.timestamp.mSampleTime)) < 0.5) {
+        require(q->gapCount < MAX_SOURCE_GAPS, @"Source gap evidence limit exceeded");
+        q->gaps[q->gapCount++] = (SourceGap){q->previousClock, clock_block(b, fileFrame)};
+        return;
+    }
     if ((sampleFailure || hostFailure) && !q->clockFailure.present) {
         q->clockFailure = (ClockFailure){true, sampleFailure, hostFailure, observed,
             q->previousClock, clock_block(b, fileFrame)};
@@ -326,13 +340,16 @@ static void event(Queue *q, FILE *file, NSDictionary *value) {
             @"Cannot write audio timeline");
     } @finally { phase_end(q, PhaseJSONWrite, begin, mach_absolute_time()); }
 }
+static NSDictionary *source_gap_summary(Queue *q, unsigned index);
 static void consume_block(Queue *q, ExtAudioFileRef audio, FILE *timeline, unsigned r,
     uint64_t *frames, double *peak, float *pcm) {
     Block *b = &q->blocks[r % q->capacity];
     uint64_t begin = mach_absolute_time();
     observe_lag(q, b, r, atomic_load_explicit(&q->produced, memory_order_acquire), begin);
     phase_begin(q, PhaseConsume, begin);
+    unsigned gapsBefore = q->gapCount;
     require_clock_continuity(q, b, *frames, begin);
+    if (q->gapCount != gapsBefore) event(q, timeline, source_gap_summary(q, gapsBefore));
     copy_pcm(q, b, pcm);
     double blockPeak = 0;
     for (unsigned i = 0; i < b->frames * CHANNELS; ++i) {
@@ -395,6 +412,21 @@ static id clock_failure_summary(ClockFailure failure) {
         @"sample_delta_frames": finite_number(failure.current.timestamp.mSampleTime - expected),
         @"host_delta_s": @(seconds(failure.current.timestamp.mHostTime) - seconds(failure.previous.timestamp.mHostTime)),
         @"previous": clock_block_summary(failure.previous), @"current": clock_block_summary(failure.current)};
+}
+static NSDictionary *source_gap_summary(Queue *q, unsigned index) {
+    SourceGap gap = q->gaps[index];
+    double expected = gap.previous.timestamp.mSampleTime + gap.previous.frames;
+    return @{ @"kind": @"gap", @"reason": @"source_sample_gap",
+        @"file_frame_start": @(gap.current.fileFrame),
+        @"sample_delta_frames": @(gap.current.timestamp.mSampleTime - expected),
+        @"started_monotonic_s": @(seconds(gap.previous.timestamp.mHostTime) + gap.previous.frames / q->sampleRate),
+        @"ended_monotonic_s": @(seconds(gap.current.timestamp.mHostTime)),
+        @"previous": clock_block_summary(gap.previous), @"current": clock_block_summary(gap.current)};
+}
+static NSArray *source_gaps(Queue *q) {
+    NSMutableArray *gaps = [NSMutableArray array];
+    if (q) for (unsigned i = 0; i < q->gapCount; ++i) [gaps addObject:source_gap_summary(q, i)];
+    return gaps;
 }
 static NSDictionary *diagnostics(Queue *q) {
     if (!q) return @{};
@@ -620,6 +652,105 @@ static void selfcheck_caf(Queue *q) {
     }
 }
 
+static void selfcheck_source_gap(void) {
+    NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    require([NSFileManager.defaultManager createDirectoryAtPath:root withIntermediateDirectories:NO attributes:nil error:nil], @"Cannot create gap selfcheck directory");
+    Queue *q = resident_alloc(sizeof(*q));
+    ExtAudioFileRef audio = NULL;
+    FILE *journal = NULL;
+    @try {
+        require(prepare_queue(q, 2048), @"Cannot allocate gap selfcheck queue");
+        q->sampleRate = 44100;
+        AudioStreamBasicDescription format = {.mSampleRate = 44100, .mFormatID = kAudioFormatLinearPCM,
+            .mFormatFlags = kAudioFormatFlagsNativeFloatPacked, .mBytesPerPacket = CHANNELS * sizeof(float),
+            .mFramesPerPacket = 1, .mBytesPerFrame = CHANNELS * sizeof(float), .mChannelsPerFrame = CHANNELS, .mBitsPerChannel = 32};
+        NSURL *url = [NSURL fileURLWithPath:[root stringByAppendingPathComponent:@"process.caf"]];
+        check(ExtAudioFileCreateWithURL((__bridge CFURLRef)url, kAudioFileCAFType, &format, NULL, 0, &audio), @"Create gap selfcheck CAF");
+        check(ExtAudioFileSetProperty(audio, kExtAudioFileProperty_ClientDataFormat, sizeof(format), &format), @"Set gap selfcheck CAF format");
+        NSString *timelinePath = [root stringByAppendingPathComponent:@"audio.jsonl"];
+        journal = fopen(timelinePath.fileSystemRepresentation, "wx");
+        require(journal != NULL, @"Cannot create gap selfcheck journal");
+        mach_timebase_info_data_t base; mach_timebase_info(&base);
+        double samples[] = {23528019, 23530663, 23531175};
+        double hosts[] = {894455.9874658334, 894456.0474204584, 894456.0474204584 + 512.0 / 44100};
+        float values[] = {0.25f, -0.5f, 0.75f};
+        float pcm[512 * CHANNELS], pending[MAX_FRAMES * CHANNELS];
+        uint64_t written = 0; double peak = 0;
+        for (unsigned i = 0; i < 3; ++i) {
+            for (unsigned j = 0; j < 512 * CHANNELS; ++j) pcm[j] = values[i];
+            AudioTimeStamp stamp = {.mSampleTime = samples[i],
+                .mHostTime = (uint64_t)llround(hosts[i] * 1e9 * base.denom / base.numer),
+                .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
+            AudioBufferList list = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, sizeof(pcm), pcm}}};
+            receive(0, NULL, &list, &stamp, NULL, NULL, q);
+            consume_block(q, audio, journal, i, &written, &peak, pending);
+        }
+        require(!atomic_load(&q->failure) && !q->clockFailure.present && q->gapCount == 1 &&
+            written == 1536 && atomic_load(&q->consumed) == 3, @"Source gap must preserve the current and following PCM blocks");
+        require(fclose(journal) == 0, @"Close gap selfcheck journal"); journal = NULL;
+        NSMutableArray *entries = [NSMutableArray array];
+        NSString *text = [NSString stringWithContentsOfFile:timelinePath encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) if (line.length) {
+            NSDictionary *entry = [NSJSONSerialization JSONObjectWithData:[line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            require(entry != nil, @"Gap journal must contain valid JSON"); [entries addObject:entry];
+        }
+        require(entries.count == 4 && [entries[0][@"kind"] isEqual:@"audio"] && [entries[1][@"kind"] isEqual:@"gap"] &&
+            [entries[2][@"file_frame_start"] unsignedIntValue] == 512 && [entries[3][@"file_frame_start"] unsignedIntValue] == 1024,
+            @"Source gap must not insert silence or alter physical CAF offsets");
+        NSDictionary *gap = entries[1];
+        require([gap[@"reason"] isEqual:@"source_sample_gap"] && [gap[@"file_frame_start"] unsignedIntValue] == 512 &&
+            [gap[@"sample_delta_frames"] doubleValue] == 2132 &&
+            fabs(([gap[@"ended_monotonic_s"] doubleValue] - [gap[@"started_monotonic_s"] doubleValue]) * 44100 - 2132) < 0.5 &&
+            [gap[@"previous"][@"sample_time"] doubleValue] == 23528019 && [gap[@"current"][@"sample_time"] doubleValue] == 23530663,
+            @"Recorded gap must retain the real source clock boundary");
+        NSString *session = [root stringByAppendingPathComponent:@"session.json"];
+        json(NULL, @{@"status": @"captured_unqualified", @"errors": @[], @"frames": @(written), @"acquisition_gaps": source_gaps(q)}, session);
+        NSDictionary *saved = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:session] options:0 error:nil];
+        require([saved[@"status"] isEqual:@"captured_unqualified"] && [saved[@"errors"] count] == 0 &&
+            [saved[@"acquisition_gaps"] count] == 1 && same_json_values(saved[@"acquisition_gaps"][0], gap),
+            @"Session and journal source gaps must agree without a fatal capture error");
+        check(finalize_caf(q, audio), @"Finalize gap selfcheck CAF"); audio = NULL;
+        check(ExtAudioFileOpenURL((__bridge CFURLRef)url, &audio), @"Reopen gap selfcheck CAF");
+        SInt64 length = -1; UInt32 size = sizeof(length);
+        check(ExtAudioFileGetProperty(audio, kExtAudioFileProperty_FileLengthFrames, &size, &length), @"Read gap CAF length");
+        require(length == 1536, @"CAF must contain captured frames only");
+        check(ExtAudioFileSetProperty(audio, kExtAudioFileProperty_ClientDataFormat, sizeof(format), &format), @"Set gap CAF read format");
+        float decoded[1536 * CHANNELS]; UInt32 count = 1536;
+        AudioBufferList decodedList = {.mNumberBuffers = 1, .mBuffers = {{CHANNELS, sizeof(decoded), decoded}}};
+        check(ExtAudioFileRead(audio, &count, &decodedList), @"Read gap CAF");
+        require(count == 1536, @"Gap CAF frame count changed");
+        for (unsigned i = 0; i < count * CHANNELS; ++i)
+            require(decoded[i] == values[i / (512 * CHANNELS)], @"Received PCM must survive the source gap unchanged");
+
+        struct { double sample, host; } invalid[] = {
+            {23530663, hosts[1] + 1.0 / 44100}, {23530663, hosts[0]},
+            {23528019, hosts[1]}, {0, hosts[1]}};
+        Block *b = &q->blocks[3]; b->frames = 512;
+        q->previousClock = q->gaps[0].previous;
+        for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+            q->clockFailure = (ClockFailure){0};
+            b->timestamp = (AudioTimeStamp){.mSampleTime = invalid[i].sample,
+                .mHostTime = (uint64_t)llround(invalid[i].host * 1e9 * base.denom / base.numer),
+                .mFlags = kAudioTimeStampHostTimeValid | kAudioTimeStampSampleTimeValid};
+            bool rejected = false;
+            @try { require_clock_continuity(q, b, written, mach_absolute_time()); }
+            @catch (NSException *error) { rejected = [error.reason hasSuffix:@"discontinuity"]; }
+            require(rejected && q->clockFailure.present && q->gapCount == 1,
+                @"Uncorroborated forward gaps, backward/reset clocks and bad host clocks must remain fatal");
+        }
+        b->timestamp = q->gaps[0].current.timestamp; q->gapCount = MAX_SOURCE_GAPS;
+        bool rejected = false;
+        @try { require_clock_continuity(q, b, written, mach_absolute_time()); }
+        @catch (NSException *error) { rejected = [error.reason isEqual:@"Source gap evidence limit exceeded"]; }
+        require(rejected && q->gapCount == MAX_SOURCE_GAPS, @"Gap evidence must remain bounded without hiding further loss");
+    } @finally {
+        if (journal) fclose(journal);
+        if (audio) ExtAudioFileDispose(audio);
+        require(destroy_queue(q) == 0, @"Cannot release gap selfcheck queue");
+        [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+    }
+}
+
 static void selfcheck_receive(Queue *q, unsigned frames) {
     float samples[MAX_FRAMES * CHANNELS];
     uint64_t start = q->nextFrame;
@@ -830,7 +961,8 @@ static void selfcheck(void) {
     require(atomic_load(&q->failure) == 2, @"Mismatched buffers must fail closed");
     selfcheck_caf(q);
     require(destroy_queue(q) == 0, @"Cannot release resident selfcheck queue");
-    puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, journal-failure PCM counts, bounded capture diagnostics, clock failure boundary, phase timing context, zero/partial CAF finalization; no capture or playback");
+    selfcheck_source_gap();
+    puts("selfcheck passed: five-second duration buffer, virtual3.139s/4s stalls, one-frame descriptors, bounded FIFO, wrap, overflow, interleaved/planar PCM, malformed buffers, controlled Stop metadata, pending Stop PCM finalization, journal-failure PCM counts, bounded capture diagnostics, clock failure boundary, forward source-gap continuation, phase timing context, zero/partial CAF finalization; no capture or playback");
 }
 
 static dispatch_source_t monitor_safety(NSString *root, pid_t controllingParent, NSMutableDictionary *state) {
@@ -865,7 +997,8 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
         @"controlling_parent_pid": @(controllingParent), @"recorder_pid": @(getpid()), @"recorder_executable": @(recorderPath),
         @"mechanism": @"CoreAudio explicit process tap", @"scope": @"one HAL process; all its output streams",
         @"requested_seconds": @(duration), @"microphone": @NO, @"global_fallback": @NO,
-        @"capture_consent": @"unqualified; nonzero PCM required", @"started_monotonic_s": @(seconds(mach_absolute_time()))} mutableCopy];
+        @"capture_consent": @"unqualified; nonzero PCM required", @"started_monotonic_s": @(seconds(mach_absolute_time())),
+        @"acquisition_gaps": @[]} mutableCopy];
     NSString *session = [root stringByAppendingPathComponent:@"session.json"];
     json(NULL, metadata, session);
     AudioObjectID tap = 0, aggregate = 0;
@@ -897,6 +1030,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
             format.mFramesPerPacket == 1 && format.mBytesPerPacket == format.mBytesPerFrame &&
             isfinite(format.mSampleRate) && format.mSampleRate >= 8000 && format.mSampleRate <= 192000,
             @"Unsupported tap format (expected packed float32 stereo)");
+        q->sampleRate = format.mSampleRate;
         require(prepare_queue(q, (unsigned)ceil(format.mSampleRate * BUFFER_SECONDS)), @"Cannot allocate capture buffers");
         CFStringRef uid = NULL;
         property(tap, kAudioTapPropertyUID, sizeof(uid), &uid);
@@ -936,7 +1070,12 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
             unsigned r = atomic_load_explicit(&q->consumed, memory_order_relaxed);
             unsigned w = atomic_load_explicit(&q->produced, memory_order_acquire);
             while (r != w) { @autoreleasepool {
+                unsigned gapsBefore = q->gapCount;
                 consume_block(q, audio, timeline, r++, &frames, &peak, pcm);
+                if (q->gapCount != gapsBefore) {
+                    require(fflush(timeline) == 0, @"Cannot flush audio timeline");
+                    metadata[@"acquisition_gaps"] = source_gaps(q); json(q, metadata, session);
+                }
             } }
             phase_begin(q, PhaseIdle, mach_absolute_time());
             uint64_t now = mach_absolute_time();
@@ -976,6 +1115,7 @@ static int capture(pid_t pid, NSString *expectedPath, double duration, NSString 
     if (aggregate) { OSStatus s = AudioHardwareDestroyAggregateDevice(aggregate); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy aggregate: %d", (int)s]]; }
     if (tap) { OSStatus s = AudioHardwareDestroyProcessTap(tap); if (s) [errors addObject:[NSString stringWithFormat:@"Destroy tap: %d", (int)s]]; }
     metadata[@"capture_diagnostics"] = diagnostics(q);
+    metadata[@"acquisition_gaps"] = source_gaps(q);
     if (callbackDestroyed) {
         int error = destroy_queue(q);
         if (error) [errors addObject:[NSString stringWithFormat:@"Release resident recorder memory: %s (errno %d)", strerror(error), error]];

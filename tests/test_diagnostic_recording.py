@@ -355,6 +355,186 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertEqual(report["deadline_monotonic"], 101.0)
         self.assertFalse(report["captures"][1]["session"]["duration_completed"])
 
+    def test_native_gap_keeps_worker_armed_and_recording_until_owned_stop(self):
+        clock = [100.0]
+        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        recording = self.recording()
+        recording.deadline = 101.0
+        gaps = [
+            {
+                "kind": "gap",
+                "reason": "source_sample_gap",
+                "file_frame_start": 480,
+                "sample_delta_frames": 48.0,
+                "started_monotonic_s": 100.1,
+                "ended_monotonic_s": 100.101,
+                "previous": {"sample_time": 0.0, "frame_count": 480},
+                "current": {"sample_time": 528.0, "frame_count": 480},
+            },
+            {
+                "kind": "gap",
+                "reason": "source_sample_gap",
+                "file_frame_start": 960,
+                "sample_delta_frames": 96.0,
+                "started_monotonic_s": 100.2,
+                "ended_monotonic_s": 100.202,
+            },
+        ]
+        fake_launch = self.fake_launch
+
+        def launch_with_gap(recording, commands, **kwargs):
+            launch = fake_launch(recording, commands, **kwargs)
+
+            def write_gap(command, output):
+                launch(command, output)
+                if output.name != "rust-123":
+                    return
+                process = recording.processes[-1][0]
+                process.returncode = None
+                process.poll.return_value = None
+                (output / "session.json").write_text(
+                    json.dumps(
+                        {
+                            "status": "in_progress",
+                            "target": {"pid": 123, "executable": "/worker"},
+                            "capture_started_monotonic_s": 100.0,
+                            "errors": [],
+                            "acquisition_gaps": gaps,
+                        }
+                    )
+                )
+                (output / "process.caf").write_bytes(b"PCM before and after gaps")
+
+            return write_gap
+
+        worker_polls = 0
+
+        def workers():
+            nonlocal worker_polls
+            worker_polls += 1
+            if worker_polls > 1:
+                self.assertIsNotNone(recording.ready_monotonic)
+                process = recording.processes[-1][0]
+                self.assertIsNone(process.poll())
+                self.assertEqual(recording.status, "degraded")
+                self.assertEqual(
+                    recording.wait_for_worker(identity, lambda: False), (True, "armed")
+                )
+                report = recording.report()
+                self.assertEqual(report["qualification"], "partial")
+                self.assertEqual(
+                    report["acquisition_gaps"],
+                    [{**gap, "capture": "rust-123", **identity} for gap in gaps],
+                )
+                self.assertFalse(recording._failures)
+                self.assertIsNone(recording.error_type)
+                clock[0] = 101.0
+                recording.cancelled.set()
+            return (identity,)
+
+        def finalize():
+            process, output = recording.processes[-1]
+            self.assertIsNone(process.poll())
+            process.returncode = 0
+            process.poll.return_value = 0
+            path = output / "session.json"
+            metadata = json.loads(path.read_text())
+            metadata.update(
+                status="captured_unqualified",
+                stop_requested=True,
+                capture_stopped_monotonic_s=101.01,
+            )
+            path.write_text(json.dumps(metadata))
+
+        recording.workers = workers
+        with (
+            patch("vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]),
+            patch.object(self, "fake_launch", side_effect=launch_with_gap),
+            patch.object(recording, "_stop_processes", side_effect=finalize) as stop,
+            patch.object(recording, "_stop_failed_capture") as stop_failed,
+        ):
+            self.run_fake(recording)
+        stop.assert_called_once_with()
+        stop_failed.assert_not_called()
+        report = recording.report()
+        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["stop_reason"], "deadline")
+        self.assertEqual(report["qualification"], "partial")
+        self.assertIsNone(report["error_type"])
+        self.assertEqual(
+            report["acquisition_gaps"],
+            [{**gap, "capture": "rust-123", **identity} for gap in gaps],
+        )
+        self.assertIsNone(report["captures"][-1]["acquisition_failure"])
+        self.assertEqual(
+            (self.root / "rust-123" / "process.caf").read_bytes(),
+            b"PCM before and after gaps",
+        )
+
+    def test_gap_first_observed_on_native_close_remains_partial(self):
+        clock = [100.0]
+        recording = self.recording()
+        recording.deadline = 101.0
+        gap = {
+            "kind": "gap",
+            "reason": "source_sample_gap",
+            "file_frame_start": 480,
+            "sample_delta_frames": 48.0,
+            "started_monotonic_s": 100.1,
+            "ended_monotonic_s": 100.101,
+        }
+
+        def workers():
+            clock[0] = 101.0
+            recording.cancelled.set()
+            return ()
+
+        def finalize():
+            path = self.root / "game-audio" / "session.json"
+            metadata = json.loads(path.read_text())
+            metadata["acquisition_gaps"] = [gap]
+            path.write_text(json.dumps(metadata))
+
+        recording.workers = workers
+        with (
+            patch("vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]),
+            patch.object(recording, "_stop_processes", side_effect=finalize),
+        ):
+            self.run_fake(recording)
+        report = recording.report()
+        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["qualification"], "partial")
+        self.assertIsNone(report["error_type"])
+        self.assertEqual(report["acquisition_gaps"], [{**gap, "capture": "game-audio"}])
+
+    def test_malformed_or_unbounded_native_gap_metadata_remains_fatal(self):
+        gap = {
+            "kind": "gap",
+            "reason": "source_sample_gap",
+            "file_frame_start": 480,
+            "sample_delta_frames": 48.0,
+            "started_monotonic_s": 100.1,
+            "ended_monotonic_s": 100.101,
+        }
+        for gaps in (
+            [gap] * 17,
+            {"gap": gap},
+            [{**gap, "sample_delta_frames": float("nan")}],
+            [{**gap, "ended_monotonic_s": 100.0}],
+            [{**gap, "file_frame_start": True}],
+        ):
+            with self.subTest(gaps=gaps), tempfile.TemporaryDirectory() as folder:
+                self.root = Path(folder)
+                recording = self.recording()
+                output = self.root / "game-audio"
+                self.fake_launch(recording, [])([], output)
+                path = output / "session.json"
+                metadata = json.loads(path.read_text())
+                metadata["acquisition_gaps"] = gaps
+                path.write_text(json.dumps(metadata))
+                self.assertFalse(recording._check_capture_readiness())
+                self.assertEqual(recording.report()["qualification"], "failed")
+
     def test_stop_just_before_deadline_remains_partial_after_delayed_observation(self):
         clock = [100.0]
         recording = self.recording()
