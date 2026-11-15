@@ -2,7 +2,25 @@
 
 ## Active - Hansel native-run defects and original-speech qualification
 
-- [ ] After the fixes, rerun Hansel6TH-23 without tester advancement. Confirm
+- [ ] **RUN-15-01: recognized `I ...` falls back to TTS despite a full original.**
+      On100631:109 the name Isolde is visible, but OCR returns Narrator and
+      matching ends `expected-ambiguous`; admission has no canonical ID and
+      starts live MOSS. Inspect the actual candidate scope and name-region
+      evidence before choosing a shared fix. Offline chapter matching also lets
+      the previous108 `I know...` veto complete109 as a possible prefix; synthesis
+      preference retains the incomplete result when speaker evidence is missing.
+      Account for completed dialogue/confirmed transitions without accepting a
+      genuinely growing prefix. Preserve Narrator when a name is actually absent;
+      do not substitute hidden resource speakers merely to remove ambiguity.
+- [ ] **RUN-15-02: a transient empty OCR repeats an already spoken raw line.**
+      One continuous visible100631:109 `I ...` produced two identical captured
+      TTS outputs. An empty OCR between them cleared tracker state and the same
+      text was emitted under a new generation. Preserve spoken-line ownership
+      across uncertain/empty observations until a real transition is established;
+      retain explicit replay and legitimate later repetitions. Verify with the
+      saved video, raw OCR timeline and process-audio clip as regression evidence,
+      then qualify the change in native replay.
+- [ ] After these fixes, rerun Hansel6TH-23 without tester advancement. Confirm
       available originals remain game-only, including Communicator `Repeat.`
       (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue
       plays and sparse text progresses. Preserve automatically changing
