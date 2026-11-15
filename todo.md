@@ -44,10 +44,6 @@
 
 ## Active - Remaining CI qualification
 
-- [ ] Repair the stale `runtime_progress_manifest_path` import/use in
-      `tests.test_pregeneration_setup`, then rerun the changed-test gate. The
-      production symbol was removed; the unchanged test module fails to import.
-      The runner reports this as no discovered tests before executing its shards.
 - [ ] Investigate preparation/reading source ownership after closing preparation:
       `tests.test_preparation_reading_lifecycle` fails source-reuse and playback
       preference assertions both on baseline4b005cb3 and after the matching fix.

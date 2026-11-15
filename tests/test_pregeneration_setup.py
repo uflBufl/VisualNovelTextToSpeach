@@ -39,7 +39,7 @@ from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
     OfflineGenerationResult,
-    runtime_progress_manifest_path,
+    runtime_generation_state_path,
 )
 from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePackPublisher,
@@ -4323,7 +4323,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
-    def test_progress_reading_waits_for_current_manifest_and_selected_ready_line(self):
+    def test_progress_reading_requires_generation_database_and_selected_ready_line(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -4333,9 +4333,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 story_index=content.story_index,
                 story_index_sha256=content.story_index_sha256,
             )
-            manifest = runtime_progress_manifest_path(generation_input)
-            published_manifest = manifest.read_bytes()
-            manifest.unlink()
+            database = runtime_generation_state_path(generation_input)
+            unpublished_output = generation_input.output_directory.rename(
+                root / "unpublished-output"
+            )
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(game_pack=str(root / "previous-game-pack.json")),
                 discovery=lambda: ContentDiscovery((content,)),
@@ -4362,12 +4363,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.play_ready_button.click()
             reading.assert_not_called()
 
-            manifest.write_bytes(published_manifest)
+            unpublished_output.rename(generation_input.output_directory)
             dialog._progress_finished(ready_original, None)
 
             self.assertEqual(
                 dialog.runtime_playback_settings().generated_audio_manifest,
-                str(manifest),
+                str(database),
             )
             self.assertTrue(dialog.play_ready_button.isEnabled())
             dialog.play_ready_button.click()
