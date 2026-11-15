@@ -350,8 +350,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: recheck the recorded failures under Repair failing regression tests
-on the current code before choosing the next repair. Supplemental voice coverage
+Next action: review the remaining native Mac acceptance gates before scheduling
+more game runs. Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
@@ -1777,18 +1777,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 M1 owns concurrent chapter-generation acceptance, including deferred activation,
 restart and completed-line reuse, on Mac. Windows platform acceptance remains a
 separate future gate.
-
-## Repair failing regression tests
-
-- [ ] Reconcile `test_retained_leases_preserve_typed_dialogue_announcements_and_cancellation`
-      with the current `prepare_route(..., first_observed_at=None)` call. Wrapped
-      worker/native cases fail identically on clean `405e9b3e` and the Reading
-      setup change. Check the timestamp forwarding contract before updating the
-      expectation; keep typed dialogue, announcements and cancellation assertions.
-
-- [ ] Investigate `test_macos_setup_save_keeps_reading_handoff_after_deferred_hotkey_refresh`: accepting the setup leaves `Restoring the saved Reading setup...` instead of `Reading setup saved`. The changed-test selector and isolated runs on both the working tree and unchanged `01712c05` reproduce the failure. Trace the preview acceptance/save/restore flow. Gate: the test passes with durable settings and the start-reading handoff preserved.
-
-- [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and an isolated run against untouched HEAD06699fc3 fail identically. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
 
 ## Investigate intermittent macOS Qt test crash
 

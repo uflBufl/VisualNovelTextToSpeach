@@ -8246,6 +8246,7 @@ class MainTest(unittest.TestCase):
                             line_id="line-id",
                             resolve_unidentified=True,
                             prepared_audio=None,
+                            first_observed_at=None,
                         )
                         self.assertEqual(wrapper.play_route.call_count, 2)
                     controller.error_handler.assert_not_called()
