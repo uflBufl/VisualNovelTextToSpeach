@@ -5,21 +5,18 @@
 - [ ] **RUN-15-01: recognized `I ...` falls back to TTS despite a full original.**
       On100631:109 the name Isolde is visible, but OCR returns Narrator and
       matching ends `expected-ambiguous`; admission has no canonical ID and
-      starts live MOSS. Local discovery reproduces the full resolution chain:
-      chapter108 `I know...` vetoes exact next109 as a possible growing prefix;
-      synthesis filtering separately hides109; the controller then widens to
-      other chapters, where Cornerstone314009:56 and Everecho314501:60 also say
-      `I ...`, producing the recorded ambiguity.
-      - Resolve canonical identity in the established chapter before synthesis
-        eligibility; preserve synthesis-only competition for unknown context and
-        equivalent prepared-audio borrowing.
+      starts live MOSS. The remaining local blocker is chapter108 `I know...`,
+      which vetoes exact next109 as a possible growing prefix. Local incomplete
+      matching can still widen to other chapters, where Cornerstone314009:56 and
+      Everecho314501:60 also say `I ...`, producing ambiguity.
       - Pass reliable completed/current-occurrence evidence into shared matching:
         a previously fully observed and finished line must not veto an exact
         successor as its growing prefix after a confirmed text transition.
         Keep protection for uncompleted typewriter text and uncertain truncation.
-      - Retain local incomplete/ambiguous ownership instead of unconditionally
-        searching other chapters. Allow re-identification on genuine mismatch;
-        preserve manual chapter changes and automatic dialogue transitions.
+      - Retain local incomplete ownership when it represents the same growing
+        occurrence. Preserve re-identification when a reliable recognized name
+        contradicts another chapter's prefix-only candidate; preserve manual
+        chapter changes and automatic dialogue transitions.
       - Cover the real108 ->109 case with/without a recognized name, unrelated
         cross-chapter duplicates, unfinished prefixes and existing short-original
         and borrowing behavior. Run changed tests first, then focused matching,
@@ -28,7 +25,8 @@
       Isolde. If it recurs, retain the native frame, selected speaker region,
       glyph-gate result and raw name OCR before choosing an image-processing fix.
       Preserve Narrator when a name is actually absent; do not substitute hidden
-      resource speakers merely to remove ambiguity. Agree this plan before code.
+      resource speakers merely to remove ambiguity. Agree the remaining changes
+      before code.
 - [ ] **RUN-15-02: a transient empty OCR repeats an already spoken raw line.**
       One continuous visible100631:109 `I ...` produced two identical captured
       TTS outputs. An empty OCR between them cleared tracker state and the same
@@ -73,6 +71,12 @@
 
 ## Active - Remaining CI qualification
 
+- [ ] Investigate preparation/reading source ownership after closing preparation:
+      `tests.test_preparation_reading_lifecycle` fails source-reuse and playback
+      preference assertions both on baseline4b005cb3 and after the matching fix.
+      Establish whether these expectations match automatic prepared reading,
+      then repair the actual ownership defect or outdated fixtures. Keep current
+      progress callbacks and reading-after-close behavior covered.
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on
       hosted Windows/Linux and packaged GPU runtimes after local gates pass.
       Verify playback buttons distinguish preparation from actual device onset,

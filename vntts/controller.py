@@ -1050,7 +1050,11 @@ class AppController:
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
             text,
-            candidate_filter=lambda row: not row.has_full_source_audio,
+            candidate_filter=(
+                None
+                if self.chapter_voice_preloader.current_match is not None
+                else lambda row: not row.has_full_source_audio
+            ),
         )
         if line is None or not backend.has_generated_line(line):
             return None
@@ -1690,11 +1694,15 @@ class AppController:
                 result.text,
                 line_ids,
                 update_context=False,
-                prefer_synthesis=plan is None
-                or self.settings.live_sequence_mode == "off",
+                prefer_synthesis=(
+                    (plan is None or self.settings.live_sequence_mode == "off")
+                    and preloader.current_match is None
+                    and confirmation_line_id is None
+                ),
             )
             if (
                 line is None
+                and match != "expected-ambiguous"
                 and confident
                 and self.automatic_prepared_reading
                 and plan is None
@@ -3887,7 +3895,7 @@ class AppController:
                 routed_text,
                 (row.line_id for row in rows if row.line_id),
                 update_context=False,
-                prefer_synthesis=True,
+                prefer_synthesis=match is None,
             )
             return reader.enqueue(
                 routed_character, routed_text, line_id=line.line_id if line else None

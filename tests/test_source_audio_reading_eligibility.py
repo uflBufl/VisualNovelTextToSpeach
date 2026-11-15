@@ -169,6 +169,83 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         )
         live.prepare_playback.assert_not_called()
 
+    def test_known_chapter_resolves_original_before_synthesis_candidates(self):
+        for text, other_text in (
+            ("I ...", "Isolde stands alone on the street."),
+            ("Huh?", "Huh!"),
+        ):
+            for speaker in ("Ada", "Narrator"):
+                with self.subTest(text=text, speaker=speaker):
+                    anchor = story_line("anchor", "The scene begins.", chapter="known")
+                    original = replace(
+                        story_line("original", text, chapter="known", full=True),
+                        sequence=2,
+                    )
+                    other = replace(
+                        story_line("unvoiced", other_text, chapter="known"), sequence=3
+                    )
+                    controller, live = self.controller((anchor, original, other))
+                    controller.chapter_voice_preloader.select_line_id(anchor.line_id)
+
+                    admitted, line = self.resolve(controller, text, speaker)
+
+                    self.assertIs(line, original)
+                    route = self.route(controller, admitted, line)
+                    self.assertIsInstance(route, SourceAudioRoute)
+                    self.assertEqual(route.trace.line_id, original.line_id)
+                    live.prepare_playback.assert_not_called()
+                    library = controller.speech_backend.library
+                    library.find_with_preflight.assert_not_called()
+
+    def test_known_chapter_duplicate_identity_is_not_resolved_by_audio_availability(self):
+        original = story_line("original", chapter="known", full=True)
+        unvoiced = story_line("unvoiced", chapter="known")
+        controller, _live = self.controller((original, unvoiced))
+        controller.chapter_voice_preloader.select_line_id(original.line_id)
+
+        _admitted, line = self.resolve(controller)
+
+        self.assertIsNone(line)
+        self.assertEqual(
+            controller.chapter_voice_preloader.current_match.chapter, "known"
+        )
+
+    def test_known_chapter_enqueue_preserves_original_identity(self):
+        original = story_line("original", chapter="known", full=True)
+        unvoiced = story_line("unvoiced", "Huh!", chapter="known")
+        controller, _live = self.controller((original, unvoiced))
+        controller.chapter_voice_preloader.select_line_id(original.line_id)
+        controller.live_reader = Mock(is_running=True)
+        with (
+            patch.object(controller, "_canonical_observed_character", return_value="Ada"),
+            patch.object(controller, "_dialog_observed", return_value=None),
+        ):
+            self.assertTrue(controller._enqueue_dialog("Ada", original.text))
+
+        character, text = controller.live_reader.enqueue.call_args.args
+        line_id = controller.live_reader.enqueue.call_args.kwargs["line_id"]
+        self.assertEqual(line_id, original.line_id)
+        route = controller.speech_backend.prepare_route(
+            character, text, line_id=line_id, resolve_unidentified=False
+        )
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertEqual(route.trace.line_id, original.line_id)
+
+    def test_known_chapter_prefix_keeps_originals_in_uniqueness_check(self):
+        text = "We should leave this place before the sun rises."
+        original = story_line("original", text, chapter="known", full=True)
+        unvoiced = story_line("unvoiced", text + " Follow me.", chapter="known")
+        controller, live = self.controller((original, unvoiced))
+        controller.chapter_voice_preloader.select_line_id(original.line_id)
+
+        self.assertIsNone(
+            controller._resolve_early_indexed_dialogue(
+                "Ada", "We should leave this place"
+            )
+        )
+        controller.speech_backend.library.find_with_preflight.assert_not_called()
+        live.prepare_playback.assert_not_called()
+
     def test_global_recovery_ignores_other_chapter_original_duplicates(self):
         anchor = story_line("anchor", "The previously identified chapter.")
         unvoiced = story_line("unvoiced")
