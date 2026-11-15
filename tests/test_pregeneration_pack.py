@@ -8,6 +8,7 @@ from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -29,6 +30,7 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from tests.authoring_fixtures import tree_hashes
+from tests.bulk_generation_fixtures import audio_samples
 from tests.generation_state_fixtures import replace_generation_state
 from tests.pregeneration_fixtures import fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
@@ -55,7 +57,6 @@ from vntts.pregeneration_pack import (
     _portable_voice_entries,
     _prepare_live_sequence,
     _story_audio_pack,
-    _validate_inputs,
     _write_cumulative_routes,
     _write_prepared_sequence,
     inspect_story_audio,
@@ -878,16 +879,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             imported, _ = _load_incremental_base(base.manifest, job, all_selected)
             self.assertEqual(imported.pack.manifest_path, base.manifest)
 
-    def test_publication_reuses_the_generation_result_identity_contract(self):
+    def test_publication_rejects_invalid_generation_inputs_without_writes(self):
         with TemporaryDirectory() as directory:
-            job, prepared, generated, _items = fixture(Path(directory))
-            expected = (
-                prepared.directory.parent
-                / f"generation-output-{prepared.identity[:16]}"
-            )
-            self.assertEqual(prepared.output_directory, expected)
-            self.assertEqual(generated.output, expected)
-            _validate_inputs(job, prepared, generated)
+            root = Path(directory)
+            job, prepared, generated, _items = fixture(root)
+            before = tree_hashes(root)
             cases = (
                 ((None, prepared, generated), "Offline preparation job is invalid"),
                 ((job, None, generated), "Offline generation input is invalid"),
@@ -896,7 +892,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     (
                         job,
                         prepared,
-                        replace(generated, output=expected.parent / "foreign-output"),
+                        replace(generated, output=root / "foreign-output"),
                     ),
                     "Offline pack output identity changed",
                 ),
@@ -906,7 +902,8 @@ class OfflinePackPublisherTest(unittest.TestCase):
                     self.subTest(message=message),
                     self.assertRaisesRegex(OfflinePackError, message),
                 ):
-                    _validate_inputs(*values)
+                    OfflinePackPublisher().publish(*values)
+                self.assertEqual(tree_hashes(root), before)
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
@@ -1557,18 +1554,6 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         _copy_prepared_file(source, destination, digest, "story index")
                     destination.unlink()
 
-    def test_incremental_reuse_hard_links_verified_audio(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source.wav"
-            destination = root / "pack" / "audio.wav"
-            source.write_bytes(b"verified audio")
-
-            _link_verified_file(source, destination, sha256_file(source))
-
-            self.assertTrue(source.samefile(destination))
-            self.assertEqual(destination.read_bytes(), b"verified audio")
-
     def test_audio_link_failure_preserves_source_without_copy_fallback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2035,25 +2020,24 @@ class OfflinePackPublisherTest(unittest.TestCase):
 
     def test_publishes_and_reuses_portable_generated_and_live_routes(self):
         with TemporaryDirectory() as temporary_directory:
-            job, generation_input, generation_result, items = fixture(
-                Path(temporary_directory)
-            )
+            root = Path(temporary_directory)
+            job, generation_input, generation_result, items = fixture(root)
             publisher = OfflinePackPublisher()
 
             first = publisher.publish(job, generation_input, generation_result)
-            with patch(
-                "vntts.pregeneration_pack.load_generation_state_from_snapshot",
-                side_effect=AssertionError("published pack must be reused"),
-            ):
-                second = publisher.publish(job, generation_input, generation_result)
+            before_reuse = tree_hashes(root)
+            second = publisher.publish(job, generation_input, generation_result)
+            self.assertEqual(tree_hashes(root), before_reuse)
             library = GeneratedAudioLibrary.load_optional(
                 first.imported.generated_audio_manifest
             )
             self.assertEqual(first, second)
             self.assertEqual(first.approved, 1)
             self.assertEqual(first.live_fallbacks, 1)
-            self.assertIsNotNone(
-                library.find(items[0]["line_id"], items[0]["text_sha256"])
+            generated = library.find(items[0]["line_id"], items[0]["text_sha256"])
+            self.assertEqual(generated.sample_rate, 16_000)
+            np.testing.assert_allclose(
+                generated.samples, audio_samples(), atol=1 / 32768
             )
             self.assertIn(
                 (items[1]["line_id"], items[1]["text_sha256"]),

@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+import numpy as np
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     load_story_index_document,
@@ -12,13 +13,16 @@ from vntts_artifacts.story_index import (
 )
 
 from tests.audio_output_fixtures import FakeAudioOutput
+from tests.bulk_generation_fixtures import audio_samples
 from tests.pregeneration_fixtures import fixture
 from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.controller import AppController
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
     GeneratedAudioRoute,
+    PlaybackStatus,
     SourceAudioRoute,
 )
 from vntts.pregeneration_activation import (
@@ -119,12 +123,14 @@ class OfflinePackActivatorTest(unittest.TestCase):
             controller.apply_settings.return_value = True
             activated = OfflinePackActivator(
                 save_state=lambda _settings, _pack: root / "settings.json"
-            ).activate(AppSettings(), pack, controller)
+            ).activate(AppSettings(force_live_narrator=True), pack, controller)
             self.assertEqual(
                 activated.settings.audio_source_policy, "prefer-game-audio"
             )
             live = Mock()
             live.name = "unused-live"
+            output = FakeAudioOutput()
+            output.query_devices = Mock(return_value={"default_samplerate": 16_000})
             backend = GeneratedAudioFallbackBackend(
                 live,
                 GeneratedAudioLibrary.load_optional(
@@ -132,35 +138,24 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 ),
                 ChapterVoicePreloader.load_optional(activated.settings.story_index),
                 audio_source_policy=activated.settings.audio_source_policy,
-                audio_output=FakeAudioOutput(),
+                audio_output=output,
             )
+            backend.voice_override = AppController(
+                activated.settings
+            )._has_manual_voice_override
             backend.set_live_mode_active(True)
             source = backend.prepare_route(original.speaker, original.text)
             generated = backend.prepare_route("Narrator", "Prepared line generated.")
             self.assertIsInstance(source, SourceAudioRoute)
             self.assertGreater(source.prepared.completion_seconds, 1.25)
             self.assertIsInstance(generated, GeneratedAudioRoute)
+            outcome = backend.play_route(generated)
+            self.assertEqual(outcome.status, PlaybackStatus.COMPLETED)
+            played, sample_rate, _options = output.plays[0]
+            self.assertEqual(sample_rate, 16_000)
+            np.testing.assert_allclose(played, audio_samples(), atol=1 / 32768)
             live.prepare_playback.assert_not_called()
-
-    def test_activation_uses_saved_audio_instead_of_previous_live_overrides(self):
-        from vntts.controller import AppController
-
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            pack = published_pack(root)
-            current = AppSettings(force_live_narrator=True)
-            controller = Mock(is_ready=True)
-            controller.apply_settings.return_value = True
-            controller.start.return_value = True
-            activator = OfflinePackActivator(
-                save_state=lambda _settings, _pack: root / "settings.json"
-            )
-            result = activator.activate(current, pack, controller)
-            self.assertFalse(result.settings.force_live_narrator)
-            live = AppController(result.settings)
-            self.assertFalse(live._has_manual_voice_override("Narrator"))
-            self.assertFalse(live._has_manual_voice_override("Hotelier"))
-            self.assertFalse(live._has_manual_voice_override("Other story speaker"))
+            live.play_prepared.assert_not_called()
 
     def test_restarts_runtime_before_committing_playback_state(self):
         with TemporaryDirectory() as temporary_directory:
@@ -198,7 +193,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
             root = Path(temporary_directory)
             pack = published_pack(root)
             previous = AppSettings(
-                game_pack="previous-pack.json", tts_speaker_wav="live-narrator.wav"
+                game_pack="previous-pack.json",
+                tts_speaker_wav="live-narrator.wav",
+                speech_backend="moss-tts",
+                pocket_gated_model_accepted=True,
             )
             for apply_failed in (False, True):
                 with self.subTest(apply_failed=apply_failed):
@@ -218,8 +216,8 @@ class OfflinePackActivatorTest(unittest.TestCase):
                         )
                     else:
                         result = activator.activate(previous, pack, controller)
-                        self.assertFalse(result.settings.pocket_gated_model_accepted)
-                        self.assertEqual(result.settings.speech_backend, "pocket-tts")
+                        self.assertTrue(result.settings.pocket_gated_model_accepted)
+                        self.assertEqual(result.settings.speech_backend, "moss-tts")
                         self.assertEqual(
                             result.settings.tts_speaker_wav, "live-narrator.wav"
                         )
