@@ -2,13 +2,6 @@
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] Finish the short native check of speaker-padding polarity: capture a
-      visible game name through the normal window/persistent OCR path and confirm
-      it reaches raw OCR. Saved native Isolde frames, opposite-polarity regression
-      and related OCR consumers pass with white padding; full chapter repetition
-      is unnecessary for this remaining gate.
-      Preserve Narrator when a name is actually absent; do not substitute hidden
-      resource speakers merely to remove ambiguity.
 - [ ] **RUN-15-02: native qualification of empty OCR recovery.**
       Qualify an already spoken raw/unindexed line losing recognition and
       returning unchanged, including a short line returning with Narrator
