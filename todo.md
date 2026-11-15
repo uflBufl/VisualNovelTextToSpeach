@@ -5,13 +5,30 @@
 - [ ] **RUN-15-01: recognized `I ...` falls back to TTS despite a full original.**
       On100631:109 the name Isolde is visible, but OCR returns Narrator and
       matching ends `expected-ambiguous`; admission has no canonical ID and
-      starts live MOSS. Inspect the actual candidate scope and name-region
-      evidence before choosing a shared fix. Offline chapter matching also lets
-      the previous108 `I know...` veto complete109 as a possible prefix; synthesis
-      preference retains the incomplete result when speaker evidence is missing.
-      Account for completed dialogue/confirmed transitions without accepting a
-      genuinely growing prefix. Preserve Narrator when a name is actually absent;
-      do not substitute hidden resource speakers merely to remove ambiguity.
+      starts live MOSS. Local discovery reproduces the full resolution chain:
+      chapter108 `I know...` vetoes exact next109 as a possible growing prefix;
+      synthesis filtering separately hides109; the controller then widens to
+      other chapters, where Cornerstone314009:56 and Everecho314501:60 also say
+      `I ...`, producing the recorded ambiguity.
+      - Resolve canonical identity in the established chapter before synthesis
+        eligibility; preserve synthesis-only competition for unknown context and
+        equivalent prepared-audio borrowing.
+      - Pass reliable completed/current-occurrence evidence into shared matching:
+        a previously fully observed and finished line must not veto an exact
+        successor as its growing prefix after a confirmed text transition.
+        Keep protection for uncompleted typewriter text and uncertain truncation.
+      - Retain local incomplete/ambiguous ownership instead of unconditionally
+        searching other chapters. Allow re-identification on genuine mismatch;
+        preserve manual chapter changes and automatic dialogue transitions.
+      - Cover the real108 ->109 case with/without a recognized name, unrelated
+        cross-chapter duplicates, unfinished prefixes and existing short-original
+        and borrowing behavior. Run changed tests first, then focused matching,
+        controller and playback-consumer regressions; qualify with native replay.
+      Name loss is not reproduced on the saved video frames: offline OCR reads
+      Isolde. If it recurs, retain the native frame, selected speaker region,
+      glyph-gate result and raw name OCR before choosing an image-processing fix.
+      Preserve Narrator when a name is actually absent; do not substitute hidden
+      resource speakers merely to remove ambiguity. Agree this plan before code.
 - [ ] **RUN-15-02: a transient empty OCR repeats an already spoken raw line.**
       One continuous visible100631:109 `I ...` produced two identical captured
       TTS outputs. An empty OCR between them cleared tracker state and the same
