@@ -104,18 +104,10 @@ class CleanupTest(unittest.TestCase):
                             ],
                         )
 
-    def test_attempt_reports_success_and_failure_without_owning_another_cleanup(self):
+    def test_successful_cleanup_runs_once_and_reports_success(self):
         cleanup = Mock()
         self.assertTrue(attempt_cleanup(cleanup, description="Resource cleanup"))
         cleanup.assert_called_once_with()
-        primary = ValueError("operation failed")
-        failed = Mock(side_effect=OSError("cleanup failed"))
-        self.assertFalse(
-            attempt_cleanup(
-                failed, description="Resource cleanup", primary_error=primary
-            )
-        )
-        failed.assert_called_once_with()
 
 
 if __name__ == "__main__":

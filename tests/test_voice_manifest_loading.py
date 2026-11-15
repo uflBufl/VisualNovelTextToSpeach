@@ -251,17 +251,15 @@ class VoiceManifestLoadingTest(unittest.TestCase):
                 "voices": [{"character": "A", "speaker": "before"}],
             }
             path.write_text(json.dumps(document), encoding="utf-8")
-            captured = dict(
-                document, voices=[dict(document["voices"][0], speaker="captured")]
-            )
 
             def capture_current(*args, **kwargs):
-                path.write_text(json.dumps(captured), encoding="utf-8")
-                return load_voice_manifest(*args, **kwargs)
+                captured = load_voice_manifest(*args, **kwargs)
+                path.write_text("{", encoding="utf-8")
+                return captured
 
             with patch.object(
                 workspace_inspection, "load_voice_manifest", side_effect=capture_current
             ):
                 registry, overrides = workspace_inspection._load_voice_routing(path)
-            self.assertEqual(registry.resolve("A").speaker, "captured")
+            self.assertEqual(registry.resolve("A").speaker, "before")
             self.assertEqual(overrides, {})

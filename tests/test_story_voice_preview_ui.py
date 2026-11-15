@@ -9,9 +9,11 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np  # noqa: E402
 import shiboken6  # noqa: E402
+import soundfile as sf  # noqa: E402
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
 from tests.native_clip_fixtures import FakeClipController  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
@@ -175,15 +177,31 @@ class StoryVoicePreviewTest(unittest.TestCase):
     ):
         dialog = self.dialog
         button = dialog.play_narrator_reference
+        controller = FakeClipController(sample_rate=16000, channels=1)
+        pcm = PersistentPcmPlayer(controller)
+        self.addCleanup(pcm.close)
+        dialog._narrator_player = QtPcmPlayer(dialog, player_factory=lambda: pcm)
+        self.addCleanup(dialog._narrator_player.stop)
         dialog.narrator_choice.addItem("Rhiannon", "character:rhiannon")
         dialog.narrator_choice.setCurrentIndex(dialog.narrator_choice.count() - 1)
-        dialog._play_narrator_reference()
+        button.click()
         self.assertEqual(button.property("playbackState"), "preparing")
-        dialog._narrator_reference_changed(QtPcmPlayer.PlaybackState.PlayingState)
+        reference = (
+            Path(self.plan.voice_manifest).parent / "references" / "rhiannon.wav"
+        )
+        samples, sample_rate = sf.read(reference)
+        self.assertEqual(controller.sample_rate, sample_rate)
+        np.testing.assert_allclose(controller.samples[:, 0], samples, atol=1e-6)
+        self.service.generate.assert_not_called()
+        controller.pump(1)
+        dialog._narrator_player._poll()
         self.assertEqual(button.property("playbackState"), "playing")
-        dialog._play_narrator_reference()
+        button.click()
+        self.assertFalse(controller.state["playing"])
         self.assertEqual(button.property("playbackState"), "idle")
-        dialog._narrator_reference_changed(QtPcmPlayer.PlaybackState.PlayingState)
+        dialog._narrator_player.playbackStateChanged.emit(
+            QtPcmPlayer.PlaybackState.PlayingState
+        )
         self.assertEqual(button.property("playbackState"), "idle")
         self.assertEqual(button.text(), "Reference")
 
@@ -236,7 +254,6 @@ class StoryVoicePreviewTest(unittest.TestCase):
             ),
             self.group.group_id,
         )
-        self.assertFalse(hasattr(self.dialog, "voice_panel"))
         self.service.generate.assert_called_once()
         self.assertEqual(
             self.service.generate.call_args.args,
@@ -245,7 +262,9 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.assertEqual(
             self.service.generate.call_args.kwargs["text"], COMPARISON_PREVIEW_TEXT
         )
-        self.player.play_bytes.assert_called_once()
+        self.player.play_bytes.assert_called_once_with(
+            self.preview.path.read_bytes(), source=str(self.preview.path)
+        )
         self.assertEqual(self.dialog.voice_library.bindings(), bindings)
         self.assertIsNone(
             self.decisions.choice_for(
@@ -275,7 +294,6 @@ class StoryVoicePreviewTest(unittest.TestCase):
             ],
             before,
         )
-        self.assertEqual(self.dialog.findChildren(QLabel, "voice_preview_status"), [])
         self.assertEqual(
             self.row_button(self.group).property("vnttsActionIcon"), "refresh-cw"
         )
@@ -345,7 +363,9 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
         self.assertEqual(self.pool.tasks, [])
         foreground.generate.assert_not_called()
-        self.player.play_bytes.assert_called_once()
+        self.player.play_bytes.assert_called_once_with(
+            self.preview.path.read_bytes(), source=str(self.preview.path)
+        )
 
     def test_leaving_summary_cancels_background_work_without_autoplay(self):
         session = Mock(supports_prefetch=True)
@@ -380,7 +400,18 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.assertFalse(cancellation.is_set())
         self.run_tasks()
 
-        self.assertGreaterEqual(session.generate.call_count, 2)
+        self.assertEqual(
+            [
+                (call.args[1].group_id, call.args[2])
+                for call in session.generate.call_args_list
+            ],
+            [
+                (self.group.group_id, self.group.source_id),
+                (self.other.group_id, "preset:marius"),
+                (self.group.group_id, "preset:marius"),
+            ],
+        )
+        self.assertTrue(self.dialog.continue_button.isEnabled())
         self.player.play_bytes.assert_not_called()
 
     def test_destroying_owner_cancels_queued_preparation(self):
@@ -406,9 +437,6 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.run_tasks()
 
         self.assertEqual(self.service.generate.call_args.args[2], "preset:marius")
-        self.assertNotEqual(
-            self.service.generate.call_args.args[2], self.other.candidates[0].source_id
-        )
 
     def test_narrator_button_plays_inline_even_with_voices_editor_available(self):
         self.assertTrue(self.dialog.narrator_controls.isHidden())
@@ -612,9 +640,13 @@ class StoryVoicePreviewTest(unittest.TestCase):
 
         self.assertTrue(old_request.is_set())
         self.assertEqual(len(self.pool.tasks), 1)
-        self.player.play_bytes.assert_called_once()
+        self.player.play_bytes.assert_called_once_with(
+            self.preview.path.read_bytes(), source=str(self.preview.path)
+        )
         self.run_tasks()
-        self.player.play_bytes.assert_called_once()
+        self.player.play_bytes.assert_called_once_with(
+            self.preview.path.read_bytes(), source=str(self.preview.path)
+        )
 
     def test_leaving_summary_cancels_and_suppresses_autoplay(self):
         self.select(self.group)

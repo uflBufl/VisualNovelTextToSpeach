@@ -346,7 +346,7 @@ class GenerationDatabaseTest(unittest.TestCase):
                 database.write_state(path, value, changed_items=())
                 self.assertEqual(database.read_state(path), value)
 
-    def test_invalid_json_values_fail_without_publishing_state(self):
+    def test_invalid_evidence_fails_without_publishing_state(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "generation-state.sqlite3"
             value = state()
@@ -354,6 +354,16 @@ class GenerationDatabaseTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 database.write_state(path, value)
             self.assertFalse(path.exists())
+
+            for status, review in (("failed", "approved"), ("generated", "approved")):
+                value = state()
+                value["items"]["one"].update(status=status, review_status=review)
+                with (
+                    self.subTest(status=status, review=review),
+                    self.assertRaisesRegex(ValueError, "status"),
+                ):
+                    database.write_state(path, value)
+                self.assertFalse(path.exists())
 
     def test_missing_reads_do_not_create_directories_or_files(self):
         with TemporaryDirectory() as directory:

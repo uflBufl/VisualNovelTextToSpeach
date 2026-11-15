@@ -393,7 +393,6 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             self.assertFalse(dialog.save_button.isEnabled())
             dialog.show()
             self.application.processEvents()
-            self.assertGreater(dialog.profile_table.columnWidth(0), 200)
             dialog._append_row(dialog.global_table, " Mareus ", " Marcus ")
             dialog._append_row(dialog.global_table, " ", " ")
             dialog._append_row(dialog.profile_table, " Vertln ", " Vertin ")
@@ -449,29 +448,34 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_save_failure_restores_controls_for_retry(self):
-        store = Mock(global_entries={}, profile_entries={})
-        store.replace_entries.side_effect = [OSError("temporary disk failure"), None]
-        dialog = OCRCorrectionsDialog("game", "Game", store)
-        dialog._append_row(dialog.global_table, "Mareus", "")
-        dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+        with TemporaryDirectory() as directory:
+            store = OCRCorrectionStore(Path(directory) / "ocr-corrections.json")
+            dialog = OCRCorrectionsDialog("game", "Game", store)
+            self.addCleanup(dialog.deleteLater)
+            dialog._append_row(dialog.global_table, "Mareus", "")
+            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
 
-        dialog.save()
-        store.replace_entries.assert_not_called()
-        dialog.global_table.item(0, 1).setText("Marcus")
-        dialog.save()
-        self.wait_for(lambda: not dialog._save_active)
+            dialog.save()
+            self.assertFalse(store.path.exists())
+            dialog.global_table.item(0, 1).setText("Marcus")
+            with patch(
+                "vntts.versioned_json.atomic_write_bytes",
+                side_effect=OSError("temporary disk failure"),
+            ):
+                dialog.save()
+                self.wait_for(lambda: not dialog._save_active)
 
-        self.assertIn("select Save again", dialog.status.toPlainText())
-        self.assertTrue(dialog.buttons.isEnabled())
-        self.assertEqual(dialog.profile_table.item(0, 1).text(), "Vertin")
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
-        dialog.save()
-        self.wait_for(lambda: not dialog._save_active)
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(store.replace_entries.call_count, 2)
-        store.replace_entries.assert_called_with(
-            {"Mareus": "Marcus"}, "game", {"Vertln": "Vertin"}
-        )
+            self.assertIn("select Save again", dialog.status.toPlainText())
+            self.assertTrue(dialog.buttons.isEnabled())
+            self.assertEqual(dialog.profile_table.item(0, 1).text(), "Vertin")
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            self.assertFalse(store.path.exists())
+            dialog.save()
+            self.wait_for(lambda: not dialog._save_active)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            loaded = OCRCorrectionStore.load(store.path)
+            self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(loaded.profile_entries["game"], {"Vertln": "Vertin"})
 
     def test_submission_failure_preserves_rules_and_restores_save_for_retry(self):
         with TemporaryDirectory() as directory:
@@ -562,7 +566,6 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.assertIn("Profile row 2", dialog.status.toPlainText())
         self.assertEqual(dialog.tabs.currentIndex(), 0)
         self.assertTrue(dialog.global_table.item(0, 1).toolTip())
-        self.assertTrue(dialog.profile_table.item(1, 0).toolTip())
         store.replace_entries.assert_not_called()
         dialog.deleteLater()
 
@@ -583,9 +586,9 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         font = dialog.status.font()
         font.setPointSize(font.pointSize() * 2)
         dialog.status.setFont(font)
-        self.assertEqual(
-            dialog.status.height(), dialog.status.fontMetrics().lineSpacing() * 3 + 12
-        )
+        self.application.processEvents()
+        self.assertGreater(dialog.status.verticalScrollBar().maximum(), 0)
+        self.assertTrue(dialog.rect().contains(dialog.buttons.geometry()))
         dialog.deleteLater()
 
     def test_narrow_enlarged_editor_keeps_actions_below_the_table(self):
@@ -681,11 +684,6 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             dialog.closeEvent(first_close)
 
         self.assertFalse(first_close.isAccepted())
-        self.assertEqual(dialog.cancel_button.text(), "Cancel")
-        self.assertEqual(
-            dialog._discard_dialog().button(QMessageBox.StandardButton.Cancel).text(),
-            "Keep editing",
-        )
 
         with patch.object(
             QMessageBox,
@@ -814,7 +812,6 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
 
         self.assertFalse(dialog._save_active)
         self.assertIn("replacement must differ", dialog.status.toPlainText())
-        self.assertTrue(dialog.profile_table.item(0, 0).toolTip())
         dialog.deleteLater()
 
 

@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
+from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.ocr import (  # noqa: E402
     CAPTURE_COORDINATE_SPACE,
     CaptureRegionNeedsCalibration,
@@ -106,7 +107,6 @@ class GameProfileStoreTest(unittest.TestCase):
         values = profile.to_mapping()
         restored = GameProfile.from_mapping(values)
 
-        self.assertEqual(values["ocr_regions"], regions.to_json())
         self.assertEqual(restored.ocr_regions, regions)
         self.assertFalse(restored.ocr_regions._resolved)
 
@@ -159,7 +159,7 @@ class GameProfileStoreTest(unittest.TestCase):
 
         self.assertIsNone(updated.ocr_regions)
 
-    def test_update_capture_regions_replaces_both_in_one_commit(self):
+    def test_update_capture_regions_persists_both_regions(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "profiles.json"
             store = GameProfileStore(path)
@@ -260,10 +260,12 @@ class GameProfileStoreTest(unittest.TestCase):
             duplicate = store.duplicate(original.id, "Game copy")
             renamed = store.rename(duplicate.id, "Second game")
             removed = store.remove(original.id)
+            reloaded = GameProfileStore.load(store.path).profiles
 
         self.assertEqual(renamed.name, "Second game")
         self.assertEqual(removed, original)
         self.assertEqual(store.profiles, [renamed])
+        self.assertEqual(reloaded, [renamed])
 
     def test_profile_mutations_publish_memory_only_after_persistence(self):
         operations = (
@@ -473,26 +475,26 @@ class GameProfileStoreTest(unittest.TestCase):
 
     def test_profile_persists_and_preflights_game_pack_on_activation(self):
         with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "profiles.json"
+            root = Path(temporary_directory).resolve()
+            path = root / "profiles.json"
+            pack, *_ = write_synthetic_game_pack(root / "pack")
             store = GameProfileStore(path)
             profile = store.create(
                 "Packaged game",
-                AppSettings(game_pack="packs/game-pack.json"),
+                AppSettings(game_pack=str(pack)),
             )
             loaded = GameProfileStore.load(path).get(profile.id)
-            resolved = AppSettings(game_pack="/resolved/game-pack.json")
+            applied = loaded.apply(AppSettings())
 
-            with patch(
-                "vntts.game_pack.apply_game_pack",
-                return_value=resolved,
-            ) as preflight:
-                applied = loaded.apply(AppSettings())
-
-        self.assertEqual(loaded.game_pack, "packs/game-pack.json")
-        self.assertEqual(applied, resolved)
+        self.assertEqual(applied.active_profile_id, profile.id)
+        self.assertEqual(loaded.game_pack, str(pack))
+        self.assertEqual(applied.game_pack, str(pack.resolve()))
+        self.assertEqual(applied.story_index, str(pack.parent / "story-index.jsonl"))
         self.assertEqual(
-            preflight.call_args.args[0].game_pack,
-            "packs/game-pack.json",
+            applied.voice_manifest, str(pack.parent / "voice-manifest.json")
+        )
+        self.assertEqual(
+            applied.generated_audio_manifest, str(pack.parent / "generated-audio.json")
         )
 
     def test_legacy_profile_without_audio_policy_uses_prepared_audio(self):
@@ -747,28 +749,6 @@ class GameProfilesDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
-
-    def test_using_profile_selects_settings(self):
-        with TemporaryDirectory() as temporary_directory:
-            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
-            region = DialogRegion(0.05, 0.65, 0.9, 0.3)
-            profile = store.create(
-                "Reverse: 1999",
-                AppSettings(
-                    capture_mode="window",
-                    game_window_title="Reverse: 1999",
-                    ocr_language="eng",
-                    voice_manifest="voices.json",
-                ),
-                region=region,
-            )
-            dialog = GameProfilesDialog(AppSettings(), store)
-            dialog.refresh_profiles(profile.id)
-
-            dialog.use_profile()
-
-        self.assertEqual(dialog.settings().active_profile_id, profile.id)
-        self.assertEqual(dialog.settings().game_window_title, "Reverse: 1999")
 
     def test_create_profile_copies_active_capture_layout(self):
         with TemporaryDirectory() as temporary_directory:

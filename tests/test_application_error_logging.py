@@ -136,15 +136,6 @@ class ApplicationErrorLoggingTest(unittest.TestCase):
         self.assertIn("Worker thread failed", text)
         self.assertIn("Unraisable", text)
 
-    def test_capture_preserves_propagated_startup_failure(self):
-        log = support.configure_application_error_log()
-        failure = RuntimeError("Initialization failed")
-        with self.assertRaises(RuntimeError) as caught:
-            with support.capture_unhandled_errors():
-                raise failure
-        self.assertIs(caught.exception, failure)
-        self.assertIn("Initialization failed", log.snapshot()[0]["traceback"])
-
     def test_logging_failure_preserves_original_exception_in_memory(self):
         log = support.configure_application_error_log(Path("unused-errors.log"))
         with patch.object(

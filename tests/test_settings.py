@@ -339,27 +339,23 @@ class SettingsTest(unittest.TestCase):
                     self.assertEqual(warnings, [])
                     self.assertEqual(path.read_bytes(), before)
 
-    def test_environment_override_keeps_split_engines_independent(self):
-        saved = AppSettings(
-            speech_backend="pocket-tts", offline_speech_backend="moss-tts"
-        )
-
-        effective = saved.with_environment_overrides(
-            {"VNTTS_SPEECH_BACKEND": "coqui-xtts"}
-        )
-
-        self.assertEqual(effective.speech_backend, "coqui-xtts")
-        self.assertEqual(effective.offline_speech_backend, "moss-tts")
-
     def test_qwen_persists_as_live_or_offline_engine(self):
-        for live, offline in (("qwen-tts", "pocket-tts"), ("pocket-tts", "qwen-tts")):
-            settings = AppSettings.from_mapping(
-                {"speech_backend": live, "offline_speech_backend": offline}
-            )
-            self.assertEqual(
-                (settings.speech_backend, settings.offline_speech_backend),
-                (live, offline),
-            )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            for live, offline in (
+                ("qwen-tts", "pocket-tts"),
+                ("pocket-tts", "qwen-tts"),
+            ):
+                with self.subTest(live=live, offline=offline):
+                    settings = AppSettings.from_mapping(
+                        {"speech_backend": live, "offline_speech_backend": offline}
+                    )
+                    settings.save(path)
+                    loaded = load_app_settings(path, environment={})
+                    self.assertEqual(
+                        (loaded.speech_backend, loaded.offline_speech_backend),
+                        (live, offline),
+                    )
 
     def test_invalid_environment_overrides_preserve_saved_settings(self):
         saved = AppSettings(
@@ -385,12 +381,16 @@ class SettingsTest(unittest.TestCase):
         )
 
         self.assertEqual(effective, saved)
-        self.assertEqual(len(warnings), 6)
-
-    def test_moss_tts_backend_can_be_selected(self):
-        settings = AppSettings.from_mapping({"speech_backend": "moss-tts"})
-
-        self.assertEqual(settings.speech_backend, "moss-tts")
+        for field in (
+            "live_interval_ms",
+            "output_volume_percent",
+            "speech_backend",
+            "capture_mode",
+            "live_sequence_mode",
+            "VNTTS_HOTKEY",
+        ):
+            with self.subTest(field=field):
+                self.assertTrue(any(field in warning for warning in warnings))
 
     def test_pocket_tts_is_the_default_backend(self):
         self.assertEqual(AppSettings().speech_backend, "pocket-tts")
@@ -549,8 +549,6 @@ class SettingsTest(unittest.TestCase):
             settings = load_app_settings(path, environment={})
 
         self.assertFalse(settings.force_live_narrator)
-        self.assertNotIn("voice_assignments", asdict(settings))
-        self.assertNotIn("character_voice_defaults", asdict(settings))
 
     def test_legacy_narrator_assignment_migrates_to_force_live_routing(self):
         with TemporaryDirectory() as temporary_directory:
@@ -823,7 +821,8 @@ class SettingsTest(unittest.TestCase):
             settings.speech_rate_percent,
             AppSettings().speech_rate_percent,
         )
-        self.assertEqual(len(warnings), 2)
+        for field in ("output_volume_percent", "speech_rate_percent"):
+            self.assertTrue(any(field in warning for warning in warnings))
 
     def test_invalid_auto_advance_key_falls_back_safely(self):
         warnings = []

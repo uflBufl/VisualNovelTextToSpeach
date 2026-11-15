@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QKeySequence, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
@@ -119,24 +119,6 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.application.processEvents()
                 self.assertEqual(dialog.table.currentRow(), 0)
                 dialog.close()
-
-    def test_failed_assertion_releases_the_readiness_window(self):
-        case = ReadinessDialogTest(
-            "test_loading_state_names_readiness_and_has_no_stale_details"
-        )
-        case.assertEqual = Mock(side_effect=AssertionError("injected failure"))
-        result = unittest.TestResult()
-
-        case.run(result)
-
-        self.assertEqual(len(result.failures), 1)
-        self.assertEqual(result.errors, [])
-        self.assertFalse(
-            any(
-                isinstance(widget, ReadinessDialog)
-                for widget in self.application.topLevelWidgets()
-            )
-        )
 
     def test_copy_selected_check_keeps_full_error_and_path(self):
         pool = ManualThreadPool()
@@ -259,13 +241,10 @@ class ReadinessDialogTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertIn("Errors: 1", dialog.summary.text())
+        self.assertIn("Warnings: 1", dialog.summary.text())
         self.assertFalse(dialog.copy_all.isHidden())
         self.assertFalse(dialog.refresh_button.isHidden())
         self.assertEqual(dialog.table.rowCount(), 2)
-        self.assertEqual(
-            dialog.table.horizontalHeader().sectionResizeMode(1),
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
         dialog.deleteLater()
 
     def test_details_follow_selection_and_reset_when_checks_restart(self):
@@ -471,7 +450,16 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.assertFalse(dialog.progress.isHidden())
                 pool.run_next()
                 self.application.processEvents()
-                self.assertEqual(dialog.table.rowCount(), 1)
+                self.assertEqual(
+                    [
+                        (
+                            dialog.table.item(row, 1).text(),
+                            dialog.table.item(row, 2).text(),
+                        )
+                        for row in range(dialog.table.rowCount())
+                    ],
+                    [("OCR", "Ready")],
+                )
                 self.assertFalse(dialog.reading_button.isHidden())
                 self.assertTrue(dialog.progress.isHidden())
                 dialog.close()

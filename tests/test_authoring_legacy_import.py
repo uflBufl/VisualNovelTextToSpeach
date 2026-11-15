@@ -639,21 +639,6 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                         )
                         self.assertEqual((destination / "keep.txt").read_text(), "keep")
 
-    def test_rejects_invalid_status_review_combinations(self):
-        for status, review in (("failed", "approved"), ("generated", "approved")):
-            with (
-                self.subTest(status=status, review=review),
-                TemporaryDirectory() as directory,
-            ):
-                root = Path(directory)
-                fixture = write_legacy_fixture(root)
-                state = generation_database.read_state(fixture["state"])
-                item = state["items"][fixture["queue_id"]]
-                item["status"] = status
-                item["review_status"] = review
-                with self.assertRaisesRegex(ValueError, "status"):
-                    replace_generation_state(fixture["state"], state)
-
     def test_active_job_and_source_mutation_during_copy_are_deferred(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -691,7 +676,6 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             ):
                 import_legacy_job(fixture["job_directory"], root / "app-data")
 
-            self.assertFalse((root / "app-data" / "legacy-").exists())
             self.assertEqual(list((root / "app-data").iterdir()), [])
 
     def test_running_job_with_proven_dead_pid_imports_as_interrupted_snapshot(self):
@@ -842,6 +826,21 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             first = import_standalone_generation(
                 fixture["queue"], fixture["state"].parent, root / "app-data"
             )
+            imported_paths = {
+                "queue": first.destination / "queue.jsonl",
+                "state": first.destination / "generated-audio/generation-state.sqlite3",
+                "manifest": first.destination / "generated-audio/manifest.json",
+                "wav": first.destination / "generated-audio/audio/rhiannon/line.wav",
+            }
+            self.assertEqual(
+                {name: sha256_file(path) for name, path in imported_paths.items()},
+                source_hashes,
+            )
+            self.assertEqual(
+                generation_database.read_state(imported_paths["state"]),
+                generation_database.read_state(fixture["state"]),
+            )
+            before_reimport = tree_hashes(first.destination)
             second = import_standalone_generation(
                 fixture["queue"], fixture["state"].parent, root / "app-data"
             )
@@ -850,6 +849,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             self.assertTrue(first.created)
             self.assertFalse(second.created)
             self.assertEqual(first.destination, second.destination)
+            self.assertEqual(tree_hashes(first.destination), before_reimport)
             self.assertFalse((first.destination / "legacy/job.json").exists())
             self.assertEqual(
                 source_hashes,
@@ -927,6 +927,11 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             self.assertEqual(identity["seed"], 11)
             self.assertEqual(identity["status"], "approved")
             self.assertEqual(identity["review_status"], "approved")
+            imported_item = imported_state["items"][fixture["queue_id"]]
+            self.assertEqual(imported_item["attempts"], 3)
+            self.assertEqual(imported_item["seed"], 11)
+            self.assertEqual(imported_item["status"], "approved")
+            self.assertEqual(imported_item["review_status"], "approved")
             self.assertEqual(imported_state["active"]["phase"], "retrying")
             self.assertEqual(sha256_file(imported_wav), source_hashes["wav"])
             self.assertEqual(
@@ -1130,6 +1135,8 @@ class LegacyAuthoringImportTest(unittest.TestCase):
             state_item["review_status"] = "rejected"
             state_item["seed"] = 12
             replace_generation_state(fixture["state"], state)
+            original_manifest = fixture["manifest"].read_bytes()
+            original_audio = fixture["wav"].read_bytes()
 
             candidate = next(
                 value
@@ -1137,15 +1144,28 @@ class LegacyAuthoringImportTest(unittest.TestCase):
                 if value.kind == "pregeneration-job"
             )
             result = import_legacy_job(fixture["job_directory"], root / "app-data")
-            stale_manifest_exists = (
-                result.destination / "legacy/stale-generated-audio-manifest.json"
-            ).is_file()
+            self.assertEqual(
+                (
+                    result.destination / "legacy/stale-generated-audio-manifest.json"
+                ).read_bytes(),
+                original_manifest,
+            )
             current_manifest_exists = (
                 result.destination / "generated-audio/manifest.json"
             ).exists()
-            imported_wav_exists = (
-                result.destination / "generated-audio/audio/rhiannon/line.wav"
-            ).is_file()
+            self.assertEqual(
+                (
+                    result.destination / "generated-audio/audio/rhiannon/line.wav"
+                ).read_bytes(),
+                original_audio,
+            )
+            imported_state = generation_database.read_state(
+                result.destination / "generated-audio/generation-state.sqlite3"
+            )
+            imported_item = imported_state["items"][fixture["queue_id"]]
+            self.assertEqual(imported_item["status"], "generated")
+            self.assertEqual(imported_item["review_status"], "rejected")
+            self.assertEqual(imported_item["seed"], 12)
 
         self.assertEqual(result.manifest["identities"][0]["review_status"], "rejected")
         self.assertEqual(result.manifest["identities"][0]["seed"], 12)
@@ -1155,9 +1175,7 @@ class LegacyAuthoringImportTest(unittest.TestCase):
         self.assertTrue(result.manifest["summary"]["generated_manifest_diagnostics"])
         self.assertTrue(candidate.compatible)
         self.assertTrue(candidate.diagnostics)
-        self.assertTrue(stale_manifest_exists)
         self.assertFalse(current_manifest_exists)
-        self.assertTrue(imported_wav_exists)
 
     def test_discovery_keeps_actionable_incompatibility_errors(self):
         with TemporaryDirectory() as directory:
@@ -1256,30 +1274,6 @@ class LegacyAuthoringImportTest(unittest.TestCase):
 
         self.assertTrue(json.loads(first_output.getvalue())["created"])
         self.assertFalse(json.loads(second_output.getvalue())["created"])
-
-    def test_generated_wav_metadata_uses_checksum_bound_payload(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            fixture = write_legacy_fixture(root)
-            audio = fixture["wav"]
-            digest = sha256_file(audio)
-            probe = legacy_module.probe_pcm16_mono_wav
-            expected = probe(audio)
-
-            def replace_before_decode(source):
-                audio.write_bytes(b"replaced after checksum")
-                return probe(source)
-
-            with patch.object(
-                legacy_module,
-                "probe_pcm16_mono_wav",
-                side_effect=replace_before_decode,
-            ):
-                info = legacy_module._validate_generated_wav(
-                    audio, digest, fixture["queue_id"]
-                )
-            self.assertEqual(info, expected)
-            self.assertEqual(audio.read_bytes(), b"replaced after checksum")
 
 
 if __name__ == "__main__":

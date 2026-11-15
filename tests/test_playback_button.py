@@ -1,6 +1,5 @@
 import os
 import unittest
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -36,10 +35,8 @@ class PlaybackButtonTest(unittest.TestCase):
                 self.assertEqual(
                     button.accessibleName(), f"{action} original reference"
                 )
+                self.assertEqual(button.shortcut(), QKeySequence("Ctrl+P"))
                 self.assertIn("Shortcut:", button.toolTip())
-                with patch("vntts.playback_button.set_action_icon") as render:
-                    set_playback_button_state(button, state, label="original reference")
-                    render.assert_not_called()
 
     def test_custom_shortcut_tooltip_survives_state_changes(self):
         button = QPushButton("Recording")

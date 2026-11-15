@@ -149,30 +149,9 @@ class QueueExtensionTest(unittest.TestCase):
                 ),
             )
             self.assertEqual(binding["extension_id"], ledger["extension_id"])
-            self.assertEqual({path: path.read_bytes() for path in before}, before)
-
-    def test_workspace_binding_matches_validated_queue_and_preserves_public_contract(
-        self,
-    ):
-        with TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            metadata = {"game": "Reverse: 1999", "language": "en"}
-            base = write_voice_generation_queue(
-                root / "base.jsonl", metadata, [item(1)]
-            )
-            addition = write_voice_generation_queue(
-                root / "addition.jsonl", metadata, [item(2)]
-            )
-            output = publish_additive_generation_queue(
-                base, addition, root / "combined.jsonl"
-            )
-            queue, ledger = validate_additive_generation_queue(output, base_queue=base)
-            self.assertEqual(queue.path, output)
-            self.assertIs(ledger, queue.metadata[FIELD])
-            binding = workspace_queue_extension(output, base_queue=base)
             self.assertEqual(binding["queue_sha256"], sha256_file(output))
-            self.assertEqual(binding["extension_id"], ledger["extension_id"])
-            self.assertEqual(binding["added_queue_ids"], [item(2)["queue_id"]])
+            self.assertEqual(binding["added_queue_ids"], [added_item["queue_id"]])
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
 
     def test_workspace_binding_rejects_target_replacement_after_validation(self):
         with TemporaryDirectory() as directory:
@@ -378,7 +357,7 @@ class QueueExtensionTest(unittest.TestCase):
             with self.assertRaisesRegex(QueueExtensionError, "collides"):
                 publish_additive_generation_queue(base, extension, output)
 
-        self.assertFalse(output.exists())
+            self.assertFalse(output.exists())
 
     def test_rejects_changed_game(self):
         with TemporaryDirectory() as directory:

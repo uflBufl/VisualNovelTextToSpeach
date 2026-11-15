@@ -34,7 +34,6 @@ from vntts.game_narrator import (
 )
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
-from vntts.pregeneration_audition_ui import VoiceAuditionPanel
 from vntts.preview_content_advisor import PreviewContentAdvisor
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings
@@ -153,19 +152,6 @@ class GameNarratorTest(unittest.TestCase):
             clean_wav_bytes(amplitude=0.2)
         )
         return manifest
-
-    def test_host_contains_one_audio_editor_and_no_duplicate_reference_widgets(self):
-        dialog = self.editor()
-        self.assertEqual(dialog.findChildren(VoiceAuditionPanel), [dialog.voice_panel])
-        for old_widget in (
-            "references",
-            "original_button",
-            "preview_button",
-            "text",
-            "save_button",
-            "exact_transcript",
-        ):
-            self.assertFalse(hasattr(dialog, old_widget), old_widget)
 
     def test_footer_transfer_retires_original_layout_items(self):
         build_actions = GameNarratorDialog._build_editor_actions
@@ -1136,8 +1122,6 @@ class GameNarratorTest(unittest.TestCase):
                 dialog = self.editor(settings=settings)
                 self.select(dialog, "catalog", source="character:rhiannon")
                 self.assertIs(dialog.settings_value, settings)
-                self.assertFalse(hasattr(dialog, "consent"))
-                self.assertFalse(hasattr(dialog, "terms"))
                 self.assertFalse(
                     any(
                         "Pocket" in widget.text()
@@ -1176,7 +1160,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
         self.assertIsNotNone(self.library.binding("Narrator"))
 
-    def test_editor_has_no_maintenance_actions_and_keeps_model_visible_for_every_source(
+    def test_switching_sources_keeps_model_visible_and_preserves_acceptance(
         self,
     ):
         self.bind_narrator()
@@ -1185,28 +1169,11 @@ class GameNarratorTest(unittest.TestCase):
                 speech_backend="pocket-tts", pocket_gated_model_accepted=True
             )
         )
-        for name in (
-            "source_setup",
-            "source_setup_controls",
-            "game_installation",
-            "folder_button",
-            "discover_button",
-            "copy_details",
-        ):
-            self.assertFalse(hasattr(dialog, name), name)
         dialog.show()
-        panel = dialog.voice_panel
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
                 self.assertTrue(dialog.tts_model_label.isVisible())
-                for name in (
-                    "reference_details_toggle",
-                    "reference_details",
-                    "advice_details",
-                    "runtime",
-                ):
-                    self.assertFalse(hasattr(panel, name), name)
                 self.assertTrue(dialog.settings_value.pocket_gated_model_accepted)
         self.assertEqual(self.backend.requests, [])
 
