@@ -336,9 +336,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the original-speech cue fix below before changing product
-code. Reuse the recorded Hansel chapter; do not repeat the chapter
-for each remaining case. Windows recording acceptance needs its own host.
+Next action: agree how to establish full speech coverage for supplemental voice
+candidates before changing reading. The user deferred that fix and ASR changes;
+resource-family classification alone cannot suppress narration. Reuse the recorded
+Hansel chapter; do not repeat it for each case. Windows acceptance needs its own host.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -349,12 +350,16 @@ for each remaining case. Windows recording acceptance needs its own host.
       key timing and successful source correlation did not detect this duplicate.
       Root cause: extractor resolves story_audio_cues separately, but source-audio
       eligibility, duration and generation policy consider only the primary voice.
-      Proposed change, pending agreement: classify actual dialogue-voice cues in
-      extraction, project their availability/media/duration into the shared original
-      speech contract, and apply it consistently to preparation, discovery and Read.
-      Preserve ordinary sound-effect cues; the newspaper/magic cues53/55 must not
-      suppress narration. Refresh the derived catalog/preparation while reusing
-      compatible audio;59 must use the game voice while53 remains unvoiced/eligible.
+      Reading and ASR changes are explicitly deferred. Before implementation,
+      agree proof of full text coverage: voice-named resources also contain breaths,
+      laughs and barking over narration, so audio_kind=voice_candidate is not proof.
+      Then project verified availability/media/duration into preparation, discovery
+      and Read while preserving ordinary sound effects and unvoiced53 eligibility.
+      Check actual58 ->59 matching too: without bounded sequence context the equal
+      quotes can remain ambiguous, and equivalent-speech reuse may select prepared53
+      even after59 is marked original. Update derived catalogs/preparation without
+      discarding compatible recordings; source-input fingerprints currently omit
+      extractor/policy versions, so a dependency update alone does not refresh them.
       Do not infer an unseen speaker, change fuzzy matching or add a line-specific
       playback guard. Gate: the real cue59 excludes generation and prepared reuse
       for that occurrence, respects original completion, and produces no overlap;
