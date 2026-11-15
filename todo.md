@@ -1,5 +1,12 @@
 # TODO
 
+## Active - Windows empty capture frame pool
+
+- [ ] On Windows, rebuild and qualify Reading setup, calibration and continued
+      capture for the selected game window, including waiting for the first
+      frame and draining the frame pool. Verify display capture and diagnostic
+      video through the shared source loop; portable checks do not qualify WGC.
+
 ## Active - Source build and native component readiness
 
 - [ ] On Windows, run `uv run --no-project python scripts/build.py` from a fresh

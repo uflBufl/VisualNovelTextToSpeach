@@ -72,6 +72,14 @@ fn device_loss_hresult(code: u32) -> bool {
 fn can_recover_device(error: &Failure, recovered: bool) -> bool {
     error.code == "device_lost" && !recovered
 }
+fn optional_frame<T>(result: windows::core::Result<T>) -> windows::core::Result<Option<T>> {
+    match result {
+        Ok(frame) => Ok(Some(frame)),
+        // TryGetNextFrame returns null for an empty pool; windows-rs projects it as S_OK.
+        Err(error) if error.code().0 == 0 => Ok(None),
+        Err(error) => Err(error),
+    }
+}
 fn clock() -> Result<f64, Failure> {
     unsafe {
         let (mut ticks, mut frequency) = (0, 0);
@@ -384,10 +392,9 @@ unsafe fn run_source(
                 // Drain at most the bounded pool capacity. Never retain a native frame after Close.
                 let mut latest: Option<Direct3D11CaptureFrame> = None;
                 for _ in 0..2 {
-                    let frame = match native.pool.TryGetNextFrame() {
-                        Ok(frame) => frame,
-                        Err(error) if error.code().0 as u32 == 0x80004003 => break,
-                        Err(error) => return Err(error.into()),
+                    let frame = match optional_frame(native.pool.TryGetNextFrame())? {
+                        Some(frame) => frame,
+                        None => break,
                     };
                     if let Some(previous) = latest.replace(frame) {
                         let _ = previous.Close();
@@ -816,6 +823,24 @@ unsafe fn validate_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_frame_pool_is_not_a_capture_failure() {
+        let empty = unsafe {
+            <Direct3D11CaptureFrame as windows::core::Type<Direct3D11CaptureFrame>>::from_abi(
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(empty.as_ref().unwrap_err().code().0, 0);
+        assert!(optional_frame(empty).unwrap().is_none());
+        assert_eq!(optional_frame(Ok(42)).unwrap(), Some(42));
+        for code in [0x80004003u32, 0x80070005, 0x887A0005] {
+            let error = windows::core::Error::from_hresult(windows::core::HRESULT(code as i32));
+            assert_eq!(
+                optional_frame::<()>(Err(error)).unwrap_err().code().0 as u32,
+                code
+            );
+        }
+    }
     fn stopped_source() -> Source {
         let (done_tx, done) = mpsc::channel();
         done_tx.send(()).unwrap();
