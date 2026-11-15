@@ -1,17 +1,18 @@
 # Standalone Windows Graphics Capture helper
 
 Requires Windows 10 version 2004 (build 19041) or newer, including Windows 11.
-This source-stage helper is not yet integrated into the Python application or
-release bundles. Live Windows testing is a separate owner-run check, not a
-prerequisite for integration or merging this change.
+The Python application launches this helper automatically for selected-window
+and explicit display capture through the common native-capture protocol.
 
-Build on Windows with Rust's `x86_64-pc-windows-msvc` toolchain and Visual Studio
-C++ build tools:
+Prepare the source application from the project root with Rust's
+`x86_64-pc-windows-msvc` toolchain and Visual Studio C++ build tools installed:
 
 ```powershell
-.\scripts\build-windows-capture.ps1
+uv run --no-project python scripts/build.py
 ```
 
+This installs Python dependencies and builds both native workers. To rebuild only
+the capture helper, use `powershell -File scripts/build-windows-capture.ps1`.
 The executable is staged at
 `native/capture-worker/windows/target/release/vntts-capture-worker.exe`. Build dependencies are
 pinned in Cargo.lock. Focused portable tests:

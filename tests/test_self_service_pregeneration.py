@@ -861,7 +861,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 AppSettings(),
                 controller_factory=Mock(return_value=controller),
             )
-            with patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog):
+            with (
+                patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog),
+                patch("vntts.app.check_audio_runtime"),
+            ):
                 tray.open_pregeneration()
                 dialog.select_all_button.click()
                 dialog.continue_button.click()
@@ -869,7 +872,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 tray.dashboard.show_reading()
                 self.assertIs(tray.open_pregeneration(), dialog)
                 tray.prepare_reading()
-                self.assertIsNone(tray.onboarding_wizard)
+                self.assertIsNotNone(tray.onboarding_wizard)
+                self.assertTrue(dialog.has_pending_work())
+                tray.onboarding_wizard.reject()
+                self.application.processEvents()
                 controller.start.assert_not_called()
                 with patch.object(self.application, "quit") as quit_application:
                     tray.dashboard.quit_button.click()

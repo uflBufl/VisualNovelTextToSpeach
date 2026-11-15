@@ -428,12 +428,12 @@ class ReadinessDialog(QDialog):
         if result.remediation == "external-ocr":
             self._show_ocr_remediation(result)
             return
-        if result.remediation == "external-audio-runtime":
+        if result.remediation in {"external-audio-runtime", "external-capture-runtime"}:
             self.details_toggle.setChecked(True)
             self.remediation_reason.setText(
                 "Follow the installation instructions in Full check details, "
                 "then run checks again. "
-                "VNTTS starts its audio worker automatically."
+                "VNTTS starts its native worker automatically."
             )
             return
         if result.remediation == "external-audio":

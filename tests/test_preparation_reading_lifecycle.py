@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool, Signal  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QWidget  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
@@ -18,7 +18,7 @@ from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.game_pack import import_game_pack  # noqa: E402
-from vntts.settings import AppSettings  # noqa: E402
+from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 
 
 class PreparationPanel(QDialog):
@@ -35,6 +35,8 @@ class PreparationPanel(QDialog):
         self.pending_work = True
         self.requests = []
         self.observations = []
+        self.publisher = SimpleNamespace(base_pack=None)
+        self.reading_status = QLabel(self)
         self.readingLineObserved.connect(
             lambda line_id, text_hash: self.observations.append((line_id, text_hash))
         )
@@ -45,6 +47,15 @@ class PreparationPanel(QDialog):
 
     def has_pending_work(self):
         return self.pending_work
+
+    def set_reading_status(self, message):
+        self.reading_status.setText(message)
+
+    def apply_playback_settings(self, settings):
+        self.playback_settings = settings
+
+    def apply_narrator_settings(self, settings):
+        self.settings = settings
 
     def job(self):
         return self.current_job
@@ -156,6 +167,202 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(isValid(panel))
         self.assertIsNone(tray.pregeneration_dialog)
+
+    def _setup_during_generation(self):
+        tray, controller, panel, saved = self._tray()
+        saved = saved.updated(
+            onboarding_completed=False,
+            speech_rate_percent=125,
+            force_live_narrator=True,
+            audio_source_policy="prefer-generated",
+        )
+        tray.settings = controller.settings = saved
+        tray._controller_ready = controller.is_ready = False
+        controller.unresolved_live_speakers.return_value = ()
+        controller.start.side_effect = lambda: (
+            setattr(controller, "is_ready", True) or True
+        )
+        controller.test_current_dialog.return_value = ("Narrator", "Ready dialogue.")
+        controller.last_audio_source_description = "prepared"
+        tray.dashboard.show_stories()
+        tray._read_prepared_story(True)
+        wizard = tray.onboarding_wizard
+        self.assertIsNotNone(wizard)
+        self.assertTrue(wizard.isVisible())
+        self.assertIn("setup", panel.reading_status.text())
+        self.assertTrue(panel.generating)
+        pool = ManualThreadPool()
+        tray.onboarding_test_runner.thread_pool = pool
+        tray.configuration_runner.thread_pool = pool
+        wizard.show_page(len(wizard.pages) - 1)
+        wizard.test_page.run_test()
+        pool.run_next()
+        self.application.processEvents()
+        self.assertTrue(wizard.test_page.successful, wizard.test_page.status.text())
+        self.assertEqual(
+            controller.settings.generated_audio_manifest,
+            panel.current_settings.generated_audio_manifest,
+        )
+        self.assertEqual(controller.settings.speech_rate_percent, 100)
+        controller.start.assert_not_called()
+        return tray, controller, panel, saved, wizard, pool
+
+    def test_setup_preserves_progress_source_without_saving_playback_overrides(self):
+        tray, controller, panel, saved, wizard, pool = self._setup_during_generation()
+        tray.initial_start_runner.thread_pool = pool
+        with patch.object(tray, "schedule_hotkeys"):
+            wizard.accept()
+            self.application.processEvents()
+            pool.run_next()
+            self.application.processEvents()
+        self.assertIsNone(tray.onboarding_wizard)
+        self.assertTrue(panel.generating)
+        self.assertTrue(panel.has_pending_work())
+        self.assertEqual(panel.settings.speech_rate_percent, 100)
+        self.assertTrue(tray.settings.onboarding_completed)
+        persisted = load_app_settings(self.root / "settings.json", environment={})
+        for name in ("speech_rate_percent", "force_live_narrator", "audio_source_policy"):
+            self.assertEqual(getattr(persisted, name), getattr(saved, name))
+        self.assertIsNone(persisted.generated_audio_manifest)
+        self.assertEqual(
+            tray._runtime_settings().generated_audio_manifest,
+            panel.current_settings.generated_audio_manifest,
+        )
+        self.assertIn("Select Read", panel.reading_status.text())
+        controller.toggle_live.assert_not_called()
+        with (
+            patch.object(tray, "schedule_hotkeys"),
+            patch.object(tray, "_start_live_with_available_scope", return_value=True) as start,
+        ):
+            tray.toggle_live()
+        start.assert_called_once_with()
+        self.assertEqual(
+            controller.settings.generated_audio_manifest,
+            panel.current_settings.generated_audio_manifest,
+        )
+        self.assertTrue(panel.generating)
+
+    def test_cancelled_or_unsaved_setup_restores_runtime_and_leaves_generation_running(self):
+        for outcome in ("cancel", "save-error"):
+            with self.subTest(outcome=outcome):
+                tray, controller, panel, saved, wizard, pool = self._setup_during_generation()
+                with patch.object(
+                    tray, "_save_settings_candidate", side_effect=OSError("disk full")
+                ):
+                    if outcome == "cancel":
+                        wizard.reject()
+                    else:
+                        wizard.accept()
+                    self.application.processEvents()
+                self.assertIsNone(tray._onboarding_reading_settings)
+                self.assertFalse(tray.settings.onboarding_completed)
+                self.assertIn("Select Read", panel.reading_status.text())
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(controller.settings, saved)
+                self.assertTrue(panel.generating)
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_setup_tracks_finished_story_order_and_keeps_the_same_generation_source(self):
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                tray, controller, panel, _saved, wizard, pool = self._setup_during_generation()
+                sequence = self.root / "finished-sequence.json"
+                sequence.write_text("{}")
+                panel.current_settings = panel.current_settings.updated(
+                    live_sequence_plan=str(sequence), live_sequence_mode="audio-auto"
+                )
+                panel.generating = panel.pending_work = not completed
+                tray.initial_start_runner.thread_pool = pool
+                with patch.object(tray, "schedule_hotkeys"):
+                    wizard.accept()
+                    self.application.processEvents()
+                    pool.run_next()
+                    self.application.processEvents()
+                self.assertEqual(controller.settings.live_sequence_plan, str(sequence))
+                self.assertEqual(tray._runtime_settings().live_sequence_plan, str(sequence))
+                self.assertEqual(panel.has_pending_work(), not completed)
+                controller.speech_backend.progress_line_observed("line", "hash")
+                self.application.processEvents()
+                self.assertIn(("line", "hash"), panel.observations)
+                tray.shutdown()
+
+    def test_setup_does_not_switch_to_another_preparation_opened_before_save(self):
+        tray, controller, panel, saved, wizard, pool = self._setup_during_generation()
+        selected = controller.settings.generated_audio_manifest
+        panel.current_settings = self._progress_settings("another", saved)
+        tray.initial_start_runner.thread_pool = pool
+        with patch.object(tray, "schedule_hotkeys"):
+            wizard.accept()
+            self.application.processEvents()
+            pool.run_next()
+            self.application.processEvents()
+        self.assertEqual(controller.settings.generated_audio_manifest, selected)
+        self.assertEqual(tray._runtime_settings().generated_audio_manifest, selected)
+        controller.speech_backend.progress_line_observed("old", "hash")
+        self.application.processEvents()
+        self.assertEqual(panel.observations, [])
+
+    def test_setup_from_reading_is_available_during_generation_and_defers_activation(self):
+        tray, _controller, panel, _saved = self._tray()
+        tray.settings = tray.settings.updated(onboarding_completed=False, game_window_title="Game")
+        tray.dashboard.set_configuration(tray.settings)
+        tray.set_ready(False)
+        tray.dashboard.prepare_reading_button.click()
+        self.assertIsNotNone(tray.onboarding_wizard)
+        panel.defer_activation = Mock()
+        tray._activate_ready_preparation()
+        panel.defer_activation.assert_called_once()
+        self.assertTrue(panel.generating)
+        tray.onboarding_wizard.reject()
+
+    def test_stories_read_explains_when_another_setup_is_already_open(self):
+        tray, _controller, panel, _saved = self._tray()
+        tray.settings = tray.settings.updated(onboarding_completed=False)
+        tray.run_onboarding()
+        wizard = tray.onboarding_wizard
+        tray._read_prepared_story(True)
+        self.assertIs(tray.onboarding_wizard, wizard)
+        self.assertIsNone(tray._onboarding_reading_settings)
+        self.assertIn("Finish or cancel", panel.reading_status.text())
+        wizard.reject()
+
+    def test_stories_read_explains_runtime_and_source_blockers_locally(self):
+        for blocker, reason in (
+            ("loading", "updating"),
+            ("audio", "audio missing"),
+            ("source", "not ready"),
+        ):
+            with self.subTest(blocker=blocker):
+                tray, controller, panel, _saved = self._tray()
+                if blocker == "loading":
+                    tray._controller_busy = True
+                elif blocker == "source":
+                    panel.current_settings = None
+                with patch(
+                    "vntts.app.check_audio_runtime",
+                    side_effect=RuntimeError("audio missing") if blocker == "audio" else None,
+                ):
+                    tray._read_prepared_story(True)
+                self.assertIn(reason, panel.reading_status.text())
+                controller.toggle_live.assert_not_called()
+                self.assertTrue(panel.generating)
+                tray._controller_busy = False
+                tray.shutdown()
+
+    def test_failed_reading_initialization_is_reported_beside_stories_read(self):
+        tray, controller, panel, _saved = self._tray()
+        tray._controller_ready = controller.is_ready = False
+        controller.start.return_value = False
+        pool = ManualThreadPool()
+        tray.initial_start_runner.thread_pool = pool
+        tray._read_prepared_story(True)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertIn("Unable to initialize reading", panel.reading_status.text())
+        self.assertTrue(panel.generating)
+        controller.toggle_live.assert_not_called()
 
     def test_close_during_speech_pause_or_audio_wait_keeps_reading_source(self):
         for snapshot in ({"speaking": True}, {"paused": True}, {"queued": True}):

@@ -34,9 +34,7 @@ _workers_lock = Lock()
 _discovery_generation = 0
 
 
-AUDIO_WORKER_BUILD_COMMAND = (
-    "cargo build --release --locked --manifest-path native/audio-worker/Cargo.toml"
-)
+AUDIO_WORKER_BUILD_COMMAND = "uv run --no-project python scripts/build.py"
 
 
 class AudioRuntimeUnavailable(RuntimeError):
@@ -181,7 +179,8 @@ class RustAudioWorker:
                 ) from error
             if ready.get("event") != "ready" or ready.get("protocol") != 2:
                 raise RuntimeError(
-                    "Rust audio worker protocol mismatch; rebuild native/audio-worker with Cargo"
+                    "Rust audio worker protocol mismatch; rebuild from the project directory: "
+                    f"{AUDIO_WORKER_BUILD_COMMAND}"
                 )
             self.startup_ms = (monotonic() - started) * 1000
             self.ready = ready

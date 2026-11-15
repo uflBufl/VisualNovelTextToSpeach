@@ -56,6 +56,74 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         self.display_target = self.enterContext(
             patch("vntts.onboarding.DisplayCaptureTarget")
         )
+        self.capture_worker_probe = self.enterContext(
+            patch(
+                "vntts.onboarding.probe_capture_worker", return_value="capture-worker"
+            )
+        )
+
+    def test_component_readiness_is_independent_from_source_selection(self):
+        diagnostics = OnboardingDiagnostics(
+            tesseract_probe=lambda: "5.5.0",
+            audio_probe=lambda: "Speakers",
+            permission_status_provider=granted_permissions,
+        )
+        results = {
+            result.name: result
+            for result in diagnostics.run(AppSettings(capture_mode="window"))
+        }
+        self.assertEqual(results["Capture component"].status, "ok")
+        self.assertEqual(results["Capture source"].status, "error")
+        self.capture_worker_probe.assert_called_once_with(cancellation=None)
+        self.window_target.assert_not_called()
+
+    def test_missing_or_incompatible_component_has_build_guidance_and_can_recover(self):
+        build_command = "uv run --no-project python scripts/build.py"
+        for error in (
+            OSError("Missing worker"),
+            RuntimeError("Incompatible protocol"),
+            RuntimeError(f"Missing worker. Run: {build_command}"),
+        ):
+            with self.subTest(error=error):
+                self.capture_worker_probe.side_effect = error
+                with self.assertLogs("vntts.onboarding", level="ERROR"):
+                    result = OnboardingDiagnostics()._check_capture_worker()
+                self.assertEqual(result.status, "error")
+                self.assertEqual(result.remediation, "external-capture-runtime")
+                self.assertIn(str(error), result.message)
+                self.assertEqual(result.message.count(build_command), 1)
+                self.assertIn("automatically", result.message)
+        self.capture_worker_probe.side_effect = None
+        self.assertEqual(OnboardingDiagnostics()._check_capture_worker().status, "ok")
+
+    def test_source_is_only_probed_when_the_capture_component_is_ready(self):
+        for failure in (RuntimeError("Capture worker timed out"), None):
+            with self.subTest(component_ready=failure is None):
+                self.window_target.reset_mock()
+                self.capture_worker_probe.side_effect = failure
+                diagnostics = OnboardingDiagnostics(
+                    tesseract_probe=lambda: "5.5.0",
+                    audio_probe=lambda: "Speakers",
+                    permission_status_provider=granted_permissions,
+                )
+                results = diagnostics.run(
+                    AppSettings(capture_mode="window", game_window_title="Game")
+                )
+                self.assertEqual(
+                    [result.name for result in results[:3]],
+                    ["Hotkeys", "Capture component", "Capture source"],
+                )
+                source = results[2]
+                if failure is None:
+                    self.assertEqual(source.status, "ok")
+                    self.window_target.return_value.capture_native.assert_called_once_with(
+                        cancel=None
+                    )
+                else:
+                    self.assertEqual(source.status, "warning")
+                    self.assertIn("Not checked", source.message)
+                    self.window_target.assert_not_called()
+                    self.window_target.return_value.capture_native.assert_not_called()
 
     def test_capture_readiness_probes_native_source_and_always_closes(self):
         for mode, factory in (
@@ -1615,6 +1683,25 @@ class OnboardingWizardTest(unittest.TestCase):
 
         self.assertIn("Requirements section", page.remediation_reason.text())
         self.assertFalse(page.remediation_button.isEnabled())
+        wizard.deleteLater()
+
+    def test_capture_installation_guidance_has_no_inert_help_action(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.diagnostics_page
+        instruction = "From the project directory run: uv run --no-project python scripts/build.py"
+        page._checks_finished(
+            (
+                DiagnosticResult(
+                    "Capture component",
+                    "error",
+                    instruction,
+                    "external-capture-runtime",
+                ),
+            ),
+            None,
+        )
+        self.assertEqual(page.remediation_reason.text(), instruction)
+        self.assertTrue(page.remediation_button.isHidden())
         wizard.deleteLater()
 
     def test_successful_test_has_one_explicit_finish_handoff(self):

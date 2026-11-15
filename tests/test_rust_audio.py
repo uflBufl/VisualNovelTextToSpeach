@@ -108,7 +108,7 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
         self.assertEqual(
             raised.exception.summary, "The audio component is not installed."
         )
-        self.assertIn("cargo build --release", str(raised.exception))
+        self.assertIn("uv run --no-project python scripts/build.py", str(raised.exception))
 
     def test_missing_worker_is_actionable_and_can_be_installed_then_retried(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -142,7 +142,7 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
         with (
             patch("vntts.rust_audio.subprocess.Popen", side_effect=tracked_launch),
             patch.object(RustAudioWorker, "receive", side_effect=queue.Empty),
-            self.assertRaisesRegex(RuntimeError, "startup timed out.*cargo build"),
+            self.assertRaisesRegex(RuntimeError, "startup timed out.*scripts/build.py"),
         ):
             RustAudioWorker([sys.executable, "-c", "import time; time.sleep(30)"])
         self.assertEqual(len(processes), 1)

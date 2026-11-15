@@ -17,8 +17,11 @@ from uuid import UUID
 from vntts.native_capture import (
     CaptureError,
     NativeCaptureSession,
+    probe_capture_worker,
+    worker_command,
     worker_executable,
 )
+from vntts.runtime_preparation import RuntimePreparationCancelled
 
 PEER = r"""
 import json, sys, time
@@ -78,6 +81,146 @@ def session(mode="normal", **kwargs):
     return NativeCaptureSession(
         {"kind": "window", "window_id": 17, "pid": 29}, command=command(mode), **kwargs
     )
+
+
+PROBE_PEER = r"""
+import json, pathlib, sys, time
+request = json.loads(sys.stdin.buffer.readline())
+assert request == dict(version=0, id=1, op="close",
+    session_id="00000000-0000-0000-0000-000000000001")
+mode = sys.argv[1]
+if mode == "cancel": pathlib.Path(sys.argv[2]).touch()
+if mode in ("hang", "cancel"): time.sleep(30)
+if mode in ("noisy-output", "noisy-errors"):
+    stream = sys.stdout if mode == "noisy-output" else sys.stderr
+    stream.write("x" * 65537)
+    stream.flush()
+    time.sleep(30)
+if mode == "exit":
+    sys.stderr.write("component loader failed")
+    sys.exit(3)
+if mode == "oversized":
+    print("x" * 65537)
+    sys.exit()
+if mode == "malformed":
+    print("not JSON")
+    sys.exit()
+response = dict(version=2, id=1 if mode == "unsupported_version" else 0, ok=False, frame_bytes=0,
+    error=dict(code=mode if mode == "unsupported_version" else "protocol_version"))
+if mode == "wrong-version": response["version"] = 1
+if mode == "float-version": response["version"] = 2.0
+if mode == "wrong-id": response["id"] = 2
+if mode == "bool-id": response["id"] = False
+if mode == "missing-id": del response["id"]
+if mode == "success": response["ok"] = True
+if mode == "bool-size": response["frame_bytes"] = False
+if mode == "payload": response["frame_bytes"] = 4
+if mode == "wrong-error": response["error"]["code"] = "invalid_session"
+if mode == "malformed-error": response["error"]["code"] = []
+if mode == "missing-error": del response["error"]
+if mode == "array": response = []
+print(json.dumps(response))
+"""
+
+
+class CaptureComponentProbeTest(unittest.TestCase):
+    def setUp(self):
+        self.command = self.enterContext(patch("vntts.native_capture.worker_command"))
+        self.shared_memory = self.enterContext(
+            patch("vntts.native_capture.SharedMemory")
+        )
+        self.children = []
+        self.outputs = []
+        real_popen = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            self.children.append(process)
+            self.outputs.extend((kwargs["stdout"], kwargs["stderr"]))
+            return process
+
+        self.enterContext(
+            patch("vntts.native_capture.subprocess.Popen", side_effect=popen)
+        )
+
+    def tearDown(self):
+        self.shared_memory.assert_not_called()
+        for process in self.children:
+            self.assertIsNotNone(process.poll())
+            self.assertTrue(process.stdin.closed)
+        for output in self.outputs:
+            self.assertTrue(output.closed)
+
+    def peer(self, mode, *args):
+        self.command.return_value = [sys.executable, "-c", PROBE_PEER, mode, *args]
+
+    def test_launch_and_protocol_check_never_opens_a_capture_session(self):
+        for rejection in ("protocol_version", "unsupported_version"):
+            with self.subTest(rejection=rejection):
+                self.peer(rejection)
+                self.assertEqual(
+                    probe_capture_worker(), " ".join(self.command.return_value)
+                )
+
+    def test_incompatible_and_unbounded_responses_are_rejected(self):
+        for mode in (
+            "wrong-version",
+            "float-version",
+            "wrong-id",
+            "bool-id",
+            "missing-id",
+            "success",
+            "bool-size",
+            "payload",
+            "wrong-error",
+            "malformed-error",
+            "missing-error",
+            "array",
+            "malformed",
+            "oversized",
+        ):
+            with self.subTest(mode=mode):
+                self.peer(mode)
+                with self.assertRaises(CaptureError) as caught:
+                    probe_capture_worker()
+                self.assertEqual(caught.exception.code, "protocol_error")
+
+    def test_noisy_live_worker_is_rejected_before_the_startup_deadline(self):
+        for mode in ("noisy-output", "noisy-errors"):
+            with self.subTest(mode=mode):
+                self.peer(mode)
+                with self.assertRaises(CaptureError) as caught:
+                    probe_capture_worker(timeout=5)
+                self.assertEqual(caught.exception.code, "protocol_error")
+
+    def test_failed_launch_or_loader_error_is_reported(self):
+        self.command.return_value = [
+            str(Path(tempfile.gettempdir()) / "missing-capture-component")
+        ]
+        with self.assertRaises(OSError):
+            probe_capture_worker()
+        self.peer("exit")
+        with self.assertRaisesRegex(CaptureError, "component loader failed"):
+            probe_capture_worker()
+
+    def test_hung_worker_is_killed_and_reaped_on_timeout_or_cancellation(self):
+        self.peer("hang")
+        with self.assertRaises(CaptureError) as caught:
+            probe_capture_worker(timeout=0.1)
+        self.assertEqual(caught.exception.code, "worker_timeout")
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "started"
+            self.peer("cancel", str(marker))
+            with self.assertRaises(RuntimePreparationCancelled):
+                probe_capture_worker(cancellation=marker.is_file, timeout=5)
+
+    def test_precancelled_probe_never_resolves_or_launches_worker(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with self.assertRaises(RuntimePreparationCancelled):
+            probe_capture_worker(cancellation=cancelled)
+        self.command.assert_not_called()
+        self.assertEqual(self.children, [])
 
 
 class NativeCaptureTest(unittest.TestCase):
@@ -313,6 +456,38 @@ class NativeCaptureTest(unittest.TestCase):
 
 
 class WorkerResolverTest(unittest.TestCase):
+    def test_component_probe_bypasses_wayland_preflight_but_capture_still_refuses_it(
+        self,
+    ):
+        from vntts.window_capture import WindowCaptureUnavailableError
+
+        real_popen = subprocess.Popen
+        expected = [sys.executable, "-m", "vntts.x11_capture_worker"]
+
+        def peer(command, **kwargs):
+            self.assertEqual(command, expected)
+            return real_popen(
+                [sys.executable, "-c", PROBE_PEER, "protocol_version"], **kwargs
+            )
+
+        with (
+            patch("vntts.native_capture.sys.platform", "linux"),
+            patch("vntts.native_capture.sys.frozen", False, create=True),
+            patch.dict(
+                os.environ,
+                {"XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0"},
+                clear=True,
+            ),
+            patch("vntts.native_capture.subprocess.Popen", side_effect=peer) as launch,
+        ):
+            with self.assertRaisesRegex(
+                WindowCaptureUnavailableError, "native Wayland"
+            ):
+                worker_command()
+            launch.assert_not_called()
+            self.assertEqual(probe_capture_worker(), " ".join(expected))
+            launch.assert_called_once()
+
     def test_explicit_worker_requires_executable_without_starting_it(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "worker"
@@ -324,16 +499,14 @@ class WorkerResolverTest(unittest.TestCase):
                 self.assertEqual(worker_executable(), path)
 
     def test_source_paths_and_build_guidance(self):
-        for platform, suffix, build in (
+        for platform, suffix in (
             (
                 "darwin",
                 "macos/build/vntts-capture-worker",
-                "scripts/build-macos-capture.sh",
             ),
             (
                 "win32",
                 "windows/target/release/vntts-capture-worker.exe",
-                "scripts/build-windows-capture.ps1",
             ),
         ):
             with (
@@ -342,7 +515,9 @@ class WorkerResolverTest(unittest.TestCase):
                 patch("vntts.native_capture.sys.platform", platform),
                 patch("vntts.native_capture.Path.is_file", return_value=False),
             ):
-                with self.assertRaisesRegex(CaptureError, build):
+                with self.assertRaisesRegex(
+                    CaptureError, "uv run --no-project python scripts/build.py"
+                ):
                     worker_executable()
                 with (
                     patch("vntts.native_capture.Path.is_file", return_value=True),

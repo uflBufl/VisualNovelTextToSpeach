@@ -1,5 +1,19 @@
 # TODO
 
+## Active - Source build and native component readiness
+
+- [ ] On Windows, run `uv run --no-project python scripts/build.py` from a fresh
+      source checkout with the documented tools installed. Confirm both workers
+      are discovered by the app and Check readiness verifies capture startup and
+      protocol independently from actual window capture. Keep package/installer
+      work outside this source workflow.
+
+## Active - Reading setup during story generation
+
+- [ ] Qualify on Windows: read a ready chapter from Stories while later chapters
+      continue generating; complete/cancel setup and retry without losing the
+      selected source. Native capture must be installed for this gate.
+
 ## Active - Remaining dialogue recognition and original-speech qualification
 
 - [ ] Qualify unknown-symbol waiting separately from recognized punctuation.
@@ -1779,6 +1793,12 @@ separate future gate.
 
 ## Repair failing regression tests
 
+- [ ] Reconcile `test_retained_leases_preserve_typed_dialogue_announcements_and_cancellation`
+      with the current `prepare_route(..., first_observed_at=None)` call. Wrapped
+      worker/native cases fail identically on clean `405e9b3e` and the Reading
+      setup change. Check the timestamp forwarding contract before updating the
+      expectation; keep typed dialogue, announcements and cancellation assertions.
+
 - [ ] Investigate `test_macos_setup_save_keeps_reading_handoff_after_deferred_hotkey_refresh`: accepting the setup leaves `Restoring the saved Reading setup...` instead of `Reading setup saved`. The changed-test selector and isolated runs on both the working tree and unchanged `01712c05` reproduce the failure. Trace the preview acceptance/save/restore flow. Gate: the test passes with durable settings and the start-reading handoff preserved.
 
 - [ ] Reproduce and fix `test_normal_subprocess_cancel_persists_typed_cancellation_after_real_child_exit`: after the child exits, `state["items"][queue_id]` is missing (`KeyError: line:one:5f2598bcb8bae8b4`). The October26 changed-test selector and an isolated run against untouched HEAD06699fc3 fail identically. Trace queue/state publication before changing cancellation timing. Gate: the real-child cancellation retains its typed cancelled item, with no stale publication after cancellation.
@@ -1833,11 +1853,11 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       files at `3bee3b79`; source-progress changes introduce no new findings.
       Inspect actual complexity before updating the baseline.
 
-- [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: its first
-      process reports `The prepared pack was not activated`. Reproduces alone
-      on unmodified HEAD `9df359d3`, before the diagnostic scan fix. Check the
-      activation scheduling and fixture contract; preserve the real fresh-install
-      preparation/restart path rather than weakening its assertion.
+- [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: the
+      preparation/restart journey still fails on clean `405e9b3e`: the second
+      process routes a prepared narrator line into live synthesis. Check saved
+      pack activation and the restart routing contract; preserve the real
+      fresh-install preparation/restart path rather than weakening its assertion.
 
 ## Qualify SQLite-only storage
 

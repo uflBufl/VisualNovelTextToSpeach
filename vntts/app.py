@@ -1916,6 +1916,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._initialize_runners(pregeneration_activator)
         self._initialize_session_state(profile_store, correction_store)
+        self._onboarding_reading_settings: AppSettings | None = None
         self._build_actions()
         self._build_main_menu()
         self._build_setup_and_support_menus()
@@ -2862,20 +2863,35 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.show_reading()
 
     def prepare_reading(
-        self, *, start_live: bool = False, require_preparation: bool = False
+        self,
+        *,
+        start_live: bool = False,
+        require_preparation: bool = False,
+        reading_settings: AppSettings | None = None,
     ) -> None:
         if self._controller_busy or self._shutting_down:
+            self._set_reading_status(
+                "VNTTS is shutting down."
+                if self._shutting_down
+                else "Reading controls are updating. Try Read again when ready."
+            )
             return
         if self.narrator_dialog is not None:
+            self._set_reading_status("Save or cancel your voice selection before reading.")
             self.dashboard.show_voices()
             return
         if not self._audio_runtime_available():
+            self._set_reading_status(
+                self._audio_runtime_error or "Select Audio setup before reading."
+            )
             return
-        runtime_settings, source_available = self._reading_source_choice(
-            require_preparation=require_preparation
+        runtime_settings, source_available = (
+            (reading_settings, True)
+            if reading_settings is not None
+            else self._reading_source_choice(require_preparation=require_preparation)
         )
         if not source_available and require_preparation:
-            self.set_status(
+            self._set_reading_status(
                 "This preparation is not ready for reading yet. "
                 "Continue preparation and wait for Read to become available."
             )
@@ -2895,7 +2911,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         self._show_preparation_reading(runtime_settings)
         if not self.settings.onboarding_completed:
-            self.run_onboarding()
+            self._set_reading_status(
+                "Finish Reading setup to read this story. Background preparation will continue."
+                if require_preparation
+                else "Finish Reading setup before starting to read."
+            )
+            if require_preparation:
+                self.run_onboarding(reading_settings=runtime_settings)
+            else:
+                self.run_onboarding()
             return
         if (
             runtime_settings is not None
@@ -2911,7 +2935,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._start_live_after_initial_start = bool(start_live)
         self._initial_start_settings = runtime_settings
         self._initial_start_sequence_reason = sequence_reason
-        self.set_status(
+        self._set_reading_status(
             "Preparing reading; it will start automatically when ready."
             if start_live
             else "Loading the speech model and voices; controls will unlock "
@@ -2924,6 +2948,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             runtime_settings or self._runtime_settings(),
         )
 
+    def _set_reading_status(self, message: str) -> None:
+        self.set_status(message)
+        if self.pregeneration_dialog is not None:
+            self.pregeneration_dialog.set_reading_status(message)
+
     def _attach_preparation_reading(
         self, runtime_settings: AppSettings, *, start_live: bool, sequence_reason: SequenceUnavailableReason | None = None
     ) -> bool:
@@ -2932,6 +2961,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._finish_controller_lifecycle()
         if applied is False:
             self.show_error("Unable to connect in-progress prepared audio")
+            self._set_reading_status(
+                "Unable to connect prepared audio. Select Read to try again."
+            )
             return True
         self._retain_preparation_reading(runtime_settings, sequence_reason=sequence_reason)
         if self.controller.is_ready:
@@ -2942,7 +2974,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 backend.progress_wait_request = dialog.prioritize_line
                 backend.progress_line_observed = dialog.readingLineObserved.emit
             self._apply_controller_action_state()
-            self.set_status(
+            self._set_reading_status(
                 "Reading uses finished recordings while preparation continues. "
                 "If you catch up, it waits for that dialogue instead of starting "
                 "a second TTS generation."
@@ -2988,8 +3020,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ready = False
         if not ready and not self.last_controller_error:
             self.last_controller_error = "Unable to initialize reading."
+        if not ready and settings is not None:
+            self._set_reading_status(
+                self.last_controller_error or "Unable to initialize reading."
+            )
         self.signals.ready_changed.emit(ready)
         if ready:
+            if settings is not None and not start_live:
+                self._set_reading_status("Reading is ready. Select Read to start.")
             self.schedule_hotkeys()
             if start_live and not self.controller.is_live_running:
                 self.toggle_live()
@@ -3858,7 +3896,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif remediation == "settings":
             self.open_settings()
 
-    def run_onboarding(self) -> None:
+    def run_onboarding(self, *, reading_settings: AppSettings | None = None) -> None:
         if self._controller_busy or self._shutting_down or self.live_stop_runner.active:
             self.set_status(
                 "Reading controls are updating. Try setup again when ready."
@@ -3867,14 +3905,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
-        if (
-            self.pregeneration_dialog is not None
-            and self.pregeneration_dialog.has_pending_work()
-        ):
-            self.set_status("Finish or cancel story preparation before reading setup.")
-            self.dashboard.show_stories()
-            return
         if self.onboarding_wizard is not None:
+            if (
+                reading_settings is not None
+                and self._onboarding_reading_settings != reading_settings
+            ):
+                self._set_reading_status(
+                    "Finish or cancel the open Reading setup, then select Read for this story."
+                )
             self.onboarding_wizard.show()
             self.onboarding_wizard.raise_()
             self.onboarding_wizard.activateWindow()
@@ -3888,6 +3926,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.onboarding_wizard = wizard
         self._onboarding_preview_settings = None
+        self._onboarding_reading_settings = reading_settings
         wizard.voices_requested.connect(lambda: self._open_onboarding_voices(wizard))
         wizard.settings_requested.connect(
             lambda: self._open_onboarding_settings(wizard)
@@ -3934,7 +3973,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 False, "Finish or cancel calibration before testing speech."
             )
             return
-        settings = self._runtime_settings(settings)
+        settings = self._onboarding_runtime_settings(settings)
         model_name = settings.tts_model
         if (
             settings.speech_backend == "coqui-xtts"
@@ -3958,6 +3997,24 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             settings,
             model_name,
             cancel_event,
+        )
+
+    def _onboarding_runtime_settings(self, settings: AppSettings) -> AppSettings:
+        selected = self._onboarding_reading_settings
+        if selected is None:
+            return self._runtime_settings(settings)
+        current = self._preparation_runtime_settings()
+        if current is not None and (
+            current.generated_audio_manifest == selected.generated_audio_manifest
+        ):
+            # Story order can finish preparing while the setup window is open.
+            self._onboarding_reading_settings = selected = current
+        return settings.updated(
+            **{name: getattr(selected, name) for name in content_path_setting_names},
+            live_sequence_mode=selected.live_sequence_mode,
+            audio_source_policy=selected.audio_source_policy,
+            force_live_narrator=selected.force_live_narrator,
+            speech_rate_percent=selected.speech_rate_percent,
         )
 
     def _run_onboarding_check(
@@ -4384,6 +4441,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if (
             self._controller_busy
+            or self.onboarding_wizard is not None
             or self.narrator_dialog is not None
             or self.controller.is_live_running is True
         ):
