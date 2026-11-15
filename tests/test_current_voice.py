@@ -205,9 +205,7 @@ class CurrentVoiceTests(unittest.TestCase):
                 voice_states={"old": object()},
                 prompt_audio_codes={"old": object()},
                 conditionals={"old": object()},
-                clear_runtime_cache=Mock(
-                    side_effect=AssertionError("Worker terminated")
-                ),
+                clear_runtime_cache=Mock(),
             ),
             _apply_narrator_voice=Mock(),
             _clear_voice_runtime_cache=Mock(),

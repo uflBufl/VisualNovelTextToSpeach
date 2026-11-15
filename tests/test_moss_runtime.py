@@ -77,7 +77,6 @@ class RetainedMossRuntimeTests(unittest.TestCase):
 
                 self.assertIsInstance(backend, IsolatedSpeechBackend)
                 self.assertIs(backend.registry, registry)
-                self.assertFalse(hasattr(backend, "runtime_status"))
                 self.assertIsNone(backend.process)
                 self.assertIsNone(runtime.backend)
 

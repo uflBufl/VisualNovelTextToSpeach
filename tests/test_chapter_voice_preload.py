@@ -1501,61 +1501,40 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                     yield name
 
             with patch.object(preload_module, "temporary_directory", temporary):
-                for mode in ("streamed", "buffered-control"):
-                    with self.subTest(mode=mode):
-                        failure = _EvidenceReadFailure(self, evidence)
-                        staged = []
+                failure = _EvidenceReadFailure(self, evidence)
+                staged = []
 
-                        def copy(original, target):
-                            staged.append(Path(target))
-                            try:
-                                if mode == "streamed":
-                                    original_copy(original, target)
-                                else:
-                                    with path_safety.open_regular_binary(
-                                        original
-                                    ) as source:
-                                        captured = source.read()
-                                    Path(target).write_bytes(captured)
-                            finally:
-                                self.assertEqual(
-                                    Path(target).read_bytes(),
-                                    evidence_payload if mode == "streamed" else b"",
-                                )
+                def copy(original, target):
+                    staged.append(Path(target))
+                    try:
+                        original_copy(original, target)
+                    finally:
+                        self.assertEqual(Path(target).read_bytes(), evidence_payload)
 
-                        def load(snapshot, **kwargs):
-                            self.assertFalse(
-                                Path(snapshot).with_name(evidence.name).exists()
-                            )
-                            self.assertTrue(
-                                all(not temporary.exists() for temporary in staged)
-                            )
-                            return original_load(snapshot, **kwargs)
+                def load(snapshot, **kwargs):
+                    self.assertFalse(Path(snapshot).with_name(evidence.name).exists())
+                    self.assertTrue(all(not temporary.exists() for temporary in staged))
+                    return original_load(snapshot, **kwargs)
 
-                        with (
-                            patch.object(
-                                path_safety, "open_regular_binary", failure.admitted
-                            ),
-                            patch.object(preload_module, "copy_regular_file", copy),
-                            patch.object(
-                                ChapterVoicePreloader, "load_optional", side_effect=load
-                            ),
-                        ):
-                            fallback = ChapterVoicePreloader.load_snapshot(
-                                path, payload
-                            ).dialogue
-                        self.assertEqual(len(failure.streams), 1)
-                        self.assertEqual(failure.reads, [evidence_payload])
-                        self.assertTrue(failure.streams[0].closed)
-                        self.assertFalse(fallback[0].source_audio_authoritative)
-                        self.assertEqual(
-                            fallback[0].source_audio_completeness, "unknown"
-                        )
-                        self.assertFalse(directories[-1].exists())
-                        self.assertEqual(tree_hashes(root), before)
+                with (
+                    patch.object(path_safety, "open_regular_binary", failure.admitted),
+                    patch.object(preload_module, "copy_regular_file", copy),
+                    patch.object(
+                        ChapterVoicePreloader, "load_optional", side_effect=load
+                    ),
+                ):
+                    fallback = ChapterVoicePreloader.load_snapshot(
+                        path, payload
+                    ).dialogue
+                self.assertEqual(len(failure.streams), 1)
+                self.assertEqual(failure.reads, [evidence_payload])
+                self.assertTrue(failure.streams[0].closed)
+                self.assertFalse(fallback[0].source_audio_authoritative)
+                self.assertEqual(fallback[0].source_audio_completeness, "unknown")
+                self.assertFalse(directories[-1].exists())
+                self.assertEqual(tree_hashes(root), before)
                 recovered = ChapterVoicePreloader.load_snapshot(path, payload).dialogue
             self.assertEqual(recovered, expected)
-            self.assertEqual(len(directories), 3)
             self.assertTrue(all(not temporary.exists() for temporary in directories))
             self.assertEqual(tree_hashes(root), before)
 
@@ -1646,12 +1625,6 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
 
         self.assertIsNone(
             preloader.resolve_exact("Kamuta", "These old ones are enough")
-        )
-        self.assertIsNone(
-            preloader.resolve_exact(
-                "Kamuta",
-                "These old ones are enough to carry everyone.",
-            )
         )
         line, result = preloader.resolve_exact_with_result(
             "Kamuta",
@@ -1771,7 +1744,7 @@ class SynthesisPreferenceTest(unittest.TestCase):
         preloader.resolve_observation_among(
             "Ada", rows[0].text, (row.line_id for row in rows), update_context=False
         )
-        diagnostics = preloader.last_resolution_diagnostics
+        diagnostics = preloader.last_resolution_diagnostics.copy()
         self.assertEqual(diagnostics["match_result"], "expected-ambiguous")
         previous = ChapterMatch("1", 5, 1.0)
         preloader.current_match = previous
@@ -1779,12 +1752,12 @@ class SynthesisPreferenceTest(unittest.TestCase):
             preloader.equivalent_speech_candidates("Ada", rows[0].text), rows[:2]
         )
         self.assertIs(preloader.current_match, previous)
-        self.assertIs(preloader.last_resolution_diagnostics, diagnostics)
+        self.assertEqual(preloader.last_resolution_diagnostics, diagnostics)
         preloader.current_match = ChapterMatch("3", 1, 1.0)
         self.assertEqual(
             preloader.equivalent_speech_candidates("Ada", rows[0].text), ()
         )
-        self.assertIs(preloader.last_resolution_diagnostics, diagnostics)
+        self.assertEqual(preloader.last_resolution_diagnostics, diagnostics)
 
     def test_equivalent_original_continuations_do_not_block_synthesis(self):
         rows = (

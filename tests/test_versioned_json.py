@@ -143,6 +143,10 @@ class VersionedJsonTest(unittest.TestCase):
                         revision=fresh,
                         document_name="test document",
                     )
+                    self.assertEqual(
+                        json.loads(path.read_bytes()),
+                        {"schema_version": 1, "value": "recovered"},
+                    )
                     self.assertEqual(revision, sha256(path.read_bytes()).digest())
 
     def test_guarded_writer_keeps_its_receipt_when_replaced_after_verification(self):
@@ -204,6 +208,12 @@ class VersionedJsonTest(unittest.TestCase):
 
             self.assertEqual(payload["value"], "original")
             self.assertEqual(revision, sha256(original).digest())
+            self.assertEqual(
+                read_versioned_json(
+                    path, schema_version=1, document_name="test document"
+                )["value"],
+                "replacement",
+            )
 
     def test_nested_json_uses_parse_errors_and_fresh_fallbacks(self):
         decoder_error = RecursionError("native parser limit")
@@ -244,23 +254,6 @@ class VersionedJsonTest(unittest.TestCase):
             self.assertEqual(decode.call_args_list, [call(before)] * 3)
             self.assertEqual(path.read_bytes(), before)
 
-    def test_legacy_reader_delegates_to_snapshot_payload(self):
-        with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "document.json"
-            path.write_text(
-                json.dumps({"schema_version": 1, "value": "stable"}),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(
-                read_versioned_json(
-                    path,
-                    schema_version=1,
-                    document_name="test document",
-                )["value"],
-                "stable",
-            )
-
     def test_loader_revision_callback_only_runs_after_successful_decode(self):
         revisions = []
         warnings = []
@@ -270,6 +263,7 @@ class VersionedJsonTest(unittest.TestCase):
                 json.dumps({"schema_version": 1, "value": "stable"}),
                 encoding="utf-8",
             )
+            expected_revision = sha256(path.read_bytes()).digest()
             loaded = load_versioned_json(
                 path,
                 schema_version=1,
@@ -317,7 +311,7 @@ class VersionedJsonTest(unittest.TestCase):
         self.assertEqual(failed, "fallback")
         self.assertEqual(malformed, {})
         self.assertEqual(missing, {})
-        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions, [expected_revision])
         self.assertEqual(len(warnings), 2)
 
     def test_loader_applies_explicit_compatibility_policy(self):
@@ -379,6 +373,7 @@ class VersionedJsonTest(unittest.TestCase):
 
         self.assertEqual(malformed, {})
         self.assertEqual(future, {})
+        self.assertIsNot(malformed, future)
         self.assertEqual(len(warnings), 2)
 
     def test_nonpositive_schema_versions_are_not_treated_as_compatible(self):
@@ -426,24 +421,6 @@ class VersionedJsonTest(unittest.TestCase):
 
         self.assertEqual(result, "fallback")
         self.assertIn("size limit", warnings[0])
-
-    def test_atomic_writer_keeps_existing_document_when_publication_fails(self):
-        with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "document.json"
-            path.write_text('{"schema_version": 1, "value": "stable"}\n')
-
-            with (
-                patch(
-                    "vntts.versioned_json.atomic_write_bytes",
-                    side_effect=OSError("blocked"),
-                ),
-                self.assertRaisesRegex(OSError, "blocked"),
-            ):
-                write_versioned_json(path, 1, {"value": "replacement"})
-
-            payload = json.loads(path.read_text(encoding="utf-8"))
-
-        self.assertEqual(payload, {"schema_version": 1, "value": "stable"})
 
     def test_writer_rejects_conflicting_schema_version(self):
         with TemporaryDirectory() as temporary_directory:

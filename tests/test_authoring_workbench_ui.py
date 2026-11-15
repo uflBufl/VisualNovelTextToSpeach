@@ -411,8 +411,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.show()
                 self.application.processEvents()
 
-            self.assertFalse(hasattr(dialog, "narrator_only"))
-            self.assertFalse(hasattr(dialog, "exclude_narrator"))
             self.assertEqual(dialog.review_character.currentText(), "All voice roles")
             self.assertEqual(
                 dialog.review_character.accessibleName(), "Filter review by voice role"
@@ -1207,7 +1205,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 dialog._selected_review_item().queue_id, "rhiannon-pending"
             )
-            self.assertFalse(hasattr(dialog, "rhiannon_only"))
             dialog.review_character.setCurrentText("Narrator only")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(

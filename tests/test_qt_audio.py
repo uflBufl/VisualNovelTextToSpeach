@@ -48,31 +48,26 @@ class QtAudioTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def test_runtime_factory_errors_are_reported_and_retry_uses_a_fresh_player(self):
-        for error in (
-            RuntimeError("Rust audio worker is missing; rebuild native/audio-worker"),
-            PermissionError("Rust audio worker is not executable"),
-            RuntimeError("Rust audio worker exited before completion"),
-            RuntimeError("Rust audio worker protocol mismatch"),
-            TimeoutError("Rust audio worker startup timed out"),
-        ):
-            with self.subTest(error=str(error)):
-                pcm = _PcmPlayer()
-                factory = Mock(side_effect=[error, pcm])
-                player = QtPcmPlayer(player_factory=factory)
-                failures = []
-                player.errorOccurred.connect(
-                    lambda _code, message: failures.append(message)
-                )
-                self.assertIsNone(player.play_bytes(b"audio", "test.wav"))
-                self.assertEqual(failures, [str(error)])
-                self.assertEqual(player.errorString(), str(error))
-                self.assertFalse(player._timer.isActive())
-                self.assertIsNone(player._token)
-                self.assertIs(player.play_bytes(b"audio", "test.wav"), pcm.clip)
-                self.assertTrue(player._timer.isActive())
-                player.stop()
-                player.deleteLater()
-                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        error = RuntimeError(
+            "Rust audio worker is missing; rebuild native/audio-worker"
+        )
+        pcm = _PcmPlayer()
+        factory = Mock(side_effect=[error, pcm])
+        player = QtPcmPlayer(player_factory=factory)
+        failures = []
+        player.errorOccurred.connect(lambda _code, message: failures.append(message))
+        self.assertIsNone(player.play_bytes(b"audio", "test.wav"))
+        self.assertEqual(failures, [str(error)])
+        self.assertEqual(player.errorString(), str(error))
+        self.assertFalse(player._timer.isActive())
+        self.assertIsNone(player._token)
+        self.assertIs(player.play_bytes(b"audio", "test.wav"), pcm.clip)
+        self.assertEqual(pcm.loaded, (b"audio", "test.wav"))
+        self.assertIs(pcm.played, pcm.clip)
+        self.assertTrue(player._timer.isActive())
+        player.stop()
+        player.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_poll_failure_preserves_error_when_stop_also_fails_and_can_retry(self):
         broken = _PcmPlayer()

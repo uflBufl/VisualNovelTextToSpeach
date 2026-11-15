@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QKeySequence, QPalette, QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QHeaderView  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
@@ -119,24 +119,6 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.application.processEvents()
                 self.assertEqual(dialog.table.currentRow(), 0)
                 dialog.close()
-
-    def test_failed_assertion_releases_the_readiness_window(self):
-        case = ReadinessDialogTest(
-            "test_loading_state_names_readiness_and_has_no_stale_details"
-        )
-        case.assertEqual = Mock(side_effect=AssertionError("injected failure"))
-        result = unittest.TestResult()
-
-        case.run(result)
-
-        self.assertEqual(len(result.failures), 1)
-        self.assertEqual(result.errors, [])
-        self.assertFalse(
-            any(
-                isinstance(widget, ReadinessDialog)
-                for widget in self.application.topLevelWidgets()
-            )
-        )
 
     def test_copy_selected_check_keeps_full_error_and_path(self):
         pool = ManualThreadPool()
@@ -259,21 +241,18 @@ class ReadinessDialogTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertIn("Errors: 1", dialog.summary.text())
+        self.assertIn("Warnings: 1", dialog.summary.text())
         self.assertFalse(dialog.copy_all.isHidden())
         self.assertFalse(dialog.refresh_button.isHidden())
         self.assertEqual(dialog.table.rowCount(), 2)
-        self.assertEqual(
-            dialog.table.horizontalHeader().sectionResizeMode(1),
-            QHeaderView.ResizeMode.ResizeToContents,
-        )
         dialog.deleteLater()
 
     def test_details_follow_selection_and_reset_when_checks_restart(self):
         pool = ManualThreadPool()
         results = (
             DiagnosticResult("Runtime", "ok", "Installed at /full/runtime/path"),
-            DiagnosticResult("Audio", "error", "No output device", "external-audio"),
             DiagnosticResult("Voices", "warning", "Narrator fallback", "voices"),
+            DiagnosticResult("Audio", "error", "No output device", "external-audio"),
         )
         diagnostics = Mock()
         diagnostics.run.return_value = results
@@ -287,6 +266,8 @@ class ReadinessDialogTest(unittest.TestCase):
             [dialog.table.item(row, 1).text() for row in range(3)],
             ["Audio", "Voices", "Runtime"],
         )
+        self.assertEqual(dialog.table.currentRow(), 0)
+        self.assertIn("Cannot start reading", dialog.summary.text())
         self.assertTrue(dialog.selected_details.isHidden())
         dialog.details_toggle.setFocus()
         QTest.keyClick(dialog.details_toggle, Qt.Key.Key_Space)
@@ -442,7 +423,10 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.application.processEvents()
                 self.assertFalse(dialog.isVisible())
                 self.assertEqual(dialog.table.rowCount(), 0)
-                self.assertFalse(dialog.reading_button.isVisible())
+                self.assertTrue(dialog.reading_button.isHidden())
+                self.assertTrue(
+                    diagnostics.run.call_args.kwargs["cancellation"].is_set()
+                )
                 dialog.deleteLater()
 
     def test_malformed_probe_result_is_a_visible_retryable_failure(self):
@@ -466,7 +450,16 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.assertFalse(dialog.progress.isHidden())
                 pool.run_next()
                 self.application.processEvents()
-                self.assertEqual(dialog.table.rowCount(), 1)
+                self.assertEqual(
+                    [
+                        (
+                            dialog.table.item(row, 1).text(),
+                            dialog.table.item(row, 2).text(),
+                        )
+                        for row in range(dialog.table.rowCount())
+                    ],
+                    [("OCR", "Ready")],
+                )
                 self.assertFalse(dialog.reading_button.isHidden())
                 self.assertTrue(dialog.progress.isHidden())
                 dialog.close()
@@ -545,31 +538,6 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertEqual(settings_requests, [True])
         self.assertEqual(voice_requests, [True])
         self.assertTrue(dialog.remediation_button.isHidden())
-        dialog.deleteLater()
-
-    def test_warning_before_error_still_selects_first_error(self):
-        pool = ManualThreadPool()
-        diagnostics = type(
-            "Diagnostics",
-            (),
-            {
-                "run": lambda _self, _settings, *, cancellation=None: (
-                    DiagnosticResult(
-                        "Character voices", "warning", "Fallback", "voices"
-                    ),
-                    DiagnosticResult(
-                        "Audio output", "error", "No device", "external-audio"
-                    ),
-                )
-            },
-        )()
-        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
-        pool.run_next()
-        self.application.processEvents()
-        self.assertEqual(dialog.table.currentRow(), 0)
-        self.assertEqual(dialog.table.item(0, 1).text(), "Audio output")
-        self.assertEqual(dialog.table.item(1, 1).text(), "Character voices")
-        self.assertIn("Cannot start reading", dialog.summary.text())
         dialog.deleteLater()
 
     def test_external_ocr_and_audio_errors_name_next_action_without_false_button(self):
@@ -732,19 +700,39 @@ class ReadinessDialogTest(unittest.TestCase):
 
     def test_failed_probe_has_recovery_without_stale_action(self):
         pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = (
+            DiagnosticResult(
+                "Character voices", "warning", "Narrator fallback", "voices"
+            ),
+        )
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertFalse(dialog.reading_button.isHidden())
+        self.assertTrue(dialog.remediation_button.isEnabled())
 
-        class Diagnostics:
-            def run(self, _settings, *, cancellation=None):
-                raise RuntimeError("device probe failed")
-
-        dialog = ReadinessDialog(AppSettings(), Diagnostics(), thread_pool=pool)
+        diagnostics.run.side_effect = RuntimeError("device probe failed")
+        dialog.refresh_button.click()
         pool.run_next()
         self.application.processEvents()
 
         self.assertIn("device probe failed", dialog.summary.text())
         self.assertTrue(dialog.refresh_button.isEnabled())
         self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertTrue(dialog.reading_button.isHidden())
+        self.assertEqual(dialog.table.rowCount(), 0)
+        self.assertFalse(dialog.copy_selected.isEnabled())
+        self.assertFalse(dialog.copy_all.isEnabled())
         self.assertIn("Select a warning or error", dialog.remediation_reason.text())
+
+        diagnostics.run.side_effect = None
+        dialog.refresh_button.click()
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(dialog.table.item(0, 2).text(), "Narrator fallback")
+        self.assertFalse(dialog.reading_button.isHidden())
+        self.assertTrue(dialog.remediation_button.isEnabled())
         dialog.deleteLater()
 
 

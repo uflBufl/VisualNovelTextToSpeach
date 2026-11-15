@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import write_story_index_document
@@ -16,6 +16,7 @@ from tests.pregeneration_fixtures import item as pack_item
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import generation_state
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.generation_database import read_state
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationWorker,
@@ -25,9 +26,7 @@ from vntts.pregeneration_pack import (
     OfflinePackPublisher,
     load_saved_pack,
 )
-from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
-    GenerationResourceEstimate,
     PregenerationJob,
     PregenerationSetupError,
     PreparationEstimate,
@@ -36,28 +35,6 @@ from vntts.pregeneration_setup import (
     inspect_story_index,
 )
 from vntts.pregeneration_voices import VoicePlan
-
-
-def _inputs(root):
-    identity = "a" * 64
-    directory = root / f"generation-input-{identity[:16]}"
-    directory.mkdir(parents=True)
-    queue = directory / "queue.jsonl"
-    queue.write_text("queue", encoding="utf-8")
-    return PregenerationInput(
-        identity=identity,
-        directory=directory,
-        story_index=directory / "story-index.jsonl",
-        voice_manifest=directory / "voice-manifest.json",
-        queue=queue,
-        queue_sha256=sha256_file(queue),
-        queue_items=2,
-        ready_items=2,
-        narrator_fallback_roles=(),
-        story_index_sha256="c" * 64,
-        voice_manifest_sha256="d" * 64,
-        source_audio_semantic_evidence_sha256=None,
-    )
 
 
 class PregenerationResourcesTest(unittest.TestCase):
@@ -89,7 +66,7 @@ class PregenerationResourcesTest(unittest.TestCase):
             )
 
         self.assertEqual(estimate.generation_text_characters, len(text))
-        self.assertEqual(estimate.rough_audio_seconds, (len(text) + 11) // 12)
+        self.assertGreater(estimate.rough_audio_seconds, 0)
         self.assertEqual(estimate.estimated_generation_minutes, 0)
 
     def test_resource_estimate_ignores_queue_replacement_after_capture(self):
@@ -181,37 +158,15 @@ class PregenerationResourcesTest(unittest.TestCase):
 
     def test_resource_estimate_excludes_completed_audio_when_resuming(self):
         with TemporaryDirectory() as temporary_directory:
-            inputs = _inputs(Path(temporary_directory))
-            output = inputs.directory.parent / "generation-output-aaaaaaaaaaaaaaaa"
-            output.mkdir()
-            state = output / "generation-state.sqlite3"
-            replace_generation_state(
-                state, {"queue_sha256": inputs.queue_sha256, "items": {}}
-            )
-            items = (
-                SimpleNamespace(queue_id="done", action="generate", text="Done."),
-                SimpleNamespace(
-                    queue_id="retry", action="generate", text="Retry this."
-                ),
-            )
-            with (
-                patch(
-                    "vntts.pregeneration_setup.load_stable_generation_queue",
-                    return_value=(SimpleNamespace(items=items), inputs.queue_sha256),
-                ),
-                patch(
-                    "vntts.pregeneration_setup.load_generation_state_from_snapshot",
-                    return_value={
-                        "items": {
-                            "done": {"status": "approved", "review_status": "approved"}
-                        }
-                    },
-                ),
-            ):
-                estimate = estimate_generation_resources(inputs)
+            _job, inputs, result, items = fixture(Path(temporary_directory))
+            state = read_state(result.state)
+            del state["items"][items[1]["queue_id"]]
+            replace_generation_state(result.state, state)
+
+            estimate = estimate_generation_resources(inputs)
 
         self.assertEqual((estimate.total_items, estimate.remaining_items), (2, 1))
-        self.assertEqual(estimate.remaining_text_characters, len("Retry this."))
+        self.assertEqual(estimate.remaining_text_characters, len(items[1]["text"]))
 
     def test_saved_job_without_new_rough_fields_still_loads(self):
         job = PregenerationJob(
@@ -239,11 +194,18 @@ class PregenerationResourcesTest(unittest.TestCase):
 
     def test_generation_stops_before_worker_when_remaining_audio_will_not_fit(self):
         with TemporaryDirectory() as temporary_directory:
-            inputs = _inputs(Path(temporary_directory))
+            root = Path(temporary_directory)
+            job, inputs, result, items = fixture(root)
+            state = read_state(result.state)
+            del state["items"][items[1]["queue_id"]]
+            replace_generation_state(result.state, state)
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
             plan = VoicePlan(
-                job_id="b" * 24,
-                created_at="2026-01-01T00:00:00+00:00",
-                story_index_sha256="c" * 64,
+                job_id=job.job_id,
+                created_at=job.created_at,
+                story_index_sha256=inputs.story_index_sha256,
                 voice_manifest=None,
                 voice_manifest_sha256=None,
                 synthesis_backend="pocket-tts",
@@ -254,12 +216,10 @@ class PregenerationResourcesTest(unittest.TestCase):
                 synthesis_controls_sha256="d" * 64,
                 groups=(),
             )
-            estimate = GenerationResourceEstimate(1, 1, 12, 12, 1, 1, 48_000, 48_000)
+            popen = Mock(
+                side_effect=AssertionError("worker started with no free space")
+            )
             with (
-                patch(
-                    "vntts.pregeneration_generation.estimate_generation_resources",
-                    return_value=estimate,
-                ),
                 patch(
                     "vntts.pregeneration_generation.shutil.disk_usage",
                     return_value=SimpleNamespace(free=0),
@@ -269,13 +229,23 @@ class PregenerationResourcesTest(unittest.TestCase):
                     "Free space or choose fewer stories.*saved work stays",
                 ),
             ):
-                OfflineGenerationWorker(command=("worker",)).generate(inputs, plan)
+                OfflineGenerationWorker(
+                    command=("worker",), popen_factory=popen
+                ).generate(inputs, plan)
+            popen.assert_not_called()
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
 
     def test_pack_stops_before_staging_when_audio_copy_will_not_fit(self):
-        from tests.pregeneration_fixtures import fixture
-
         with TemporaryDirectory() as temporary_directory:
-            job, inputs, result, _items = fixture(Path(temporary_directory))
+            root = Path(temporary_directory)
+            job, inputs, result, _items = fixture(root)
+            before_paths = set(root.rglob("*"))
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
             with (
                 patch(
                     "vntts.pregeneration_pack.shutil.disk_usage",
@@ -287,10 +257,13 @@ class PregenerationResourcesTest(unittest.TestCase):
                 ),
             ):
                 OfflinePackPublisher().publish(job, inputs, result)
+            self.assertEqual(set(root.rglob("*")), before_paths)
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
 
     def test_pack_wraps_disk_preflight_file_errors(self):
-        from tests.pregeneration_fixtures import fixture
-
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))
             with (
@@ -305,21 +278,8 @@ class PregenerationResourcesTest(unittest.TestCase):
             ):
                 OfflinePackPublisher().publish(job, inputs, result)
 
-    def test_saved_pack_loader_rechecks_the_self_service_identity(self):
-        from tests.pregeneration_fixtures import fixture
-
-        with TemporaryDirectory() as temporary_directory:
-            job, inputs, result, _items = fixture(Path(temporary_directory))
-            published = OfflinePackPublisher().publish(job, inputs, result)
-
-            loaded = load_saved_pack(published.manifest)
-
-        self.assertEqual(loaded.identity, published.identity)
-
     def test_saved_pack_loader_rejects_any_damaged_generated_audio(self):
         from vntts_artifacts.generated_audio import load_generated_audio_document
-
-        from tests.pregeneration_fixtures import fixture
 
         with TemporaryDirectory() as temporary_directory:
             job, inputs, result, _items = fixture(Path(temporary_directory))

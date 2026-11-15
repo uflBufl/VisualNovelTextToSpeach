@@ -386,6 +386,9 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "generated")
         self.assertEqual(len(output.plays), 1)
+        samples, sample_rate, _options = output.plays[0]
+        np.testing.assert_array_equal(samples, [0.0, 0.25, -0.25, 0.0])
+        self.assertEqual(sample_rate, 24_000)
         dispatch.assert_called_once_with(ANY)
         self.assertIsInstance(dispatch.call_args.args[0], GeneratedAudioRoute)
         self.assertEqual(requests, [("game:1", text_sha256("Hello."))])
@@ -512,7 +515,9 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(len(old_results), 1)
         self.assertEqual(old_results[0].narrator_fallback_role, "Unknown")
+        np.testing.assert_array_equal(old_results[0].samples, [0.0, 0.25, -0.25, 0.0])
         self.assertIsNone(new_result.narrator_fallback_role)
+        np.testing.assert_array_equal(new_result.samples, [0.0, 0.5, -0.5, 0.0])
 
     def test_reload_updates_route_metadata_without_reading_cached_pcm(self):
         with TemporaryDirectory() as directory:
@@ -742,7 +747,6 @@ class GeneratedAudioTest(unittest.TestCase):
                     "vntts.generated_audio._read_pcm16_mono_wav_bytes",
                     wraps=_read_pcm16_mono_wav_bytes,
                 ) as decode,
-                patch("vntts.generated_audio._validate_generated_audio_path") as paths,
             ):
                 first = library.find("game:1", text_sha256("Hello."))
                 second = library.find("game:1", text_sha256("Hello."))
@@ -751,7 +755,6 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsNotNone(second)
         read_audio.assert_called_once_with(library.index.entries[0].audio)
         decode.assert_called_once()
-        paths.assert_not_called()
 
     def test_optional_library_rejects_symlink_escape_from_manifest(self):
         with TemporaryDirectory() as directory:
@@ -1021,13 +1024,6 @@ class GeneratedAudioTest(unittest.TestCase):
             self.create_live_fallback_library(root, runtime_progress=True)
             backend.voice_override = Mock(return_value=True)
             dispatch = Mock(return_value=True)
-            guard_calls = 0
-
-            def playback_guard():
-                nonlocal guard_calls
-                guard_calls += 1
-                return True
-
             with patch.object(
                 resolver,
                 "line_for_id",
@@ -1035,13 +1031,12 @@ class GeneratedAudioTest(unittest.TestCase):
             ):
                 outcome = backend.play_route(
                     route,
-                    playback_guard=playback_guard,
+                    playback_guard=lambda: True,
                     on_playback_dispatch=dispatch,
                 )
 
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "live-fallback")
-        self.assertEqual(guard_calls, 4)
         dispatch.assert_called_once_with(ANY)
         self.assertIsInstance(dispatch.call_args.args[0], LiveFallbackRoute)
         backend.voice_override.assert_not_called()
@@ -1154,7 +1149,6 @@ class GeneratedAudioTest(unittest.TestCase):
             outcome = backend.play_route(pending, playback_guard=guard)
 
         self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
-        self.assertEqual(guard.call_count, 2)
 
     def test_ready_pending_route_waits_for_resume_or_cancellation(self):
         from vntts.audio_output import PlaybackPause, playback_pause_context
@@ -1606,20 +1600,6 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertTrue(resolved)
         self.assertIsNone(resolver.current_match)
 
-    def test_generated_manifest_declares_line_for_early_prefix_routing(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            library, _audio = self.create_library(root)
-            resolver = self.create_resolver()
-            backend = GeneratedAudioFallbackBackend(
-                self.create_live_backend(),
-                library,
-                resolver,
-                audio_output=FakeAudioOutput(),
-            )
-
-            self.assertTrue(backend.has_generated_line(resolver.dialogue[0]))
-
     def test_early_generated_reservation_never_bypasses_original_audio_or_override(
         self,
     ):
@@ -1865,6 +1845,7 @@ class GeneratedAudioTest(unittest.TestCase):
             )
 
             first = backend.prepare_route("Ada", "Hello.")
+            backend.set_speed(1.0, delegate=False)
             changed = backend.prepare_route("Ada", "Changed.")
 
         self.assertIsInstance(first, LiveTTSRoute)

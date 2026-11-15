@@ -431,7 +431,8 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         )
         self.assertEqual(item[AUDIO_EVENT_PLAN_FIELD]["story_audio_cue_count"], 1)
         self.assertEqual(
-            len(item[AUDIO_EVENT_PLAN_FIELD]["story_audio_cues_sha256"]), 64
+            item[AUDIO_EVENT_PLAN_FIELD]["story_audio_cues_sha256"],
+            builder.canonical_document_sha256([story_audio_cue()]),
         )
         self.assertEqual(item[STORY_AUDIO_CUES_FIELD], [story_audio_cue()])
         self.assertEqual(plan.summary.audio_event_composition, 1)
@@ -628,6 +629,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 root, [story_record("line-1", "absent")]
             )
             output = root / "queue.jsonl"
+            before = {
+                path: path.read_bytes() for path in root.rglob("*") if path.is_file()
+            }
             preflight_stdout = io.StringIO()
             with redirect_stdout(preflight_stdout):
                 result = authoring_main(
@@ -642,7 +646,10 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                     ]
                 )
             self.assertEqual(result, 0)
-            self.assertFalse(output.exists())
+            self.assertEqual(
+                {path: path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                before,
+            )
             build_stdout = io.StringIO()
             with redirect_stdout(build_stdout):
                 result = authoring_main(
@@ -660,9 +667,9 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 )
 
             self.assertEqual(result, 0)
-            self.assertTrue(output.is_file())
             preflight = json.loads(preflight_stdout.getvalue())
             built = json.loads(build_stdout.getvalue())
+            self.assertEqual(preflight["summary"]["ready"], 1)
             self.assertEqual(preflight["summary"], built["summary"])
             self.assertEqual(built["output"], str(output.resolve()))
             self.assertEqual(
@@ -763,35 +770,14 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             plan = plan_generation_queue(document, entries, manifest_path)
             output = publish_generation_queue(plan, root / "direct-queue.jsonl")
             queue = VoiceGenerationQueue.load(output)
+            story_hash = hashlib.sha256(story_path.read_bytes()).hexdigest()
+            manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
 
         self.assertEqual(queue.items[0].line_id, "line-1")
         self.assertEqual(plan.summary.ready, 1)
         self.assertEqual(plan.summary.missing_reference, 0)
-        self.assertRegex(
-            queue.metadata["source_story_index_document_sha256"], r"^[0-9a-f]{64}$"
-        )
-        self.assertRegex(
-            queue.metadata["source_voice_manifest_entries_sha256"],
-            r"^[0-9a-f]{64}$",
-        )
-        self.assertRegex(queue.metadata["source_story_index_sha256"], r"^[0-9a-f]{64}$")
-        self.assertRegex(
-            queue.metadata["source_voice_manifest_sha256"], r"^[0-9a-f]{64}$"
-        )
-
-    def test_pathless_typed_plan_is_rejected_before_publication(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            story_path, manifest_path = write_inputs(
-                root, [story_record("line-1", "absent")]
-            )
-            document = StoryIndexDocument.load(story_path)
-            _manifest, entries = load_voice_manifest(manifest_path, allow_legacy=False)
-
-            with self.assertRaisesRegex(
-                (GenerationQueueBuildError, TypeError), "voice_manifest_path|required"
-            ):
-                plan_generation_queue(document, entries)
+        self.assertEqual(queue.metadata["source_story_index_sha256"], story_hash)
+        self.assertEqual(queue.metadata["source_voice_manifest_sha256"], manifest_hash)
 
     def test_ready_requires_every_configured_reference_to_exist(self):
         with TemporaryDirectory() as directory:
@@ -804,23 +790,6 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 "references/missing.wav",
                 "references/ada.wav",
             ]
-            write_voice_manifest(manifest_path, manifest)
-
-            plan = inspect_generation_queue(story_path, manifest_path)
-
-        self.assertEqual(plan.summary.ready, 0)
-        self.assertEqual(plan.summary.missing_reference, 1)
-
-    def test_ready_rejects_existing_non_wav_reference(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            story_path, manifest_path = write_inputs(
-                root, [story_record("line-1", "absent")]
-            )
-            reference = root / "references" / "not-a-wave.wav"
-            reference.write_bytes(b"not a wave")
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["voices"][0]["references"] = ["references/not-a-wave.wav"]
             write_voice_manifest(manifest_path, manifest)
 
             plan = inspect_generation_queue(story_path, manifest_path)

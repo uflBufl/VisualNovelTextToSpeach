@@ -227,6 +227,7 @@ class SharedAudioStoreTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             source = self.audio(root / "source.wav")
+            original = source.read_bytes()
             store = SharedAudioStore(root / "store")
             with patch(
                 "vntts.audio_store.os.fsync", side_effect=OSError("failed sync")
@@ -234,7 +235,7 @@ class SharedAudioStoreTest(unittest.TestCase):
                 with self.assertRaises(OSError):
                     store.put("key", source)
             self.assertIsNone(store.get("key"))
-            self.assertGreater(source.stat().st_size, 100)
+            self.assertEqual(source.read_bytes(), original)
 
     def test_windows_flush_uses_write_capable_handle_without_changing_audio(self):
         with TemporaryDirectory() as directory:
@@ -357,6 +358,7 @@ class SharedAudioStoreTest(unittest.TestCase):
             first = store.put("key", self.audio(root / "first.wav"))
             source = root / "second.wav"
             write_pcm16_wav(source, [0.125, -0.25], 16000)
+            originals = {path: path.read_bytes() for path in (first, source)}
             connect = sqlite3.connect
 
             class FailedCommit(sqlite3.Connection):
@@ -372,8 +374,12 @@ class SharedAudioStoreTest(unittest.TestCase):
                 with self.assertRaises(SharedAudioStoreError):
                     store.put("key", source)
             self.assertEqual(store.get("key"), first)
-            self.assertEqual(len(list((store.directory / "objects").glob("*.wav"))), 2)
-            self.assertGreater(source.stat().st_size, 44)
+            self.assertEqual({path: path.read_bytes() for path in originals}, originals)
+            recordings = tuple((store.directory / "objects").glob("*.wav"))
+            self.assertEqual(len(recordings), 2)
+            self.assertEqual(
+                {path.read_bytes() for path in recordings}, set(originals.values())
+            )
 
     def test_concurrent_process_publication_keeps_every_binding_and_one_inode(self):
         with TemporaryDirectory() as directory:
@@ -563,7 +569,10 @@ class FinalWavReuseTest(unittest.TestCase):
                 queue, root / "failed", _KeyedRenderer([SynthesisCompletion.LIMITED])
             )
             self.assertEqual(list((root / "audio-store").rglob("*.wav")), [])
-            self.assertEqual(list((root / "audio-store").rglob("*.json")), [])
+            self.assertEqual(
+                tuple(SharedAudioStore(root / "audio-store").iter_bindings()), ()
+            )
             retried = _KeyedRenderer()
-            self.generate(queue, root / "retry", retried)
+            result = self.generate(queue, root / "retry", retried)
             self.assertEqual(len(retried.requests), 1)
+            self.assertEqual(result.generated, 1)

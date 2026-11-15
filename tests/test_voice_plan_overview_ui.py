@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -72,8 +72,11 @@ class VoicePlanOverviewTest(unittest.TestCase):
         return plan
 
     def row_values(self, row=0):
-        return self.dialog.voice_routes.item(row).data(
-            int(Qt.ItemDataRole.UserRole) + 2
+        card = self.dialog.voice_routes.itemWidget(self.dialog.voice_routes.item(row))
+        return tuple(
+            label.text()
+            for label in card.findChildren(QLabel)
+            if label.isVisibleTo(card)
         )
 
     def saved_group(self, **changes):
@@ -244,29 +247,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.assertTrue(self.dialog._awaiting_voice_confirmation)
         self.assertTrue(self.dialog.continue_button.isEnabled())
-        self.assertFalse(hasattr(self.dialog, "voice_panel"))
-        self.assertFalse(hasattr(self.dialog, "choose_character_voice"))
-
-    def test_primary_action_and_double_click_open_the_same_editor(self):
-        self.show_plan()
-        self.dialog.game_narrator_chooser = Mock(return_value=None)
-        self.dialog.inspect_character_voice.click()
-        self.dialog.voice_routes.itemDoubleClicked.emit(
-            self.dialog.voice_routes.currentItem()
-        )
-        self.assertEqual(self.dialog.game_narrator_chooser.call_count, 2)
-        for call in self.dialog.game_narrator_chooser.call_args_list:
-            self.assertEqual(call.args, (self.dialog.settings, self.dialog))
-            self.assertEqual(call.kwargs, {"character": self.group.character})
-
-    def test_cancelled_or_async_editor_keeps_the_story_plan_unchanged(self):
-        plan = self.show_plan()
-        self.dialog.game_narrator_chooser = Mock(return_value=None)
-        self.dialog.apply_narrator_settings = Mock()
-        self.dialog.inspect_character_voice.click()
-        self.assertIs(self.dialog.voice_plan(), plan)
-        self.assertTrue(self.dialog._awaiting_voice_confirmation)
-        self.dialog.apply_narrator_settings.assert_not_called()
 
     def test_editor_context_survives_deferred_initialization(self):
         from vntts.game_narrator_ui import GameNarratorDialog
@@ -368,7 +348,6 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.show_plan((group,))
         self.assertEqual(self.dialog.voice_routes.count(), 1)
         self.assertEqual(self.row_values()[3], "2")
-        self.assertFalse(hasattr(self.dialog, "voice_assignment_choice"))
         self.assertTrue(
             self.dialog.voice_route_details.text().startswith(f"{group.character}: ")
         )
@@ -502,22 +481,29 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.assertIsNot(self.application.focusWidget(), details)
 
     def test_card_mouse_selection_double_click_and_keyboard_preview(self):
-        first = self.saved_group()
+        first = self.saved_group(character="First", routing_role="First")
         second = replace(
-            first, group_id="second", character="Other", routing_role="Other"
+            first, group_id="second", character="Second", routing_role="Second"
         )
         self.show_plan((first, second))
         self.dialog.show()
         self.application.processEvents()
+        self.dialog.game_narrator_chooser = Mock(return_value=None)
+        self.dialog.inspect_character_voice.click()
         routes = self.dialog.voice_routes
         second_item = routes.item(1)
         card = routes.itemWidget(second_item)
         label = card.findChildren(QLabel)[0]
         QTest.mouseClick(label, Qt.MouseButton.LeftButton)
         self.assertIs(routes.currentItem(), second_item)
-        with patch.object(self.dialog, "_choose_character_voice") as open_voice:
-            QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
-            open_voice.assert_called_once()
+        QTest.mouseDClick(label, Qt.MouseButton.LeftButton)
+        self.assertEqual(
+            self.dialog.game_narrator_chooser.call_args_list,
+            [
+                call(self.dialog.settings, self.dialog, character=first.character),
+                call(self.dialog.settings, self.dialog, character=second.character),
+            ],
+        )
         button = self.dialog._summary_preview_rows[second.group_id]
         button.setFocus()
         with patch.object(self.dialog, "_play_summary_voice") as preview:

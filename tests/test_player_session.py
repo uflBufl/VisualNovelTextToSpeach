@@ -1,6 +1,6 @@
 import unittest
-from concurrent.futures import Future
-from threading import Event, Thread
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
 from unittest.mock import Mock
 
 from vntts.player_session import PlayerSessionOwner
@@ -48,7 +48,9 @@ class PlayerSessionOwnerTest(unittest.TestCase):
             [requested, previous],
         )
 
-    def test_start_handoff_uses_owned_cancellation_and_does_not_start_after_cancel(self):
+    def test_start_handoff_uses_owned_cancellation_and_does_not_start_after_cancel(
+        self,
+    ):
         cancellation = Event()
         previous = AppSettings(story_index="previous-story.jsonl")
         requested = previous.updated(story_index="new-story.jsonl")
@@ -231,30 +233,34 @@ class PlayerSessionOwnerTest(unittest.TestCase):
     def test_replacement_waits_for_superseded_start(self) -> None:
         entered = Event()
         release = Event()
+        events = []
         controller = Mock()
 
         def start() -> bool:
             if controller.start.call_count == 1:
                 entered.set()
                 assert release.wait(2)
+                events.append("previous-start-finished")
             return True
 
         controller.start.side_effect = start
+        controller.apply_settings.side_effect = lambda *_args, **_kwargs: (
+            events.append("replacement-settings") or True
+        )
         owner = PlayerSessionOwner(controller)
         first = owner.begin()
-        old = Thread(target=owner.start, args=(first,))
-        old.start()
-        assert entered.wait(1)
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            old = workers.submit(owner.start, first)
+            try:
+                self.assertTrue(entered.wait(1))
+                second = owner.begin()
+                replacement = workers.submit(owner.restart, second, AppSettings())
+            finally:
+                release.set()
+            self.assertFalse(old.result(timeout=2))
+            self.assertTrue(replacement.result(timeout=2))
 
-        second = owner.begin()
-        replacement = Thread(target=owner.restart, args=(second, AppSettings()))
-        replacement.start()
-        assert not controller.apply_settings.called
-        release.set()
-        old.join(2)
-        replacement.join(2)
-        assert not old.is_alive() and not replacement.is_alive()
-        controller.apply_settings.assert_called_once()
+        self.assertEqual(events, ["previous-start-finished", "replacement-settings"])
         assert controller.start.call_count == 2
         assert owner.is_current(second)
 
@@ -271,13 +277,14 @@ class PlayerSessionOwnerTest(unittest.TestCase):
         controller.start.side_effect = start
         owner = PlayerSessionOwner(controller)
         generation = owner.begin()
-        worker = Thread(target=owner.start, args=(generation,))
-        worker.start()
-        assert entered.wait(1)
-        owner.close()
-        release.set()
-        worker.join(2)
-        assert not worker.is_alive()
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            worker = workers.submit(owner.start, generation)
+            try:
+                self.assertTrue(entered.wait(1))
+                owner.close()
+            finally:
+                release.set()
+            self.assertFalse(worker.result(timeout=2))
         controller.request_shutdown.assert_called_once()
         controller.shutdown.assert_called_once()
         assert not owner.is_current(generation)

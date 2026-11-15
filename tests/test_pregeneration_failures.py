@@ -93,7 +93,6 @@ class PregenerationFailuresTest(unittest.TestCase):
                 "Internal pause: 1.68 s (limit 1.2 s); "
                 "Silence: 64% (limit 50%)",
             )
-            self.assertNotIn("sentence", failure.reason)
             self.assertEqual(failure.details, "Original provider error")
 
     def test_small_threshold_excess_is_not_rounded_away(self):
@@ -227,6 +226,7 @@ class PregenerationFailuresTest(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 load_preparation_failure_audio(inputs, failure)
+            retained.write_bytes(payload.getvalue())
             _save(inputs, item, {"status": "approved", "review_status": "approved"})
             with self.assertRaises(ValueError):
                 load_preparation_failure_audio(inputs, failure)

@@ -6,6 +6,7 @@ import shutil
 import stat
 import unittest
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -142,8 +143,8 @@ class VoiceLibraryTest(unittest.TestCase):
                 library.discover_many(requests, rollback=rollback)
             self.assertEqual(library.path.read_bytes(), before)
             self.assertFalse(tuple(library.blobs_path.glob("*.wav")))
-            self.assertFalse(rollback._before)
-            self.assertFalse(rollback._expected)
+            self.assertTrue(library.rollback_bindings(rollback))
+            self.assertEqual(library.path.read_bytes(), before)
 
     def test_failed_batch_cleans_new_blobs_with_one_fresh_index_read(self):
         with TemporaryDirectory() as directory:
@@ -442,24 +443,18 @@ class VoiceLibraryTest(unittest.TestCase):
 
             first._load = blocked_first_load
             second._load = observed_second_load
-            first_thread = Thread(
-                target=first.select,
-                kwargs={"role": "Alice", "route": "narrator"},
-            )
-            second_thread = Thread(
-                target=second.select,
-                kwargs={"role": "Bob", "route": "narrator"},
-            )
-            first_thread.start()
-            self.assertTrue(first_loaded.wait(1))
-            second_thread.start()
-            second_loaded.wait(0.1)
-            release_first.set()
-            first_thread.join(1)
-            second_thread.join(1)
-
-            self.assertFalse(first_thread.is_alive())
-            self.assertFalse(second_thread.is_alive())
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                first_write = workers.submit(first.select, "Alice", route="narrator")
+                try:
+                    self.assertTrue(first_loaded.wait(1))
+                    second_write = workers.submit(
+                        second.select, "Bob", route="narrator"
+                    )
+                    second_loaded.wait(0.1)
+                finally:
+                    release_first.set()
+                self.assertEqual(first_write.result(timeout=1).role, "Alice")
+                self.assertEqual(second_write.result(timeout=1).role, "Bob")
             self.assertEqual(
                 {binding.role for binding in VoiceLibrary(root).bindings()},
                 {"Alice", "Bob"},
@@ -975,7 +970,8 @@ class VoiceLibraryTest(unittest.TestCase):
             write_wav(first, b"\x00\x00")
             write_wav(second, b"\x01\x00")
             library = VoiceLibrary(root / "fixed-library.json")
-            selected = library.discover("Mrs. Owen", first, bind_if_missing=True)
+            selected = library.discover("Mrs. Owen", first)
+            library.discover("Mrs. Owen", first, bind_if_missing=True)
             with patch.object(library, "_write", wraps=library._write) as write:
                 duplicate = library.discover("Mrs. Owen", first)
                 write.assert_not_called()
@@ -1037,20 +1033,6 @@ class VoiceLibraryTest(unittest.TestCase):
 
             self.assertEqual(len(library.alternatives("Ada")), 2)
             self.assertEqual(len(list(library.blobs_path.glob("*.wav"))), 2)
-
-    def test_existing_alternative_can_be_bound_without_rediscovery(self) -> None:
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            reference = root / "voice.wav"
-            write_wav(reference, b"\x00\x00")
-            library = VoiceLibrary(root / "library")
-            alternative = library.discover("Role", reference)
-
-            with patch.object(library, "_write", wraps=library._write) as write:
-                library.discover("Role", reference, bind_if_missing=True)
-                write.assert_called_once()
-
-            self.assertEqual(library.binding("Role").source_sha256, alternative.sha256)
 
     def test_explicit_routes_replace_canonical_binding_and_support_presets(
         self,

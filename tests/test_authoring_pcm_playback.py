@@ -28,14 +28,10 @@ class PersistentPcmPlayerTest(unittest.TestCase):
             mono = Path(directory) / "mono-24k.wav"
             stereo = Path(directory) / "stereo-48k.wav"
             sf.write(mono, np.linspace(-0.5, 0.5, 2_400), 24_000, subtype="PCM_16")
-            sf.write(
-                stereo,
-                np.column_stack(
-                    (np.linspace(-0.5, 0.5, 4_800), np.linspace(0.5, -0.5, 4_800))
-                ),
-                48_000,
-                subtype="PCM_16",
+            stereo_samples = np.column_stack(
+                (np.linspace(-0.5, 0.5, 4_800), np.linspace(0.5, -0.5, 4_800))
             )
+            sf.write(stereo, stereo_samples, 48_000, subtype="PCM_16")
 
             prepared_mono = player.load(mono)
             prepared_stereo = player.load(stereo)
@@ -45,7 +41,15 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         np.testing.assert_allclose(
             prepared_mono.samples[:, 0], prepared_mono.samples[:, 1]
         )
+        np.testing.assert_allclose(
+            prepared_mono.samples[[1_200, 2_400, 3_600], 0],
+            [-0.25, 0.0, 0.25],
+            atol=0.001,
+        )
         self.assertEqual(prepared_stereo.samples.shape, (4_800, 2))
+        np.testing.assert_allclose(
+            prepared_stereo.samples, stereo_samples, atol=1 / 32768
+        )
 
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
@@ -75,6 +79,11 @@ class PersistentPcmPlayerTest(unittest.TestCase):
 
         self.assertEqual(clip.sample_rate, 48_000)
         self.assertEqual(clip.samples.shape, (4_800, 2))
+        np.testing.assert_allclose(
+            clip.samples[[1_200, 2_400, 3_600]],
+            [[-0.25, -0.25], [0.0, 0.0], [0.25, 0.25]],
+            atol=0.001,
+        )
 
     def test_new_clip_starts_at_its_first_frame_in_the_same_native_worker(self):
         audio, player = self.create_player()
@@ -170,7 +179,6 @@ class PersistentPcmPlayerTest(unittest.TestCase):
         player.play(PcmClip(np.ones((480, 2), np.float32), player.sample_rate))
         audio.state["producer_starvation_count"] = 2
         self.assertFalse(player.snapshot().underflowed)
-        self.assertEqual(audio.status()["producer_starvation_count"], 2)
 
     def test_completed_clip_can_seek_and_replay_after_native_buffer_was_released(self):
         audio, player = self.create_player()

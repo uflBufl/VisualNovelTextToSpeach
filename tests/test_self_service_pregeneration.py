@@ -1866,7 +1866,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(second.voice_plan().audition_count, 0)
             self.assertTrue(generator.rendered)
-            self.assertFalse(decisions.path.exists())
+            reloaded = VoiceDecisionStore(decisions.path)
+            for group in second.voice_plan().groups:
+                self.assertIsNone(
+                    reloaded.choice_for(group.group_id, group.decision_context_sha256)
+                )
             first.deleteLater()
             second.deleteLater()
 

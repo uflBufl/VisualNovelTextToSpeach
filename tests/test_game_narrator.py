@@ -34,7 +34,6 @@ from vntts.game_narrator import (
 )
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
-from vntts.pregeneration_audition_ui import VoiceAuditionPanel
 from vntts.preview_content_advisor import PreviewContentAdvisor
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings
@@ -153,19 +152,6 @@ class GameNarratorTest(unittest.TestCase):
             clean_wav_bytes(amplitude=0.2)
         )
         return manifest
-
-    def test_host_contains_one_audio_editor_and_no_duplicate_reference_widgets(self):
-        dialog = self.editor()
-        self.assertEqual(dialog.findChildren(VoiceAuditionPanel), [dialog.voice_panel])
-        for old_widget in (
-            "references",
-            "original_button",
-            "preview_button",
-            "text",
-            "save_button",
-            "exact_transcript",
-        ):
-            self.assertFalse(hasattr(dialog, old_widget), old_widget)
 
     def test_footer_transfer_retires_original_layout_items(self):
         build_actions = GameNarratorDialog._build_editor_actions
@@ -988,6 +974,10 @@ class GameNarratorTest(unittest.TestCase):
         self.select(dialog, "preset", role="Aderyn", source="preset:marius")
         self.assertTrue(dialog._settings_dirty)
         self.listen(dialog)
+        self.save(dialog)
+        self.assertEqual(
+            VoiceLibrary(self.library.root).binding("Aderyn").source_id, "preset:marius"
+        )
 
     def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
         self.library.select("Aderyn", route="voice", source_id="preset:marius")
@@ -999,16 +989,6 @@ class GameNarratorTest(unittest.TestCase):
         self.drain()
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
         self.assertEqual(self.library.binding("Aderyn"), before)
-
-    def test_external_transaction_can_rollback_accepted_nested_save(self):
-        self.library.select("Aderyn", route="voice", source_id="preset:marius")
-        rollback = self.library.binding_rollback()
-        dialog = self.editor(rollback=rollback)
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        self.save(dialog)
-        dialog.restore_initial_voice_bindings()
-        self.assertEqual(self.library.binding("Aderyn").source_id, "preset:marius")
 
     def test_library_write_failure_keeps_choice_available_for_retry(self):
         binder = Mock(side_effect=[ValueError("disk full"), self.settings])
@@ -1061,14 +1041,6 @@ class GameNarratorTest(unittest.TestCase):
         self.drain()
         self.assertIn("reference changed", dialog.voice_panel.status.toPlainText())
         self.assertIsNone(self.library.binding("Aderyn"))
-
-    def test_custom_preview_and_qwen_transcript_belong_to_shared_panel(self):
-        dialog = self.editor(settings=self.settings.updated(speech_backend="qwen-tts"))
-        self.select(dialog, "catalog", source="character:rhiannon")
-        panel = dialog.voice_panel
-        self.assertTrue(hasattr(panel, "preview_text"))
-        self.assertTrue(hasattr(panel, "reference_transcript"))
-        self.assertFalse(hasattr(dialog, "exact_transcript"))
 
     def test_missing_manifest_cannot_be_saved_after_listening(self):
         dialog = self.editor()
@@ -1150,8 +1122,6 @@ class GameNarratorTest(unittest.TestCase):
                 dialog = self.editor(settings=settings)
                 self.select(dialog, "catalog", source="character:rhiannon")
                 self.assertIs(dialog.settings_value, settings)
-                self.assertFalse(hasattr(dialog, "consent"))
-                self.assertFalse(hasattr(dialog, "terms"))
                 self.assertFalse(
                     any(
                         "Pocket" in widget.text()
@@ -1190,7 +1160,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
         self.assertIsNotNone(self.library.binding("Narrator"))
 
-    def test_editor_has_no_maintenance_actions_and_keeps_model_visible_for_every_source(
+    def test_switching_sources_keeps_model_visible_and_preserves_acceptance(
         self,
     ):
         self.bind_narrator()
@@ -1199,28 +1169,11 @@ class GameNarratorTest(unittest.TestCase):
                 speech_backend="pocket-tts", pocket_gated_model_accepted=True
             )
         )
-        for name in (
-            "source_setup",
-            "source_setup_controls",
-            "game_installation",
-            "folder_button",
-            "discover_button",
-            "copy_details",
-        ):
-            self.assertFalse(hasattr(dialog, name), name)
         dialog.show()
-        panel = dialog.voice_panel
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
                 self.assertTrue(dialog.tts_model_label.isVisible())
-                for name in (
-                    "reference_details_toggle",
-                    "reference_details",
-                    "advice_details",
-                    "runtime",
-                ):
-                    self.assertFalse(hasattr(panel, name), name)
                 self.assertTrue(dialog.settings_value.pocket_gated_model_accepted)
         self.assertEqual(self.backend.requests, [])
 

@@ -101,6 +101,7 @@ class PreparationFailuresPanelTest(unittest.TestCase):
         self.assertTrue(self.panel.play.isEnabled())
         self.assertFalse(self.panel.stop_button.isEnabled())
         self.panel.details.click()
+        self.assertTrue(self.panel.technical.isVisible())
         self.assertEqual(self.panel.technical.toPlainText(), "Provider detail")
         for state, explanation in (
             ("not_created", "No audio was created"),
@@ -124,17 +125,19 @@ class PreparationFailuresPanelTest(unittest.TestCase):
         self.assertFalse(self.player.playing)
 
     def test_loading_remains_preparing_until_player_starts_and_primary_stops(self):
-        self.player.play_bytes = Mock()
+        self.player.play_bytes = Mock(return_value=object())
         caption = self.panel.play.text()
         size = self.panel.play.sizeHint()
         self.panel.play.click()
         self.drain()
         self.assertEqual(self.panel.play.property("playbackState"), "preparing")
+        self.player.playing = True
         self.player.playbackStateChanged.emit(QMediaPlayer.PlaybackState.PlayingState)
         self.assertEqual(self.panel.play.property("playbackState"), "playing")
         self.assertEqual(self.panel.play.text(), caption)
         self.assertEqual(self.panel.play.sizeHint(), size)
         self.panel.play.click()
+        self.assertFalse(self.player.playing)
         self.assertEqual(self.panel.play.property("playbackState"), "idle")
         self.assertFalse(self.panel.stop_button.isEnabled())
 

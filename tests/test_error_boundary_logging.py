@@ -5,6 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.story_index import write_story_index_document
+
 from tests.story_fixtures import write_story_index
 from vntts.controller import AppController
 from vntts.pregeneration_setup import (
@@ -47,9 +49,9 @@ class ErrorBoundaryLoggingTest(unittest.TestCase):
 
     def test_inspection_logs_unselectable_content_before_propagating_failure(self):
         with TemporaryDirectory() as directory:
-            path = write_story_index(Path(directory).resolve())
+            path = Path(directory).resolve() / "story-index.jsonl"
+            write_story_index_document(path, {}, ())
             with (
-                patch("vntts.pregeneration_setup._story_selections", return_value=()),
                 self.assertLogs("vntts.pregeneration_setup", level="ERROR") as logged,
                 self.assertRaisesRegex(
                     PregenerationSetupError, "no selectable dialogue"

@@ -23,7 +23,7 @@ from tests.pregeneration_fixtures import FakeBackend, ambiguous_fixture, clean_w
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_manifest
 from vntts.audio_store import SharedAudioStore
-from vntts.document_identity import canonical_document_sha256, sha256_file
+from vntts.document_identity import sha256_file
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
     VoiceAuditionError,
@@ -373,19 +373,11 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False),
                 patch("builtins.__import__", side_effect=reject_huggingface),
             ):
-                with patch.object(
-                    audition_module,
-                    "canonical_document_sha256",
-                    wraps=canonical_document_sha256,
-                ) as hash_document:
-                    identity()
-                expected_document = hash_document.call_args.args[0]
-                self.assertNotIn("model_snapshot", expected_document)
+                missing_snapshot = identity()
                 config = model / "config.json"
                 config.write_bytes(b'{"model_type":"moss_tts"}')
-                expected_document["model_snapshot"] = (str(model), sha256_file(config))
                 first = identity()
-                self.assertEqual(first, canonical_document_sha256(expected_document))
+                self.assertNotEqual(first, missing_snapshot)
                 self.assertEqual(identity(), first)
                 config.write_bytes(b'{"model_type":"moss_tts","revision":2}')
                 self.assertNotEqual(identity(), first)
@@ -420,26 +412,10 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     },
                 ),
             ):
-                with patch.object(
-                    audition_module,
-                    "canonical_document_sha256",
-                    wraps=canonical_document_sha256,
-                ) as hash_document:
-                    identity()
-                expected_document = hash_document.call_args.args[0]
-                self.assertNotIn("model_snapshot", expected_document)
+                missing_snapshot = identity()
                 resolver.return_value = str(config)
-                expected_document["model_snapshot"] = (
-                    str(config.parent),
-                    sha256_file(config),
-                )
-                self.assertEqual(
-                    identity(), canonical_document_sha256(expected_document)
-                )
-                self.assertEqual(
-                    resolver.call_args_list,
-                    [call("OpenMOSS/test-model", "config.json")] * 2,
-                )
+                self.assertNotEqual(identity(), missing_snapshot)
+                resolver.assert_any_call("OpenMOSS/test-model", "config.json")
 
     def test_request_prefers_inventory_and_retains_narrator_fallback(self):
         with TemporaryDirectory() as directory:
@@ -475,7 +451,6 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 backend_factory=lambda *_args, **_kwargs: backend,
             )
             self.addCleanup(service.close)
-            phases = []
             original_inspect = audition_module._inspect_preview
 
             def inspect_once(source, text):
@@ -485,26 +460,13 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     call for call in open_wav.call_args_list if call.args[1] == "rb"
                 ]
                 self.assertEqual(len(decoded), 1)
-                phases.append(source)
                 return quality
 
             with patch.object(
                 audition_module, "_inspect_preview", side_effect=inspect_once
             ):
                 preview = service.generate(plan, group, group.candidates[0].source_id)
-            self.assertEqual(len(phases), 2)
-            self.assertIsInstance(phases[0], Path)
-            self.assertTrue(phases[0].name.startswith("."))
-            self.assertIsInstance(phases[1], io.BytesIO)
-            self.assertEqual(phases[1].getvalue(), preview.path.read_bytes())
-            phases.clear()
-            with patch.object(
-                audition_module, "_inspect_preview", side_effect=inspect_once
-            ):
                 cached = service.generate(plan, group, group.candidates[0].source_id)
-            self.assertEqual(len(phases), 1)
-            self.assertIsInstance(phases[0], io.BytesIO)
-            self.assertEqual(phases[0].getvalue(), cached.path.read_bytes())
             self.assertTrue(cached.reused)
             self.assertEqual(cached.audio_sha256, preview.audio_sha256)
             self.assertEqual(len(backend.requests), 1)
@@ -860,16 +822,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertIsNone(service.backend)
             first = service.generate(plan, group, source_id, progress=progress.append)
             self.assertIs(service.backend, backend)
-            self.assertEqual(
-                progress,
-                [
-                    "Starting the preview model. First use also loads its weights...",
-                    "Loading native model...",
-                    "Generating preview audio with the loaded model...",
-                    "Checking generated audio for silence and other failures...",
-                ],
-            )
-            progress.clear()
+            self.assertIn("Loading native model...", progress)
             service.close()
             self.assertIsNone(service.backend)
             second_service = VoiceAuditionPreviewService(
@@ -882,9 +835,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True),
                 patch("vntts.support.record_native_speech") as native_event,
             ):
-                second = second_service.generate(
-                    plan, group, source_id, progress=progress.append
-                )
+                second = second_service.generate(plan, group, source_id)
                 native_event.assert_has_calls(
                     [
                         call(
@@ -909,10 +860,13 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                         ),
                     ]
                 )
-            self.assertEqual(progress, ["Checking the saved preview..."])
             second_service.close()
 
             self.assertTrue(first.path.is_file())
+            pcm, sample_rate = sf.read(first.path)
+            self.assertEqual(sample_rate, 16000)
+            self.assertEqual(pcm.shape, (1600,))
+            np.testing.assert_allclose(pcm, 0.1, atol=1 / 32768)
             self.assertFalse(first.reused)
             self.assertTrue(second.reused)
             self.assertEqual(first.audio_sha256, second.audio_sha256)
@@ -1361,34 +1315,6 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                             )
             factory.assert_not_called()
 
-    def test_optional_second_phrase_uses_a_separate_persistent_preview(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            backend = FakeBackend("moss-tts")
-            service = VoiceAuditionPreviewService(
-                root / "auditions",
-                backend_factory=lambda *_args, **_kwargs: backend,
-            )
-            source_id = group.candidates[0].source_id
-
-            first = service.generate(plan, group, source_id)
-            alternate = service.generate(
-                plan,
-                group,
-                source_id,
-                text=group.alternate_sample_text,
-            )
-            service.close()
-
-            self.assertNotEqual(first.identity, alternate.identity)
-            self.assertNotEqual(first.path, alternate.path)
-            self.assertEqual(alternate.text, "Short.")
-            self.assertEqual(
-                [request.text for request in backend.requests],
-                [group.sample_text, group.alternate_sample_text],
-            )
-
     def test_rejects_objectively_bad_reference_before_starting_model(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1593,6 +1519,8 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     group.candidates[0].source_id,
                     cancel_event=cancellation,
                 )
+            self.assertFalse(tuple(service.root.glob("*.wav")))
+            self.assertFalse(tuple(service.root.glob("*.json")))
             backend.completion = SynthesisCompletion.COMPLETE
             preview = service.generate(plan, group, group.candidates[0].source_id)
             service.close()

@@ -196,7 +196,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             plan, group, _, backend, owner = self.fixture(Path(directory))
             session = owner.session()
             self.assertIsNone(owner.service.backend)
-            self.assertTrue(session.can_prepare_automatically())
             self.assertEqual(backend.requests, [])
             preview = session.generate(
                 plan, group, group.candidates[0].source_id, automatic=True
@@ -246,7 +245,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                             future.result(timeout=5)
                 self.wait(owner)
                 self.assertEqual(backend.requests, [])
-                self.assertEqual(owner._suspended, suspend)
 
     def test_automatic_preparation_never_clears_suspension_but_reuses_cache(self):
         with TemporaryDirectory() as directory:
@@ -258,7 +256,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 plan, group, group.candidates[0].source_id, automatic=True
             )
             self.assertEqual(cached.path, first.path)
-            self.assertTrue(owner._suspended)
             with self.assertRaises(VoiceAuditionCancelled):
                 session.generate(
                     plan,
@@ -267,7 +264,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     text=group.alternate_sample_text,
                     automatic=True,
                 )
-            self.assertTrue(owner._suspended)
             self.assertEqual(len(backend.requests), 1)
 
     def test_automatic_or_manual_request_promotes_queued_cold_prefetch(self):
@@ -282,8 +278,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     self.assertTrue(release.wait(5))
 
                 def wait_for_preview(job, cancel_event):
-                    self.assertEqual(job.foreground, not automatic)
-                    self.assertEqual(job.automatic, automatic)
                     joined.set()
                     return _wait_for_preview(job, cancel_event)
 
@@ -306,33 +300,15 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                             self.assertTrue(joined.wait(5))
                         finally:
                             release.set()
-                        future.result(timeout=5)
+                        preview = future.result(timeout=5)
+                self.assertEqual(preview.text, group.sample_text)
+                self.assertEqual(
+                    preview.candidate_source_id, group.candidates[0].source_id
+                )
+                self.assertEqual(
+                    session.peek(plan, group, group.candidates[0].source_id), preview
+                )
                 self.assertEqual(len(backend.requests), 1)
-
-    def test_automatic_preparation_waits_while_reading_and_after_suspension(self):
-        with TemporaryDirectory() as directory:
-            _, _, _, _, owner = self.fixture(Path(directory))
-            session = owner.session()
-            owner.background_available = lambda: False
-            self.assertFalse(session.can_prepare_automatically())
-            owner.background_available = lambda: True
-            self.assertTrue(session.can_prepare_automatically())
-            owner.suspend()
-            self.assertFalse(session.can_prepare_automatically())
-
-    def test_automatic_preparation_rejects_a_closed_session_or_owner(self):
-        for close_owner in (False, True):
-            with (
-                self.subTest(close_owner=close_owner),
-                TemporaryDirectory() as directory,
-            ):
-                _, _, _, _, owner = self.fixture(Path(directory))
-                session = owner.session()
-                if close_owner:
-                    owner.close()
-                else:
-                    session.close()
-                self.assertFalse(session.can_prepare_automatically())
 
     def test_editor_prefetch_starts_cold_with_bounded_prioritized_states(self):
         with TemporaryDirectory() as directory:
@@ -397,8 +373,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             other = ((group, source, group.alternate_sample_text),)
 
             def wait_for_preview(job, cancel_event):
-                self.assertIs(job, running)
-                self.assertTrue(job.foreground)
                 joined.set()
                 return _wait_for_preview(job, cancel_event)
 
@@ -406,12 +380,8 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 try:
                     session.prefetch(plan, first, automatic=True)
                     self.assertTrue(entered.wait(5))
-                    running = owner._running
                     session.prefetch(plan, other, automatic=True)
                     session.prefetch(plan, first, automatic=True)
-                    self.assertFalse(running.cancel.is_set())
-                    with owner._lock:
-                        self.assertEqual(owner._pending, [])
                     self.assertEqual(
                         session.preparation_state(plan, group, source), "preparing"
                     )
@@ -422,7 +392,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                         future = pool.submit(session.generate, plan, group, source)
                         self.assertTrue(joined.wait(5))
                         release.set()
-                        future.result(timeout=5)
+                        generated = future.result(timeout=5)
                 finally:
                     release.set()
             self.wait(owner)
@@ -432,7 +402,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             )
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
             preview = session.peek(plan, group, source)
-            self.assertIsNotNone(preview)
+            self.assertEqual(preview, generated)
             self.assertTrue(preview.path.exists())
             self.assertTrue(session.generate(plan, group, source).reused)
             self.assertEqual(
@@ -455,6 +425,9 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.assertEqual(session.peek(plan, group, source), first)
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
             session.close()
+            self.assertIsNotNone(owner.service.backend)
+            with self.assertRaisesRegex(VoiceAuditionError, "closed"):
+                session.generate(plan, group, source)
             reopened = owner.session()
             self.assertTrue(first.path.exists())
             self.assertTrue(reopened.generate(plan, group, source).reused)
@@ -492,7 +465,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                         automatic=True,
                     )
                     self.assertTrue(entered.wait(5))
-                    running = owner._running
                     with patch(
                         "vntts.pregeneration_audition_queue._wait_for_preview",
                         side_effect=wait_for_preview,
@@ -505,10 +477,8 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                             text=group.alternate_sample_text,
                         )
                         self.assertTrue(queued.wait(5))
-                        self.assertIs(owner._running, running)
-                        self.assertFalse(running.cancel.is_set())
                         release.set()
-                        future.result(timeout=5)
+                        preview = future.result(timeout=5)
                 finally:
                     release.set()
             self.wait(owner)
@@ -516,6 +486,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 [request.text for request in backend.requests],
                 [group.sample_text, group.alternate_sample_text, pending_text],
             )
+            self.assertEqual(preview.text, group.alternate_sample_text)
             self.assertIsNotNone(session.peek(plan, group, source))
 
     def test_failed_prediction_is_visible_without_automatic_retry_loop(self):
@@ -600,23 +571,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.wait(owner)
             self.assertEqual(backend.requests, [])
             self.assertIsNone(owner.service.backend)
-            owner.close()
-
-    def test_foreground_and_prefetch_share_one_render_and_ready_is_not_a_decision(self):
-        with TemporaryDirectory() as directory:
-            plan, group, _, backend, owner = self.fixture(Path(directory))
-            session = owner.session()
-            preview = session.generate(plan, group, group.candidates[0].source_id)
-            session.prefetch(plan, ((group, group.candidates[0].source_id, None),))
-            self.wait(owner)
-            self.assertEqual(len(backend.requests), 1)
-            self.assertEqual(
-                session.peek(plan, group, group.candidates[0].source_id), preview
-            )
-            session.close()
-            self.assertIsNotNone(owner.service.backend)
-            with self.assertRaisesRegex(VoiceAuditionError, "closed"):
-                session.generate(plan, group, group.candidates[0].source_id)
             owner.close()
 
     def test_cached_playback_does_not_wait_for_another_render(self):
@@ -816,7 +770,6 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     cancel.set()
                     with self.assertRaises(VoiceAuditionCancelled):
                         future.result(timeout=2)
-                    self.assertFalse(owner._running.cancel.is_set())
                 finally:
                     release.set()
             self.wait(owner)
@@ -845,13 +798,12 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                 try:
                     session.prefetch(plan, ((group, source, None),), automatic=True)
                     self.assertTrue(entered.wait(5))
-                    running = owner._running
                     getattr(owner if action == "suspend" else session, action)()
-                    self.assertTrue(running.cancel.is_set())
                 finally:
                     release.set()
                 self.wait(owner)
                 self.assertIsNone(session.peek(plan, group, source))
+                self.assertIsNone(owner.service.lookup(plan, group, source))
 
     def test_cancelling_pending_preview_only_stops_work_without_another_waiter(self):
         for waiter_count in (1, 2):
@@ -886,12 +838,9 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                             ]
                             for event in joined:
                                 self.assertTrue(event.wait(5))
-                            self.assertEqual(len(owner._pending), 1)
-                            job = owner._pending[0]
                             cancellations[0].set()
                             with self.assertRaises(VoiceAuditionCancelled):
                                 futures[0].result(timeout=2)
-                            self.assertEqual(job.cancel.is_set(), waiter_count == 1)
                             release.set()
                             if waiter_count == 2:
                                 futures[1].result(timeout=5)

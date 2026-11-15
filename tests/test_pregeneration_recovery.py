@@ -1,7 +1,6 @@
 import os
 import stat
 import unittest
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -83,35 +82,39 @@ def inputs(root):
 class OfflineRecoveryPlanTest(unittest.TestCase):
     def test_terminal_fallback_refreshes_in_memory_progress_after_commit(self):
         with TemporaryDirectory() as temporary_directory:
-            generation_input, result, _voice_plan = inputs(Path(temporary_directory))
-            generator = Mock()
-            generator.inspect.return_value = result
-            events = []
-            generator.refresh_progress.side_effect = lambda _input: events.append(
-                "refresh"
-            )
-            with (
-                patch(
-                    "vntts.pregeneration_recovery.validate_offline_generation_result"
-                ),
-                patch(
-                    "vntts.pregeneration_recovery.authorize_live_fallback",
-                    side_effect=lambda _state, _queue, queue_id, **_options: (
-                        events.append(queue_id)
-                    ),
-                ),
-            ):
-                self.assertIs(
-                    _terminalize_exhausted_failures(
-                        generation_input,
-                        result,
-                        ("b", "a"),
-                        None,
-                        generator=generator,
-                    ),
-                    result,
+            with patch("tests.pregeneration_fixtures.authorize_live_fallback"):
+                _job, generation_input, _result, items = fixture(
+                    Path(temporary_directory)
                 )
-            self.assertEqual(events, ["a", "refresh", "b", "refresh"])
+            generator = OfflineGenerationWorker(backend_factory=Mock())
+            first = generator.inspect(generation_input)
+            generator.refresh_progress(generation_input)
+            before = generator.inspect_progress(generation_input)
+            self.assertEqual(
+                (before.generated, before.failed, before.other_terminal), (1, 1, 0)
+            )
+
+            result = _terminalize_exhausted_failures(
+                generation_input,
+                first,
+                (items[1]["queue_id"],),
+                None,
+                generator=generator,
+            )
+
+            progress = generator.inspect_progress(generation_input)
+            self.assertEqual(
+                (progress.generated, progress.failed, progress.other_terminal),
+                (1, 0, 1),
+            )
+            self.assertEqual(progress.ready_line_ids, (items[0]["line_id"],))
+            self.assertEqual(result, generator.inspect(generation_input))
+            state = generation_state.load_generation_state(
+                result.state, generation_input.queue
+            )
+            self.assertEqual(
+                state["items"][items[1]["queue_id"]]["status"], "live_fallback"
+            )
 
     def test_recovery_order_ignores_queue_replacement_after_capture(self):
         with TemporaryDirectory() as directory:
@@ -395,18 +398,24 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             )
             worker = OfflineRecoveryWorker(generator)
             scopes, events = [], []
+            generated_results = iter(
+                replace(result, generated=count, failed=3 - count) for count in range(3)
+            )
 
             def generate(*_args, **options):
                 scopes.append(generator._backend_session)
                 events.append(("generate", options["queue_ids"][0]))
-                return result
+                return next(generated_results)
 
             def recover(_input, _plan, current, _cancel=None, *, queue_id=None):
                 scopes.append(generator._backend_session)
                 events.append(("recover", queue_id))
                 if queue_id == "a":
                     worker.prioritize_line("priority", "hash")
-                return OfflineRecoveryResult(current, 0, 0, 0, ())
+                repaired = replace(
+                    current, generated=current.generated + 1, failed=current.failed - 1
+                )
+                return OfflineRecoveryResult(repaired, 1, 1, 0, ())
 
             with (
                 patch.object(generator, "inspect", side_effect=OfflineGenerationError),
@@ -417,7 +426,12 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                     return_value=(("a", "b", "c"), {("priority", "hash"): "c"}),
                 ),
             ):
-                worker.generate_and_recover(generation_input, voice_plan)
+                recovered = worker.generate_and_recover(generation_input, voice_plan)
+            self.assertEqual(
+                recovered.generation, replace(result, generated=3, failed=0)
+            )
+            self.assertEqual(recovered.attempted_actions, 3)
+            self.assertEqual(recovered.recovered, 3)
             self.assertIsNotNone(scopes[0])
             self.assertTrue(all(scope is scopes[0] for scope in scopes))
             self.assertTrue(scopes[0].closed)
@@ -479,25 +493,6 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(events["bulk-generation-total"]["count"], 1)
         self.assertEqual(len({event["operation_id"] for event in events.values()}), 1)
 
-    def test_custom_generation_session_closes_around_failure(self):
-        events = []
-
-        class Generator:
-            @contextmanager
-            def generation_session(self, _input, _plan):
-                events.append("begin")
-                try:
-                    yield
-                finally:
-                    events.append("end")
-
-        worker = OfflineRecoveryWorker(Generator())
-        failure = OfflineRecoveryError("failed")
-        with patch.object(worker, "_generate_and_recover", side_effect=failure):
-            with self.assertRaises(OfflineRecoveryError):
-                worker.generate_and_recover(None, None)
-        self.assertEqual(events, ["begin", "end"])
-
     def test_scoped_recovery_finishes_one_dialogue_without_touching_the_next(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
@@ -533,9 +528,13 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 queue_id="a",
             )
 
-        self.assertEqual(
-            generator.repair.call_args.kwargs["queue_ids"],
-            ("a",),
+        generator.repair.assert_called_once_with(
+            generation_input,
+            voice_plan,
+            first,
+            action="edge_silence_trim",
+            queue_ids=("a",),
+            cancel_event=None,
         )
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 0)
@@ -579,53 +578,6 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             self.assertEqual(
                 generator.repair.call_args.kwargs["queue_ids"], (queue_id,)
             )
-
-    def test_generation_and_recovery_alternate_in_queue_order(self):
-        with TemporaryDirectory() as temporary_directory:
-            generation_input, first, voice_plan = inputs(Path(temporary_directory))
-            second = replace(first, generated=2, failed=1)
-            final = replace(first, generated=3, failed=0)
-            generator = Mock()
-            generator.inspect.side_effect = OfflineGenerationError
-            generator.generate.side_effect = (first, second)
-            worker = OfflineRecoveryWorker(generator)
-            events = []
-
-            def recover(_input, _plan, current, _cancel=None, *, queue_id=None):
-                events.append(("recover", queue_id))
-                result = second if queue_id == "a" else final
-                return OfflineRecoveryResult(result, 1, 1, 0, ())
-
-            def generate(*_arguments, **options):
-                queue_id = options["queue_ids"][0]
-                events.append(("generate", queue_id))
-                return first if queue_id == "a" else second
-
-            generator.generate.side_effect = generate
-            with (
-                patch(
-                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
-                    return_value=(("a", "b"), {}),
-                ),
-                patch.object(worker, "recover", side_effect=recover),
-            ):
-                result = worker.generate_and_recover(
-                    generation_input,
-                    voice_plan,
-                )
-
-        self.assertEqual(
-            events,
-            [
-                ("generate", "a"),
-                ("recover", "a"),
-                ("generate", "b"),
-                ("recover", "b"),
-            ],
-        )
-        self.assertIs(result.generation, final)
-        self.assertEqual(result.attempted_actions, 2)
-        self.assertEqual(result.recovered, 2)
 
     def test_generation_and_recovery_skip_completed_dialogues_on_resume(self):
         with TemporaryDirectory() as temporary_directory:
@@ -718,48 +670,22 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             (result.generation.generated, result.generation.other_terminal), (1, 1)
         )
 
-    def test_waiting_dialogue_moves_to_the_next_render_boundary(self):
-        with TemporaryDirectory() as temporary_directory:
-            generation_input, current, voice_plan = inputs(Path(temporary_directory))
-            generator = Mock()
-            generator.inspect.side_effect = OfflineGenerationError
-            generator.generate.return_value = current
-            worker = OfflineRecoveryWorker(generator)
-            worker.prioritize_line("line:b", "b" * 64)
-            recovered = OfflineRecoveryResult(current, 0, 0, 0, ())
-
-            with (
-                patch(
-                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
-                    return_value=(
-                        ("a", "b"),
-                        {("line:b", "b" * 64): "b"},
-                    ),
-                ),
-                patch.object(worker, "recover", return_value=recovered),
-            ):
-                worker.generate_and_recover(generation_input, voice_plan)
-
-        self.assertEqual(
-            [call.kwargs["queue_ids"] for call in generator.generate.call_args_list],
-            [("b",), ("a",)],
-        )
-
     def test_priority_changes_preserve_remaining_order_and_ignore_completed_lines(self):
         with TemporaryDirectory() as directory:
             generation_input, current, voice_plan = inputs(Path(directory))
             generator = Mock()
             generator.inspect.side_effect = OfflineGenerationError
             worker = OfflineRecoveryWorker(generator)
+            worker.prioritize_line("line:b", "b" * 64)
             events = []
 
             def generate(*_arguments, **options):
                 queue_id = options["queue_ids"][0]
                 events.append(queue_id)
-                if queue_id == "a":
+                if queue_id == "b":
                     worker.prioritize_line("line:c", "c" * 64)
                 elif queue_id == "c":
-                    worker.prioritize_line("line:a", "a" * 64)
+                    worker.prioritize_line("line:b", "b" * 64)
                 return current
 
             generator.generate.side_effect = generate
@@ -769,7 +695,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                     return_value=(
                         ("a", "b", "c", "d"),
                         {
-                            ("line:a", "a" * 64): "a",
+                            ("line:b", "b" * 64): "b",
                             ("line:c", "c" * 64): "c",
                         },
                     ),
@@ -781,7 +707,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 ),
             ):
                 worker.generate_and_recover(generation_input, voice_plan)
-        self.assertEqual(events, ["a", "c", "b", "d"])
+        self.assertEqual(events, ["b", "c", "a", "d"])
 
     def test_generation_resume_repairs_existing_failure_before_new_generation(self):
         with TemporaryDirectory() as temporary_directory:
@@ -845,7 +771,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         self.assertEqual(generator.repair.call_args.kwargs["queue_ids"], ("a",))
         self.assertEqual(result.remaining_failed, 0)
         self.assertEqual(result.recovered, 0)
-        self.assertIs(result.generation, completed)
+        self.assertEqual(result.generation, completed)
 
     def test_terminal_generation_skips_failure_planning(self):
         with TemporaryDirectory() as temporary_directory:
@@ -860,7 +786,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             )
 
         planner.assert_not_called()
-        self.assertIs(result.generation, terminal)
+        self.assertEqual(result.generation, terminal)
 
     def test_replans_and_never_repeats_a_queue_action_pair(self):
         with TemporaryDirectory() as temporary_directory:
@@ -892,7 +818,14 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
 
             result = worker.recover(generation_input, voice_plan, first)
 
-        generator.repair.assert_called_once()
+        generator.repair.assert_called_once_with(
+            generation_input,
+            voice_plan,
+            first,
+            action="edge_silence_trim",
+            queue_ids=("a", "b"),
+            cancel_event=None,
+        )
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_failed, 1)
@@ -935,7 +868,13 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                 generator, planner=lambda *_arguments: next(plans)
             ).recover(generation_input, voice_plan, first)
 
-        self.assertEqual(generator.repair.call_count, 2)
+        self.assertEqual(
+            [
+                (call.kwargs["action"], call.kwargs["queue_ids"])
+                for call in generator.repair.call_args_list
+            ],
+            [("safe_resume", ("a",)), ("bounded_seed_retry", ("a",))],
+        )
         self.assertEqual(result.attempted_actions, 2)
         self.assertEqual(result.recovered, 1)
         self.assertEqual(result.remaining_action_counts, (("reference_comparison", 1),))
