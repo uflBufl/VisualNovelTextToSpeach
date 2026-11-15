@@ -2,18 +2,12 @@
 
 ## Active - Hansel native-run defects and original-speech qualification
 
-- [ ] **REVIEW-02: distinguish repeated text from repeated voice identity.**
-      The quote after100631:58 really appears again, but source59 is Vertin while
-      playback reused Narrator source53. Their current voices differ; the visible
-      frame has no speaker name. Inspect chapter-position matching and absent-name
-      evidence before choosing a fix; do not classify legitimate repeated text as
-      an unwanted duplicate or assume identical text implies equivalent audio.
 - [ ] After the fixes, rerun Hansel6TH-23 without tester advancement. Confirm
       available originals remain game-only, including Communicator `Repeat.`
       (100631:13) and Marcus `Doctor ...` (100631:36). Confirm unvoiced dialogue
-      plays, sparse text progresses and the repeated quote uses the intended
-      current voice. Preserve automatically changing dialogue53 ->54 ->55 without
-      duplicate playback. Include plain ellipsis and unknown-symbol waiting.
+      plays and sparse text progresses. Preserve automatically changing
+      dialogue53 ->54 ->55 without duplicate playback. Include plain ellipsis and
+      unknown-symbol waiting.
       The image-level ellipsis checks in OCR/live capture/replay remain necessary
       for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
       Remove them only when shared recognition qualifies those same cases; the
