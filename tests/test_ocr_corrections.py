@@ -36,6 +36,7 @@ from vntts.ocr_corrections import (  # noqa: E402
     corrections_schema_version,
 )
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog  # noqa: E402
+from vntts.versioned_json import StaleDocumentError  # noqa: E402
 
 
 class OCRCorrectionDictionaryTest(unittest.TestCase):
@@ -155,13 +156,15 @@ class OCRCorrectionStoreTest(unittest.TestCase):
 
             store.upsert_entries({"Vertln": "Vertin"})
             store.upsert_entries({"mareus": "Ms. Marcus"})
+            loaded = OCRCorrectionStore.load(store.path)
 
         self.assertEqual(
             store.global_entries,
             {"Vertln": "Vertin", "mareus": "Ms. Marcus"},
         )
+        self.assertEqual(loaded.global_entries, store.global_entries)
 
-    def test_failed_save_preserves_in_memory_entries(self):
+    def test_failed_save_preserves_entries_and_allows_retry(self):
         with TemporaryDirectory() as directory:
             store = OCRCorrectionStore(
                 Path(directory) / "ocr-corrections.json",
@@ -170,7 +173,6 @@ class OCRCorrectionStoreTest(unittest.TestCase):
             )
             store.save()
             original = store.path.read_bytes()
-            revision = store._revision
             for method, arguments in (
                 ("replace_entries", ({"New": "Global"}, "game", {"New": "Profile"})),
                 ("upsert_entries", ({"New": "Global"},)),
@@ -184,18 +186,18 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                         patch(
                             "vntts.versioned_json.atomic_write_bytes",
                             side_effect=disk_error,
-                        ) as write,
+                        ),
                         self.assertRaisesRegex(OSError, "disk full") as raised,
                     ):
                         getattr(store, method)(*arguments)
 
                     self.assertIs(raised.exception, disk_error)
-                    write.assert_called_once()
                     self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
                     self.assertEqual(
                         store.profile_entries, {"game": {"Vertln": "Vertin"}}
                     )
-                    self.assertEqual(store._revision, revision)
+                    self.assertEqual(store.path.read_bytes(), original)
+                    store.save()
                     self.assertEqual(store.path.read_bytes(), original)
 
     def test_replacement_while_saving_preserves_foreign_entries_until_reload(self):
@@ -207,7 +209,6 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 profile_entries={"game": {"Vertln": "Vertin"}},
             )
             store.save()
-            revision = store._revision
             foreign_global = {"Mareus": "Marcus", "Poaeher": "Poacher"}
             foreign_profiles = {
                 "game": {"Vertln": "Vertin"},
@@ -237,16 +238,14 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 patch(
                     "vntts.versioned_json.atomic_write_bytes",
                     side_effect=replace_after_write,
-                ) as write,
-                self.assertRaisesRegex(OSError, "changed while saving"),
+                ),
+                self.assertRaisesRegex(StaleDocumentError, "changed while saving"),
             ):
                 store.upsert_entries({"New": "Mine"}, "game")
-            write.assert_called_once()
             self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
             self.assertEqual(store.profile_entries, {"game": {"Vertln": "Vertin"}})
-            self.assertEqual(store._revision, revision)
             self.assertEqual(path.read_bytes(), foreign)
-            with self.assertRaisesRegex(OSError, "changed on disk"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed on disk"):
                 store.upsert_entries({"New": "Mine"}, "game")
             self.assertEqual(path.read_bytes(), foreign)
 
@@ -270,9 +269,9 @@ class OCRCorrectionStoreTest(unittest.TestCase):
             stale = OCRCorrectionStore.load(path)
             first.upsert_entries({"Vertln": "Vertin"})
 
-            with self.assertRaisesRegex(OSError, "changed on disk"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed on disk"):
                 stale.upsert_entries({"Poaeher": "Poacher"})
-            with self.assertRaisesRegex(OSError, "changed on disk"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed on disk"):
                 stale.save()
 
             self.assertEqual(stale.global_entries, {"Mareus": "Marcus"})
@@ -310,7 +309,7 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                 loaded.global_entries,
                 {"Mareus": "Marcus", "Vertln": "Vertin"},
             )
-            with self.assertRaisesRegex(OSError, "changed on disk"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed on disk"):
                 loaded.upsert_entries({"Poaeher": "Poacher"})
 
             self.assertEqual(
@@ -341,7 +340,7 @@ class OCRCorrectionStoreTest(unittest.TestCase):
             warnings = []
 
             store = OCRCorrectionStore.load(path, warn=warnings.append)
-            with self.assertRaisesRegex(OSError, "changed on disk"):
+            with self.assertRaisesRegex(StaleDocumentError, "changed on disk"):
                 store.save()
             self.assertEqual(path.read_bytes(), original)
 

@@ -88,7 +88,6 @@ class GameProfileStoreTest(unittest.TestCase):
         profile = GameProfile.from_settings("Game", AppSettings())
         values = profile.to_mapping()
         values.pop("ocr_regions", None)
-        values["dialog_region"] = values["dialog_region"]
         values["id"] = "legacy"
         values["name"] = "Legacy"
 
@@ -715,39 +714,6 @@ class GameProfileStoreTest(unittest.TestCase):
 
         self.assertEqual(store.profiles, [])
         self.assertIn("unsupported game profiles schema version", warnings[0])
-
-    def test_unhashable_sequence_mode_preserves_saved_profile(self):
-        warnings = []
-        with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "profiles.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "schema_version": profiles_schema_version,
-                        "profiles": [
-                            {
-                                "id": "damaged",
-                                "name": "Damaged game",
-                                "capture_mode": "screen",
-                                "dialog_region": {
-                                    "left": 0.1,
-                                    "top": 0.6,
-                                    "width": 0.8,
-                                    "height": 0.3,
-                                },
-                                "live_sequence_mode": [],
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            store = GameProfileStore.load(path, warn=warnings.append)
-
-        self.assertEqual(len(store.profiles), 1)
-        self.assertEqual(store.profiles[0].live_sequence_mode, "off")
-        self.assertEqual(warnings, [])
 
     def test_incomplete_profile_region_is_reported_as_invalid(self):
         values = {

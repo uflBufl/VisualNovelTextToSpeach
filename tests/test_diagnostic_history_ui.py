@@ -66,7 +66,8 @@ class DiagnosticHistoryUITest(unittest.TestCase):
         self.assertEqual(self.dialog.reading_history.columnCount(), 3)
         self.assertEqual(row.text(2), "3.0 MB")
         self.assertIn("video: 1", self.dialog.reading_history_detail.toPlainText())
-        self.assertIn("2", self.dialog.reading_storage.text())
+        self.assertRegex(self.dialog.reading_storage.text(), r"\b2\b")
+        self.assertIn("3.0 MB", self.dialog.reading_storage.text())
         self.dialog.reading_history.setCurrentItem(
             self.dialog.reading_history.topLevelItem(1)
         )
@@ -576,6 +577,10 @@ class DiagnosticHistoryDispatchTest(unittest.TestCase):
         self.assertIs(
             self.tray.support_history_runner.start.call_args.args[0],
             delete_saved_diagnostic_session,
+        )
+        self.assertEqual(
+            self.tray.support_history_runner.start.call_args.args[-1],
+            session_entry(2).session_id,
         )
 
     def test_deletion_started_during_export_picker_restores_ui_request(self):

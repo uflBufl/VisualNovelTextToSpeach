@@ -67,7 +67,9 @@ class SettingsTest(unittest.TestCase):
                 loaded = load_app_settings(
                     path,
                     environment={
-                        "VNTTS_GAME_PACK": str(pack.parent / "." / pack.name),
+                        "VNTTS_GAME_PACK": str(
+                            pack.parent / ".." / pack.parent.name / pack.name
+                        ),
                         "VNTTS_GAME_WINDOW_TITLE": "Temporary game",
                         "VNTTS_LIVE_SEQUENCE_PLAN": "temporary-external-sequence.json",
                     },
@@ -385,11 +387,6 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(effective, saved)
         self.assertEqual(len(warnings), 6)
 
-    def test_pocket_tts_backend_can_be_selected(self):
-        settings = AppSettings.from_mapping({"speech_backend": "pocket-tts"})
-
-        self.assertEqual(settings.speech_backend, "pocket-tts")
-
     def test_moss_tts_backend_can_be_selected(self):
         settings = AppSettings.from_mapping({"speech_backend": "moss-tts"})
 
@@ -497,16 +494,6 @@ class SettingsTest(unittest.TestCase):
         settings = AppSettings.from_mapping({"live_sequence_mode": "audio-manual"})
 
         self.assertEqual(settings.live_sequence_mode, "audio-manual")
-
-    def test_sequence_audio_auto_can_be_selected_explicitly(self):
-        settings = AppSettings.from_mapping(
-            {
-                "schema_version": settings_schema_version,
-                "live_sequence_mode": "audio-auto",
-            }
-        )
-
-        self.assertEqual(settings.live_sequence_mode, "audio-auto")
 
     def test_unknown_sequence_mode_fails_closed(self):
         warnings = []

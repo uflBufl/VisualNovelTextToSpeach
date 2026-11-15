@@ -272,8 +272,8 @@ class ReadinessDialogTest(unittest.TestCase):
         pool = ManualThreadPool()
         results = (
             DiagnosticResult("Runtime", "ok", "Installed at /full/runtime/path"),
-            DiagnosticResult("Audio", "error", "No output device", "external-audio"),
             DiagnosticResult("Voices", "warning", "Narrator fallback", "voices"),
+            DiagnosticResult("Audio", "error", "No output device", "external-audio"),
         )
         diagnostics = Mock()
         diagnostics.run.return_value = results
@@ -287,6 +287,8 @@ class ReadinessDialogTest(unittest.TestCase):
             [dialog.table.item(row, 1).text() for row in range(3)],
             ["Audio", "Voices", "Runtime"],
         )
+        self.assertEqual(dialog.table.currentRow(), 0)
+        self.assertIn("Cannot start reading", dialog.summary.text())
         self.assertTrue(dialog.selected_details.isHidden())
         dialog.details_toggle.setFocus()
         QTest.keyClick(dialog.details_toggle, Qt.Key.Key_Space)
@@ -442,7 +444,10 @@ class ReadinessDialogTest(unittest.TestCase):
                 self.application.processEvents()
                 self.assertFalse(dialog.isVisible())
                 self.assertEqual(dialog.table.rowCount(), 0)
-                self.assertFalse(dialog.reading_button.isVisible())
+                self.assertTrue(dialog.reading_button.isHidden())
+                self.assertTrue(
+                    diagnostics.run.call_args.kwargs["cancellation"].is_set()
+                )
                 dialog.deleteLater()
 
     def test_malformed_probe_result_is_a_visible_retryable_failure(self):
@@ -545,31 +550,6 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertEqual(settings_requests, [True])
         self.assertEqual(voice_requests, [True])
         self.assertTrue(dialog.remediation_button.isHidden())
-        dialog.deleteLater()
-
-    def test_warning_before_error_still_selects_first_error(self):
-        pool = ManualThreadPool()
-        diagnostics = type(
-            "Diagnostics",
-            (),
-            {
-                "run": lambda _self, _settings, *, cancellation=None: (
-                    DiagnosticResult(
-                        "Character voices", "warning", "Fallback", "voices"
-                    ),
-                    DiagnosticResult(
-                        "Audio output", "error", "No device", "external-audio"
-                    ),
-                )
-            },
-        )()
-        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
-        pool.run_next()
-        self.application.processEvents()
-        self.assertEqual(dialog.table.currentRow(), 0)
-        self.assertEqual(dialog.table.item(0, 1).text(), "Audio output")
-        self.assertEqual(dialog.table.item(1, 1).text(), "Character voices")
-        self.assertIn("Cannot start reading", dialog.summary.text())
         dialog.deleteLater()
 
     def test_external_ocr_and_audio_errors_name_next_action_without_false_button(self):
@@ -732,19 +712,39 @@ class ReadinessDialogTest(unittest.TestCase):
 
     def test_failed_probe_has_recovery_without_stale_action(self):
         pool = ManualThreadPool()
+        diagnostics = Mock()
+        diagnostics.run.return_value = (
+            DiagnosticResult(
+                "Character voices", "warning", "Narrator fallback", "voices"
+            ),
+        )
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        pool.run_next()
+        self.application.processEvents()
+        self.assertFalse(dialog.reading_button.isHidden())
+        self.assertTrue(dialog.remediation_button.isEnabled())
 
-        class Diagnostics:
-            def run(self, _settings, *, cancellation=None):
-                raise RuntimeError("device probe failed")
-
-        dialog = ReadinessDialog(AppSettings(), Diagnostics(), thread_pool=pool)
+        diagnostics.run.side_effect = RuntimeError("device probe failed")
+        dialog.refresh_button.click()
         pool.run_next()
         self.application.processEvents()
 
         self.assertIn("device probe failed", dialog.summary.text())
         self.assertTrue(dialog.refresh_button.isEnabled())
         self.assertFalse(dialog.remediation_button.isEnabled())
+        self.assertTrue(dialog.reading_button.isHidden())
+        self.assertEqual(dialog.table.rowCount(), 0)
+        self.assertFalse(dialog.copy_selected.isEnabled())
+        self.assertFalse(dialog.copy_all.isEnabled())
         self.assertIn("Select a warning or error", dialog.remediation_reason.text())
+
+        diagnostics.run.side_effect = None
+        dialog.refresh_button.click()
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(dialog.table.item(0, 2).text(), "Narrator fallback")
+        self.assertFalse(dialog.reading_button.isHidden())
+        self.assertTrue(dialog.remediation_button.isEnabled())
         dialog.deleteLater()
 
 

@@ -77,8 +77,9 @@ class ProfileCaptureRegionTest(unittest.TestCase):
             with patch("vntts.dialog_capture.capture_dialog") as capture:
                 capture.return_value = (detected, None)
                 learned = controller._capture_live_frame()
+                self.assertIsNotNone(learned.ocr_regions)
                 capture.return_value = (blank, None)
-                self.assertIs(
+                self.assertEqual(
                     controller._capture_live_frame().ocr_regions, learned.ocr_regions
                 )
 
@@ -86,20 +87,20 @@ class ProfileCaptureRegionTest(unittest.TestCase):
                 self.assertIsNone(controller._capture_live_frame().ocr_regions)
 
                 capture.return_value = (detected, None)
-                controller._capture_live_frame()
+                self.assertIsNotNone(controller._capture_live_frame().ocr_regions)
                 capture.return_value = (blank, None)
                 controller.live_reader.run_id = "second-run"
                 self.assertIsNone(controller._capture_live_frame().ocr_regions)
 
                 capture.return_value = (detected, None)
-                controller._capture_live_frame()
+                self.assertIsNotNone(controller._capture_live_frame().ocr_regions)
                 capture.return_value = (blank, None)
                 calibrated = DialogRegion(0, 0.5, 1, 0.5)
                 store.update_region(second.id, calibrated)
                 self.assertIsNone(controller._capture_live_frame().ocr_regions)
 
                 capture.return_value = (detected, None)
-                controller._capture_live_frame()
+                self.assertIsNotNone(controller._capture_live_frame().ocr_regions)
                 capture.return_value = (blank, None)
                 store.update_capture_regions(second.id, calibrated, configured)
                 self.assertEqual(

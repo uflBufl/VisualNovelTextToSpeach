@@ -627,6 +627,10 @@ class OCRReviewDialogTest(unittest.TestCase):
             ):
                 dialog.resolve_without_correction()
             self.wait_for(lambda: not dialog._write_active)
+            self.assertEqual(OCRReviewStore(review_directory).pending_samples(), [])
+            self.assertEqual(
+                OCRCorrectionStore.load(correction_store.path).global_entries, {}
+            )
 
         self.assertEqual(correction_store.global_entries, {})
         self.assertEqual(dialog.sample_list.count(), 0)
@@ -706,17 +710,24 @@ class OCRReviewDialogTest(unittest.TestCase):
             dialog.save_correction()
             self.wait_for(lambda: not dialog._write_active)
             self.assertEqual(OCRReviewStore(review_directory).pending_samples(), [])
-            self.assertEqual(len(correction_store.profile_entries["game"]), 2)
+            self.assertEqual(
+                OCRCorrectionStore.load(correction_store.path).profile_entries["game"],
+                {"Mareus": "Marcus", "Hello tiniekeeper.": "Hello timekeeper."},
+            )
             dialog.deleteLater()
 
     def test_empty_state_and_scope_explain_impact(self):
         with TemporaryDirectory() as temporary_directory:
             dialog = OCRReviewDialog(temporary_directory)
-            self.assertTrue(dialog.empty_message.isVisible() or not dialog.isVisible())
-            self.assertFalse(dialog.details_panel.isVisible())
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.empty_message.isVisibleTo(dialog))
+            self.assertFalse(dialog.details_panel.isVisibleTo(dialog))
             self.assertFalse(dialog.save_button.isEnabled())
             record_uncertain_sample(temporary_directory)
             dialog.reload_samples()
+            self.assertTrue(dialog.empty_message.isHidden())
+            self.assertTrue(dialog.details_panel.isVisibleTo(dialog))
             dialog.corrected_character.setText("Marcus")
             self.assertIn("Future OCR for all games", dialog.impact.text())
             self.assertNotIn("Mareus", dialog.impact.text())
@@ -759,7 +770,10 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertTrue(dialog.resolve_button.isEnabled())
             self.assertIn("Rule saved", dialog.status.toPlainText())
             saved_rules = OCRCorrectionStore.load(store.path).global_entries
-            self.assertEqual(len(saved_rules), 2)
+            self.assertEqual(
+                saved_rules,
+                {"Mareus": "Marcus", "Hello tiniekeeper.": "Hello timekeeper."},
+            )
             refreshed.assert_called_once_with()
             confirmation = dialog._dismissal_dialog()
             self.assertIn("keeps any rules already saved", confirmation.text())
@@ -885,7 +899,10 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertIn("the Reverse: 1999 profile", dialog.impact.text())
             dialog.save_correction()
             self.wait_for(lambda: not dialog._write_active)
-            self.assertEqual(store.profile_entries["game"], {"Mareus": "Marcus"})
+            self.assertEqual(
+                OCRCorrectionStore.load(store.path).profile_entries["game"],
+                {"Mareus": "Marcus"},
+            )
             dialog.deleteLater()
 
     def test_large_screenshot_can_scroll_both_axes(self):
@@ -934,11 +951,12 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertIn("Future OCR for all games", dialog.impact.text())
             dialog.save_correction()
             self.wait_for(lambda: not dialog._write_active)
+            loaded = OCRCorrectionStore.load(store.path)
             self.assertEqual(
-                store.global_entries,
+                loaded.global_entries,
                 {"Hello tiniekeeper.": "Hello timekeeper."},
             )
-            result = store.dictionary_for("another-game").correct_result(
+            result = loaded.dictionary_for("another-game").correct_result(
                 OCRResult("Mareus", "Hello tiniekeeper.", 95, "balanced", 1)
             )
             self.assertEqual(result.text, "Hello timekeeper.")

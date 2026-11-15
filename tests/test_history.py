@@ -2,6 +2,7 @@ import json
 import os
 import time
 import unittest
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -60,8 +61,8 @@ class DialogueHistoryTest(unittest.TestCase):
         complete = history.add("Marcus", "Hello, Timekeeper.")
         regressed = history.add("Marcus", "Hello")
 
-        self.assertIs(regressed, complete)
-        self.assertEqual(history.snapshot()[0].text, "Hello, Timekeeper.")
+        self.assertEqual(regressed, complete)
+        self.assertEqual(history.snapshot(), [complete])
 
     def test_similar_consecutive_lines_remain_separate(self):
         history = self.create_history()
@@ -74,17 +75,17 @@ class DialogueHistoryTest(unittest.TestCase):
 
     def test_search_matches_speaker_and_dialog_case_insensitively(self):
         history = self.create_history()
-        history.add("Marcus", "The suitcase is ready.")
+        marcus = history.add("Marcus", "The suitcase is ready.")
         history.finish_current()
-        history.add("Lucy", "Good morning.")
+        lucy = history.add("Lucy", "Good morning.")
 
-        self.assertEqual(history.search("SUITCASE")[0].character, "Marcus")
-        self.assertEqual(history.search("lucy")[0].text, "Good morning.")
+        self.assertEqual(history.search("SUITCASE"), [marcus])
+        self.assertEqual(history.search("lucy"), [lucy])
         self.assertEqual(history.search("missing"), [])
 
     def test_exports_text_and_machine_readable_json(self):
         history = self.create_history()
-        history.add("Marcus", "Hello, Timekeeper.")
+        entry = history.add("Marcus", "Hello, Timekeeper.")
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
 
@@ -94,8 +95,7 @@ class DialogueHistoryTest(unittest.TestCase):
             payload = json.loads(json_path.read_text(encoding="utf-8"))
 
         self.assertIn("Marcus\nHello, Timekeeper.", text)
-        self.assertEqual(payload["entries"][0]["character"], "Marcus")
-        self.assertEqual(payload["entries"][0]["text"], "Hello, Timekeeper.")
+        self.assertEqual(payload["entries"], [asdict(entry)])
 
 
 class DialogueHistoryDialogTest(unittest.TestCase):
@@ -673,9 +673,9 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
     def test_export_includes_whole_session_while_history_is_filtered(self):
         history = DialogueHistory()
-        history.add("Marcus", "The suitcase is ready.")
+        marcus = history.add("Marcus", "The suitcase is ready.")
         history.finish_current()
-        history.add("Lucy", "Good morning.")
+        lucy = history.add("Lucy", "Good morning.")
         dialog = self.create_dialog(history, Mock())
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "history.json"
@@ -688,7 +688,9 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                     ):
                         dialog.export_history()
                     exported = json.loads(path.read_text(encoding="utf-8"))
-                    self.assertEqual(len(exported["entries"]), 2)
+                    self.assertEqual(
+                        exported["entries"], [asdict(marcus), asdict(lucy)]
+                    )
 
     def test_refresh_preserves_older_selection_and_scroll_position(self):
         history = DialogueHistory()
