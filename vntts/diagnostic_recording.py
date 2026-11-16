@@ -28,6 +28,7 @@ from vntts.windows_recording_process import RecorderJob, request_stop
 
 MAX_DIAGNOSTIC_SECONDS = 3600
 MAX_DIAGNOSTIC_MEDIA_BYTES = 9 * 1024**3
+WORKER_RETIREMENT_TIMEOUT = 3.0
 
 
 def process_executable(pid: int) -> str:
@@ -298,7 +299,7 @@ class NativeDiagnosticRecording:
         self._helper_created: dict[str, float] = {}
         self._helper_fingerprints: dict[str, dict[str, str]] = {}
         self._sample_observed_at: dict[str, float] = {}
-        self._failed_stop_started: dict[str, float] = {}
+        self._capture_stop_started: dict[str, float] = {}
         self._identities: dict[str, dict[str, object]] = {}
         self._failures: dict[str, dict[str, object]] = {}
         self._native_gaps: dict[str, list[dict[str, object]]] = {}
@@ -306,6 +307,8 @@ class NativeDiagnosticRecording:
         self._arming = Condition()
         self._worker_arms: dict[tuple[object, ...], str] = {}
         self._arm_gaps: dict[tuple[object, ...], dict[str, object]] = {}
+        self._retirement_requests: dict[tuple[object, ...], float] = {}
+        self._retirement_gaps: dict[tuple[object, ...], dict[str, object]] = {}
         self._finished = Event()
 
     def wait_for_worker(
@@ -353,6 +356,92 @@ class NativeDiagnosticRecording:
                 },
             )
         return False, reason
+
+    def finish_worker(self, identity: dict[str, object]) -> tuple[bool, str]:
+        """Keep the source alive until its recorder finalizes, with bounded waiting."""
+        key = tuple(
+            identity[name] for name in ("worker_pid", "worker_path", "worker_id")
+        )
+        deadline = monotonic() + WORKER_RETIREMENT_TIMEOUT
+        with self._arming:
+            if self._finished.is_set():
+                return True, "recorder-stopped"
+            self._retirement_requests.setdefault(key, monotonic())
+            while True:
+                state = self._worker_arms.get(key)
+                if state == "retired":
+                    return True, "finalized"
+                if state == "failed":
+                    return False, "capture-failed"
+                if self._finished.is_set():
+                    return True, "recorder-stopped"
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    reason = "Audio worker recording finalization timed out"
+                    self._retirement_gaps.setdefault(
+                        key,
+                        {
+                            "capture": "rust-retirement",
+                            **identity,
+                            "detected_monotonic": monotonic(),
+                            "status": "failed-or-partial",
+                            "error_type": "RustRecordingRetirementError",
+                            "error_message": reason,
+                            "scope": "Worker exited without acknowledged segment finalization",
+                        },
+                    )
+                    if self.error_type is None:
+                        self.error_type = "RustRecordingRetirementError"
+                        self.error_message = reason
+                    self.status = "degraded"
+                    return False, "timeout"
+                self._arming.wait(min(0.02, remaining))
+
+    def _finish_worker_captures(self, *, request_stop: bool = True) -> None:
+        with self._arming:
+            requests = tuple(self._retirement_requests.items())
+        for identity, cutoff in requests:
+            with self._arming:
+                if self._worker_arms.get(identity) in {"retired", "failed"}:
+                    continue
+            name = next(
+                (
+                    name
+                    for name, owner in self._identities.items()
+                    if tuple(
+                        owner[key] for key in ("worker_pid", "worker_path", "worker_id")
+                    )
+                    == identity
+                ),
+                None,
+            )
+            capture = next(
+                (
+                    (process, output)
+                    for process, output in self.processes
+                    if output.name == name
+                ),
+                None,
+            )
+            if capture is None:
+                continue
+            process, output = capture
+            if process.poll() is None:
+                if request_stop:
+                    self._request_capture_stop(process, output)
+                continue
+            try:
+                self._verify_final_capture(process, output, self.deadline or cutoff)
+            except Exception as error:
+                self._fail_capture(output.name, error)
+            else:
+                for lifetime in self._worker_lifetimes:
+                    if lifetime["capture"] == name:
+                        lifetime["retirement_requested_monotonic"] = cutoff
+                        lifetime["capture_finalized_monotonic"] = monotonic()
+                with self._arming:
+                    self._worker_arms[identity] = "retired"
+                    self._arming.notify_all()
 
     def _launch(self, command: list[str], output: Path) -> None:
         if self.cancelled.is_set():
@@ -491,6 +580,7 @@ class NativeDiagnosticRecording:
         last_budget_check = 0.0
         while not self.cancelled.is_set() and monotonic() < deadline:
             current = self._discover_worker_captures(audio, deadline, seen, previous)
+            self._finish_worker_captures()
             self._retire_worker_captures(seen, previous - current)
             previous = current
             ready = self._check_capture_readiness()
@@ -604,23 +694,26 @@ class NativeDiagnosticRecording:
             for lifetime in self._worker_lifetimes:
                 if lifetime["capture"] == retired_name:
                     lifetime["retired_observed_monotonic"] = monotonic()
-            self._fail_capture(
-                retired_name,
-                RuntimeError("Audio worker retired; process capture is partial"),
-            )
+            with self._arming:
+                finalized = self._worker_arms.get(identity) == "retired"
+            if not finalized:
+                self._fail_capture(
+                    retired_name,
+                    RuntimeError("Audio worker retired; process capture is partial"),
+                )
 
     def _check_capture_readiness(self) -> bool:
         ready = not self.error_type
         for process, output in self.processes:
             if output.name in self._failures:
-                self._stop_failed_capture(process, output)
+                self._request_capture_stop(process, output)
                 continue
             try:
                 ready &= self._check_capture(process, output)
             except Exception as error:
                 ready = False
                 self._fail_capture(output.name, error)
-                self._stop_failed_capture(process, output)
+                self._request_capture_stop(process, output)
         return ready
 
     def _check_capture(self, process: subprocess.Popen, output: Path) -> bool:
@@ -697,6 +790,9 @@ class NativeDiagnosticRecording:
                 worker_identity["worker_path"],
                 worker_identity["worker_id"],
             )
+            with self._arming:
+                if worker_key in self._retirement_requests:
+                    return
             target = metadata.get("target")
             started = metadata.get("capture_started_monotonic_s")
             if (
@@ -724,40 +820,49 @@ class NativeDiagnosticRecording:
             if output.name in self._failures:
                 continue
             try:
-                metadata = _session(output)
-                self._observe_capture_gaps(output, metadata)
-                expected = (
-                    "succeeded" if output.name == "window" else "captured_unqualified"
-                )
-                if (
-                    process.returncode != 0
-                    or metadata.get("status") != expected
-                    or metadata.get("errors")
-                ):
-                    raise RuntimeError(
-                        f"Recorder evidence incomplete for {output.name}"
-                    )
-                if output.name != "window" and metadata.get("stop_requested"):
-                    stopped = metadata.get("capture_stopped_monotonic_s")
-                    cutoff = min(
-                        deadline,
-                        self.cancelled.requested_monotonic
-                        if self.cancelled.requested_monotonic is not None
-                        else deadline,
-                    )
-                    if (
-                        not isinstance(stopped, (int, float))
-                        or isinstance(stopped, bool)
-                        or not math.isfinite(stopped)
-                        or stopped < cutoff
-                    ):
-                        raise RuntimeError(
-                            f"Recorder stopped before owned cutoff for {output.name}"
-                        )
-                if not _has_sample(output, output.name == "window"):
-                    raise RuntimeError(f"Recorder has no samples for {output.name}")
+                self._verify_final_capture(process, output, deadline)
             except Exception as error:
                 self._fail_capture(output.name, error)
+
+    def _verify_final_capture(
+        self, process: subprocess.Popen, output: Path, deadline: float
+    ) -> None:
+        metadata = _session(output)
+        self._observe_capture_gaps(output, metadata)
+        expected = "succeeded" if output.name == "window" else "captured_unqualified"
+        if (
+            process.returncode != 0
+            or metadata.get("status") != expected
+            or metadata.get("errors")
+        ):
+            raise RuntimeError(f"Recorder evidence incomplete for {output.name}")
+        if output.name != "window" and metadata.get("stop_requested"):
+            stopped = metadata.get("capture_stopped_monotonic_s")
+            cutoff = min(
+                deadline,
+                self.cancelled.requested_monotonic
+                if self.cancelled.requested_monotonic is not None
+                else deadline,
+            )
+            identity = self._identities.get(output.name)
+            if identity is not None:
+                key = tuple(
+                    identity[name]
+                    for name in ("worker_pid", "worker_path", "worker_id")
+                )
+                with self._arming:
+                    cutoff = min(cutoff, self._retirement_requests.get(key, cutoff))
+            if (
+                not isinstance(stopped, (int, float))
+                or isinstance(stopped, bool)
+                or not math.isfinite(stopped)
+                or stopped < cutoff
+            ):
+                raise RuntimeError(
+                    f"Recorder stopped before owned cutoff for {output.name}"
+                )
+        if not _has_sample(output, output.name == "window"):
+            raise RuntimeError(f"Recorder has no samples for {output.name}")
 
     def _fail_capture(self, name: str, error: Exception) -> None:
         identity = self._identities.get(name)
@@ -784,13 +889,13 @@ class NativeDiagnosticRecording:
             self.error_type, self.error_message = type(error).__name__, str(error)
         self.status = "degraded"
 
-    def _stop_failed_capture(self, process: subprocess.Popen, output: Path) -> None:
+    def _request_capture_stop(self, process: subprocess.Popen, output: Path) -> None:
         if process.poll() is not None:
             return
-        started = self._failed_stop_started.get(output.name)
+        started = self._capture_stop_started.get(output.name)
         if sys.platform == "win32":
             if started is None:
-                self._failed_stop_started[output.name] = monotonic()
+                self._capture_stop_started[output.name] = monotonic()
                 request_stop(process)
             elif monotonic() - started >= 2:
                 try:
@@ -802,7 +907,7 @@ class NativeDiagnosticRecording:
                         process.kill()
             return
         if started is None:
-            self._failed_stop_started[output.name] = monotonic()
+            self._capture_stop_started[output.name] = monotonic()
             action = signal.SIGTERM
         elif monotonic() - started >= 2:
             action = signal.SIGKILL
@@ -821,11 +926,7 @@ class NativeDiagnosticRecording:
                 for process, _ in self.processes:
                     request_stop(process)
                 deadline = monotonic() + 10
-                for process in running:
-                    try:
-                        process.wait(timeout=max(0.01, deadline - monotonic()))
-                    except subprocess.TimeoutExpired:
-                        pass
+                self._wait_capture_stops(running, deadline)
             finally:
                 try:
                     with ExitStack() as ownership:
@@ -839,6 +940,7 @@ class NativeDiagnosticRecording:
                     deadline = monotonic() + 2
                     for process in running:
                         process.wait(timeout=max(0.01, deadline - monotonic()))
+            self._finish_worker_captures(request_stop=False)
             return
         for process in running:
             try:
@@ -846,11 +948,7 @@ class NativeDiagnosticRecording:
             except ProcessLookupError:
                 pass
         deadline = monotonic() + 10
-        for process in running:
-            try:
-                process.wait(timeout=max(0.01, deadline - monotonic()))
-            except subprocess.TimeoutExpired:
-                pass
+        self._wait_capture_stops(running, deadline)
         for process in running:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -859,6 +957,23 @@ class NativeDiagnosticRecording:
         deadline = monotonic() + 2
         for process in running:
             process.wait(timeout=max(0.01, deadline - monotonic()))
+        self._finish_worker_captures(request_stop=False)
+
+    def _wait_capture_stops(
+        self, running: list[subprocess.Popen], deadline: float
+    ) -> None:
+        while True:
+            self._finish_worker_captures(request_stop=False)
+            pending = next(
+                (process for process in running if process.poll() is None), None
+            )
+            remaining = deadline - monotonic()
+            if pending is None or remaining <= 0:
+                return
+            try:
+                pending.wait(timeout=min(0.02, remaining))
+            except subprocess.TimeoutExpired:
+                pass
 
     def _check_media_budget(self) -> None:
         limit = min(
@@ -885,6 +1000,7 @@ class NativeDiagnosticRecording:
     def report(self) -> dict[str, object]:
         with self._arming:
             arm_gaps = list(self._arm_gaps.values())
+            retirement_gaps = list(self._retirement_gaps.values())
         captures: list[dict[str, object]] = []
         for process, output in self.processes:
             record: dict[str, object] = {
@@ -935,6 +1051,7 @@ class NativeDiagnosticRecording:
             "acquisition_gaps": [
                 *self._failures.values(),
                 *arm_gaps,
+                *retirement_gaps,
                 *(
                     {**gap, "capture": name, **self._identities.get(name, {})}
                     for name, gaps in list(self._native_gaps.items())

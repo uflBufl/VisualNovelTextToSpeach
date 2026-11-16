@@ -18,6 +18,7 @@ from vntts.reading_diagnostics import (  # noqa: E402
     SavedDiagnosticSession,
     arm_audio_worker_recording,
     delete_saved_diagnostic_session,
+    finish_audio_worker_recording,
     record_diagnostic_event,
     retain_diagnostic_source,
     selected_recording_target,
@@ -87,6 +88,35 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
             )
         recorder._fail_capture.assert_called_once()
         self.assertEqual(record.call_args.kwargs["reason"], "capture-failed")
+
+    def test_worker_retirement_is_disabled_without_media_and_survives_finalizing(self):
+        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        with patch("vntts.reading_diagnostics._active", None):
+            finish_audio_worker_recording(identity)
+        recorder = Mock()
+        recorder.finish_worker.return_value = True, "finalized"
+        session = SimpleNamespace(recording=recorder, phase="finalizing")
+        with (
+            patch("vntts.reading_diagnostics._active", session),
+            patch("vntts.reading_diagnostics.record_diagnostic_event") as record,
+        ):
+            finish_audio_worker_recording(identity)
+        recorder.finish_worker.assert_called_once_with(identity)
+        self.assertEqual(record.call_args.kwargs["reason"], "finalized")
+
+    def test_retirement_recorder_error_cannot_prevent_audio_worker_cleanup(self):
+        recorder = Mock()
+        recorder.finish_worker.side_effect = OSError("finalization unavailable")
+        recorder._fail_capture.side_effect = OSError("report unavailable")
+        with (
+            patch(
+                "vntts.reading_diagnostics._active", SimpleNamespace(recording=recorder)
+            ),
+            patch("vntts.reading_diagnostics.record_diagnostic_event") as record,
+        ):
+            finish_audio_worker_recording({"worker_id": "first"})
+        recorder._fail_capture.assert_called_once()
+        self.assertFalse(record.call_args.kwargs["ready"])
 
     def test_early_evidence_survives_eviction_and_runtime_is_allowlisted(self):
         session = self.session()

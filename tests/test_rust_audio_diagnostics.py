@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.rust_audio import RustAudioWorker, active_audio_workers
+from vntts.rust_audio import RustAudioWorker, _ClipPlayback, active_audio_workers
 from vntts.rust_output import RustOutputStream
 
 PEER = r"""
@@ -246,6 +246,75 @@ class NativeAudioDiagnosticsTest(unittest.TestCase):
         self.assertNotIn(
             worker.process.pid, [item["worker_pid"] for item in active_audio_workers()]
         )
+
+    def test_close_finalizes_recording_while_source_is_alive_and_discoverable(self):
+        worker = self.worker()
+        self.play(worker)
+        identities = []
+
+        def finish(identity):
+            self.assertTrue(worker.closed.is_set())
+            self.assertIsNone(worker.process.poll())
+            owner = next(
+                owner
+                for owner in active_audio_workers()
+                if owner["worker_id"] == identity["worker_id"]
+            )
+            self.assertTrue(identity.items() <= owner.items())
+            identities.append(identity)
+
+        with patch(
+            "vntts.reading_diagnostics.finish_audio_worker_recording",
+            side_effect=finish,
+        ) as finalize:
+            worker.close()
+            worker.close()
+        finalize.assert_called_once()
+        self.assertEqual(identities[0]["worker_id"], worker.diagnostic_worker_id)
+        self.assertIsNotNone(worker.process.poll())
+
+    def test_clip_stop_watchdog_releases_state_lock_before_recorder_handshake(self):
+        worker = self.worker("stop")
+        worker.active_id = 1
+        worker._audio_used = True
+        clip = object.__new__(_ClipPlayback)
+        clip.worker, clip.clip_id = worker, 1
+        clip.finished = Mock()
+        clip.finished.wait.return_value = False
+        clip.stop_requested = threading.Event()
+        clip.stop_requested.set()
+        clip.stop_sent = threading.Event()
+        discovered = threading.Event()
+
+        def discover():
+            active_audio_workers()
+            discovered.set()
+
+        def finish(_identity):
+            thread = threading.Thread(target=discover, daemon=True)
+            thread.start()
+            self.assertTrue(
+                discovered.wait(1), "Worker close blocked recorder discovery"
+            )
+            thread.join(1)
+
+        with patch(
+            "vntts.reading_diagnostics.finish_audio_worker_recording",
+            side_effect=finish,
+        ):
+            clip._watch_stop()
+        self.assertIsNotNone(worker.process.poll())
+
+    def test_unexpected_worker_exit_does_not_claim_orderly_retirement(self):
+        worker = self.worker()
+        self.play(worker)
+        worker.process.kill()
+        worker.process.wait(timeout=2)
+        with patch(
+            "vntts.reading_diagnostics.finish_audio_worker_recording"
+        ) as finalize:
+            worker.close()
+        finalize.assert_not_called()
 
     def test_query_only_workers_are_not_process_capture_targets(self):
         worker = self.worker()

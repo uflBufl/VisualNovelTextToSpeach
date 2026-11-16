@@ -137,6 +137,7 @@ class RustAudioWorker:
         self.device_changed = Event()
         self.discovery_stale = Event()
         self.closed = Event()
+        self._close_complete = False
         self.next_id = 0
         self._active_id: int | None = None
         self._diagnostic_clip: dict[str, Any] = {}
@@ -438,8 +439,10 @@ class RustAudioWorker:
             while self.active_id == clip_id and not self.closed.wait(0.02):
                 if monotonic() >= deadline:
                     with self.state_lock:
-                        if self.active_id == clip_id:
-                            self.close()
+                        if self.active_id != clip_id:
+                            return
+                        self.closed.set()
+                    self.close()
                     return
 
         Thread(target=watchdog, name="vntts-rust-cancel-watch", daemon=True).start()
@@ -449,9 +452,19 @@ class RustAudioWorker:
             self._close()
 
     def _close(self) -> None:
-        if self.closed.is_set():
+        if self._close_complete:
             return
         self.closed.set()
+        if self._audio_used and self.process.poll() is None:
+            from vntts.reading_diagnostics import finish_audio_worker_recording
+
+            finish_audio_worker_recording(
+                {
+                    "worker_pid": self.process.pid,
+                    "worker_path": self.executable_path,
+                    "worker_id": self.diagnostic_worker_id,
+                }
+            )
         # Closing a pipe can wait for a concurrent writer; terminate its reader first.
         if self.process.poll() is None:
             self.process.terminate()
@@ -466,6 +479,7 @@ class RustAudioWorker:
         if self.reader is not current_thread():
             self.reader.join(timeout=1)
         self.stderr.close()
+        self._close_complete = True
 
     def play_buffer(
         self,
@@ -635,8 +649,10 @@ class _ClipPlayback:
                     return
                 if not self.finished.wait(3):
                     with self.worker.state_lock:
-                        if self.worker.active_id == self.clip_id:
-                            self.worker.close()
+                        if self.worker.active_id != self.clip_id:
+                            return
+                        self.worker.closed.set()
+                    self.worker.close()
                 return
 
     def _wait_for_completion(self) -> tuple[bool, bool]:
@@ -765,17 +781,13 @@ def _validate_timing_diagnostics(event: dict[str, Any]) -> None:
 
 
 def active_audio_workers() -> tuple[dict[str, object], ...]:
-    """Snapshot live audio owners before PCM, including idle owners, for process recording."""
+    """Snapshot audio-used processes through finalization, including idle/closing owners."""
     with _workers_lock:
         workers = tuple(_workers)
     result = []
     for worker in sorted(workers, key=lambda worker: worker.process.pid):
         with worker.state_lock:
-            if (
-                worker._audio_used
-                and not worker.closed.is_set()
-                and worker.process.poll() is None
-            ):
+            if worker._audio_used and worker.process.poll() is None:
                 result.append(
                     {
                         "worker_pid": worker.process.pid,

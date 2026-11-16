@@ -222,6 +222,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
     def test_stop_requests_all_helpers_before_wait_then_closes_all_jobs(self):
         recording = self.recording()
         events = []
+        clock = [100.0]
         processes = []
         for pid in (71, 72):
             process = Mock(pid=pid, returncode=None)
@@ -229,6 +230,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
 
             def wait(timeout, process=process):
                 if process.returncode is None:
+                    clock[0] += timeout
                     raise subprocess.TimeoutExpired("helper", timeout)
                 events.append(("wait", process.pid))
                 return process.returncode
@@ -244,6 +246,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
             processes.append(process)
         with (
             patch("vntts.diagnostic_recording.sys.platform", "win32"),
+            patch("vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]),
             patch(
                 "vntts.diagnostic_recording.request_stop",
                 side_effect=lambda p: events.append(("stop", p.pid)),
@@ -267,7 +270,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
             patch("vntts.diagnostic_recording.request_stop") as stop,
         ):
             for _ in range(3):
-                recording._stop_failed_capture(process, self.root / "window")
+                recording._request_capture_stop(process, self.root / "window")
         stop.assert_called_once_with(process)
         job.close.assert_called_once()
         process.kill.assert_called_once()

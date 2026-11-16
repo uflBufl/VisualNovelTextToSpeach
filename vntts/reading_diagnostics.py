@@ -165,6 +165,30 @@ def arm_audio_worker_recording(
     return reason != "cancelled" or not interrupted()
 
 
+def finish_audio_worker_recording(identity: dict[str, object]) -> None:
+    """Finalize an owned process segment before its audio worker exits."""
+    session = _active
+    if session is None or session.recording is None:
+        return
+    started = monotonic()
+    try:
+        ready, reason = session.recording.finish_worker(identity)
+    except Exception as error:
+        ready, reason = False, "capture-failed"
+        try:
+            session.recording._fail_capture("rust-retirement", error)
+        except Exception:
+            pass  # Optional recording must not prevent worker cleanup.
+    record_diagnostic_event(
+        "audio",
+        "rust-recording-retire",
+        **identity,
+        ready=ready,
+        reason=reason,
+        wait_ms=round((monotonic() - started) * 1000, 3),
+    )
+
+
 def retain_diagnostic_source(
     line_id: str, path: Path | None, digest: str | None
 ) -> None:

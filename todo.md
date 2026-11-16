@@ -226,26 +226,22 @@
 
 ## Active - Finish diagnostic-session native acceptance
 
-- [ ] **D1 - Finish recorder turnover and bounded-stop qualification.**
-      After forced Rust-worker exit, the repaired session retains a partial segment,
-      explicit worker identity/loss evidence and independent game video/audio plus
-      journals until the original deadline. Verify a replacement worker within the
-      same session and actual default-device change. The corrected bounded-stop
-      contract passes a native deadline run with both process taps finalized and no
-      acquisition errors. Wait for media readiness before starting Reading: cold
-      native-tool preparation took58s of a300s session and missed the first clip.
-      Qualify captured intervals without claiming uncovered startup/tail time. Private aggregate-tap
-      creation alone did not reproduce device-refresh feedback; retain refresh-origin
-      events and choose an audio-owner repair only if evidence supports it.
-
-      The short native reading check also marks ordinary Stop and completed
-      preview-worker retirement as failed acquisition: _retire_worker_captures
-      unconditionally fails an absent worker, and the native tap reports Target
-      process unavailable. Agree an owned-retirement cutoff/finalization handshake
-      before implementation; preserve unexpected-exit failure and do not infer
-      audible loss from this status. Retain and qualify covered intervals rather
-      than merely suppressing the error. Evidence: short-reading-controls-20261116; recurred after ordinary Stop in
-      prefix-repair-native-20261116, session2ffd301983694b9598da05a4388ff378.
+- [ ] **D1 - Qualify recorder turnover in the combined native reading run.**
+      With selected-window/game audio and Reading active, verify ordinary Stop,
+      completed preview retirement, Read restart and actual default-device change.
+      Owned worker segments must finish through their requested cutoff without a
+      false acquisition error; unexpected exit must retain failure/partial PCM,
+      independent game/video and journals, then capture the replacement worker
+      under a new identity until the original session deadline.
+      Wait for media readiness before starting Reading and qualify only captured
+      intervals; never claim uncovered startup/tail time. Include Stop while other
+      helpers are still draining and keep its owner wait bounded.
+      Compare with the isolated process-tap evidence in
+      recorder-retirement-20261116/native-turnover.json and
+      native-source-correlation.json. The worker-only probe does not qualify
+      combined in-game controls or actual device changes. Windows native
+      lifecycle acceptance remains on its own host; retain native identity and
+      failure checks rather than suppressing unavailable-target errors.
 
 ## Rust audio native acceptance gaps
 
@@ -375,7 +371,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: short native confirmation of indexed chapter discovery in RUN-16-03.
+Next action: combine the short native D1 worker-retirement confirmation with
+indexed chapter discovery in RUN-16-03.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.

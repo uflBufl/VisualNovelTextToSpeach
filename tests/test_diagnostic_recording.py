@@ -451,7 +451,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             patch("vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]),
             patch.object(self, "fake_launch", side_effect=launch_with_gap),
             patch.object(recording, "_stop_processes", side_effect=finalize) as stop,
-            patch.object(recording, "_stop_failed_capture") as stop_failed,
+            patch.object(recording, "_request_capture_stop") as stop_failed,
         ):
             self.run_fake(recording)
         stop.assert_called_once_with()
@@ -830,9 +830,9 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             patch("vntts.diagnostic_recording.monotonic", side_effect=[10, 11, 12]),
             patch("vntts.diagnostic_recording.os.killpg", create=True) as kill,
         ):
-            recording._stop_failed_capture(process, output)
-            recording._stop_failed_capture(process, output)
-            recording._stop_failed_capture(process, output)
+            recording._request_capture_stop(process, output)
+            recording._request_capture_stop(process, output)
+            recording._request_capture_stop(process, output)
         self.assertEqual(
             kill.call_args_list,
             [
