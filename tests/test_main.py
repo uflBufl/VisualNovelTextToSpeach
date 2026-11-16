@@ -7715,7 +7715,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(dialogs, [])
         self.assertEqual(
             statuses[-1],
-            "OCR uncertain: 42% (requires 60%). Waiting for clearer text.",
+            "OCR uncertain: 42% (requires 60%). Waiting for readable text. Check the dialogue and Story areas if the text moved.",
         )
         self.assertNotIn("Possibly incorrect", repr(statuses))
         self.assertNotIn("Marcus", repr(statuses))

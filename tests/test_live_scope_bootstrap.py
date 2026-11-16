@@ -203,7 +203,7 @@ class LiveScopeBootstrapTest(unittest.TestCase):
         self.assertIsNone(self.controller.indexed_current_recovery)
         self.controller.live_reader.invalidate_observation.assert_called_once_with()
         self.controller.status_handler.assert_called_once_with(
-            "OCR uncertain: 25% (requires 60%). Waiting for clearer text."
+            "OCR uncertain: 25% (requires 60%). Waiting for readable text. Check the dialogue and Story areas if the text moved."
         )
         self.assertNotIn(self.line.text, repr(self.controller.status_handler.call_args))
         matcher.assert_not_called()

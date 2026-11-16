@@ -4115,7 +4115,8 @@ class AppController:
                         )
         self.status_handler(
             f"OCR uncertain: {result.confidence:.0f}% (requires {minimum_confidence}%). "
-            "Waiting for clearer text."
+            "Waiting for readable text. Check the dialogue and Story areas "
+            "if the text moved."
         )
 
     def _resolve_voice_label(self, character: str) -> str:

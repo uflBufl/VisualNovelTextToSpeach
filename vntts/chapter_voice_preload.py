@@ -767,8 +767,16 @@ class ChapterVoicePreloader:
                 shape = prepared.get(span)
                 if shape is None:
                     shape = prepared[span] = prepare_text(span)
-                evidence = comparison_cache[key] = compare_text(
-                    shape, self.matching_text[row], limit=0 if exact_shape else 4
+                evidence = comparison_cache[key] = self._recover_current_edge_glyph(
+                    row,
+                    shape,
+                    compare_text(
+                        shape, self.matching_text[row], limit=0 if exact_shape else 4
+                    ),
+                    speaker,
+                    current,
+                    fully_observed_line_id,
+                    span == str(text),
                 )
             return evidence
 
@@ -1010,6 +1018,40 @@ class ChapterVoicePreloader:
                 else "expected-no-match",
             )
         )
+
+    def _recover_current_edge_glyph(
+        self,
+        row: ChapterDialogue,
+        observed: MatchingText,
+        evidence: TextEvidence,
+        speaker: str,
+        current: ChapterMatch | None,
+        fully_observed_line_id: str | None,
+        raw_observation: bool,
+    ) -> TextEvidence:
+        source = self.matching_text[row]
+        if (
+            raw_observation
+            and row.line_id == fully_observed_line_id
+            and current is not None
+            and (row.chapter, _story_position(row))
+            == (current.chapter, _story_position(current))
+            and speaker
+            and speaker == _normalize(row.speaker)
+            and evidence.distance == 1
+            and not evidence.complete
+            and observed.protected_content == source.protected_content
+            and len(source.key) > 2
+            and (
+                observed.key == source.key[1:]
+                and source.key[1].isalnum()
+                or observed.key == source.key[:-1]
+                and source.key[-2].isalnum()
+            )
+        ):
+            # A missing edge glyph cannot truncate a fully seen current owner.
+            return TextEvidence(1, True, None, source.alphanumeric_length)
+        return evidence
 
     def resolve_unique_prefix(
         self,

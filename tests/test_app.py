@@ -3144,7 +3144,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         controller = tray.controller
         uncertain = OCRResult("Untrusted name", "Private OCR fragment", 42.4, "test", 3)
-        warning = "OCR uncertain: 42% (requires 60%). Waiting for clearer text."
+        warning = "OCR uncertain: 42% (requires 60%). Waiting for readable text. Check the dialogue and Story areas if the text moved."
         for previous in (None, ("Marcus", "Previously recognized dialogue.")):
             with self.subTest(previous=previous):
                 if previous is not None:
