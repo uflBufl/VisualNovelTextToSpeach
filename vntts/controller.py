@@ -24,6 +24,7 @@ from vntts.caption_layout import select_caption
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterVoicePreloader,
+    StoryMatchingCancelled,
     StoryObservationMatch,
 )
 from vntts.chapter_voice_preload import _normalize as _normalize_story_text
@@ -532,6 +533,12 @@ class SequenceEventLease:
     occurrence_id: int
 
 
+@dataclass
+class _StoryObservationLease:
+    owner: tuple[object, ...]
+    stale: bool = False
+
+
 class AppController:
     last_sequence_prefix_gate: tuple[object, ...] | None
 
@@ -963,9 +970,25 @@ class AppController:
         )
 
     def _resolve_initial_live_sequence_line(
-        self, character: str, text: str
+        self,
+        character: str,
+        text: str,
+        *,
+        preloader: ChapterVoicePreloader,
+        line_ids: Sequence[str],
+        prefer_synthesis: bool,
     ) -> tuple[ChapterDialogue | None, object]:
         """Resolve one complete startup line inside the configured sequence."""
+        match = preloader.resolve_observation_among(
+            character,
+            text,
+            line_ids,
+            recover_crop_noise=True,
+            prefer_synthesis=prefer_synthesis,
+        )
+        return match.line, match.method
+
+    def _initial_live_sequence_line_ids_locked(self) -> tuple[str, ...]:
         plan = self.live_sequence_plan
         line_ids = (
             tuple(
@@ -980,14 +1003,53 @@ class AppController:
                 if event.is_speech and event.line_id is not None
             )
         )
-        match = self.chapter_voice_preloader.resolve_observation_among(
-            character,
-            text,
-            line_ids,
-            recover_crop_noise=True,
-            prefer_synthesis=plan is None or self.settings.live_sequence_mode == "off",
+        return line_ids
+
+    def _story_matching_owner_locked(self) -> tuple[object, ...]:
+        cursor, reader = self.story_cursor, self.live_reader
+        return (
+            id(self.settings),
+            id(self.chapter_voice_preloader),
+            self.chapter_voice_preloader.current_match,
+            id(self.live_sequence_plan),
+            id(cursor),
+            None if cursor is None else cursor.current_event_id,
+            None if cursor is None else cursor.occurrence_id,
+            None if cursor is None else cursor.state,
+            self.observation_serial,
+            id(reader),
+            getattr(reader, "run_id", None),
+            getattr(reader, "frame_route_epoch", None),
+            id(getattr(reader, "stop_event", None)),
+            reader.stop_event.is_set()
+            if isinstance(reader, LiveDialogReader)
+            else None,
+            self.shutdown_requested.is_set(),
         )
-        return match.line, match.method
+
+    def _story_matching_snapshot_locked(self) -> ChapterVoicePreloader:
+        reader = self.live_reader
+        stop = reader.stop_event if isinstance(reader, LiveDialogReader) else None
+        stopped = stop is not None and stop.is_set()
+        shutdown = self.shutdown_requested
+        observation_serial = self.observation_serial
+        return self.chapter_voice_preloader.matching_snapshot(
+            cancelled=lambda: (
+                shutdown.is_set()
+                or self.observation_serial != observation_serial
+                or (stop is not None and not stopped and stop.is_set())
+            )
+        )
+
+    def _story_observation_lease_locked(
+        self, lease: _StoryObservationLease | None = None
+    ) -> _StoryObservationLease:
+        owner = self._story_matching_owner_locked()
+        if lease is None:
+            return _StoryObservationLease(owner)
+        if lease.owner != owner:
+            lease.stale = True
+        return lease
 
     def _load_live_speaker_corpus(self) -> None:
         self.live_speaker_corpus = None
@@ -1595,6 +1657,9 @@ class AppController:
         voice_router = self.voice_router
         if voice_router is None:
             raise RuntimeError("The speech engine is not ready")
+        self._refresh_prepared_audio()
+        with self.story_cursor_lock:
+            lease = self._story_observation_lease_locked()
         try:
             image = getattr(frame, "image", None)
             provenance = getattr(image, "info", {}).get("capture_provenance")
@@ -1633,7 +1698,9 @@ class AppController:
             error_type: str | None = None
             resolution: dict[str, object] = {}
             try:
-                resolved = self._resolve_story_ocr_result(result, resolution=resolution)
+                resolved = self._resolve_story_ocr_result(
+                    result, resolution=resolution, lease=lease
+                )
                 line = resolution.get("line")
                 canonical_line = line if isinstance(line, ChapterDialogue) else None
                 canonical_exact = resolution.get("match_result") in {
@@ -1677,7 +1744,10 @@ class AppController:
             result_resolver=resolve_result,
             raw_result_observer=observe_raw_result,
         )
-        character = self._canonical_observed_character(character, text)
+        character = self._canonical_observed_character(character, text, lease=lease)
+        with self.story_cursor_lock:
+            if self._story_observation_lease_locked(lease).stale:
+                return character, text
         if (
             isinstance(comparison, DialogFrameEquivalence)
             and evidence_context is not None
@@ -1744,7 +1814,11 @@ class AppController:
         )
 
     def _resolve_story_ocr_result(
-        self, result: OCRResult, *, resolution: dict[str, object] | None = None
+        self,
+        result: OCRResult,
+        *,
+        resolution: dict[str, object] | None = None,
+        lease: _StoryObservationLease | None = None,
     ) -> OCRResult:
         confidence = (
             result.confidence
@@ -1769,9 +1843,18 @@ class AppController:
             and not result.speaker_note
             else ""
         )
-        self._refresh_prepared_audio()
+        if lease is None:
+            self._refresh_prepared_audio()
         with self.story_cursor_lock:
-            preloader = self.chapter_voice_preloader
+            lease = self._story_observation_lease_locked(lease)
+            if lease.stale:
+                if resolution is not None:
+                    resolution["match_result"] = "stale-observation"
+                return result
+            owner_preloader = self.chapter_voice_preloader
+            preloader = owner_preloader
+            settings = self.settings
+            automatic_prepared_reading = self.automatic_prepared_reading
             plan, cursor = self.live_sequence_plan, self.story_cursor
             bounded = (
                 plan is not None
@@ -1786,6 +1869,7 @@ class AppController:
                 }
             )
             confirmation_line_id = None
+            confirmation_candidate_ids: tuple[str, ...] = ()
             if not confident and not bounded:
                 reader = self.live_reader
                 chunk = (
@@ -1810,53 +1894,21 @@ class AppController:
                     return result
                 confirmation_line_id = current_line.line_id
                 if (
-                    self.automatic_prepared_reading
+                    automatic_prepared_reading
                     and speaker
                     and (speaker, result.text)
                     != (current_line.speaker, current_line.text)
                 ):
-                    candidate, candidate_match = (
-                        self._resolve_complete_exact_line_locked(
-                            speaker,
-                            result.text,
-                            tuple(
-                                row.line_id
-                                for row in preloader.by_chapter.get(
-                                    current_line.chapter, ()
-                                )
-                                if row.line_id
-                            ),
-                        )
+                    confirmation_candidate_ids = tuple(
+                        row.line_id
+                        for row in preloader.by_chapter.get(current_line.chapter, ())
+                        if row.line_id
                     )
-                    backend = self.speech_backend
-                    if (
-                        candidate is not None
-                        and candidate_match == "expected-exact"
-                        and isinstance(backend, GeneratedAudioFallbackBackend)
-                        and backend.library is not None
-                        and backend.speed == 1.0
-                        and candidate.line_id
-                        and candidate.text_sha256
-                        and backend.library.has_entry(
-                            candidate.line_id, candidate.text_sha256
-                        )
-                    ):
-                        confirmation_line_id = candidate.line_id
+            backend = self.speech_backend
             expected_prefix = self._expected_sequence_prefix_line_locked()
-            if expected_prefix is not None:
-                evidence = compare_text(
-                    prepare_text(result.text),
-                    self.chapter_voice_preloader.matching_text[expected_prefix],
-                    limit=0,
-                )
-                if not evidence.complete and evidence.prefix_distance == 0:
-                    if resolution is not None:
-                        resolution["match_result"] = "owned-prefix"
-                    return result
-            line_ids: tuple[str, ...]
-            if confirmation_line_id is not None:
-                line_ids = (confirmation_line_id,)
-            elif plan is not None and self.settings.live_sequence_mode != "off":
+            chapter_line_ids = self._chapter_sequence_line_ids_locked()
+            fully_observed_line_id = self._fully_observed_line_id()
+            if plan is not None and settings.live_sequence_mode != "off":
                 events = (
                     (cursor.current_event, *cursor.bounded_visible_successors())
                     if cursor is not None
@@ -1879,14 +1931,50 @@ class AppController:
                     else preloader.by_chapter.get(preloader.current_match.chapter, ())
                 )
                 line_ids = tuple(row.line_id for row in rows if row.line_id)
-            fully_observed_line_id = self._fully_observed_line_id()
+            preloader = self._story_matching_snapshot_locked()
+            owner = self._story_matching_owner_locked()
+            lease.owner = owner
+        try:
+            if confirmation_candidate_ids:
+                candidate, candidate_match = self._resolve_complete_exact_line(
+                    preloader,
+                    speaker,
+                    result.text,
+                    confirmation_candidate_ids,
+                    fully_observed_line_id=fully_observed_line_id,
+                )
+                if (
+                    candidate is not None
+                    and candidate_match == "expected-exact"
+                    and isinstance(backend, GeneratedAudioFallbackBackend)
+                    and backend.library is not None
+                    and backend.speed == 1.0
+                    and candidate.line_id
+                    and candidate.text_sha256
+                    and backend.library.has_entry(
+                        candidate.line_id, candidate.text_sha256
+                    )
+                ):
+                    confirmation_line_id = candidate.line_id
+            if confirmation_line_id is not None:
+                line_ids = (confirmation_line_id,)
+            if expected_prefix is not None:
+                evidence = compare_text(
+                    prepare_text(result.text),
+                    preloader.matching_text[expected_prefix],
+                    limit=0,
+                )
+                if not evidence.complete and evidence.prefix_distance == 0:
+                    if resolution is not None:
+                        resolution["match_result"] = "owned-prefix"
+                    return result
             line, match = preloader.resolve_complete_among(
                 speaker,
                 result.text,
                 line_ids,
                 update_context=False,
                 prefer_synthesis=(
-                    (plan is None or self.settings.live_sequence_mode == "off")
+                    (plan is None or settings.live_sequence_mode == "off")
                     and preloader.current_match is None
                     and confirmation_line_id is None
                 ),
@@ -1894,20 +1982,16 @@ class AppController:
             )
             if (
                 line is None
-                and match != "expected-ambiguous"
-                and not (
-                    match == "expected-incomplete"
-                    and fully_observed_line_id is not None
-                    and (
-                        not speaker
-                        or _normalize_story_text(speaker)
-                        == _normalize_story_text(
-                            preloader.by_line_id[fully_observed_line_id].speaker
-                        )
+                and (
+                    match in {"expected-no-match", "no-expected-candidates"}
+                    or (
+                        match == "expected-incomplete"
+                        and bool(speaker)
+                        and preloader.has_exact_observation(speaker, result.text)
                     )
                 )
                 and confident
-                and self.automatic_prepared_reading
+                and automatic_prepared_reading
                 and plan is None
                 and preloader.current_match is not None
             ):
@@ -1929,18 +2013,35 @@ class AppController:
             ):
                 line = None
                 match = "ocr-uncertain"
-            if line is None and confident:
-                chapter_line, chapter_match = (
-                    self._resolve_chapter_exact_sequence_line_locked(
-                        speaker, result.text
-                    )
+            if line is None and confident and chapter_line_ids:
+                chapter_line, chapter_match = self._resolve_complete_exact_line(
+                    preloader,
+                    speaker,
+                    result.text,
+                    chapter_line_ids,
+                    fully_observed_line_id=fully_observed_line_id,
                 )
                 if chapter_line is not None:
                     line, match = chapter_line, chapter_match
+        except StoryMatchingCancelled:
+            lease.stale = True
+            if resolution is not None:
+                resolution["match_result"] = "stale-observation"
+            return result
+        with self.story_cursor_lock:
+            if self._story_matching_owner_locked() != owner:
+                lease.stale = True
+                if resolution is not None:
+                    resolution["match_result"] = "stale-observation"
+                return result
+            owner_preloader.last_resolution_diagnostics = (
+                preloader.last_resolution_diagnostics
+            )
             if resolution is not None:
                 resolution.update(match_result=match, line=line)
-            if line is not None and self.automatic_prepared_reading:
-                preloader.select_line_id(line.line_id)
+            if line is not None and automatic_prepared_reading:
+                owner_preloader.select_line_id(line.line_id)
+            lease.owner = self._story_matching_owner_locked()
         if line is None:
             return result
         self._request_original_speech(line)
@@ -2073,8 +2174,9 @@ class AppController:
         with self.story_cursor_lock:
             self.observation_serial += 1
             self.indexed_current_recovery = None
+            lease = self._story_observation_lease_locked()
         observed_character = character or "Narrator"
-        character = self._canonical_observed_character(character, text)
+        character = self._canonical_observed_character(character, text, lease=lease)
         canonical_routing = False
         canonical_event_changed = False
         early_prefix = False
@@ -2085,7 +2187,15 @@ class AppController:
                 if self.story_cursor is None
                 else self.story_cursor.current_event_id
             )
-            sequence_observation = self._observe_live_sequence(character, text)
+        sequence_observation = self._observe_live_sequence(character, text, lease=lease)
+        with self.story_cursor_lock:
+            if self._story_observation_lease_locked(lease).stale:
+                return False
+            if sequence_observation is not None and (
+                self.story_cursor is None
+                or self.story_cursor.snapshot() != sequence_observation[0]
+            ):
+                return False
             if self._live_sequence_audio_active():
                 if self.story_cursor is None:
                     return False
@@ -2519,43 +2629,37 @@ class AppController:
             self.error_handler(error)
         return status
 
-    def _observe_live_sequence(
-        self, character: str, text: str
-    ) -> tuple[StoryCursorSnapshot, ChapterDialogue | None, object] | None:
-        with self.story_cursor_lock:
-            return self._observe_live_sequence_locked(character, text)
-
-    def _resolve_chapter_exact_sequence_line_locked(
-        self, character: str, text: str
-    ) -> tuple[ChapterDialogue | None, str]:
+    def _chapter_sequence_line_ids_locked(self) -> tuple[str, ...]:
         cursor, plan = self.story_cursor, self.live_sequence_plan
         current = None if cursor is None else cursor.current_event
         if current is None or plan is None or self.settings.live_sequence_mode == "off":
-            return None, "expected-no-active-chapter"
-        line_ids = tuple(
+            return ()
+        return tuple(
             event.line_id
             for event in plan.events.values()
             if event.is_speech and event.chapter == current.chapter and event.line_id
         )
-        return self._resolve_complete_exact_line_locked(character, text, line_ids)
 
-    def _resolve_complete_exact_line_locked(
-        self, character: str, text: str, line_ids: Sequence[str]
+    @staticmethod
+    def _resolve_complete_exact_line(
+        preloader: ChapterVoicePreloader,
+        character: str,
+        text: str,
+        line_ids: Sequence[str],
+        *,
+        fully_observed_line_id: str | None,
     ) -> tuple[ChapterDialogue | None, str]:
-        line, match = self.chapter_voice_preloader.resolve_exact_among(
-            character,
-            text,
-            line_ids,
-            update_context=False,
+        line, match = preloader.resolve_exact_among(
+            character, text, line_ids, update_context=False
         )
         if line is None:
             return None, match
-        line, match = self.chapter_voice_preloader.resolve_complete_among(
+        line, match = preloader.resolve_complete_among(
             character,
             text,
             line_ids,
             update_context=False,
-            fully_observed_line_id=self._fully_observed_line_id(),
+            fully_observed_line_id=fully_observed_line_id,
         )
         if match not in {
             "expected-exact",
@@ -2566,189 +2670,257 @@ class AppController:
             return None, match
         return line, match
 
-    def _observe_live_sequence_locked(
-        self, character: str, text: str
+    def _observe_live_sequence(
+        self,
+        character: str,
+        text: str,
+        *,
+        lease: _StoryObservationLease | None = None,
     ) -> tuple[StoryCursorSnapshot, ChapterDialogue | None, object] | None:
-        cursor = self.story_cursor
-        plan = self.live_sequence_plan
-        if cursor is None or plan is None or self.settings.live_sequence_mode == "off":
-            return None
-        previous_event_id = cursor.current_event_id
-        confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
-        candidate_events: tuple[LiveSequenceEvent, ...] = ()
-        if previous_event_id is None or cursor.state in {
-            StoryCursorState.UNSYNCHRONIZED,
-            StoryCursorState.ANCHORING,
-        }:
-            line, match_result = self._resolve_initial_live_sequence_line(
-                character,
-                text,
-            )
-            snapshot = (
-                None
-                if line is None or line.line_id is None
-                else cursor.observe_line(line.line_id)
-            )
-        else:
-            current = cursor.current_event
-            candidate_events = cursor.bounded_visible_successors()
-            silent_event = cursor.deterministic_visual_successor()
+        with self.story_cursor_lock:
+            lease = self._story_observation_lease_locked(lease)
+            if lease.stale:
+                return None
+            cursor, plan = self.story_cursor, self.live_sequence_plan
             if (
-                silent_event is None
+                cursor is None
+                or plan is None
+                or self.settings.live_sequence_mode == "off"
+            ):
+                return None
+            owner_preloader = self.chapter_voice_preloader
+            previous_event_id = cursor.current_event_id
+            confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
+            initial = previous_event_id is None or cursor.state in {
+                StoryCursorState.UNSYNCHRONIZED,
+                StoryCursorState.ANCHORING,
+            }
+            candidate_events = () if initial else cursor.bounded_visible_successors()
+            silent_event = None if initial else cursor.deterministic_visual_successor()
+            if (
+                not initial
+                and silent_event is None
                 and self.settings.live_sequence_mode == "shadow"
                 and cursor.state != StoryCursorState.PLAYING
             ):
                 silent_event = _unique_silent_sequence_successor(cursor)
-            if (
-                silent_event is not None
+            silent_event = (
+                silent_event
+                if silent_event is not None
                 and silent_event.kind == "silent"
                 and is_symbol_only_text(text)
-            ):
-                snapshot = cursor.anchor_event(
-                    silent_event.event_id,
-                    "visual-transition-confirmed",
-                )
-                line = None
-                match_result = "expected-silent-symbols"
-                candidate_events = (silent_event,)
-            else:
-                candidate_event_ids = tuple(
-                    dict.fromkeys(
-                        (
-                            *(
-                                (current.event_id,)
-                                if current is not None and current.is_speech
-                                else ()
-                            ),
-                            *(event.event_id for event in candidate_events),
-                        )
+                else None
+            )
+            current = cursor.current_event
+            candidate_event_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            (current.event_id,)
+                            if current is not None and current.is_speech
+                            else ()
+                        ),
+                        *(event.event_id for event in candidate_events),
                     )
                 )
-                candidate_line_ids = tuple(
+            )
+            candidate_line_ids = (
+                self._initial_live_sequence_line_ids_locked()
+                if initial
+                else tuple(
                     plan.events[event_id].line_id
                     for event_id in candidate_event_ids
                     if plan.events[event_id].line_id is not None
                 )
-
-                def resolve_observation() -> StoryObservationMatch:
-                    return self.chapter_voice_preloader.resolve_observation_among(
-                        character,
-                        text,
-                        candidate_line_ids,
-                        allow_prefix=True,
-                        recover_crop_noise=True,
-                        fully_observed_line_id=self._fully_observed_line_id(),
-                    )
-
-                expected = self._expected_sequence_prefix_line_locked()
+            )
+            chapter_line_ids = self._chapter_sequence_line_ids_locked()
+            recovery_line_ids = (
+                tuple(
+                    event.line_id for event in plan.events.values() if event.is_speech
+                )
+                if cursor.state != StoryCursorState.PLAYING
+                else ()
+            )
+            fully_observed_line_id = self._fully_observed_line_id()
+            expected = None if initial else self._expected_sequence_prefix_line_locked()
+            preloader = self._story_matching_snapshot_locked()
+            owner = self._story_matching_owner_locked()
+            lease.owner = owner
+        try:
+            observation_match = None
+            if initial:
+                line, match_result = self._resolve_initial_live_sequence_line(
+                    character,
+                    text,
+                    preloader=preloader,
+                    line_ids=candidate_line_ids,
+                    prefer_synthesis=False,
+                )
+            elif silent_event is not None:
+                line, match_result = None, "expected-silent-symbols"
+            else:
                 if expected is not None:
                     observed = _normalize_story_text(text)
                     speaker = _normalize_story_text(character)
                     evidence = compare_text(
-                        prepare_text(text),
-                        self.chapter_voice_preloader.matching_text[expected],
-                        limit=0,
+                        prepare_text(text), preloader.matching_text[expected], limit=0
                     )
                     prefix_matches = evidence.complete or evidence.prefix_distance == 0
                     speaker_matches = bool(
                         speaker in {"", "narrator"}
                         or speaker == _normalize_story_text(expected.speaker)
                     )
-                    reserved = bool(
-                        prefix_matches
-                        and speaker_matches
-                        and self._reserve_generated_prefix(expected)
-                    )
-                    self._report_sequence_prefix_gate_locked(
-                        "owned-prefix-accepted"
-                        if reserved
-                        else "prefix-text-mismatch"
-                        if not prefix_matches
-                        else "prefix-speaker-mismatch"
-                        if not speaker_matches
-                        else "generated-reservation-failed",
-                        line_id=expected.line_id,
-                        normalized_text_characters=len(observed),
-                        prefix_matches=prefix_matches,
-                        speaker_matches=speaker_matches,
-                        reservation_ready=reserved,
-                    )
+                    with self.story_cursor_lock:
+                        if self._story_matching_owner_locked() != owner:
+                            lease.stale = True
+                            return None
+                        reserved = bool(
+                            prefix_matches
+                            and speaker_matches
+                            and self._expected_sequence_prefix_line_locked() == expected
+                            and self._reserve_generated_prefix(expected)
+                        )
+                        self._report_sequence_prefix_gate_locked(
+                            "owned-prefix-accepted"
+                            if reserved
+                            else "prefix-text-mismatch"
+                            if not prefix_matches
+                            else "prefix-speaker-mismatch"
+                            if not speaker_matches
+                            else "generated-reservation-failed",
+                            line_id=expected.line_id,
+                            normalized_text_characters=len(observed),
+                            prefix_matches=prefix_matches,
+                            speaker_matches=speaker_matches,
+                            reservation_ready=reserved,
+                        )
                     if reserved:
-                        line = expected
-                        complete = evidence.complete
                         observation_match = StoryObservationMatch(
                             expected,
                             "expected-owned-exact"
-                            if complete
+                            if evidence.complete
                             else "expected-owned-prefix",
-                            complete=complete,
-                            prefix=not complete,
+                            complete=evidence.complete,
+                            prefix=not evidence.complete,
                         )
-                    else:
-                        observation_match = resolve_observation()
-                else:
-                    observation_match = resolve_observation()
+                if observation_match is None:
+                    observation_match = preloader.resolve_observation_among(
+                        character,
+                        text,
+                        candidate_line_ids,
+                        allow_prefix=True,
+                        recover_crop_noise=True,
+                        fully_observed_line_id=fully_observed_line_id,
+                    )
                 line, match_result = observation_match.line, observation_match.method
-                snapshot, line, match_result = self._apply_sequence_observation_locked(
-                    cursor, observation_match, candidate_event_ids, character, text
+            chapter_line, chapter_match = (
+                self._resolve_complete_exact_line(
+                    preloader,
+                    character,
+                    text,
+                    chapter_line_ids,
+                    fully_observed_line_id=fully_observed_line_id,
                 )
-        self._remember_indexed_current_recovery_locked(
-            character, text, line, previous_event_id, candidate_events
-        )
-        if self._report_sequence_candidate_miss_if_needed(
-            cursor,
-            line,
-            snapshot,
-            previous_event_id,
-            candidate_events,
-            match_result,
-        ):
+                if observation_match is not None and line is None
+                else (None, str(match_result))
+            )
+            recovery_line, recovery_match = (
+                preloader.resolve_exact_among(
+                    character, text, recovery_line_ids, update_context=False
+                )
+                if line is None and recovery_line_ids
+                else (None, "expected-no-match")
+            )
+        except StoryMatchingCancelled:
+            lease.stale = True
             return None
-        if snapshot is None:
-            return None
-        generation = (
-            self.live_reader.active_generation if self.live_reader is not None else 0
-        )
-        if (
-            confirming_dispatch
-            and snapshot.state != StoryCursorState.DESYNCHRONIZED
-            and snapshot.current_event_id != previous_event_id
-            and self.live_reader is not None
-        ):
-            self.live_reader.confirm_pending_auto_advance()
-        self.pipeline_event_handler(
-            (
-                "sequence-shadow"
-                if self.settings.live_sequence_mode == "shadow"
-                else f"sequence-{self.settings.live_sequence_mode}"
-            ),
-            generation,
-            monotonic(),
-            state=snapshot.state.value,
-            previous_event_id=previous_event_id,
-            event_id=snapshot.current_event_id,
-            line_id=None if line is None else snapshot.current_line_id,
-            next_event_count=len(snapshot.expected_successor_ids),
-            reason=snapshot.reason,
-            match_result=match_result,
-        )
-        self._publish_live_sequence_status()
-        return snapshot, line, match_result
+        with self.story_cursor_lock:
+            if self._story_matching_owner_locked() != owner:
+                lease.stale = True
+                return None
+            owner_preloader.current_match = preloader.current_match
+            owner_preloader.last_resolution_diagnostics = (
+                preloader.last_resolution_diagnostics
+            )
+            if initial:
+                snapshot = (
+                    None
+                    if line is None or line.line_id is None
+                    else cursor.observe_line(line.line_id)
+                )
+            elif silent_event is not None:
+                snapshot = cursor.anchor_event(
+                    silent_event.event_id, "visual-transition-confirmed"
+                )
+                candidate_events = (silent_event,)
+            else:
+                assert observation_match is not None
+                snapshot, line, match_result = self._apply_sequence_observation_locked(
+                    cursor,
+                    observation_match,
+                    candidate_event_ids,
+                    chapter_line,
+                    chapter_match,
+                )
+            self._remember_indexed_current_recovery_locked(
+                line,
+                previous_event_id,
+                candidate_events,
+                recovery_line,
+                recovery_match,
+            )
+            candidate_miss = self._report_sequence_candidate_miss_if_needed(
+                cursor,
+                line,
+                snapshot,
+                previous_event_id,
+                candidate_events,
+                match_result,
+            )
+            lease.owner = self._story_matching_owner_locked()
+            if candidate_miss or snapshot is None:
+                return None
+            generation = (
+                self.live_reader.active_generation
+                if self.live_reader is not None
+                else 0
+            )
+            if (
+                confirming_dispatch
+                and snapshot.state != StoryCursorState.DESYNCHRONIZED
+                and snapshot.current_event_id != previous_event_id
+                and self.live_reader is not None
+            ):
+                self.live_reader.confirm_pending_auto_advance()
+            self.pipeline_event_handler(
+                (
+                    "sequence-shadow"
+                    if self.settings.live_sequence_mode == "shadow"
+                    else f"sequence-{self.settings.live_sequence_mode}"
+                ),
+                generation,
+                monotonic(),
+                state=snapshot.state.value,
+                previous_event_id=previous_event_id,
+                event_id=snapshot.current_event_id,
+                line_id=None if line is None else snapshot.current_line_id,
+                next_event_count=len(snapshot.expected_successor_ids),
+                reason=snapshot.reason,
+                match_result=match_result,
+            )
+            self._publish_live_sequence_status()
+            lease.owner = self._story_matching_owner_locked()
+            return snapshot, line, match_result
 
     def _apply_sequence_observation_locked(
         self,
         cursor: _StoryCursor,
         observation_match: StoryObservationMatch,
         candidate_event_ids: tuple[str, ...],
-        character: str,
-        text: str,
+        chapter_line: ChapterDialogue | None,
+        chapter_match: str,
     ) -> tuple[StoryCursorSnapshot | None, ChapterDialogue | None, object]:
         line, match_result = observation_match.line, observation_match.method
-        chapter_line, chapter_match = (
-            self._resolve_chapter_exact_sequence_line_locked(character, text)
-            if line is None
-            else (None, match_result)
-        )
         chapter_event = (
             None
             if chapter_line is None or chapter_line.line_id is None
@@ -3265,11 +3437,11 @@ class AppController:
 
     def _remember_indexed_current_recovery_locked(
         self,
-        character: str,
-        text: str,
         line: ChapterDialogue | None,
         previous_event_id: str | None,
         candidate_events: tuple[LiveSequenceEvent, ...],
+        exact: ChapterDialogue | None,
+        exact_result: str,
     ) -> None:
         cursor, plan = self.story_cursor, self.live_sequence_plan
         if (
@@ -3279,12 +3451,6 @@ class AppController:
             or cursor.state == StoryCursorState.PLAYING
         ):
             return
-        exact, exact_result = self.chapter_voice_preloader.resolve_exact_among(
-            character,
-            text,
-            (event.line_id for event in plan.events.values() if event.is_speech),
-            update_context=False,
-        )
         if exact_result not in {"expected-exact", "expected-normalized-exact"}:
             exact = None
         exact_event = (
@@ -3871,13 +4037,46 @@ class AppController:
             return successful
 
     def _canonical_observed_character(
-        self, character: str | None, text: str | None = None
+        self,
+        character: str | None,
+        text: str | None = None,
+        *,
+        lease: _StoryObservationLease | None = None,
     ) -> str:
         original = str(character or "Narrator").strip() or "Narrator"
         with self.story_cursor_lock:
-            if self._expected_sequence_prefix_line_locked() is not None:
+            lease = self._story_observation_lease_locked(lease)
+            if lease.stale:
                 return original
-        canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
+            if self._expected_sequence_prefix_line_locked() is not None:
+                lease.owner = self._story_matching_owner_locked()
+                return original
+            owner_preloader = self.chapter_voice_preloader
+            preloader = self._story_matching_snapshot_locked()
+            owner = self._story_matching_owner_locked()
+        try:
+            canonical = self._canonical_character_from_story(preloader, original, text)
+        except StoryMatchingCancelled:
+            lease.stale = True
+            return original
+        with self.story_cursor_lock:
+            if self._story_matching_owner_locked() != owner:
+                lease.stale = True
+                return original
+            owner_preloader.current_match = preloader.current_match
+            owner_preloader.last_resolution_diagnostics = (
+                preloader.last_resolution_diagnostics
+            )
+            lease.owner = self._story_matching_owner_locked()
+        return canonical
+
+    def _canonical_character_from_story(
+        self,
+        preloader: ChapterVoicePreloader,
+        original: str,
+        text: str | None,
+    ) -> str:
+        canonicalize = getattr(preloader, "canonical_speaker", None)
         if callable(canonicalize):
             canonical = canonicalize(original)
             if isinstance(canonical, str) and normalize_character_name(
@@ -3887,7 +4086,7 @@ class AppController:
 
         if text:
             resolve_by_text = getattr(
-                self.chapter_voice_preloader,
+                preloader,
                 "resolve_unique_prefix_by_text",
                 None,
             )

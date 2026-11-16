@@ -3,6 +3,7 @@ import re
 import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import copy
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
@@ -96,6 +97,10 @@ class StoryObservationMatch:
     prefix: bool = False
 
 
+class StoryMatchingCancelled(Exception):
+    """The reading session stopped before its matching query completed."""
+
+
 @dataclass(frozen=True)
 class _CandidateEvidence:
     line: ChapterDialogue
@@ -169,6 +174,32 @@ class ChapterVoicePreloader:
         for rows in self.by_chapter.values():
             rows.sort(key=_story_position)
         self.current_match: ChapterMatch | None = None
+        self._matching_cancelled: Callable[[], bool] | None = None
+
+    def matching_snapshot(
+        self, *, cancelled: Callable[[], bool] | None = None
+    ) -> "ChapterVoicePreloader":
+        """Share indexed content, isolating query context and diagnostics."""
+        snapshot = copy(self)
+        snapshot.last_resolution_diagnostics = self.last_resolution_diagnostics.copy()
+        snapshot._matching_cancelled = cancelled
+        return snapshot
+
+    def _check_matching_cancelled(self) -> None:
+        if self._matching_cancelled is not None and self._matching_cancelled():
+            raise StoryMatchingCancelled
+
+    def has_exact_observation(self, character: object, text: object) -> bool:
+        """Check the existing index before expanding an incomplete chapter query."""
+        return bool(
+            self.by_exact_dialogue.get(
+                (
+                    _normalize(character),
+                    is_symbol_only_text(text),
+                    _normalize_exact_text(text),
+                )
+            )
+        )
 
     @classmethod
     def from_document(
@@ -525,6 +556,7 @@ class ChapterVoicePreloader:
         update_context: bool = True,
     ) -> tuple[ChapterDialogue | None, str]:
         """Resolve one OCR observation only among explicit cursor candidates."""
+        self._check_matching_cancelled()
         allowed = {str(line_id) for line_id in line_ids if line_id}
         if not allowed:
             return None, "no-expected-candidates"
@@ -547,6 +579,7 @@ class ChapterVoicePreloader:
             (False, normalized_text, True, "expected-normalized-exact"),
             (False, normalized_text, False, "expected-normalized-text-only"),
         ):
+            self._check_matching_cancelled()
             if not observed:
                 continue
             candidates = [
@@ -628,6 +661,7 @@ class ChapterVoicePreloader:
         fully_observed_line_id: str | None = None,
     ) -> StoryObservationMatch:
         """Assess the same source coverage for canonical text and cursor ownership."""
+        self._check_matching_cancelled()
         allowed = tuple(dict.fromkeys(str(value) for value in line_ids if value))
         valid = tuple(
             row
@@ -761,6 +795,7 @@ class ChapterVoicePreloader:
         exact_shape = any(observed == self.matching_text[row] for row in valid)
 
         def compare(span: str, row: ChapterDialogue) -> TextEvidence:
+            self._check_matching_cancelled()
             key = span, row
             evidence = comparison_cache.get(key)
             if evidence is None:
@@ -1163,6 +1198,7 @@ class ChapterVoicePreloader:
         return eligible(matches(self.by_speaker.get(speaker_key, ())))
 
     def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:
+        self._check_matching_cancelled()
         if not row.line_id or not row.text_sha256 or not observed.alphanumeric_length:
             return False
         evidence = compare_text(observed, self.matching_text[row], limit=0)

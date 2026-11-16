@@ -2,13 +2,17 @@ import hashlib
 import itertools
 import unittest
 from dataclasses import replace
+from threading import Event
+from unittest.mock import patch
 
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
     ChapterVoicePreloader,
+    StoryMatchingCancelled,
 )
 from vntts.dialog import bounded_levenshtein
+from vntts.story_text_matching import compare_text
 
 
 def dialogue(text, line_id="line", *, speaker="Ada", sequence=1):
@@ -24,6 +28,55 @@ def dialogue(text, line_id="line", *, speaker="Ada", sequence=1):
 
 
 class CompleteStoryMatchingTest(unittest.TestCase):
+    def test_stopped_matching_query_aborts_before_the_next_candidate(self):
+        first = dialogue("The first complete dialogue.", "first", sequence=1)
+        second = dialogue("The next complete dialogue.", "second", sequence=2)
+        preloader = ChapterVoicePreloader((first, second))
+        preloader.select_line_id(first.line_id)
+        stopped = Event()
+        snapshot = preloader.matching_snapshot(cancelled=stopped.is_set)
+
+        def stop_during_comparison(*args, **kwargs):
+            stopped.set()
+            return compare_text(*args, **kwargs)
+
+        with patch(
+            "vntts.chapter_voice_preload.compare_text",
+            side_effect=stop_during_comparison,
+        ) as compare:
+            with self.assertRaises(StoryMatchingCancelled):
+                snapshot.resolve_complete_among(
+                    first.speaker, first.text, snapshot.by_line_id
+                )
+        self.assertEqual(compare.call_count, 1)
+        self.assertEqual(preloader.current_match.sequence, first.sequence)
+        self.assertEqual(preloader.last_resolution_diagnostics, {})
+
+    def test_matching_snapshot_shares_index_without_publishing_query_state(self):
+        first = dialogue("The first complete dialogue.", "first", sequence=1)
+        second = dialogue("The next complete dialogue.", "second", sequence=2)
+        preloader = ChapterVoicePreloader((first, second))
+        preloader.select_line_id(first.line_id)
+        preloader.last_resolution_diagnostics = {"match_result": "previous"}
+        snapshot = preloader.matching_snapshot()
+        self.assertIs(snapshot.matching_text, preloader.matching_text)
+        self.assertIs(snapshot.by_line_id, preloader.by_line_id)
+        self.assertIs(snapshot.dialogue, preloader.dialogue)
+        previous = preloader.current_match
+        selected, _ = snapshot.resolve_complete_among(
+            second.speaker, second.text, snapshot.by_line_id
+        )
+        self.assertIs(selected, second)
+        self.assertEqual(snapshot.current_match.sequence, second.sequence)
+        self.assertIs(preloader.current_match, previous)
+        self.assertEqual(
+            preloader.last_resolution_diagnostics, {"match_result": "previous"}
+        )
+        snapshot.last_resolution_diagnostics["query-only"] = True
+        self.assertNotIn("query-only", preloader.last_resolution_diagnostics)
+        preloader.select_line_id(first.line_id)
+        self.assertEqual(snapshot.current_match.sequence, second.sequence)
+
     def assert_resolves(self, canonical, observed, *, speaker="Ada"):
         row = dialogue(canonical)
         preloader = ChapterVoicePreloader([row])

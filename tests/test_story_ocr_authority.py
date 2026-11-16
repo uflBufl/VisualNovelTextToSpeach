@@ -178,17 +178,42 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         controller._resolve_voice_label = Mock(return_value="Prepared story voice")
         return controller
 
+    def resolve_initial(self, controller, character, text):
+        with controller.story_cursor_lock:
+            preloader = controller.chapter_voice_preloader.matching_snapshot()
+            line_ids = controller._initial_live_sequence_line_ids_locked()
+            prefer_synthesis = (
+                controller.live_sequence_plan is None
+                or controller.settings.live_sequence_mode == "off"
+            )
+        return controller._resolve_initial_live_sequence_line(
+            character,
+            text,
+            preloader=preloader,
+            line_ids=line_ids,
+            prefer_synthesis=prefer_synthesis,
+        )
+
     def anchor(self, controller, current, successors=(), state=StoryCursorState.LOCKED):
         controller.settings = controller.settings.updated(
             live_sequence_mode="audio-manual"
         )
         events = tuple(
-            SimpleNamespace(line_id=line.line_id, is_speech=True, chapter=line.chapter)
-            for line in (current, *successors)
+            SimpleNamespace(
+                event_id=f"event-{index}",
+                line_id=line.line_id,
+                is_speech=True,
+                chapter=line.chapter,
+            )
+            for index, line in enumerate((current, *successors))
         )
-        controller.live_sequence_plan = SimpleNamespace(events=dict(enumerate(events)))
+        controller.live_sequence_plan = SimpleNamespace(
+            events={event.event_id: event for event in events}
+        )
         controller.story_cursor = SimpleNamespace(
             state=state,
+            current_event_id=events[0].event_id,
+            occurrence_id=1,
             current_event=events[0],
             bounded_visible_successors=Mock(return_value=events[1:]),
         )
@@ -885,9 +910,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 self.assert_generated_route(
                     controller, line, (resolved.character, resolved.text)
                 )
-                initial, _ = controller._resolve_initial_live_sequence_line(
-                    raw.character, raw.text
-                )
+                initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIs(initial, line)
                 bounded, _ = controller.chapter_voice_preloader.resolve_bounded_among(
                     raw.character, raw.text, (line.line_id,)
@@ -904,9 +927,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 controller = self.controller((line,))
                 raw = observed(text, line.speaker)
                 self.assertIs(controller._resolve_story_ocr_result(raw), raw)
-                initial, _ = controller._resolve_initial_live_sequence_line(
-                    raw.character, raw.text
-                )
+                initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIsNone(initial)
                 self.assertIsNone(controller.chapter_voice_preloader.current_match)
 
@@ -926,9 +947,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 self.assert_generated_route(
                     controller, line, (resolved.character, resolved.text)
                 )
-                initial, _ = controller._resolve_initial_live_sequence_line(
-                    raw.character, raw.text
-                )
+                initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIs(initial, line)
 
     def test_changed_numbers_signs_or_negation_never_acquire_story_authority(self):
@@ -948,9 +967,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 controller = self.controller((line,))
                 raw = observed(text, line.speaker)
                 self.assertIs(controller._resolve_story_ocr_result(raw), raw)
-                initial, _ = controller._resolve_initial_live_sequence_line(
-                    raw.character, raw.text
-                )
+                initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIsNone(initial)
                 bounded, _ = controller.chapter_voice_preloader.resolve_bounded_among(
                     raw.character, raw.text, (line.line_id,)
@@ -970,9 +987,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         controller.live_sequence_plan = SimpleNamespace(
             events={"allowed": SimpleNamespace(line_id=allowed.line_id, is_speech=True)}
         )
-        line, _ = controller._resolve_initial_live_sequence_line(
-            forbidden.speaker, forbidden.text
-        )
+        line, _ = self.resolve_initial(controller, forbidden.speaker, forbidden.text)
         self.assertIsNone(line)
         self.assertIsNone(controller.chapter_voice_preloader.current_match)
 
@@ -1158,16 +1173,24 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     live_sequence_mode="audio-manual"
                 )
                 event = SimpleNamespace(
-                    line_id=first.line_id, is_speech=True, chapter=first.chapter
+                    event_id="first",
+                    line_id=first.line_id,
+                    is_speech=True,
+                    chapter=first.chapter,
                 )
                 forbidden = SimpleNamespace(
-                    line_id=other.line_id, is_speech=True, chapter=other.chapter
+                    event_id="forbidden",
+                    line_id=other.line_id,
+                    is_speech=True,
+                    chapter=other.chapter,
                 )
                 controller.live_sequence_plan = SimpleNamespace(
                     events={"first": event, "forbidden": forbidden}
                 )
                 controller.story_cursor = SimpleNamespace(
                     state=StoryCursorState.LOCKED,
+                    current_event_id=event.event_id,
+                    occurrence_id=1,
                     current_event=event,
                     bounded_visible_successors=Mock(return_value=()),
                 )

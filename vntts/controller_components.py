@@ -14,10 +14,20 @@ from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkab
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from vntts.controller import AppController, _Executor, _ExecutorFuture, _VoiceRouter
+    from vntts.controller import (
+        AppController,
+        _Executor,
+        _ExecutorFuture,
+        _StoryObservationLease,
+        _VoiceRouter,
+    )
 
 from vntts.auto_advance_policy import auto_advance_control_state
-from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.chapter_voice_preload import (
+    ChapterDialogue,
+    ChapterVoicePreloader,
+    StoryMatchingCancelled,
+)
 from vntts.cleanup import cleanup_on_exit
 from vntts.dialog import is_empty
 from vntts.dialog_capture import (
@@ -999,10 +1009,13 @@ class LiveSessionComponent:
         voice_router = controller.voice_router
         if voice_router is None:
             return False
+        controller._refresh_prepared_audio()
         target = controller.capture_target
         settings = controller.settings
         preloader = controller.chapter_voice_preloader
         observation_serial = controller.observation_serial
+        with controller.story_cursor_lock:
+            lease = controller._story_observation_lease_locked()
         bootstrap_id = uuid4().hex
         controller.live_scope_identification_token = bootstrap_id
         window = None
@@ -1030,7 +1043,7 @@ class LiveSessionComponent:
             return False
 
         def request_refusal() -> str | None:
-            return self._scope_request_refusal(
+            refusal = self._scope_request_refusal(
                 bootstrap_id,
                 observation_serial,
                 cancellation,
@@ -1039,6 +1052,14 @@ class LiveSessionComponent:
                 preloader,
                 window,
             )
+            if refusal is not None:
+                return refusal
+            with controller.story_cursor_lock:
+                return (
+                    "cancelled"
+                    if controller._story_observation_lease_locked(lease).stale
+                    else None
+                )
 
         try:
             refusal = request_refusal()
@@ -1047,12 +1068,13 @@ class LiveSessionComponent:
             window = getattr(target, "last_window", None)
 
             character, text, uncertain = self._read_scope_snapshot(
-                settings, voice_router, target, request_refusal
+                settings, voice_router, target, request_refusal, lease
+            )
+            line, match_result, refusal = self._bind_scope_snapshot(
+                character, text, uncertain, preloader, request_refusal, lease
             )
             with controller.story_cursor_lock:
-                line, match_result, refusal = self._bind_scope_snapshot(
-                    character, text, uncertain, preloader, request_refusal
-                )
+                refusal = refusal or request_refusal()
                 if refusal is not None:
                     return finish(refusal)
                 assert line is not None
@@ -1070,6 +1092,7 @@ class LiveSessionComponent:
         uncertain: tuple[OCRResult, float] | None,
         preloader: ChapterVoicePreloader,
         request_refusal: Callable[[], str | None],
+        lease: _StoryObservationLease,
     ) -> tuple[ChapterDialogue | None, object, str | None]:
         controller = self.controller
         match_result: object = None
@@ -1081,24 +1104,53 @@ class LiveSessionComponent:
             return None, match_result, "ocr-uncertain"
         if is_empty(text):
             return None, match_result, "no-dialog-text"
-        previous_match = preloader.current_match
-        observed_character = character
-        character = controller._canonical_observed_character(
-            character or "Narrator", text
-        )
-        line, match_result = controller._resolve_initial_live_sequence_line(
-            character,
-            text,
-        )
-        refusal = request_refusal()
-        if refusal is not None:
-            preloader.current_match = previous_match
-            return None, match_result, refusal
-        controller.live_scope_identification_match_result = str(match_result)
-        self._record_scope_identification_diagnostics(observed_character, character)
-        if line is None:
-            return None, match_result, "story-line-no-match"
-        return line, match_result, None
+        with controller.story_cursor_lock:
+            refusal = request_refusal()
+            if refusal is not None:
+                return None, match_result, refusal
+            expected = controller._expected_sequence_prefix_line_locked()
+            matching = controller._story_matching_snapshot_locked()
+            line_ids = controller._initial_live_sequence_line_ids_locked()
+            prefer_synthesis = (
+                controller.live_sequence_plan is None
+                or controller.settings.live_sequence_mode == "off"
+            )
+            owner = controller._story_matching_owner_locked()
+            lease.owner = owner
+        try:
+            observed_character = character
+            character = str(character or "Narrator").strip() or "Narrator"
+            character = (
+                character
+                if expected is not None
+                else controller._canonical_character_from_story(
+                    matching, character, text
+                )
+            )
+            line, match_result = controller._resolve_initial_live_sequence_line(
+                character,
+                text,
+                preloader=matching,
+                line_ids=line_ids,
+                prefer_synthesis=prefer_synthesis,
+            )
+        except StoryMatchingCancelled:
+            lease.stale = True
+            return None, match_result, "cancelled"
+        with controller.story_cursor_lock:
+            refusal = request_refusal()
+            if refusal is None and controller._story_matching_owner_locked() != owner:
+                refusal = "cancelled"
+            if refusal is not None:
+                return None, match_result, refusal
+            preloader.current_match = matching.current_match
+            preloader.last_resolution_diagnostics = matching.last_resolution_diagnostics
+            lease.owner = controller._story_matching_owner_locked()
+            controller.live_scope_identification_match_result = str(match_result)
+            self._record_scope_identification_diagnostics(observed_character, character)
+            if line is None:
+                return None, match_result, "story-line-no-match"
+            return line, match_result, None
 
     def _read_scope_snapshot(
         self,
@@ -1106,6 +1158,7 @@ class LiveSessionComponent:
         voice_router: _VoiceRouter,
         target: object,
         request_refusal: Callable[[], str | None],
+        lease: _StoryObservationLease,
     ) -> tuple[str | None, str, tuple[OCRResult, float] | None]:
         controller = self.controller
         uncertain: tuple[OCRResult, float] | None = None
@@ -1136,7 +1189,7 @@ class LiveSessionComponent:
             controller.correction_dictionary,
             controller._capture_region(),
             controller._capture_ocr_regions(),
-            controller._resolve_story_ocr_result,
+            partial(controller._resolve_story_ocr_result, lease=lease),
             controller._select_text_layout,
         )
         return character, text, uncertain

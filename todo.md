@@ -374,35 +374,20 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the RUN-16-03 implementation plan before another game run.
+Next action: qualify RUN-16-03 and RUN-16-02 together in a short native Finished Page check.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-16-03 - Keep partial chapter matching scoped and release UI state locks.**
-      In native Finished Page session018f1a1b5b0d4e7cb3fbab65b6754957, the
-      recognized fragment Heinrich: `Ahh! To` took76186ms to resolve as
-      expected-incomplete. Qt/MCP stopped responding; a native process sample
-      shows the main QTimer callback waiting on an RLock while dialog-ocr executes
-      Python comparison work. Stop was processed only after resolution returned;
-      the process subsequently quit normally. Offline replay confirms a chapter
-      result expected-incomplete in about5ms, followed by unnecessary global
-      prefer-synthesis comparison over the full catalog in13.4s. The recorded
-      previous narrator differs from the new speaker, so the current incomplete
-      guard permits this escalation. Proposed plan, awaiting approval:
-      keep expected-incomplete in the known chapter until a new observation;
-      retain global discovery when the chapter genuinely does not match. Separate
-      immutable matching input/results (including diagnostics) from cursor mutation;
-      snapshot context under a short story lock, compute outside it, and apply only
-      to the still-current reading/context. Migrate ordinary OCR, sequence matching
-      and scope bootstrap to this shared ownership boundary; do not merely unlock
-      calls whose preloader diagnostics/current context still mutate. Gate:
-      replay actual Heinrich prefix-to-full progression, retain chapter discovery,
-      ambiguity and original-audio policy, and block a calculation deterministically
-      while status and Stop remain responsive with no stale result after restart
-      or resync. Native confirmation follows offline gates. No timer or confidence
-      threshold workaround. Evidence: finished-page-qualification-20261116,
-      prefix-stall probe and native lock sample.
+- [ ] **RUN-16-03 - Qualify responsive partial-text matching in-game.**
+      In Finished Page, observe Heinrich's `Ahh! Tosca ...!` while it types after
+      the preceding narrator. Confirm reading/control refresh stays responsive,
+      the complete original remains with the game, and Stop/Read does not restore
+      an old observation or cursor after stopping or resynchronizing. Combine
+      with RUN-16-02 rather than replaying a full chapter. Offline full-catalog
+      replay and deterministic held-matching tests qualify the code paths; native
+      behavior after this repair remains unqualified. Evidence:
+      finished-page-qualification-20261116, prefix-controller-final-results.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -1882,6 +1867,14 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       tests do not qualify these platforms or neural-model/hardware behavior.
 
 ## Deferred - Restore pre-existing repository quality gates
+
+- [ ] Diagnose order-dependent OCR-service shutdown in the Reading regression
+      selection. `test_visual_ellipsis_with_zero_ocr_confidence_advances_once_after_fresh_ocr`
+      reports `OCR service is shutting down` after other selected modules on both
+      the unchanged baseline and current code; its module passes in a fresh process.
+      Capture/minimize the failing order and repair the responsible service owner
+      or fixture lifetime. Evidence: prefix-final-consumers and baseline-consumers
+      in finished-page-qualification-20261116; do not alter matching policy to hide it.
 
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 - [ ] Reconcile the complexity ratchet with the unchanged live-replay seal,

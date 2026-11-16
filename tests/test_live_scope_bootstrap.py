@@ -119,8 +119,14 @@ class LiveScopeBootstrapTest(unittest.TestCase):
     def test_focus_lost_during_match_restores_previous_story_context(self):
         resolve = self.controller._resolve_initial_live_sequence_line
 
-        def match(character, text):
-            result = resolve(character, text)
+        def match(character, text, *, preloader, line_ids, prefer_synthesis):
+            result = resolve(
+                character,
+                text,
+                preloader=preloader,
+                line_ids=line_ids,
+                prefer_synthesis=prefer_synthesis,
+            )
             self.target.is_focused.return_value = False
             return result
 

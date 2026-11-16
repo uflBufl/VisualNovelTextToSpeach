@@ -217,8 +217,12 @@ class ControllerTransitionObservationTest(unittest.TestCase):
             )
         )
         self.accept(controller, lines[0])
-        line, _match = controller._resolve_chapter_exact_sequence_line_locked(
-            "Ada", "Same words."
+        line, _match = controller._resolve_complete_exact_line(
+            controller.chapter_voice_preloader.matching_snapshot(),
+            "Ada",
+            "Same words.",
+            tuple(line.line_id for line in lines),
+            fully_observed_line_id=None,
         )
         self.assertIsNone(line)
 
