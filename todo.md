@@ -374,10 +374,24 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: review the remaining native Mac acceptance gates before scheduling
-more game runs. Supplemental voice coverage
+Next action: localize the short-prefix resolver stall in RUN-16-03 before another
+game run. Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
+
+- [ ] **RUN-16-03 - Localize slow short-prefix resolution blocking Reading controls.**
+      In native Finished Page session018f1a1b5b0d4e7cb3fbab65b6754957, the
+      recognized fragment Heinrich: `Ahh! To` took76186ms to resolve as
+      expected-incomplete. Qt/MCP stopped responding; a native process sample
+      shows the main QTimer callback waiting on an RLock while dialog-ocr executes
+      Python comparison work. Stop was processed only after resolution returned;
+      the process subsequently quit normally. Identify the actual candidate scope
+      and expensive comparison path from the saved observation/context, reproduce
+      offline, and propose bounded recognition work and lock ownership changes.
+      Do not infer deadlock or a modal dialog from the bridge timeout. Gate:
+      preserve partial-text matching decisions and make Stop/control refresh
+      responsive while recognition is busy; replay the captured fragment before
+      native confirmation. Evidence: finished-page-qualification-20261116.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -403,18 +417,16 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       for that occurrence, respects original completion, and produces no overlap;
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
-- [ ] **RUN-16-02 - Qualify ordinary Read with unprepared main-story originals.**
-      Open Chapter 6 / Finished Page with game AUTO off, without activating or
-      preparing its pack. Confirm unvoiced100630:6 is spoken once and primary
-      originals7-10 remain with the game, respect their completion and continue
-      without duplicate speech/keys. Compare with the existing prepared Hansel
-      route. Check Stop during first-time chapter timing, then Read again: no late
-      playback or extra keys, and the qualified chapter should be reused.
-      Measure cold startup and first-original delay as well as warm continuation;
-      offline full-catalog loading and first timing are not native UX acceptance.
-      Keep supplemental-cue coverage separate in deferred RUN-16-01. Evidence for
-      the real original defect: short-reading-controls-20261116,
-      session27f9e929d6a447e2aab0385b5606e234.
+- [ ] **RUN-16-02 - Finish ordinary Read cancellation and restart acceptance.**
+      After RUN-16-03, check Stop during first-time chapter timing in Finished Page,
+      then Read again: no late playback or extra keys, and the qualified chapter
+      should be reused. Distinguish actual cold timing from persisted-cache reuse;
+      retain first-original delay and warm continuation evidence. Compare lifecycle
+      with prepared Hansel. The current native session qualifies narrator synthesis
+      and primary-original exclusion but its long resolver stall prevented this
+      cancellation/restart check. Supplemental cues remain deferred in RUN-16-01.
+      Evidence: finished-page-qualification-20261116,
+      session018f1a1b5b0d4e7cb3fbab65b6754957.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
