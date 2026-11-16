@@ -362,23 +362,49 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate the first-observation Read/restart delays in RUN-17-01
-from the saved recording, then present a concrete fix plan before implementation.
+Next action: agree the indexed-catalog migration in RUN-17-01 before implementing
+it. Keep the separate pre-resolver startup delay in scope for diagnosis; faster
+matching alone does not explain that interval.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-17-01 - Resolve slow first-observation matching after Read.**
+- [ ] **RUN-17-01 - Replace full-scan matching with an indexed search architecture.**
+      Implementation plan awaiting agreement:
+      - Extend the existing disposable StoryCatalog during import/admission with
+        dialogue payloads, versioned search keys, exact/prefix B-trees and FTS5
+        fragment postings. Bind source and optional semantic-evidence identity;
+        publish atomically and rebuild known obsolete derived schemas. Keep
+        generation/audio identities and reusable recordings unchanged.
+      - Retrieve exact/prefix candidates first, then conservative typo candidates
+        using indexed disjoint fragments and a native RapidFuzz distance lower
+        bound. Include short seeds where trigram pigeonhole coverage fails;
+        ordinary trigram MATCH alone is insufficient for short OCR. Preserve
+        the existing semantic validator, rejected margin
+        competitors, visible-speaker policy, crop recovery and original-audio
+        priority. Query continuation witnesses separately; do not impose a
+        candidate cap or interpret an empty lexical key as a universal prefix.
+        Cover short/symbol-only observations explicitly; insufficient evidence
+        must remain ambiguous. Use bounded active-chapter hydration/cache.
+      - Migrate startup, chapter/global matching, ReadingCatalog, prepared-audio
+        discovery and their consumers to the shared indexed catalog. Remove
+        full-catalog dialogue/MatchingText copies, superseded dictionaries and
+        global scans in the same migration. Preserve selected-snapshot scope,
+        canonical hydration, cancellation and stale-result leases; use executing
+        thread read connections and keep heavy work outside UI/cursor locks.
+      - Gate with candidate-recall and semantic-equivalence oracle checks,
+        affected catalog/discovery/matching regressions, complete-corpus startup,
+        warm/query latency and process memory measurements, then a short native
+        confirmation. Verify packaged SQLite FTS5 and RapidFuzz on macOS/Windows;
+        no custom positional index unless measured integrated latency needs it.
       Finished Page session44b8d8f398cf4a64b9ec0999c2cbb64b has full, exact,
       confidently named Kakania20 and Isolde27 observations, yet their first
       story-result-resolution calls take19.933s and32.450s after the OCR worker
       finishes. Later anchored observations, including real noisy named/narrator
       no-matches, stay below39ms. Do not reopen the completed anchored-prefix fix
-      or blame game-voice waiting. Trace the initial candidate scope and matching
-      work with these exact saved inputs and the full catalog; determine why
-      indexed exact evidence is not enough on the initial path. Preserve speech
-      completeness/continuations, ambiguity, visible-speaker and original-audio
-      policy when proposing the repair. The first cold Read also took57.18s to
+      or blame game-voice waiting. Preserve speech completeness/continuations,
+      ambiguity, visible-speaker and original-audio policy. The first cold Read
+      also took57.18s to
       its first resolution, of which only1.618s was the resolver: separate that
       pre-resolver startup interval rather than attributing it to the same cause.
       The third Read click exceeded the bridge's5s main-thread timeout before
