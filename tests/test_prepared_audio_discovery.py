@@ -23,10 +23,71 @@ from vntts.prepared_audio_discovery import (
     PreparedAudioSnapshot,
     discover_prepared_audio,
 )
+from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
 
 
 class PreparedAudioDiscoveryTests(unittest.TestCase):
+    def test_catalog_merge_preserves_qualified_partial_original_evidence(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            partial = replace(
+                source.preloader.dialogue[0],
+                source_audio_status="available",
+                source_audio_id="partial-voice",
+                source_audio_completeness="partial",
+                source_audio_authoritative=True,
+                source_audio_duration_seconds=1.25,
+            )
+            source = replace(source, preloader=type(source.preloader)((partial,)))
+            raw = replace(
+                partial,
+                source_audio_completeness="unknown",
+                source_audio_authoritative=False,
+                source_audio_duration_seconds=None,
+            )
+            catalog = ReadingCatalog(
+                source.game_id, source.game_name, source.story_index, (raw,)
+            )
+            snapshot = PreparedAudioSnapshot((source,), catalogs=(catalog,))
+            self.assertIs(snapshot.preloader.line_for_id(line_id), partial)
+            self.assertFalse(partial.has_original_speech)
+
+    def test_current_catalog_replaces_obsolete_original_audio_authority(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            original = replace(
+                source.preloader.dialogue[0],
+                source_audio_status="available",
+                source_audio_id="old-voice",
+                source_audio_completeness="full",
+                source_audio_authoritative=True,
+                source_audio_duration_seconds=1.0,
+            )
+            source = replace(source, preloader=type(source.preloader)((original,)))
+            current = replace(
+                original,
+                source_audio_status="absent",
+                source_audio_id=None,
+                source_audio_completeness="unknown",
+                source_audio_authoritative=False,
+                source_audio_duration_seconds=None,
+            )
+            catalog = ReadingCatalog(
+                source.game_id, source.game_name, source.story_index, (current,)
+            )
+            snapshot = PreparedAudioSnapshot((source,), catalogs=(catalog,))
+            self.assertIs(snapshot.preloader.line_for_id(line_id), current)
+            self.assertTrue(
+                snapshot.library_for(lambda _entry: True).has_entry(line_id, text_hash)
+            )
+
     def test_reservation_keeps_archive_entry_without_reading_pcm_or_rediscovering(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, text_hash, wav = write_synthetic_game_pack(

@@ -394,25 +394,18 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       for that occurrence, respects original completion, and produces no overlap;
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
-- [ ] **RUN-16-02 - Resolve unprepared stories independently of generated audio.**
-      Native ordinary Read in Chapter 6 / Finished Page synthesized the correctly
-      unvoiced100630:6, then also synthesized primary-original lines7-10. OCR
-      remained expected-no-match. The full imported catalog contains this chapter,
-      but discover_prepared_audio builds the recognition preloader only from
-      generation/pack snapshots; the current inventory has no100630 dialogue.
-      Agree implementation before editing: use the selected game's imported
-      catalog for text/visible-speaker matching, independently of prepared WAV
-      discovery. Preserve qualified source-audio evidence from prepared snapshots;
-      obtain missing original durations through the existing chapter-scoped
-      duration analysis without synthesis or main-story ASR. Keep current-voice
-      filtering for generated recordings and live fallback for genuinely unvoiced
-      lines. Do not scan WAVs per frame, infer invisible speakers, change anecdote
-      ASR policy or conflate this primary-voice defect with deferred RUN-16-01.
-      Gate: ordinary Read with no prepared Finished Page pack speaks6 once, leaves
-      original7-10 to the game, respects their completion and continues without
-      duplicate speech/keys. Cover a game catalog without any generation job and
-      retain the existing prepared Hansel route. Private evidence: short-reading-
-      controls-20261116, session27f9e929d6a447e2aab0385b5606e234.
+- [ ] **RUN-16-02 - Qualify ordinary Read with unprepared main-story originals.**
+      Open Chapter 6 / Finished Page with game AUTO off, without activating or
+      preparing its pack. Confirm unvoiced100630:6 is spoken once and primary
+      originals7-10 remain with the game, respect their completion and continue
+      without duplicate speech/keys. Compare with the existing prepared Hansel
+      route. Check Stop during first-time chapter timing, then Read again: no late
+      playback or extra keys, and the qualified chapter should be reused.
+      Measure cold startup and first-original delay as well as warm continuation;
+      offline full-catalog loading and first timing are not native UX acceptance.
+      Keep supplemental-cue coverage separate in deferred RUN-16-01. Evidence for
+      the real original defect: short-reading-controls-20261116,
+      session27f9e929d6a447e2aab0385b5606e234.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
@@ -441,9 +434,8 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       of the actual chapter. Also cover no-ready-recording live fallback without
       replay, accepted-speech loss, capture restart or duplicate keys. Matching an
       isolated metadata scope is not native qualification.
-      Finished Page100630:6 exercised fresh live synthesis and completed before
-      automatic continuation. Subsequent original lines were wrongly synthesized;
-      RUN-16-02 blocks qualification of this complete fallback flow.
+      Finish the no-ready-recording native flow with RUN-16-02 before closing
+      automatic original/live fallback qualification.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other

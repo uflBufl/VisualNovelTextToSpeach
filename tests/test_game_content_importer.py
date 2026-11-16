@@ -23,6 +23,7 @@ from tests.story_fixtures import (
     write_story_index,
 )
 from tests.symlink_support import symlink_or_skip
+from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.document_identity import canonical_document_sha256
 from vntts.game_content_importer import (
     GameContentImportCancelled,
@@ -1601,6 +1602,251 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     catalog.write_text("broken catalog", encoding="utf-8")
                     with self.assertRaises(GameContentImportError):
                         importer.prepare_voice_candidates(job)
+
+
+class ReadingSourceAudioMeasurementTest(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = write_content(self.root / "catalog")
+        document = load_story_index_document(self.source)
+        metadata = dict(document.metadata)
+        metadata.pop("source_audio_semantics")
+        metadata.pop("source_audio_completion")
+        records = [
+            {
+                **{
+                    key: value
+                    for key, value in row.to_record().items()
+                    if not key.startswith(
+                        (
+                            "source_audio_duration_",
+                            "source_audio_completeness",
+                            "source_audio_semantic_",
+                        )
+                    )
+                },
+                "collection_kind": "main_story",
+            }
+            for row in document.records
+        ]
+        records.append(
+            {
+                **records[-1],
+                "line_id": "other:chapter",
+                "chapter": "other",
+                "sequence": 1,
+            }
+        )
+        write_story_index_document(self.source, metadata, records)
+        self.importer = Reverse1999GameImporter(output_root=self.root / "import")
+        self.bank = (
+            self.importer.output_root / "reverse1999" / "english-bank-index.json"
+        )
+        self.bank.parent.mkdir(parents=True)
+        self.bank.write_text("{}")
+        decoder = patch(
+            "vntts.game_content_importer.ensure_game_decoder",
+            return_value=self.root / "decoder",
+        )
+        decoder.start()
+        self.addCleanup(decoder.stop)
+        for name, kwargs in (
+            ("_bank_index_is_stale", {"return_value": False}),
+            ("_publisher_command", {"return_value": ("duration-worker",)}),
+            ("_resolve_asr_model", {"side_effect": AssertionError("ASR is forbidden")}),
+        ):
+            mocked = patch.object(self.importer, name, **kwargs)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+        worker = patch.object(self.importer, "_run", side_effect=self.publish)
+        self.worker = worker.start()
+        self.addCleanup(worker.stop)
+
+    def publish(self, arguments, cancellation):
+        from r1999extractor.source_audio_duration import (
+            SourceAudioTiming,
+            annotate_story_index_source_audio_durations,
+        )
+
+        probe = Mock()
+        probe.cache_hits = 0
+        probe.decoder_probes = 1
+        probe.probe.return_value = SourceAudioTiming(
+            1.25, 7, "a" * 64, 24000, 30000, "test-decoder"
+        )
+        annotate_story_index_source_audio_durations(
+            Path(arguments[arguments.index("--story-index") + 1]),
+            self.bank,
+            Path(arguments[arguments.index("--output") + 1]),
+            chapters=(arguments[arguments.index("--chapter") + 1],),
+            probe=probe,
+        )
+        return "", ""
+
+    def test_measures_without_generation_or_asr_and_reuses_verified_chapter(self):
+        original = self.source.read_bytes()
+        cancellation = Event()
+        measured = self.importer.measure_reading_source_audio(
+            self.source, "1", cancellation
+        )
+        repeated = self.importer.measure_reading_source_audio(
+            self.source, "1", cancellation
+        )
+
+        self.assertEqual(measured, repeated)
+        self.worker.assert_called_once()
+        arguments, passed_cancel = self.worker.call_args.args
+        self.assertIs(passed_cancel, cancellation)
+        self.assertEqual(arguments[0], "duration-worker")
+        self.assertEqual(arguments[arguments.index("--chapter") + 1], "1")
+        self.assertIn("--cache-dir", arguments)
+        self.assertIn("reading-source-audio", measured.parts)
+        chapter_input = Path(arguments[arguments.index("--story-index") + 1])
+        for path in (chapter_input, measured):
+            self.assertEqual(
+                {row.chapter for row in load_story_index_document(path).records}, {"1"}
+            )
+        line = ChapterVoicePreloader.load_optional(measured).line_for_id(
+            "line:original"
+        )
+        self.assertTrue(line.has_full_source_audio)
+        self.assertEqual(line.source_audio_duration_seconds, 1.25)
+        self.assertEqual(self.source.read_bytes(), original)
+
+    def test_source_and_bank_changes_get_separate_cached_results(self):
+        first = self.importer.measure_reading_source_audio(self.source, "1", None)
+        document = load_story_index_document(self.source)
+        write_story_index_document(
+            self.source,
+            {**document.metadata, "game_version": "updated"},
+            [row.to_record() for row in document.records],
+        )
+        second = self.importer.measure_reading_source_audio(self.source, "1", None)
+        self.bank.write_text('{"version": "updated"}')
+        third = self.importer.measure_reading_source_audio(self.source, "1", None)
+
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(second, third)
+        self.assertEqual(self.worker.call_count, 3)
+
+    def test_invalid_cached_timing_is_remeasured(self):
+        measured = self.importer.measure_reading_source_audio(self.source, "1", None)
+        document = load_story_index_document(measured)
+        records = [row.to_record() for row in document.records]
+        records[0].pop("source_audio_duration_sample_count")
+        write_story_index_document(measured, document.metadata, records)
+
+        self.importer.measure_reading_source_audio(self.source, "1", None)
+
+        self.assertEqual(self.worker.call_count, 2)
+        self.assertTrue(
+            ChapterVoicePreloader.load_optional(measured)
+            .line_for_id("line:original")
+            .has_full_source_audio
+        )
+
+    def test_main_timing_preserves_other_story_semantic_evidence(self):
+        self.source = write_content(self.root / "semantic-catalog")
+        document = load_story_index_document(self.source)
+        records = [row.to_record() for row in document.records]
+        records[0]["collection_kind"] = "character_story"
+        main = {
+            key: value
+            for key, value in records[0].items()
+            if not key.startswith(
+                (
+                    "source_audio_duration_",
+                    "source_audio_completeness",
+                    "source_audio_semantic_",
+                )
+            )
+        }
+        main.update(line_id="line:main", chapter="main", collection_kind="main_story")
+        write_story_index_document(self.source, document.metadata, [*records, main])
+        original = self.source.read_bytes()
+        evidence_path = self.source.with_name("source-audio-semantic-evidence.json")
+        original_evidence = evidence_path.read_bytes()
+
+        measured = self.importer.measure_reading_source_audio(self.source, "main", None)
+
+        preloader = ChapterVoicePreloader.load_optional(measured)
+        self.assertTrue(preloader.line_for_id("line:main").has_full_source_audio)
+        self.assertIsNone(preloader.line_for_id("line:original"))
+        self.assertTrue(
+            ChapterVoicePreloader.load_optional(self.source)
+            .line_for_id("line:original")
+            .has_full_source_audio
+        )
+        self.assertEqual(self.source.read_bytes(), original)
+        self.assertEqual(evidence_path.read_bytes(), original_evidence)
+
+    def test_input_change_while_publisher_runs_is_not_accepted(self):
+        def change_after_publish(arguments, cancellation):
+            self.publish(arguments, cancellation)
+            self.bank.write_text('{"version": "updated"}')
+            return "", ""
+
+        self.worker.side_effect = change_after_publish
+        with self.assertRaisesRegex(GameContentImportError, "changed"):
+            self.importer.measure_reading_source_audio(self.source, "1", None)
+
+    def test_publisher_cannot_expand_the_measured_chapter(self):
+        def publish_with_another_chapter(arguments, cancellation):
+            self.publish(arguments, cancellation)
+            output = Path(arguments[arguments.index("--output") + 1])
+            document = load_story_index_document(output)
+            extra = next(
+                row.to_record()
+                for row in load_story_index_document(self.source).records
+                if row.chapter == "other"
+            )
+            write_story_index_document(
+                output,
+                document.metadata,
+                [*(row.to_record() for row in document.records), extra],
+            )
+            return "", ""
+
+        self.worker.side_effect = publish_with_another_chapter
+        with self.assertRaisesRegex(GameContentImportError, "unverifiable"):
+            self.importer.measure_reading_source_audio(self.source, "1", None)
+
+    def test_rejects_other_story_types_missing_chapters_and_stale_banks(self):
+        with self.assertRaisesRegex(GameContentImportError, "main-story"):
+            self.importer.measure_reading_source_audio(self.source, "missing", None)
+        document = load_story_index_document(self.source)
+        records = [row.to_record() for row in document.records]
+        records[0]["collection_kind"] = "character_story"
+        write_story_index_document(self.source, document.metadata, records)
+        with self.assertRaisesRegex(GameContentImportError, "main-story"):
+            self.importer.measure_reading_source_audio(self.source, "1", None)
+        records[0]["collection_kind"] = "main_story"
+        write_story_index_document(self.source, document.metadata, records)
+        with patch.object(self.importer, "_bank_index_is_stale", return_value=True):
+            with self.assertRaisesRegex(GameContentImportError, "stale"):
+                self.importer.measure_reading_source_audio(self.source, "1", None)
+        self.worker.assert_not_called()
+
+    def test_cancelled_or_unverifiable_publisher_output_cannot_be_used(self):
+        cancellation = Event()
+
+        def cancel_after_publish(arguments, event):
+            self.publish(arguments, event)
+            event.set()
+            return "", ""
+
+        self.worker.side_effect = cancel_after_publish
+        with self.assertRaises(GameContentImportCancelled):
+            self.importer.measure_reading_source_audio(self.source, "1", cancellation)
+        self.worker.side_effect = lambda arguments, event: (
+            shutil.copyfile(self.source, arguments[arguments.index("--output") + 1]),
+            "",
+        )
+        self.bank.write_text('{"version": "new"}')
+        with self.assertRaisesRegex(GameContentImportError, "unverifiable"):
+            self.importer.measure_reading_source_audio(self.source, "1", None)
 
 
 if __name__ == "__main__":

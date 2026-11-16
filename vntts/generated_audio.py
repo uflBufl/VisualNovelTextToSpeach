@@ -762,6 +762,9 @@ class GeneratedAudioFallbackBackend:
         self.volume = 1.0
         self.speed = 1.0
         self.voice_override: Callable[[str], bool] | None = None
+        self.source_audio_resolver: (
+            Callable[[ChapterDialogue], ChapterDialogue] | None
+        ) = None
         self.progress_wait_status: Callable[[str], object] = lambda _message: None
         self.progress_wait_request: Callable[[str, str], object] = (
             lambda _line_id, _text_sha256: None
@@ -814,7 +817,7 @@ class GeneratedAudioFallbackBackend:
                         is not None
                     )
                 return False
-            if line.has_full_source_audio:
+            if line.has_original_speech:
                 return True
             if self.voice_override is not None and self.voice_override(character):
                 return False
@@ -861,7 +864,7 @@ class GeneratedAudioFallbackBackend:
             line is not None
             and line.line_id
             and line.text_sha256
-            and line.has_full_source_audio
+            and line.has_original_speech
         )
 
     def has_generated_line(self, line: ChapterDialogue) -> bool:
@@ -869,7 +872,7 @@ class GeneratedAudioFallbackBackend:
         if (
             self.library is None
             or self.speed != 1.0
-            or line.has_full_source_audio
+            or line.has_original_speech
             or not line.line_id
             or not line.text_sha256
         ):
@@ -897,7 +900,7 @@ class GeneratedAudioFallbackBackend:
             self.audio_source_policy not in {"prefer-generated", "prefer-game-audio"}
             or self.speed != 1.0
             or (self.voice_override is not None and self.voice_override(line.speaker))
-            or line.has_full_source_audio
+            or line.has_original_speech
         ):
             return False
         return self.has_generated_line(line)
@@ -914,7 +917,7 @@ class GeneratedAudioFallbackBackend:
         ):
             return None
         for line in candidates:
-            if line.line_id and line.text_sha256 and not line.has_full_source_audio:
+            if line.line_id and line.text_sha256 and not line.has_original_speech:
                 reference = self.library.reserve(line.line_id, line.text_sha256)
                 if reference is not None:
                     return reference
@@ -946,6 +949,17 @@ class GeneratedAudioFallbackBackend:
             line, match_result = self._resolve_line(
                 character, text, voice_overridden and not self.live_mode_active
             )
+        if (
+            self.live_mode_active
+            and line is not None
+            and line.has_original_speech
+            and not line.has_full_source_audio
+        ):
+            if self.source_audio_resolver is None:
+                raise RuntimeError("Original speech duration has not been prepared")
+            line = self.source_audio_resolver(line)
+            if not line.has_full_source_audio:
+                raise RuntimeError("Original speech duration could not be verified")
         if (
             voice_overridden
             and line is not None

@@ -21,12 +21,16 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from durable_file import atomic_write_json
-from r1999extractor.source_audio_policy import has_full_main_story_source_audio
+from r1999extractor.source_audio_policy import (
+    apply_main_story_source_audio_policy,
+    has_full_main_story_source_audio,
+)
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
     StoryIndexRecord,
     load_story_index_document,
+    write_story_index_document,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
@@ -42,7 +46,12 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
-from vntts.document_identity import file_sha256, is_lowercase_sha256, sha256_file
+from vntts.document_identity import (
+    canonical_document_sha256,
+    file_sha256,
+    is_lowercase_sha256,
+    sha256_file,
+)
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.json_types import decode_json
 from vntts.path_safety import (
@@ -645,6 +654,123 @@ class Reverse1999GameImporter:
             raise GameContentImportError(
                 f"Unable to inspect selected source audio: {error}"
             ) from error
+
+    def measure_reading_source_audio(
+        self,
+        source: Path,
+        chapter: str,
+        cancel_event: Cancellation | None,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Path:
+        """Measure one main-story chapter without authoring a generation job."""
+        self._raise_if_cancelled(cancel_event)
+        source = Path(source).expanduser().resolve()
+        bank_index = self.output_root / "reverse1999" / "english-bank-index.json"
+        try:
+            fingerprint = {
+                "version": 2,
+                "source_sha256": sha256_file(source),
+                "bank_sha256": sha256_file(bank_index),
+                "chapter": chapter,
+            }
+            document = load_verified_story_index_document(
+                source, str(fingerprint["source_sha256"])
+            )
+            selected = tuple(row for row in document.records if row.chapter == chapter)
+            if not selected or any(
+                row.document.get("collection_kind") != "main_story" for row in selected
+            ):
+                raise GameContentImportError(
+                    "Reading source-audio timing requires a main-story chapter."
+                )
+            if not any(row.source_audio_status == "available" for row in selected):
+                raise GameContentImportError(
+                    "This chapter has no installed source audio."
+                )
+            if self._bank_index_is_stale(bank_index):
+                raise GameContentImportError(
+                    "Installed game audio index is stale; import the game again."
+                )
+            root = (
+                self.output_root
+                / "reverse1999"
+                / "reading-source-audio"
+                / canonical_document_sha256(fingerprint)
+            )
+            timed_story = root / "story-index.jsonl"
+            try:
+                if self._reading_source_audio_is_current(timed_story, selected):
+                    self._raise_if_cancelled(cancel_event)
+                    return timed_story
+            except OSError, StoryIndexError, ValueError:
+                pass
+            root.mkdir(parents=True, exist_ok=True)
+            timed_story.unlink(missing_ok=True)
+            metadata = dict(document.metadata)
+            metadata.pop("selection_origin", None)
+            records = [row.to_record() for row in selected]
+            apply_main_story_source_audio_policy(metadata, records)
+            chapter_source = root / "input" / "story-index.jsonl"
+            chapter_source.parent.mkdir(exist_ok=True)
+            write_story_index_document(chapter_source, metadata, records)
+            self._prepare_timed_source_audio(
+                chapter_source, timed_story, (chapter,), cancel_event, progress=progress
+            )
+            self._raise_if_cancelled(cancel_event)
+            if (
+                sha256_file(source) != fingerprint["source_sha256"]
+                or sha256_file(bank_index) != fingerprint["bank_sha256"]
+                or self._bank_index_is_stale(bank_index)
+                or not self._reading_source_audio_is_current(timed_story, selected)
+            ):
+                raise GameContentImportError(
+                    "Source-audio timing changed or produced unverifiable game audio."
+                )
+            self._raise_if_cancelled(cancel_event)
+            return timed_story
+        except (OSError, StoryIndexError, ValueError) as error:
+            raise GameContentImportError(
+                f"Unable to measure reading source audio: {error}"
+            ) from error
+
+    @staticmethod
+    def _reading_source_audio_is_current(
+        timed_story: Path, selected: Sequence[StoryIndexRecord]
+    ) -> bool:
+        timed = load_story_index_document(timed_story)
+        identity_fields = (
+            "line_id",
+            "chapter",
+            "speaker",
+            "text_sha256",
+            "collection_kind",
+            "source_audio_status",
+            "source_audio_id",
+            "source_bank",
+            "source_media_ids",
+            "available_media_ids",
+        )
+        if len(timed.records) != len(selected):
+            return False
+        for original, measured in zip(selected, timed.records, strict=True):
+            if any(
+                original.document.get(field) != measured.document.get(field)
+                for field in identity_fields
+            ):
+                return False
+            if (
+                measured.source_audio_status == "available"
+                and _source_audio_duration_seconds(
+                    measured.document,
+                    completion_contract=str(
+                        timed.metadata.get("source_audio_completion") or ""
+                    ),
+                )
+                is None
+            ):
+                return False
+        return True
 
     def _prepare_timed_source_audio(
         self,

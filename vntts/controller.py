@@ -617,6 +617,7 @@ class AppController:
         self.prepared_audio_discovery_factory = prepared_audio_discovery_factory
         self.prepared_audio_snapshot: PreparedAudioSnapshot | None = None
         self.prepared_audio_inventory: PreparedAudioSnapshot | None = None
+        self.discovered_story_preloader: ChapterVoicePreloader | None = None
         self.prepared_audio_library: GeneratedAudioLibrary | None = None
         self.current_voice_snapshot: CurrentVoiceSnapshot | None = None
         self.automatic_prepared_reading = False
@@ -1094,7 +1095,7 @@ class AppController:
         )
         self._refresh_prepared_audio(force=True)
         has_original = any(
-            row.has_full_source_audio for row in self.chapter_voice_preloader.dialogue
+            row.has_original_speech for row in self.chapter_voice_preloader.dialogue
         )
         if policy == "live-tts-only" and not has_original:
             self.status_handler(f"Audio policy: live TTS only ({live_name})")
@@ -1119,6 +1120,7 @@ class AppController:
             audio_source_policy=policy,
         )
         generated_backend.voice_override = self._has_manual_voice_override
+        generated_backend.source_audio_resolver = self._prepare_original_speech
         generated_backend.progress_wait_status = self.status_handler
         if policy == "live-tts-only":
             self.status_handler(
@@ -1138,6 +1140,34 @@ class AppController:
             )
         return generated_backend
 
+    def _prepare_original_speech(self, line: ChapterDialogue) -> ChapterDialogue:
+        from vntts.game_content_importer import GameContentImportCancelled
+
+        snapshot = self.prepared_audio_snapshot
+        backend, settings, reader = self.speech_backend, self.settings, self.live_reader
+        cancellation = (
+            reader.stop_event
+            if isinstance(reader, LiveDialogReader)
+            else self.shutdown_requested
+        )
+        if snapshot is not None:
+            for catalog in snapshot.catalogs:
+                if catalog.by_line_id.get(line.line_id or "") == line:
+                    measured = catalog.prepare_original(
+                        line, cancellation, self.status_handler
+                    )
+                    if (
+                        cancellation.is_set()
+                        or self.speech_backend is not backend
+                        or self.settings is not settings
+                        or self.live_reader is not reader
+                    ):
+                        raise GameContentImportCancelled(
+                            "Reading source-audio analysis cancelled"
+                        )
+                    return measured
+        raise RuntimeError("The imported catalog for original speech is unavailable")
+
     def _refresh_prepared_audio(self, *, force: bool = False) -> None:
         """Refresh session metadata without replacing capture or accepted speech."""
         if not force and self.prepared_audio_snapshot is None:
@@ -1148,6 +1178,7 @@ class AppController:
         ):
             self.prepared_audio_snapshot = None
             self.prepared_audio_inventory = None
+            self.discovered_story_preloader = None
             self.prepared_audio_library = None
             self.current_voice_snapshot = None
             self.automatic_prepared_reading = False
@@ -1177,6 +1208,8 @@ class AppController:
         )
         inventory: PreparedAudioSnapshot | None
         if changed:
+            if previous is None:
+                self.status_handler("Loading game dialogue...")
             inventory = self.prepared_audio_discovery_factory(
                 self.prepared_audio_store or PregenerationJobStore(),
                 game_pack=settings.game_pack,
@@ -1184,16 +1217,24 @@ class AppController:
                 generated_audio_manifest=settings.generated_audio_manifest,
                 warn=self.status_handler,
                 previous=self.prepared_audio_inventory,
+                game_window_title=settings.game_window_title,
             )
             snapshot = inventory.for_settings(settings)
         else:
             assert previous is not None
             snapshot = previous
             inventory = self.prepared_audio_inventory
+        same_dialogue = (
+            previous is not None
+            and previous.sources == snapshot.sources
+            and previous.catalogs == snapshot.catalogs
+        )
         preloader = (
-            snapshot.preloader
-            if not settings.live_sequence_plan
-            else self.chapter_voice_preloader
+            self.chapter_voice_preloader
+            if settings.live_sequence_plan
+            else self.discovered_story_preloader
+            if same_dialogue and self.discovered_story_preloader is not None
+            else snapshot.preloader
         )
         library = snapshot.library_for(voices)
         projection = (
@@ -1223,6 +1264,9 @@ class AppController:
                 return
             self.prepared_audio_snapshot = snapshot
             self.prepared_audio_inventory = inventory
+            self.discovered_story_preloader = (
+                preloader if not settings.live_sequence_plan else None
+            )
             self.prepared_audio_library = library
             self.current_voice_snapshot = voices
             self.automatic_prepared_reading = True
@@ -1232,9 +1276,13 @@ class AppController:
                 )
             if not settings.live_sequence_plan:
                 current = self.chapter_voice_preloader.current_match
-                same_game = previous is not None and {
-                    source.game_id for source in previous.sources
-                } == {source.game_id for source in snapshot.sources}
+                same_game = previous is not None and (
+                    {source.game_id for source in previous.sources}
+                    | {catalog.game_id for catalog in previous.catalogs}
+                ) == (
+                    {source.game_id for source in snapshot.sources}
+                    | {catalog.game_id for catalog in snapshot.catalogs}
+                )
                 same_profile = previous_voices is not None and (
                     previous_voices.settings.active_profile_id
                     == settings.active_profile_id
@@ -1246,6 +1294,8 @@ class AppController:
                     and current.chapter in preloader.by_chapter
                 ):
                     preloader.current_match = current
+                else:
+                    preloader.current_match = None
                 self.chapter_voice_preloader = preloader
             if isinstance(backend, GeneratedAudioFallbackBackend):
                 backend.generated_reservations.clear()

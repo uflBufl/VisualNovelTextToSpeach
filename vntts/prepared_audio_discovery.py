@@ -1,4 +1,4 @@
-"""Session discovery of prepared routes without auditing archived audio files."""
+"""Imported dialogue and prepared routes without auditing archived audio files."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 
 from vntts_artifacts.generated_audio import (
@@ -28,13 +28,19 @@ from vntts.generated_audio import (
 )
 from vntts.generation_database import require_registered_output
 from vntts.generation_database import state_path as generation_state_path
-from vntts.path_safety import contained_path, read_regular_bytes, safe_relative_path
+from vntts.path_safety import (
+    contained_path,
+    open_regular_text,
+    read_regular_bytes,
+    safe_relative_path,
+)
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
     PregenerationSetupError,
     story_game_id,
 )
 from vntts.preparation_catalog import PreparationCatalogError
+from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import synthesis_character_for_line
@@ -65,6 +71,7 @@ class PreparedAudioSource:
 class PreparedAudioSnapshot:
     sources: tuple[PreparedAudioSource, ...] = ()
     watched_paths: tuple[tuple[Path, tuple[int, int, int] | None], ...] = ()
+    catalogs: tuple[ReadingCatalog, ...] = ()
 
     def changed(self) -> bool:
         return any(
@@ -82,6 +89,11 @@ class PreparedAudioSnapshot:
                 and (content_sha256 is None or source.content_sha256 == content_sha256)
             ),
             self.watched_paths,
+            tuple(
+                catalog
+                for catalog in self.catalogs
+                if game_id is None or catalog.game_id == game_id
+            ),
         )
 
     def for_settings(self, settings: AppSettings) -> PreparedAudioSnapshot:
@@ -105,6 +117,12 @@ class PreparedAudioSnapshot:
                 )
             )
             games = {source.game_id for source in matching}
+            if attribute == "story_index":
+                games.update(
+                    catalog.game_id
+                    for catalog in self.catalogs
+                    if catalog.story_index == path
+                )
             if len(games) == 1:
                 return self.scoped(game_id=next(iter(games)))
             return PreparedAudioSnapshot((), self.watched_paths)
@@ -116,11 +134,17 @@ class PreparedAudioSnapshot:
             and _name_key(source.game_name)
             and f" {_name_key(source.game_name)} " in f" {title} "
         }
+        games.update(
+            catalog.game_id
+            for catalog in self.catalogs
+            if _name_key(catalog.game_name)
+            and f" {_name_key(catalog.game_name)} " in f" {title} "
+        )
         if len(games) == 1:
             return self.scoped(game_id=next(iter(games)))
         return PreparedAudioSnapshot((), self.watched_paths)
 
-    @property
+    @cached_property
     def preloader(self) -> ChapterVoicePreloader:
         by_id: defaultdict[str, list[tuple[tuple[str, str], ChapterDialogue]]] = (
             defaultdict(list)
@@ -129,8 +153,37 @@ class PreparedAudioSnapshot:
             for line in source.preloader.dialogue:
                 if line.line_id:
                     by_id[line.line_id].append((source.scope, line))
+        current = {
+            line.line_id: line
+            for catalog in self.catalogs
+            for line in catalog.dialogue
+            if line.line_id
+        }
         rows = []
-        for candidates in by_id.values():
+        for line_id, candidates in by_id.items():
+            catalog_line = current.pop(line_id, None)
+            if catalog_line is not None:
+                rows.append(
+                    next(
+                        (
+                            line
+                            for _scope, line in sorted(
+                                candidates,
+                                key=lambda pair: pair[1].has_full_source_audio,
+                                reverse=True,
+                            )
+                            if _canonical_identity(line)
+                            == _canonical_identity(catalog_line)
+                            and line.source_audio_id == catalog_line.source_audio_id
+                            and line.source_audio_status
+                            == catalog_line.source_audio_status
+                            and line.source_audio_authoritative
+                            and line.source_audio_duration_seconds is not None
+                        ),
+                        catalog_line,
+                    )
+                )
+                continue
             if len({scope[0] for scope, _line in candidates}) != 1:
                 continue
             if len({_canonical_identity(line) for _scope, line in candidates}) == 1:
@@ -144,7 +197,7 @@ class PreparedAudioSnapshot:
                         candidates[0][1],
                     )
                 )
-        return ChapterVoicePreloader(rows)
+        return ChapterVoicePreloader((*rows, *current.values()))
 
     def library_for(
         self,
@@ -153,9 +206,9 @@ class PreparedAudioSnapshot:
         game_id: str | None = None,
         content_sha256: str | None = None,
     ) -> DiscoveredAudioLibrary:
+        scoped = self.scoped(game_id=game_id, content_sha256=content_sha256)
         return DiscoveredAudioLibrary(
-            self.scoped(game_id=game_id, content_sha256=content_sha256).sources,
-            entry_filter,
+            scoped.sources, entry_filter, catalogs=scoped.catalogs
         )
 
 
@@ -170,15 +223,33 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
         self,
         sources: tuple[PreparedAudioSource, ...],
         entry_filter: CurrentVoiceSnapshot | Callable[[GeneratedAudioEntryLike], bool],
+        *,
+        catalogs: tuple[ReadingCatalog, ...] = (),
     ) -> None:
         self.sources = sources
         self.entry_filter = entry_filter
+        current = {
+            (catalog.game_id, line.line_id): line
+            for catalog in catalogs
+            for line in catalog.dialogue
+        }
         self.full_source_audio_lines = {
             (source.game_id, _canonical_identity(line))
             for source in sources
             for line in source.preloader.dialogue
-            if line.has_full_source_audio
+            if line.has_original_speech
+            and (
+                (catalog_line := current.get((source.game_id, line.line_id))) is None
+                or (catalog_line.source_audio_id, catalog_line.source_audio_status)
+                == (line.source_audio_id, line.source_audio_status)
+            )
         }
+        self.full_source_audio_lines.update(
+            (catalog.game_id, _canonical_identity(line))
+            for catalog in catalogs
+            for line in catalog.dialogue
+            if line.has_original_speech
+        )
         self.reference_sources: dict[Path, RecordedReferenceSources] = {}
         self.invalid_reference_manifests: set[Path] = set()
         if isinstance(entry_filter, CurrentVoiceSnapshot):
@@ -364,6 +435,8 @@ def discover_prepared_audio(
     generated_audio_manifest: str | Path | None = None,
     warn: Callable[[str], object] | None = None,
     previous: PreparedAudioSnapshot | None = None,
+    catalog_root: Path | None = None,
+    game_window_title: str | None = None,
 ) -> PreparedAudioSnapshot:
     """Capture known pack/progress metadata once; never recurse or read WAVs."""
     warn = warn or (lambda _message: None)
@@ -669,7 +742,89 @@ def discover_prepared_audio(
         manifest = Path(generated_audio_manifest).expanduser().absolute()
         if manifest not in sources:
             attempt(lambda: add_source(story, manifest, "", ""))
+    root = catalog_root or (
+        store.root.parent.parent / "game-content" if store else None
+    )
+    paths: set[Path] = set()
+    if root is not None:
+        watched.add(root)
+        watched.update(path for path in root.glob("*/*") if path.is_dir())
+        paths.update(
+            path / path.name / "story-index.jsonl"
+            for path in root.glob("*")
+            if (path / path.name / "story-index.jsonl").is_file()
+        )
+    paths.update(
+        source.catalog_story_index
+        for source in sources.values()
+        if source.catalog_story_index
+    )
+    if story_index:
+        paths.add(Path(story_index).expanduser().absolute())
+    prior_catalogs = (
+        {catalog.story_index: catalog for catalog in previous.catalogs}
+        if previous
+        else {}
+    )
+    catalogs = []
+    for path in sorted(paths):
+        path = path.absolute()
+        bank = path.with_name("english-bank-index.json")
+        watched.update((path, bank))
+
+        def add_catalog() -> None:
+            old = prior_catalogs.get(path)
+            if old is not None and unchanged(path) and unchanged(bank):
+                catalogs.append(old)
+                return
+            known = next(
+                (source for source in sources.values() if source.story_index == path),
+                None,
+            )
+            if known is not None:
+                catalogs.append(
+                    ReadingCatalog(
+                        known.game_id,
+                        known.game_name,
+                        path,
+                        known.preloader.dialogue,
+                        root / known.game_id if root is not None else None,
+                    )
+                )
+                return
+            if game_window_title and not (game_pack or story_index):
+                with open_regular_text(path, encoding="utf-8") as stream:
+                    header = json.loads(stream.readline())
+                if not isinstance(header, dict):
+                    raise ValueError("Imported story metadata must be an object")
+                name = _name_key(header.get("game", ""))
+                if not name or f" {name} " not in f" {_name_key(game_window_title)} ":
+                    return
+            document = load_story_index_snapshot(path, read_regular_bytes(path))
+            game = story_game_id(document, provider_id=path.parent.parent.name)
+            if game is None:
+                game = next(
+                    (
+                        source.game_id
+                        for source in sources.values()
+                        if source.catalog_story_index == path
+                    ),
+                    None,
+                )
+            if game:
+                catalogs.append(
+                    ReadingCatalog(
+                        game,
+                        str(document.game or ""),
+                        path,
+                        ChapterVoicePreloader.dialogue_from_story_index(path, document),
+                        root / game if root is not None else None,
+                    )
+                )
+
+        attempt(add_catalog)
     return PreparedAudioSnapshot(
         tuple(sources.values()),
         tuple((path, _signature(path)) for path in sorted(watched)),
+        tuple(catalogs),
     )

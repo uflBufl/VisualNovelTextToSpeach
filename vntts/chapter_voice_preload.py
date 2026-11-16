@@ -70,6 +70,13 @@ class ChapterDialogue:
     story_title: str | None = None
     source_audio_authoritative: bool = False
     story_order: int | None = None
+    source_audio_main_story: bool = False
+
+    @property
+    def has_original_speech(self) -> bool:
+        return self.has_full_source_audio or (
+            self.source_audio_main_story and self.source_audio_status == "available"
+        )
 
     @property
     def has_full_source_audio(self) -> bool:
@@ -256,16 +263,43 @@ class ChapterVoicePreloader:
                 return cls(lookahead_rows=lookahead_rows)
         else:
             metadata, indexed_lines = document.metadata, document.records
+        return cls(
+            cls._index_dialogue(path, metadata, indexed_lines, document),
+            lookahead_rows=lookahead_rows,
+        )
+
+    @classmethod
+    def dialogue_from_story_index(
+        cls, path: str | Path, document: StoryIndexDocument
+    ) -> tuple[ChapterDialogue, ...]:
+        return cls._index_dialogue(path, document.metadata, document.records, document)
+
+    @classmethod
+    def _index_dialogue(
+        cls,
+        path: str | Path,
+        metadata: Mapping[str, object],
+        indexed_lines: Sequence[object],
+        document: StoryIndexDocument | None,
+    ) -> tuple[ChapterDialogue, ...]:
         lines: Sequence[object] = indexed_lines
+        main_story_originals = {
+            record.line_id
+            for record in (() if document is None else document.records)
+            if has_full_main_story_source_audio(record.document)
+        }
         needs_source_audio_bridge = bool(
             lines and not hasattr(lines[0], "source_audio_status")
         )
         completion_contract = str(metadata.get("source_audio_completion") or "").strip()
+        collections = metadata.get("collections")
         story_titles = {
             str(collection.get("collection_id") or "").strip(): str(
                 collection.get("title") or ""
             ).strip()
-            for raw_collection in metadata.get("collections") or ()
+            for raw_collection in (
+                collections if isinstance(collections, Sequence) else ()
+            )
             if isinstance(raw_collection, Mapping)
             for collection in (_string_mapping(raw_collection),)
         }
@@ -318,9 +352,10 @@ class ChapterVoicePreloader:
                             "story_order"
                         )
                     ),
+                    _line_text(line, "line_id") in main_story_originals,
                 )
 
-        return cls(rows(), lookahead_rows=lookahead_rows)
+        return tuple(rows())
 
     def resolve_exact(self, character: object, text: object) -> ChapterDialogue | None:
         """Resolve an OCR line without fuzzy text substitution."""
@@ -428,7 +463,7 @@ class ChapterVoicePreloader:
             )
             if row.line_id
             and row.text_sha256
-            and not row.has_full_source_audio
+            and not row.has_original_speech
             and (
                 symbol_only
                 or compare_text(observed, self.matching_text[row], limit=0).complete
@@ -446,7 +481,7 @@ class ChapterVoicePreloader:
         )
         representatives: dict[tuple[str, bool, str], ChapterDialogue] = {}
         for row in scope:
-            if row.line_id and row.text_sha256 and not row.has_full_source_audio:
+            if row.line_id and row.text_sha256 and not row.has_original_speech:
                 representatives.setdefault(
                     (
                         _normalize(row.speaker),
@@ -614,8 +649,8 @@ class ChapterVoicePreloader:
 
         if prefer_synthesis:
             # Originals remain trackable, but cannot compete for synthesis.
-            eligible = tuple(row for row in valid if not row.has_full_source_audio)
-            originals = tuple(row for row in valid if row.has_full_source_audio)
+            eligible = tuple(row for row in valid if not row.has_original_speech)
+            originals = tuple(row for row in valid if row.has_original_speech)
 
             def resolve(rows: Iterable[ChapterDialogue]) -> StoryObservationMatch:
                 return self.resolve_observation_among(
@@ -648,7 +683,7 @@ class ChapterVoicePreloader:
                     canonical = resolve((*eligible, *named_originals))
                     if (
                         canonical.line is not None
-                        and canonical.line.has_full_source_audio
+                        and canonical.line.has_original_speech
                         and (
                             match.method != "expected-incomplete"
                             or (

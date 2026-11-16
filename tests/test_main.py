@@ -1388,6 +1388,7 @@ class MainTest(unittest.TestCase):
     def _prepared_discovery_factory(library, preloader=None):
         snapshot = Mock()
         snapshot.sources = (Mock(),) if library is not None else ()
+        snapshot.catalogs = ()
         snapshot.preloader = preloader or ChapterVoicePreloader()
         snapshot.for_settings.return_value = snapshot
         snapshot.library_for.return_value = library
