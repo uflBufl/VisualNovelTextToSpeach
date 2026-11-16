@@ -14,6 +14,7 @@ from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_
 from tests.story_fixtures import write_synthetic_game_pack
 from vntts import generation_database
 from vntts.authoring.bulk_generation import run_bulk_generation
+from vntts.content_revision import ContentRevision, source_signature
 from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.document_identity import sha256_file
 from vntts.generated_audio import GeneratedAudioLibrary
@@ -25,9 +26,18 @@ from vntts.prepared_audio_discovery import (
 )
 from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
+from vntts.story_index_snapshot import load_story_index_snapshot
 
 
 class PreparedAudioDiscoveryTests(unittest.TestCase):
+    @staticmethod
+    def revision(path):
+        signature = source_signature(path)
+        payload = read_regular_bytes(path)
+        return ContentRevision.capture(
+            path, payload, load_story_index_snapshot(path, payload), signature=signature
+        )
+
     def test_catalog_merge_preserves_qualified_partial_original_evidence(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
@@ -50,7 +60,10 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 source_audio_duration_seconds=None,
             )
             catalog = ReadingCatalog(
-                source.game_id, source.game_name, source.story_index, (raw,)
+                source.game_id,
+                source.game_name,
+                self.revision(source.story_index),
+                (raw,),
             )
             snapshot = PreparedAudioSnapshot((source,), catalogs=(catalog,))
             self.assertIs(snapshot.preloader.line_for_id(line_id), partial)
@@ -80,7 +93,10 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 source_audio_duration_seconds=None,
             )
             catalog = ReadingCatalog(
-                source.game_id, source.game_name, source.story_index, (current,)
+                source.game_id,
+                source.game_name,
+                self.revision(source.story_index),
+                (current,),
             )
             snapshot = PreparedAudioSnapshot((source,), catalogs=(catalog,))
             self.assertIs(snapshot.preloader.line_for_id(line_id), current)

@@ -46,6 +46,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.content_revision import ContentRevision
 from vntts.document_identity import (
     canonical_document_sha256,
     file_sha256,
@@ -655,29 +656,26 @@ class Reverse1999GameImporter:
                 f"Unable to inspect selected source audio: {error}"
             ) from error
 
-    def measure_reading_source_audio(
+    def prepare_reading_source_audio(
         self,
-        source: Path,
+        revision: ContentRevision,
         chapter: str,
         cancel_event: Cancellation | None,
         *,
         progress: ProgressCallback | None = None,
     ) -> Path:
-        """Measure one main-story chapter without authoring a generation job."""
+        """Prepare one admitted main-story chapter without a generation job."""
         self._raise_if_cancelled(cancel_event)
-        source = Path(source).expanduser().resolve()
         bank_index = self.output_root / "reverse1999" / "english-bank-index.json"
         try:
             fingerprint = {
                 "version": 2,
-                "source_sha256": sha256_file(source),
+                "source_sha256": revision.source_sha256,
                 "bank_sha256": sha256_file(bank_index),
                 "chapter": chapter,
             }
-            document = load_verified_story_index_document(
-                source, str(fingerprint["source_sha256"])
-            )
-            selected = tuple(row for row in document.records if row.chapter == chapter)
+            document = revision.read_chapter(chapter)
+            selected = document.records
             if not selected or any(
                 row.document.get("collection_kind") != "main_story" for row in selected
             ):
@@ -718,9 +716,9 @@ class Reverse1999GameImporter:
                 chapter_source, timed_story, (chapter,), cancel_event, progress=progress
             )
             self._raise_if_cancelled(cancel_event)
+            revision.validate_current()
             if (
-                sha256_file(source) != fingerprint["source_sha256"]
-                or sha256_file(bank_index) != fingerprint["bank_sha256"]
+                sha256_file(bank_index) != fingerprint["bank_sha256"]
                 or self._bank_index_is_stale(bank_index)
                 or not self._reading_source_audio_is_current(timed_story, selected)
             ):

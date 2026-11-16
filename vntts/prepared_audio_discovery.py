@@ -18,6 +18,7 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.content_revision import ContentRevision, source_signature
 from vntts.current_voice import CurrentVoiceSnapshot, RecordedReferenceSources
 from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
@@ -781,18 +782,7 @@ def discover_prepared_audio(
                 (source for source in sources.values() if source.story_index == path),
                 None,
             )
-            if known is not None:
-                catalogs.append(
-                    ReadingCatalog(
-                        known.game_id,
-                        known.game_name,
-                        path,
-                        known.preloader.dialogue,
-                        root / known.game_id if root is not None else None,
-                    )
-                )
-                return
-            if game_window_title and not (game_pack or story_index):
+            if known is None and game_window_title and not (game_pack or story_index):
                 with open_regular_text(path, encoding="utf-8") as stream:
                     header = json.loads(stream.readline())
                 if not isinstance(header, dict):
@@ -800,23 +790,31 @@ def discover_prepared_audio(
                 name = _name_key(header.get("game", ""))
                 if not name or f" {name} " not in f" {_name_key(game_window_title)} ":
                     return
-            document = load_story_index_snapshot(path, read_regular_bytes(path))
+            signature = source_signature(path)
+            payload = read_regular_bytes(path)
+            document = load_story_index_snapshot(path, payload)
             game = story_game_id(document, provider_id=path.parent.parent.name)
             if game is None:
-                game = next(
-                    (
-                        source.game_id
-                        for source in sources.values()
-                        if source.catalog_story_index == path
-                    ),
-                    None,
+                game = (
+                    known.game_id
+                    if known is not None
+                    else next(
+                        (
+                            source.game_id
+                            for source in sources.values()
+                            if source.catalog_story_index == path
+                        ),
+                        None,
+                    )
                 )
             if game:
                 catalogs.append(
                     ReadingCatalog(
                         game,
                         str(document.game or ""),
-                        path,
+                        ContentRevision.capture(
+                            path, payload, document, signature=signature
+                        ),
                         ChapterVoicePreloader.dialogue_from_story_index(path, document),
                         root / game if root is not None else None,
                     )

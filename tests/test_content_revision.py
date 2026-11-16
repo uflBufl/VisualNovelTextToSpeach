@@ -1,0 +1,87 @@
+import os
+import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from vntts_artifacts.story_index import StoryIndexError, write_story_index_document
+
+from tests.story_fixtures import write_content
+from vntts.content_revision import ContentRevision, source_signature
+from vntts.path_safety import open_regular_binary
+from vntts.story_index_snapshot import load_story_index_snapshot
+
+
+class ContentRevisionTest(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.source = write_content(Path(temporary.name))
+        document = load_story_index_snapshot(self.source, self.source.read_bytes())
+        records = [row.to_record() for row in document.records]
+        records.append({**records[-1], "line_id": "other", "chapter": "other"})
+        write_story_index_document(self.source, document.metadata, records)
+        self.signature = source_signature(self.source)
+        self.payload = self.source.read_bytes()
+        self.document = load_story_index_snapshot(self.source, self.payload)
+        self.revision = ContentRevision.capture(
+            self.source, self.payload, self.document, signature=self.signature
+        )
+
+    def test_reads_only_requested_chapter_rows(self):
+        self.assertEqual(self.revision.source_path, self.source.absolute())
+        reads = []
+
+        class TrackedReader:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __getattr__(self, name):
+                return getattr(self.stream, name)
+
+            def read(self, length):
+                reads.append(length)
+                return self.stream.read(length)
+
+        @contextmanager
+        def tracked_open(path):
+            with open_regular_binary(path) as stream:
+                yield TrackedReader(stream)
+
+        with patch("vntts.content_revision.open_regular_binary", tracked_open):
+            chapter = self.revision.read_chapter("1")
+        self.assertEqual({row.chapter for row in chapter.records}, {"1"})
+        self.assertEqual(len(reads), len(chapter.records))
+        self.assertLess(sum(reads), len(self.payload))
+        self.assertEqual(chapter.metadata["line_count"], len(chapter.records))
+
+    def test_rejects_source_changed_after_payload_capture(self):
+        self.source.write_bytes(self.payload + b"\n")
+        with self.assertRaisesRegex(StoryIndexError, "changed during admission"):
+            ContentRevision.capture(
+                self.source, self.payload, self.document, signature=self.signature
+            )
+
+    def test_rejects_stale_revision_even_when_mtime_is_restored(self):
+        before = self.source.stat()
+        self.source.write_bytes(
+            self.payload.replace(b"line:original", b"line:changed!")
+        )
+        os.utime(self.source, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with self.assertRaisesRegex(StoryIndexError, "changed"):
+            self.revision.read_chapter("1")
+
+    def test_row_digest_still_protects_bounded_read(self):
+        self.source.write_bytes(
+            self.payload.replace(b"line:original", b"line:changed!")
+        )
+        with (
+            patch("vntts.content_revision._signature", return_value=self.signature),
+            self.assertRaisesRegex(StoryIndexError, "chapter row changed"),
+        ):
+            self.revision.read_chapter("1")
+
+
+if __name__ == "__main__":
+    unittest.main()

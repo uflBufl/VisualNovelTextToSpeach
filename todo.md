@@ -407,6 +407,16 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       the real original defect: short-reading-controls-20261116,
       session27f9e929d6a447e2aab0385b5606e234.
 
+- [ ] **PERF-16-01 - Reduce initial full-catalog recognition startup.**
+      The original full-catalog/index probe took about17s and peaked near1.8GiB
+      helper RSS. Admitted revisions now eliminate repeated full-source work per
+      chapter, but initial parsing and matching-index construction remain. Propose
+      a compact persisted lookup using the existing story catalog and chapter
+      loading before implementation; preserve current noisy OCR, completeness,
+      prefix and ambiguity decisions. Measure complete cold/warm startup, memory
+      and first-match time; do not confuse revision-only load with total startup
+      or change matching quality merely to reduce loading time.
+
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh

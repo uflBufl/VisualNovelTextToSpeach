@@ -52,6 +52,7 @@ from vntts.dialog_capture import (
     recognize_live_frame,
     report_runtime_error,
 )
+from vntts.game_reading_content import GameReadingContent
 from vntts.generated_audio import (
     AudioEventOmissionRoute,
     AudioRouteTrace,
@@ -125,6 +126,7 @@ from vntts.prepared_sequence_status import (
     sequence_unavailable_notice,
 )
 from vntts.profiles import GameProfileStore, resolve_story_region
+from vntts.reading_catalog import ReadingCatalog
 from vntts.reading_diagnostics import record_diagnostic_event, retain_ocr_resolution
 from vntts.runtime_config import (
     LiveConfiguration,
@@ -609,12 +611,14 @@ class AppController:
         prepared_audio_discovery_factory: Callable[
             ..., PreparedAudioSnapshot
         ] = discover_prepared_audio,
+        reading_content: GameReadingContent | None = None,
     ) -> None:
         self.settings = settings or AppSettings()
         self.profile_store = profile_store or GameProfileStore.load()
         self.voice_library = voice_library or application_voice_library()
         self.prepared_audio_store = prepared_audio_store
         self.prepared_audio_discovery_factory = prepared_audio_discovery_factory
+        self.reading_content = reading_content or GameReadingContent()
         self.prepared_audio_snapshot: PreparedAudioSnapshot | None = None
         self.prepared_audio_inventory: PreparedAudioSnapshot | None = None
         self.discovered_story_preloader: ChapterVoicePreloader | None = None
@@ -1067,6 +1071,8 @@ class AppController:
         return bool(is_narrator(character) and self.settings.force_live_narrator)
 
     def _set_backend_live_mode(self, active: bool) -> None:
+        if not active:
+            self.reading_content.cancel_pending()
         configure = getattr(self.speech_backend, "set_live_mode_active", None)
         if callable(configure):
             configure(active)
@@ -1143,30 +1149,70 @@ class AppController:
     def _prepare_original_speech(self, line: ChapterDialogue) -> ChapterDialogue:
         from vntts.game_content_importer import GameContentImportCancelled
 
-        snapshot = self.prepared_audio_snapshot
         backend, settings, reader = self.speech_backend, self.settings, self.live_reader
         cancellation = (
             reader.stop_event
             if isinstance(reader, LiveDialogReader)
             else self.shutdown_requested
         )
+        catalog = self._reading_catalog_for(line)
+        if catalog is not None:
+            measured = self.reading_content.prepare_original(
+                catalog, line, cancellation, self.status_handler
+            )
+            if (
+                cancellation.is_set()
+                or self.speech_backend is not backend
+                or self.settings is not settings
+                or self.live_reader is not reader
+            ):
+                raise GameContentImportCancelled(
+                    "Reading source-audio analysis cancelled"
+                )
+            return measured
+        raise RuntimeError("The imported catalog for original speech is unavailable")
+
+    def _reading_catalog_for(self, line: ChapterDialogue) -> ReadingCatalog | None:
+        snapshot = self.prepared_audio_snapshot
         if snapshot is not None:
             for catalog in snapshot.catalogs:
-                if catalog.by_line_id.get(line.line_id or "") == line:
-                    measured = catalog.prepare_original(
-                        line, cancellation, self.status_handler
-                    )
-                    if (
-                        cancellation.is_set()
-                        or self.speech_backend is not backend
-                        or self.settings is not settings
-                        or self.live_reader is not reader
-                    ):
-                        raise GameContentImportCancelled(
-                            "Reading source-audio analysis cancelled"
-                        )
-                    return measured
-        raise RuntimeError("The imported catalog for original speech is unavailable")
+                row = catalog.by_line_id.get(line.line_id or "")
+                if row is not None and (
+                    row.speaker,
+                    row.text,
+                    row.source_audio_id,
+                    row.source_audio_status,
+                ) == (
+                    line.speaker,
+                    line.text,
+                    line.source_audio_id,
+                    line.source_audio_status,
+                ):
+                    return catalog
+        return None
+
+    def _request_original_speech(self, line: ChapterDialogue) -> None:
+        from vntts.game_content_importer import GameContentImportCancelled
+
+        reader = self.live_reader
+        if not isinstance(reader, LiveDialogReader) or not reader.is_running:
+            return
+        if not any(
+            row.source_audio_main_story and not row.has_full_source_audio
+            for row in self.chapter_voice_preloader.by_chapter.get(line.chapter, ())
+        ):
+            return
+        catalog = self._reading_catalog_for(line)
+        if catalog is None:
+            return
+        try:
+            self.reading_content.request_originals(
+                catalog, line.chapter, reader.stop_event, self.status_handler
+            )
+        except GameContentImportCancelled:
+            return
+        except Exception as error:
+            self.error_handler(error)
 
     def _refresh_prepared_audio(self, *, force: bool = False) -> None:
         """Refresh session metadata without replacing capture or accepted speech."""
@@ -1178,6 +1224,7 @@ class AppController:
         ):
             self.prepared_audio_snapshot = None
             self.prepared_audio_inventory = None
+            self.reading_content.retain_catalogs(())
             self.discovered_story_preloader = None
             self.prepared_audio_library = None
             self.current_voice_snapshot = None
@@ -1226,7 +1273,8 @@ class AppController:
             inventory = self.prepared_audio_inventory
         same_dialogue = (
             previous is not None
-            and previous.sources == snapshot.sources
+            and tuple((source.scope, source.preloader) for source in previous.sources)
+            == tuple((source.scope, source.preloader) for source in snapshot.sources)
             and previous.catalogs == snapshot.catalogs
         )
         preloader = (
@@ -1264,6 +1312,7 @@ class AppController:
                 return
             self.prepared_audio_snapshot = snapshot
             self.prepared_audio_inventory = inventory
+            self.reading_content.retain_catalogs(snapshot.catalogs)
             self.discovered_story_preloader = (
                 preloader if not settings.live_sequence_plan else None
             )
@@ -1827,6 +1876,7 @@ class AppController:
                 preloader.select_line_id(line.line_id)
         if line is None:
             return result
+        self._request_original_speech(line)
         return replace(
             result,
             character=line.speaker,

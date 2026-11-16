@@ -266,6 +266,7 @@ class RuntimeLifecycleComponent:
                     return
                 self._shutdown_started.clear()
                 self.controller.shutdown_complete.clear()
+                self.controller.reading_content.reopen()
             self.controller.shutdown_requested.clear()
             open_ocr_worker()
 
@@ -833,6 +834,7 @@ class RuntimeLifecycleComponent:
                     "Backend live mode",
                 ),
                 (controller._interrupt_speech, "Speech interruption"),
+                (controller.reading_content.close, "Game-content preparation shutdown"),
             ):
                 cleanup.enter_context(cleanup_on_exit(release, description=description))
             schedule = controller.schedule_dialog_read
@@ -853,7 +855,11 @@ class RuntimeLifecycleComponent:
 
     def _drain_shutdown(self, *, reader_stop_confirmed: bool, defer: bool) -> None:
         controller = self.controller
-        defer = defer or not reader_stop_confirmed
+        defer = (
+            defer
+            or not reader_stop_confirmed
+            or not controller.reading_content.is_stopped
+        )
 
         def finish() -> None:
             if defer:
@@ -930,6 +936,13 @@ class RuntimeLifecycleComponent:
 
     def _shutdown_executors(self, *, wait: bool) -> None:
         with ExitStack() as cleanup:
+            if wait:
+                cleanup.enter_context(
+                    cleanup_on_exit(
+                        self.controller.reading_content.wait,
+                        description="Game-content preparation drain",
+                    )
+                )
             for attribute in reversed(
                 (
                     "capture_executor",
@@ -1241,6 +1254,7 @@ class LiveSessionComponent:
 
     def stop(self) -> bool:
         controller = self.controller
+        controller.reading_content.cancel_pending()
         with controller.story_cursor_lock:
             controller.indexed_current_recovery = None
             controller.observation_serial += 1
@@ -1335,6 +1349,7 @@ class LiveSessionComponent:
 
     def emergency_stop(self) -> bool:
         controller = self.controller
+        controller.reading_content.cancel_pending()
         with controller.story_cursor_lock:
             controller.sequence_prefix_dispatch_lease = None
         schedule = controller.schedule_dialog_read

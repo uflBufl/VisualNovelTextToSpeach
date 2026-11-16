@@ -1,4 +1,6 @@
 import unittest
+from concurrent.futures import Future
+from copy import copy
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +9,7 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.story_index import write_story_index_document
 
 from tests.audio_output_fixtures import FakeAudioOutput
+from tests.story_fixtures import write_synthetic_game_pack
 from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.controller import AppController
@@ -18,7 +21,10 @@ from vntts.game_content_importer import (
 from vntts.generated_audio import LiveTTSRoute, SourceAudioRoute
 from vntts.live import SpeechChunk
 from vntts.ocr import OCRResult
-from vntts.prepared_audio_discovery import discover_prepared_audio
+from vntts.prepared_audio_discovery import (
+    PreparedAudioSnapshot,
+    discover_prepared_audio,
+)
 from vntts.settings import AppSettings
 from vntts.speech_backend_contract import SpeechBackendCapabilities
 from vntts.voice_library import VoiceLibrary
@@ -138,6 +144,28 @@ class ReadingCatalogTests(unittest.TestCase):
             self.assertIs(controller.chapter_voice_preloader, preloader)
             self.assertEqual(preloader.current_match.chapter, "100630")
 
+    def test_new_ready_audio_preserves_the_existing_dialogue_index(self):
+        pack, *_ = write_synthetic_game_pack(self.root / "pack")
+        source = replace(
+            discover_prepared_audio(game_pack=pack).sources[0],
+            game_id="reverse1999",
+            game_name="Reverse: 1999",
+        )
+        self.snapshot = PreparedAudioSnapshot(
+            (source,), catalogs=self.snapshot.catalogs
+        )
+        controller, _backend, _live = self.controller()
+        preloader = controller.chapter_voice_preloader
+        self.snapshot = replace(
+            self.snapshot, sources=(replace(source, library=copy(source.library)),)
+        )
+        with patch(
+            "vntts.prepared_audio_discovery.ChapterVoicePreloader",
+            side_effect=AssertionError("audio progress rebuilt recognition"),
+        ):
+            controller._refresh_prepared_audio(force=True)
+        self.assertIs(controller.chapter_voice_preloader, preloader)
+
     def test_settings_reload_cannot_discard_unchanged_automatic_catalog(self):
         controller, _backend, _live = self.controller()
         preloader = controller.chapter_voice_preloader
@@ -174,6 +202,36 @@ class ReadingCatalogTests(unittest.TestCase):
         )
         self.assertIs(resolved, duplicate)
 
+    def test_identifying_unvoiced_line_requests_chapter_before_live_preparation(self):
+        controller, backend, live = self.controller()
+        harness = AutoAdvanceFakeFrameHarness()
+        harness.reader.capture_future = Future()
+        controller.live_reader = harness.reader
+        with patch.object(controller.reading_content, "request_originals") as request:
+            resolution = {}
+            admitted = controller._resolve_story_ocr_result(
+                OCRResult("Narrator", self.unvoiced, 95, "test", 1),
+                resolution=resolution,
+            )
+            request.assert_called_once_with(
+                self.snapshot.catalogs[0],
+                "100630",
+                harness.reader.stop_event,
+                controller.status_handler,
+            )
+            live.prepare_playback.assert_not_called()
+            route = backend.prepare_route(
+                admitted.character, admitted.text, line_id=resolution["line"].line_id
+            )
+        self.assertIsInstance(route, LiveTTSRoute)
+
+    def test_stop_cancels_content_preparation_before_a_reader_exists(self):
+        controller, _backend, _live = self.controller()
+        self.assertIsNone(controller.live_reader)
+        with patch.object(controller.reading_content, "cancel_pending") as cancel:
+            controller.emergency_stop()
+        cancel.assert_called_once()
+
     def test_ordinary_read_falls_back_then_preserves_original_without_ready_pack(self):
         controller, backend, live = self.controller()
         catalog = self.snapshot.catalogs[0]
@@ -184,7 +242,9 @@ class ReadingCatalogTests(unittest.TestCase):
             source_audio_completeness="full",
             source_audio_authoritative=True,
         )
-        with patch.object(catalog, "prepare_original", return_value=measured) as timing:
+        with patch.object(
+            controller.reading_content, "prepare_original", return_value=measured
+        ) as timing:
             routes = []
             for ordinal, text in enumerate(
                 (
@@ -229,7 +289,7 @@ class ReadingCatalogTests(unittest.TestCase):
             "reverse1999:100630:7"
         )
         with patch.object(
-            self.snapshot.catalogs[0],
+            controller.reading_content,
             "prepare_original",
             side_effect=GameContentImportError("decoder unavailable"),
         ):
@@ -251,7 +311,7 @@ class ReadingCatalogTests(unittest.TestCase):
             source_audio_authoritative=True,
         )
         with patch.object(
-            self.snapshot.catalogs[0], "prepare_original", return_value=measured
+            controller.reading_content, "prepare_original", return_value=measured
         ):
             route = backend.prepare_route(
                 original.speaker, original.text, line_id=original.line_id
@@ -282,7 +342,7 @@ class ReadingCatalogTests(unittest.TestCase):
             with (
                 self.subTest(stop=stop),
                 patch.object(
-                    self.snapshot.catalogs[0], "prepare_original", side_effect=complete
+                    controller.reading_content, "prepare_original", side_effect=complete
                 ),
             ):
                 with self.assertRaises(GameContentImportCancelled):
