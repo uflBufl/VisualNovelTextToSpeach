@@ -244,7 +244,8 @@
       process unavailable. Agree an owned-retirement cutoff/finalization handshake
       before implementation; preserve unexpected-exit failure and do not infer
       audible loss from this status. Retain and qualify covered intervals rather
-      than merely suppressing the error. Evidence: short-reading-controls-20261116.
+      than merely suppressing the error. Evidence: short-reading-controls-20261116; recurred after ordinary Stop in
+      prefix-repair-native-20261116, session2ffd301983694b9598da05a4388ff378.
 
 ## Rust audio native acceptance gaps
 
@@ -374,20 +375,30 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: qualify RUN-16-03 and RUN-16-02 together in a short native Finished Page check.
+Next action: investigate and agree the remaining noisy-prefix fallback repair in RUN-16-03 using the saved native recording.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-16-03 - Qualify responsive partial-text matching in-game.**
-      In Finished Page, observe Heinrich's `Ahh! Tosca ...!` while it types after
-      the preceding narrator. Confirm reading/control refresh stays responsive,
-      the complete original remains with the game, and Stop/Read does not restore
-      an old observation or cursor after stopping or resynchronizing. Combine
-      with RUN-16-02 rather than replaying a full chapter. Offline full-catalog
-      replay and deterministic held-matching tests qualify the code paths; native
-      behavior after this repair remains unqualified. Evidence:
-      finished-page-qualification-20261116, prefix-controller-final-results.
+- [ ] **RUN-16-03 - Avoid full-catalog fallback on noisy typewriter observations.**
+      Finished Page native session2ffd301983694b9598da05a4388ff378 after6f58fec3:
+      clean `Ahh! To` stays chapter-scoped, but actual OCR
+      `Abh! Tosca ...! You're turr` returns local expected-no-match and permits
+      global prefer-synthesis fallback. The recorded resolver takes8682.818ms;
+      video already has the full Heinrich13 text at least7.45s before its route.
+      Other named/narrator partials cost about4-8s. A chapter-only replay reproduces
+      the differing clean/noisy verdicts in about5ms, so do not treat this as game
+      voice wait or repair it by increasing speech-matching typo tolerance.
+      Separate insufficient/noisy prefix evidence from actual chapter mismatch
+      for discovery admission. Investigate reusing the existing alignment evidence
+      to defer global fuzzy search while retaining exact-index chapter changes;
+      present the concrete implementation plan before editing. Gate: replay the
+      recorded noisy partials through the full controller/catalog and preserve full
+      line, ambiguity, protected-content and cross-chapter decisions; then short
+      native confirmation. Control responsiveness/Stop/Read passed separately;
+      don't reopen that completed lock fix without contrary evidence. Native
+      media tail is partial from the existing D1 retirement issue. Evidence:
+      prefix-repair-native-20261116/evidence-review.json and noisy-local-probe.json.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -413,16 +424,15 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       for that occurrence, respects original completion, and produces no overlap;
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
-- [ ] **RUN-16-02 - Finish ordinary Read cancellation and restart acceptance.**
-      After RUN-16-03, check Stop during first-time chapter timing in Finished Page,
-      then Read again: no late playback or extra keys, and the qualified chapter
-      should be reused. Distinguish actual cold timing from persisted-cache reuse;
-      retain first-original delay and warm continuation evidence. Compare lifecycle
-      with prepared Hansel. The current native session qualifies narrator synthesis
-      and primary-original exclusion but its long resolver stall prevented this
-      cancellation/restart check. Supplemental cues remain deferred in RUN-16-01.
-      Evidence: finished-page-qualification-20261116,
-      session018f1a1b5b0d4e7cb3fbab65b6754957.
+- [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
+      Ordinary Finished Page Stop/Read and reuse now pass on the native host.
+      Remaining gate: Stop while first-time original-duration analysis is active,
+      then Read again without late publication/playback/keys. Establish actual
+      cache-miss evidence rather than claiming the current persisted warm timing
+      exercises it. Keep this with the next relevant run after RUN-16-03; no full
+      chapter replay just for the lifecycle gate. Supplemental cues remain deferred
+      in RUN-16-01. Evidence: prefix-repair-native-20261116,
+      session2ffd301983694b9598da05a4388ff378.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
