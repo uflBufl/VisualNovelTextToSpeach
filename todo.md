@@ -229,6 +229,14 @@
       creation alone did not reproduce device-refresh feedback; retain refresh-origin
       events and choose an audio-owner repair only if evidence supports it.
 
+      The short native reading check also marks ordinary Stop and completed
+      preview-worker retirement as failed acquisition: _retire_worker_captures
+      unconditionally fails an absent worker, and the native tap reports Target
+      process unavailable. Agree an owned-retirement cutoff/finalization handshake
+      before implementation; preserve unexpected-exit failure and do not infer
+      audible loss from this status. Retain and qualify covered intervals rather
+      than merely suppressing the error. Evidence: short-reading-controls-20261116.
+
 ## Rust audio native acceptance gaps
 
 - [ ] Complete adverse-path qualification of `scripts/mac_live_recording/process_tap.m`:
@@ -386,6 +394,26 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       for that occurrence, respects original completion, and produces no overlap;
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
+- [ ] **RUN-16-02 - Resolve unprepared stories independently of generated audio.**
+      Native ordinary Read in Chapter 6 / Finished Page synthesized the correctly
+      unvoiced100630:6, then also synthesized primary-original lines7-10. OCR
+      remained expected-no-match. The full imported catalog contains this chapter,
+      but discover_prepared_audio builds the recognition preloader only from
+      generation/pack snapshots; the current inventory has no100630 dialogue.
+      Agree implementation before editing: use the selected game's imported
+      catalog for text/visible-speaker matching, independently of prepared WAV
+      discovery. Preserve qualified source-audio evidence from prepared snapshots;
+      obtain missing original durations through the existing chapter-scoped
+      duration analysis without synthesis or main-story ASR. Keep current-voice
+      filtering for generated recordings and live fallback for genuinely unvoiced
+      lines. Do not scan WAVs per frame, infer invisible speakers, change anecdote
+      ASR policy or conflate this primary-voice defect with deferred RUN-16-01.
+      Gate: ordinary Read with no prepared Finished Page pack speaks6 once, leaves
+      original7-10 to the game, respects their completion and continues without
+      duplicate speech/keys. Cover a game catalog without any generation job and
+      retain the existing prepared Hansel route. Private evidence: short-reading-
+      controls-20261116, session27f9e929d6a447e2aab0385b5606e234.
+
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh
@@ -413,6 +441,9 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       of the actual chapter. Also cover no-ready-recording live fallback without
       replay, accepted-speech loss, capture restart or duplicate keys. Matching an
       isolated metadata scope is not native qualification.
+      Finished Page100630:6 exercised fresh live synthesis and completed before
+      automatic continuation. Subsequent original lines were wrongly synthesized;
+      RUN-16-02 blocks qualification of this complete fallback flow.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other
