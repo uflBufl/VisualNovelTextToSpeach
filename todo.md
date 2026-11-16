@@ -362,31 +362,18 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: qualify indexed first-observation search and initial Read/restart
-on the native Mac in RUN-17-01. Keep the separate pre-resolver startup delay in
-scope; faster matching alone does not explain that interval. Supplemental voice
-coverage and ASR changes remain deferred; resource classification cannot suppress
-narration. Reuse recorded Hansel evidence; Windows acceptance needs its own host.
+Next action: combine the remaining automatic prepared-reading gates in
+RUN-11-UI-02 with the genuinely cold timing cancellation in RUN-16-02. Indexed
+Mac Read/restart now passes; do not repeat that segment just to measure matching.
+Supplemental voice coverage and ASR changes remain deferred; resource
+classification cannot suppress narration. Windows acceptance needs its own host.
 
-- [ ] **RUN-17-01 - Qualify indexed search and first Read/restart on the native host.**
-      On an accessible main-story scene such as Finished Page, start Read without
-      a manually connected chapter, then Stop/Read again. Check canonical speaker,
-      full-text/continuation decisions, original-audio waiting and generated/live
-      fallback. Confirm that a ready catalog opens without a complete source parse
-      or rich full-catalog allocation, that matching stays outside the UI/cursor
-      lock, and that Stop prevents late publication/playback/keys. Include the
-      actual startup crop-recovery path in timings: offline unanchored short crops
-      can still require a broader candidate search than the recorded exact calls.
-      Initial index construction belongs to content admission/update and must not
-      repeat on Read. Verify that it reports progress on its existing background
-      path when rebuilding an already imported catalog. The earlier cold Read
-      took57.18s to its first resolution, with only1.618s in matching; localize any
-      remaining pre-resolver delay and the Read click's UI timeout separately.
-      Keep focused existing diagnostic events; no permanent high-volume tracing,
-      larger timeouts or recognition-policy changes on an unverified hypothesis.
-      Windows: exercise packaged FTS5/RapidFuzz and indexed query/cancellation on
-      its host; shared Python logic and dependency collection are not native
-      acceptance. Prior native evidence: indexed-recorder-native-20261117.
+- [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
+      During the next actual content update, verify visible progress for rebuilding
+      an already imported catalog on its existing background path. Initial index
+      construction belongs to admission/update and must not repeat on Read.
+      On Windows10, exercise packaged FTS5/RapidFuzz and indexed query/cancellation;
+      shared Python logic and dependency collection are not native acceptance.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
