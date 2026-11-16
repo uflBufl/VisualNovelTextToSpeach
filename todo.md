@@ -375,30 +375,22 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: investigate and agree the remaining noisy-prefix fallback repair in RUN-16-03 using the saved native recording.
+Next action: short native confirmation of indexed chapter discovery in RUN-16-03.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-16-03 - Avoid full-catalog fallback on noisy typewriter observations.**
-      Finished Page native session2ffd301983694b9598da05a4388ff378 after6f58fec3:
-      clean `Ahh! To` stays chapter-scoped, but actual OCR
-      `Abh! Tosca ...! You're turr` returns local expected-no-match and permits
-      global prefer-synthesis fallback. The recorded resolver takes8682.818ms;
-      video already has the full Heinrich13 text at least7.45s before its route.
-      Other named/narrator partials cost about4-8s. A chapter-only replay reproduces
-      the differing clean/noisy verdicts in about5ms, so do not treat this as game
-      voice wait or repair it by increasing speech-matching typo tolerance.
-      Separate insufficient/noisy prefix evidence from actual chapter mismatch
-      for discovery admission. Investigate reusing the existing alignment evidence
-      to defer global fuzzy search while retaining exact-index chapter changes;
-      present the concrete implementation plan before editing. Gate: replay the
-      recorded noisy partials through the full controller/catalog and preserve full
-      line, ambiguity, protected-content and cross-chapter decisions; then short
-      native confirmation. Control responsiveness/Stop/Read passed separately;
-      don't reopen that completed lock fix without contrary evidence. Native
-      media tail is partial from the existing D1 retirement issue. Evidence:
-      prefix-repair-native-20261116/evidence-review.json and noisy-local-probe.json.
+- [ ] **RUN-16-03 - Qualify indexed chapter discovery in native reading.**
+      On Finished Page, confirm noisy typewriter observations such as
+      `Abh! Tosca ...! You're turr` no longer stall OCR while a later full line
+      still selects the original game voice without duplicate synthesis.
+      Include named and narrator text, a clean exact chapter change and Stop/Read.
+      Chapter-local typo tolerance and initial/manual fuzzy discovery stay active;
+      an active cross-chapter jump with OCR typos waits for indexed exact text.
+      Confirm that waiting does not leak old audio or an automatic advance.
+      The saved full-catalog replay is not native timing/audio qualification;
+      use prefix-repair-native-20261116/indexed-discovery-replay.json as its
+      comparison evidence. Keep the existing D1 recorder-retirement gate separate.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.

@@ -629,6 +629,69 @@ class ChapterVoicePreloader:
         )
         return match.line, match.method
 
+    def resolve_indexed_complete(
+        self,
+        character: object,
+        text: object,
+        *,
+        update_context: bool = True,
+        prefer_synthesis: bool = False,
+        fully_observed_line_id: str | None = None,
+    ) -> tuple[ChapterDialogue | None, str]:
+        """Discover exact text through the index, retaining chapter completeness."""
+        self._check_matching_cancelled()
+        exact_text = _normalize_exact_text(text)
+        normalized_text = _normalize(text)
+        symbol_only = is_symbol_only_text(text)
+        indexed: dict[ChapterDialogue, None] = {}
+        for speaker in self.speaker_names:
+            self._check_matching_cancelled()
+            exact_rows = self.by_exact_dialogue.get(
+                (speaker, symbol_only, exact_text), ()
+            )
+            normalized_rows = (
+                self.by_normalized_dialogue.get((speaker, normalized_text), ())
+                if normalized_text and not symbol_only
+                else ()
+            )
+            for row in (*exact_rows, *normalized_rows):
+                if row.line_id and row.text_sha256:
+                    indexed[row] = None
+        line, method = self.resolve_complete_among(
+            character,
+            text,
+            (row.line_id for row in indexed),
+            update_context=False,
+            prefer_synthesis=prefer_synthesis,
+            fully_observed_line_id=fully_observed_line_id,
+        )
+        if line is None:
+            return None, method
+        # An exact short row may still be the typed opening of a longer line.
+        chapters = dict.fromkeys(row.chapter for row in indexed)
+        if self.current_match is not None:
+            chapters[self.current_match.chapter] = None
+        line, method = self.resolve_complete_among(
+            character,
+            text,
+            (
+                row.line_id
+                for chapter in chapters
+                for row in self.by_chapter.get(chapter, ())
+            ),
+            update_context=False,
+            prefer_synthesis=prefer_synthesis,
+            fully_observed_line_id=fully_observed_line_id,
+        )
+        if line is None or line not in indexed or method not in {
+            "expected-exact",
+            "expected-text-only",
+            "expected-normalized-exact",
+            "expected-normalized-text-only",
+        }:
+            return None, method
+        return self._finish_exact_resolution(line, method, update_context)
+
     def resolve_bounded_among(
         self,
         character: object,

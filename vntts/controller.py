@@ -1995,10 +1995,9 @@ class AppController:
                 and plan is None
                 and preloader.current_match is not None
             ):
-                line, match = preloader.resolve_complete_among(
+                line, match = preloader.resolve_indexed_complete(
                     speaker,
                     result.text,
-                    (row.line_id for row in preloader.dialogue if row.line_id),
                     update_context=False,
                     prefer_synthesis=True,
                     fully_observed_line_id=fully_observed_line_id,
