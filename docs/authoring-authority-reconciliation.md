@@ -7,7 +7,7 @@ operator. It never applies a decision, changes state, rebuilds a manifest,
 starts generation or infers approval from a WAV file.
 
 ```bash
-uv run --no-sync vntts-authoring-reconcile \
+uv run vntts-authoring-reconcile \
   --primary-workspace /authoring/workspaces/resume-... \
   --bundle-root /authoring/review-bundles \
   --bundle /authoring/review-bundles/current-character-a.json \

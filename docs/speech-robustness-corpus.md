@@ -49,7 +49,7 @@ Publish from every cohort decision below the authoring workspace root and add
 the final typed failures from a stable workspace:
 
 ```bash
-uv run --no-sync vntts-pregenerate speech-robustness-corpus \
+uv run vntts-pregenerate speech-robustness-corpus \
   /path/to/robustness-corpus \
   --decision-root /path/to/authoring/workspaces \
   --failure-workspace /path/to/stable/workspace
@@ -58,7 +58,7 @@ uv run --no-sync vntts-pregenerate speech-robustness-corpus \
 Validate the corpus and every bound artifact without consulting the sources:
 
 ```bash
-uv run --no-sync vntts-pregenerate speech-robustness-check \
+uv run vntts-pregenerate speech-robustness-check \
   /path/to/robustness-corpus
 ```
 
@@ -68,7 +68,7 @@ destination fails closed.
 Run the optional local ASR comparison without configuring a model path:
 
 ```bash
-uv run --no-sync vntts-pregenerate speech-robustness-asr \
+uv run vntts-pregenerate speech-robustness-asr \
   /path/to/v2-corpus \
   --output /path/to/asr-report.json --device cpu
 ```

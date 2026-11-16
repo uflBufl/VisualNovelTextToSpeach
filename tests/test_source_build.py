@@ -52,7 +52,7 @@ class SourceBuildTest(unittest.TestCase):
                     commands[:2],
                     [
                         ["rustc", "-vV"],
-                        ["uv", "sync", "--frozen", "--no-dev"],
+                        ["uv", "sync", "--frozen"],
                     ],
                 )
                 self.assertEqual(

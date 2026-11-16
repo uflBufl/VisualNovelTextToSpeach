@@ -42,7 +42,7 @@ def build() -> None:
 
     audio = ROOT / "native" / "audio-worker"
     host = _host_target()
-    _run(["uv", "sync", "--frozen", "--no-dev"])
+    _run(["uv", "sync", "--frozen"])
     _run(
         [
             "cargo",
@@ -74,9 +74,7 @@ def build() -> None:
                 str(ROOT / "scripts" / "build-windows-capture.ps1"),
             ]
         )
-    print(
-        "Source build complete. Start the application with: uv run --no-sync vntts-app"
-    )
+    print("Source build complete. Start the application with: uv run vntts-app")
 
 
 def main() -> int:

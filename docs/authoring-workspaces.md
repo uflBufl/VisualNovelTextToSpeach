@@ -431,7 +431,7 @@ child independently reloads the workspace and binds `binding.json` plus every
 selected reference into the bulk control inventory before backend construction:
 
 ```sh
-uv run --no-sync python -c '
+uv run python -c '
 from pathlib import Path
 from vntts.authoring.workbench import (
     failure_reference_runtime_binding,
@@ -634,7 +634,7 @@ Pure non-verbal lines must not fall through to ordinary TTS when no validated
 effect exists. Create an exact terminal omission successor with:
 
 ```sh
-uv run --no-sync vntts-pregenerate audio-event-omission BASE_WORKSPACE \
+uv run vntts-pregenerate audio-event-omission BASE_WORKSPACE \
   --queue-id QUEUE_ID \
   --workspaces-root AUTHORING_WORKSPACES_ROOT
 ```

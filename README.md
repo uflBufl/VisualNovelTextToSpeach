@@ -133,7 +133,7 @@ Speech-engine environments and models are prepared when selected in the app.
 Then launch:
 
 ```sh
-uv run --no-sync vntts-app
+uv run vntts-app
 ```
 
 Repeat the source-build command after updating the project. `uv sync` alone does
@@ -829,6 +829,9 @@ uv sync --group dev
 uv lock --refresh
 ```
 
+Development tools are opt-in. Normal application commands install only runtime
+dependencies; use `--group dev` when installing or running development tools.
+
 uv creates the virtual environment in `.venv/`. Activation is optional:
 
 ```sh
@@ -842,15 +845,15 @@ source .venv/bin/activate
 Format and automatically fix lint findings:
 
 ```sh
-uv run ruff check --fix .
-uv run ruff format .
+uv run --group dev ruff check --fix .
+uv run --group dev ruff format .
 ```
 
 Verify formatting and linting:
 
 ```sh
-uv run ruff format --check .
-uv run ruff check .
+uv run --group dev ruff format --check .
+uv run --group dev ruff check .
 ```
 
 ### Test selection
@@ -907,8 +910,7 @@ uv run python examples/voice_clone_demo.py
 Run the OCR notebooks from `exps/`:
 
 ```sh
-uv sync --no-dev --group notebook
-uv run --no-dev --group notebook jupyter lab
+uv run --group notebook jupyter lab
 ```
 
 ### Rust audio output
@@ -919,7 +921,7 @@ it along with the Python dependencies and capture component:
 
 ```sh
 uv run --no-project python scripts/build.py
-uv run --no-sync vntts-app
+uv run vntts-app
 ```
 
 `VNTTS_AUDIO_WORKER` can select an explicitly built worker executable;

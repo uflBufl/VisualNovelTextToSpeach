@@ -64,7 +64,7 @@ does not infer consent from another setting or environment variable.
 Use the immutable queue and authoritative state from the current workspace:
 
 ```sh
-uv run --no-sync vntts-benchmark-models \
+uv run vntts-benchmark-models \
   --queue /absolute/workspace/queue.jsonl \
   --state /absolute/workspace/generated-audio/generation-state.json \
   --manifest /absolute/workspace/inputs/voice/manifest.json \

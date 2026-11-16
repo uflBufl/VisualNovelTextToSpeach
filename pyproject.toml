@@ -76,6 +76,7 @@ vntts-authoring-reconcile = "vntts.authoring.reconciliation_cli:main"
 vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 
 [tool.uv]
+default-groups = []
 # The application owns the artifact release used by its pinned extractor too.
 override-dependencies = ["vntts-artifacts[audio]==0.7.4"]
 

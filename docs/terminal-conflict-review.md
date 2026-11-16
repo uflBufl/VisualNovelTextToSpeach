@@ -29,7 +29,7 @@ bounded by the small conflict set.
 Run the operator interface with:
 
 ```bash
-uv run --no-sync vntts-conflict-review REVIEW_DIRECTORY
+uv run vntts-conflict-review REVIEW_DIRECTORY
 ```
 
 The interface initially presents a deterministic blind A/B order derived from
@@ -55,11 +55,11 @@ publishes a successor reconciliation report.
 The supported command pipeline is:
 
 ```bash
-uv run --no-sync vntts-pregenerate terminal-conflict-resolution \
+uv run vntts-pregenerate terminal-conflict-resolution \
   REVIEW_DIRECTORY RESOLUTION_DIRECTORY
-uv run --no-sync vntts-pregenerate terminal-conflict-successor \
+uv run vntts-pregenerate terminal-conflict-successor \
   RECONCILIATION_JSON RESOLUTION_DIRECTORY SUCCESSOR_DIRECTORY
-uv run --no-sync vntts-pregenerate terminal-conflict-merge \
+uv run vntts-pregenerate terminal-conflict-merge \
   BASE_WORKSPACE SUCCESSOR_DIRECTORY --workspaces-root WORKSPACES_ROOT
 ```
 

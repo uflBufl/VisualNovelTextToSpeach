@@ -163,7 +163,7 @@ Inspect either a pending or terminal review with
 Example publication shape:
 
 ```sh
-uv run --no-sync vntts-pregenerate audio-event-review-publish \
+uv run vntts-pregenerate audio-event-review-publish \
   /absolute/workspace/queue.jsonl \
   reverse1999:314606:39:27d02801f93c9036 \
   /absolute/story-index-3.7.jsonl \
@@ -293,7 +293,7 @@ generator is available, authoring may terminalize the absence without inventing
 speech or silent WAV data:
 
 ```bash
-uv run --no-sync vntts-pregenerate audio-event-omission BASE_WORKSPACE \
+uv run vntts-pregenerate audio-event-omission BASE_WORKSPACE \
   --queue-id QUEUE_ID \
   --workspaces-root WORKSPACES_ROOT
 ```

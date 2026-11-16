@@ -27,8 +27,8 @@ if ($Application) {
     & $Application
 } elseif ($NarratorReference) {
     # A fresh, device-independent render using the production backend factory.
-    uv run --no-sync vntts-benchmark-tts --backend moss-tts --model $env:VNTTS_MOSS_GGUF --character Narrator --narrator-reference $NarratorReference
+    uv run vntts-benchmark-tts --backend moss-tts --model $env:VNTTS_MOSS_GGUF --character Narrator --narrator-reference $NarratorReference
 } else {
-    uv run --no-sync vntts-app
+    uv run vntts-app
 }
 if ($LASTEXITCODE -ne 0) { throw "VNTTS exited with code $LASTEXITCODE" }

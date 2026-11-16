@@ -80,7 +80,7 @@ def portaudio_library() -> str:
                 return str(candidates[0])
     raise AudioRuntimeUnavailable(
         "PortAudio not found. Install libportaudio2 on Debian/Ubuntu, or restore "
-        "the sounddevice package on Windows/macOS (uv sync --no-dev). "
+        "the sounddevice package on Windows/macOS (uv sync). "
         "VNTTS_PORTAUDIO_LIBRARY can select the installed library.",
         summary="PortAudio is not installed.",
     )
