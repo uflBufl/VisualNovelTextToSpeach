@@ -3,6 +3,7 @@ import unicodedata
 import unittest
 
 from vntts.story_text_matching import (
+    MatchingText,
     compare_text,
     fold_latin_diacritics,
     prepare_text,
@@ -142,6 +143,32 @@ class StoryTextMatchingTest(unittest.TestCase):
                 )
         self.assertEqual(prepare_text("Ｆｕｌｌ").key, prepare_text("Full").key)
         self.assertEqual(prepare_text("Café déjà").alphanumeric_length, 8)
+
+    def test_combining_marks_keep_their_surrounding_script_context(self):
+        expected = MatchingText(
+            "\u0307\x00q\x00б\u0307\u0308\x01\u0307",
+            2,
+            (),
+            (None,) * 9,
+            (0, 1, 1, 2, 2, 3, 4, 5, 5, 6),
+        )
+        for _ in range(2):
+            self.assertEqual(
+                prepare_text("\u0307 q\u0307\u0308 Б\u0307\u0308 .\u0307"), expected
+            )
+        self.assertEqual(prepare_text("q\u0307").key, "q")
+        self.assertEqual(prepare_text("\u0307").key, "\u0307")
+
+    def test_protected_punctuation_depends_on_position_within_each_text(self):
+        expected = MatchingText(
+            "x\x01-5%\x01x",
+            3,
+            ("-5%",),
+            (None, None, ("-5%", 0), ("-5%", 1), ("-5%", 2), None, None),
+            (0, 1, 1, 2, 3, 4, 4, 5),
+        )
+        for _ in range(2):
+            self.assertEqual(prepare_text("x%- -5% %-x"), expected)
 
     def test_empty_inputs_never_authorize_complete_or_prefix_matches(self):
         for canonical, observed in (("", ""), ("word", ""), ("", "word")):

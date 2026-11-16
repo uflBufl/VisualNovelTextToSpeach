@@ -4,6 +4,7 @@ import re
 import unicodedata
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from functools import lru_cache
 
 _HARD = "\x00"
 _SOFT = "\x01"
@@ -51,6 +52,28 @@ def fold_latin_diacritics(value: str) -> str:
     return unicodedata.normalize("NFC", "".join(result))
 
 
+@lru_cache(maxsize=4096)
+def _character_descriptor(
+    character: str,
+) -> tuple[bool, bool, tuple[tuple[str, bool, str], ...]]:
+    """Cache context-free Unicode work; Latin mark context stays with the text."""
+    folded = character if character.isascii() else fold_latin_diacritics(character)
+    return (
+        unicodedata.category(character).startswith("M"),
+        "LATIN" in unicodedata.name(character, ""),
+        tuple(
+            (
+                unit,
+                unit.isalnum()
+                or unicodedata.category(unit).startswith("M")
+                or unit == "_",
+                _HARD if unit.isspace() else _SOFT,
+            )
+            for unit in folded
+        ),
+    )
+
+
 def prepare_text(value: object) -> MatchingText:
     original = (
         unicodedata.normalize("NFKC", str(value)).casefold().translate(_TYPOGRAPHY)
@@ -70,23 +93,18 @@ def prepare_text(value: object) -> MatchingText:
     protections: list[_Protection] = []
     latin = False
     for position, character in enumerate(original):
-        if unicodedata.category(character).startswith("M"):
+        mark, is_latin, folded_units = _character_descriptor(character)
+        if mark:
             if latin:
                 continue
         else:
-            latin = "LATIN" in unicodedata.name(character, "")
+            latin = is_latin
         protection = protected.get(position)
-        for folded in fold_latin_diacritics(character):
-            if (
-                protection is not None
-                or folded.isalnum()
-                or unicodedata.category(folded).startswith("M")
-                or folded == "_"
-            ):
+        for folded, keep, boundary in folded_units:
+            if protection is not None or keep:
                 units.append(folded)
                 protections.append(protection)
                 continue
-            boundary = _HARD if folded.isspace() else _SOFT
             if units and units[-1] in _BOUNDARIES:
                 if boundary == _SOFT:
                     units[-1] = _SOFT

@@ -417,21 +417,6 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       the real original defect: short-reading-controls-20261116,
       session27f9e929d6a447e2aab0385b5606e234.
 
-- [ ] **PERF-16-01 - Reduce initial full-catalog recognition startup.**
-      Actual process-cold probe: about14.6s total, including10.6s building matching
-      indices; raw file reading takes about0.03s. prepare_text dominates CPU through
-      repeated Unicode classification/folding of individual characters. Proposed
-      implementation, awaiting approval: cache bounded, context-free character
-      descriptors while preserving outer Latin/combining-mark state, protected
-      number/negation positions, punctuation boundaries and every MatchingText
-      field. The private real-text sample improved from0.567s to0.198s with exact
-      output equality; this is not end-to-end startup qualification.
-      Gate: differential full-catalog/Unicode matching forms, existing fuzzy,
-      prefix/ambiguity/original policy regressions, and repeated complete startup,
-      memory and first-match measurements. Keep the full candidate universe;
-      defer a persisted search index unless remaining measured cost warrants it.
-      Evidence: catalog-startup-20261116; product optimization not implemented.
-
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh
