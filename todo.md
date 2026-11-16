@@ -226,22 +226,13 @@
 
 ## Active - Finish diagnostic-session native acceptance
 
-- [ ] **D1 - Qualify recorder turnover in the combined native reading run.**
-      With selected-window/game audio and Reading active, verify ordinary Stop,
-      completed preview retirement, Read restart and actual default-device change.
-      Owned worker segments must finish through their requested cutoff without a
-      false acquisition error; unexpected exit must retain failure/partial PCM,
-      independent game/video and journals, then capture the replacement worker
-      under a new identity until the original session deadline.
-      Wait for media readiness before starting Reading and qualify only captured
-      intervals; never claim uncovered startup/tail time. Include Stop while other
-      helpers are still draining and keep its owner wait bounded.
-      Compare with the isolated process-tap evidence in
-      recorder-retirement-20261116/native-turnover.json and
-      native-source-correlation.json. The worker-only probe does not qualify
-      combined in-game controls or actual device changes. Windows native
-      lifecycle acceptance remains on its own host; retain native identity and
-      failure checks rather than suppressing unavailable-target errors.
+- [ ] **D1 - Qualify remaining recorder adverse paths.**
+      During a relevant native game run, change the actual default output device.
+      For unexpected source exit, verify independent game/video and journals
+      survive, then record the replacement worker under a new identity until the
+      original deadline. Keep Windows native lifecycle acceptance on its own host.
+      Qualify only captured intervals, including readiness/startup and final
+      cutoffs; no physical-speaker claim.
 
 ## Rust audio native acceptance gaps
 
@@ -371,23 +362,32 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: combine the short native D1 worker-retirement confirmation with
-indexed chapter discovery in RUN-16-03.
+Next action: investigate the first-observation Read/restart delays in RUN-17-01
+from the saved recording, then present a concrete fix plan before implementation.
 Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-16-03 - Qualify indexed chapter discovery in native reading.**
-      On Finished Page, confirm noisy typewriter observations such as
-      `Abh! Tosca ...! You're turr` no longer stall OCR while a later full line
-      still selects the original game voice without duplicate synthesis.
-      Include named and narrator text, a clean exact chapter change and Stop/Read.
-      Chapter-local typo tolerance and initial/manual fuzzy discovery stay active;
-      an active cross-chapter jump with OCR typos waits for indexed exact text.
-      Confirm that waiting does not leak old audio or an automatic advance.
-      The saved full-catalog replay is not native timing/audio qualification;
-      use prefix-repair-native-20261116/indexed-discovery-replay.json as its
-      comparison evidence. Keep the existing D1 recorder-retirement gate separate.
+- [ ] **RUN-17-01 - Resolve slow first-observation matching after Read.**
+      Finished Page session44b8d8f398cf4a64b9ec0999c2cbb64b has full, exact,
+      confidently named Kakania20 and Isolde27 observations, yet their first
+      story-result-resolution calls take19.933s and32.450s after the OCR worker
+      finishes. Later anchored observations, including real noisy named/narrator
+      no-matches, stay below39ms. Do not reopen the completed anchored-prefix fix
+      or blame game-voice waiting. Trace the initial candidate scope and matching
+      work with these exact saved inputs and the full catalog; determine why
+      indexed exact evidence is not enough on the initial path. Preserve speech
+      completeness/continuations, ambiguity, visible-speaker and original-audio
+      policy when proposing the repair. The first cold Read also took57.18s to
+      its first resolution, of which only1.618s was the resolver: separate that
+      pre-resolver startup interval rather than attributing it to the same cause.
+      The third Read click exceeded the bridge's5s main-thread timeout before
+      completing; inspect initial Read UI work without assuming a modal dialog.
+      Use private profiling/existing evidence, not permanent high-volume metrics;
+      a new game run is unnecessary for diagnosis. Gate: reproduce the measured
+      paths, agree the implementation plan, run focused regressions/offline
+      acceptance, then a short native confirmation. Evidence:
+      indexed-recorder-native-20261117/analysis-evidence.json and saved journals.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
@@ -452,6 +452,8 @@ Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
       isolated metadata scope is not native qualification.
       Finish the no-ready-recording native flow with RUN-16-02 before closing
       automatic original/live fallback qualification.
+      Include a clean exact switch to a genuinely different chapter through the
+      indexed discovery path; the Finished Page restarts stayed inside one chapter.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other
