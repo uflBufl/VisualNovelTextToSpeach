@@ -374,24 +374,35 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: localize the short-prefix resolver stall in RUN-16-03 before another
-game run. Supplemental voice coverage
+Next action: agree the RUN-16-03 implementation plan before another game run.
+Supplemental voice coverage
 and ASR changes remain deferred; resource classification cannot suppress narration.
 Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
 
-- [ ] **RUN-16-03 - Localize slow short-prefix resolution blocking Reading controls.**
+- [ ] **RUN-16-03 - Keep partial chapter matching scoped and release UI state locks.**
       In native Finished Page session018f1a1b5b0d4e7cb3fbab65b6754957, the
       recognized fragment Heinrich: `Ahh! To` took76186ms to resolve as
       expected-incomplete. Qt/MCP stopped responding; a native process sample
       shows the main QTimer callback waiting on an RLock while dialog-ocr executes
       Python comparison work. Stop was processed only after resolution returned;
-      the process subsequently quit normally. Identify the actual candidate scope
-      and expensive comparison path from the saved observation/context, reproduce
-      offline, and propose bounded recognition work and lock ownership changes.
-      Do not infer deadlock or a modal dialog from the bridge timeout. Gate:
-      preserve partial-text matching decisions and make Stop/control refresh
-      responsive while recognition is busy; replay the captured fragment before
-      native confirmation. Evidence: finished-page-qualification-20261116.
+      the process subsequently quit normally. Offline replay confirms a chapter
+      result expected-incomplete in about5ms, followed by unnecessary global
+      prefer-synthesis comparison over the full catalog in13.4s. The recorded
+      previous narrator differs from the new speaker, so the current incomplete
+      guard permits this escalation. Proposed plan, awaiting approval:
+      keep expected-incomplete in the known chapter until a new observation;
+      retain global discovery when the chapter genuinely does not match. Separate
+      immutable matching input/results (including diagnostics) from cursor mutation;
+      snapshot context under a short story lock, compute outside it, and apply only
+      to the still-current reading/context. Migrate ordinary OCR, sequence matching
+      and scope bootstrap to this shared ownership boundary; do not merely unlock
+      calls whose preloader diagnostics/current context still mutate. Gate:
+      replay actual Heinrich prefix-to-full progression, retain chapter discovery,
+      ambiguity and original-audio policy, and block a calculation deterministically
+      while status and Stop remain responsive with no stale result after restart
+      or resync. Native confirmation follows offline gates. No timer or confidence
+      threshold workaround. Evidence: finished-page-qualification-20261116,
+      prefix-stall probe and native lock sample.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.
