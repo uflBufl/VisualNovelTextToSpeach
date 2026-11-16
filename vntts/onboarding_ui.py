@@ -51,6 +51,7 @@ from vntts.calibration import (
     DIALOG_REGION_GUIDANCE,
     CaptureWindowVisibility,
     DialogRegionOverlay,
+    StoryAreaRecognizer,
     capture_calibration_preview,
     show_calibration_overlay,
 )
@@ -1334,12 +1335,14 @@ class CalibrationPage(QWizardPage):
         save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
+        story_recognizer: StoryAreaRecognizer | None = None,
     ) -> None:
         super().__init__()
         self.capture_target_factory = capture_target_factory
         self.save_region = save_region
         self.capture_region = capture_region
         self.story_region = story_region
+        self.story_recognizer = story_recognizer
         self._capture_story_area = False
         self._capture_binding: tuple[str, str | None] | None = None
         self.flow: OnboardingWizard
@@ -1533,6 +1536,7 @@ class CalibrationPage(QWizardPage):
                     save_region=lambda _region: None,
                     capture_region=self.story_region or self.capture_region,
                     story_dialogue_region=self.capture_region,
+                    story_recognizer=self.story_recognizer,
                 )
             else:
                 overlay = show_calibration_overlay(
@@ -1800,6 +1804,7 @@ class OnboardingWizard(QDialog):
         save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
+        story_recognizer: StoryAreaRecognizer | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1814,6 +1819,7 @@ class OnboardingWizard(QDialog):
             capture_region,
             story_region,
         )
+        self.calibration_page.story_recognizer = story_recognizer
         self.finished.connect(self.calibration_page.cancel_calibration)
         navigation = self._build_navigation(reading_setup)
         self._build_layout(navigation)

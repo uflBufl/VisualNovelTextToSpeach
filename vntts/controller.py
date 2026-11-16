@@ -14,6 +14,8 @@ from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
 from uuid import uuid4
 
+from PIL import Image
+
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.audio_output import PcmAdmissionRejected
 from vntts.auto_advance import DialogueAdvancer
@@ -1380,6 +1382,76 @@ class AppController:
                 self.caption_discovery = None
             self.caption_discovery_unavailable = False
 
+    def _prepare_caption_discovery(self, cancellation: Event) -> TextDetectionWorker:
+        with self.caption_discovery_lock:
+            if cancellation.is_set() or self.shutdown_requested.is_set():
+                raise OCRPreviewCancelled("Screen text preparation cancelled")
+            if self.caption_discovery is None:
+                self.status_handler("Preparing screen text recognition…")
+                detector, recognizer = prepare_text_detection_models(
+                    self.model_assets,
+                    progress=lambda _percent, message: self.status_handler(message),
+                    cancel_event=cancellation,
+                )
+                if cancellation.is_set() or self.shutdown_requested.is_set():
+                    raise OCRPreviewCancelled("Screen text preparation cancelled")
+                self.caption_discovery = TextDetectionWorker(detector, recognizer)
+            return self.caption_discovery
+
+    def preview_story_area(
+        self,
+        image: Image.Image,
+        story_region: DialogRegion,
+        dialogue_region: DialogRegion,
+        cancel_event: Event,
+        *,
+        minimum_confidence: float | None = None,
+    ) -> OCRResult:
+        """Test a frozen image without changing saved permission or reading state."""
+        if not story_region.contains(dialogue_region):
+            raise ValueError("The Story area must contain the dialogue area")
+        minimum = optional_finite_number(
+            self.settings.ocr_minimum_confidence
+            if minimum_confidence is None
+            else minimum_confidence
+        )
+        if minimum is None or not 0 <= minimum <= 100:
+            raise ValueError("OCR minimum confidence must be between 0 and 100")
+        discovery = self._prepare_caption_discovery(cancel_event)
+        lines = discovery.detect(
+            image,
+            allowed_region=story_region,
+            covered_region=dialogue_region,
+            cancel_event=cancel_event,
+        )
+        with self.caption_discovery_lock:
+            if cancel_event.is_set() or self.shutdown_requested.is_set():
+                raise OCRPreviewCancelled("Screen text detection cancelled")
+            if self.caption_discovery is discovery:
+                self.caption_discovery_unavailable = False
+        frame = CapturedDialogFrame(
+            dialogue_region.crop(image),
+            0,
+            canonical_image=image,
+            capture_region=dialogue_region,
+        )
+        selected = select_caption(
+            frame,
+            group_text_lines(lines),
+            minimum,
+        )
+        if selected.recognized_result is not None:
+            return selected.recognized_result
+        return OCRResult(
+            "Narrator",
+            "",
+            0,
+            "layout-pending"
+            if selected.layout_kind == "pending"
+            else "story-area-empty",
+            0,
+        )
+
     def _capture_live_frame(self) -> object:
         cancellation = (
             self.live_reader.stop_event
@@ -1419,29 +1491,19 @@ class AppController:
                 raise OCRPreviewCancelled("Screen text preparation cancelled")
             if self.caption_discovery_unavailable:
                 return frame
-            if self.caption_discovery is None:
-                self.status_handler("Preparing screen text recognition…")
-                try:
-                    detector, recognizer = prepare_text_detection_models(
-                        self.model_assets,
-                        progress=lambda _percent, message: self.status_handler(message),
-                        cancel_event=cancellation,
+            try:
+                discovery = self._prepare_caption_discovery(cancellation)
+            except ModelDownloadCancelled, OCRPreviewCancelled:
+                raise
+            except Exception as error:
+                self.caption_discovery_unavailable = True
+                self.error_handler(
+                    RuntimeError(
+                        f"Text outside the dialogue area is unavailable: {error}. "
+                        "The calibrated dialogue area remains available."
                     )
-                    if cancellation.is_set() or self.shutdown_requested.is_set():
-                        raise OCRPreviewCancelled("Screen text preparation cancelled")
-                    self.caption_discovery = TextDetectionWorker(detector, recognizer)
-                except ModelDownloadCancelled, OCRPreviewCancelled:
-                    raise
-                except Exception as error:
-                    self.caption_discovery_unavailable = True
-                    self.error_handler(
-                        RuntimeError(
-                            f"Text outside the dialogue area is unavailable: {error}. "
-                            "The calibrated dialogue area remains available."
-                        )
-                    )
-                    return frame
-            discovery = self.caption_discovery
+                )
+                return frame
         started = monotonic()
         lines = discovery.detect(
             frame.canonical_image,

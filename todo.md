@@ -3,19 +3,18 @@
 ## Active - Support 29 native Reading qualification
 
 - [ ] On Windows, confirm separate Dialogue and Story areas during setup and
-      read central story phrases in the selected game window. Verify prepared
+      read central story phrases in the selected game window. Check the frozen
+      Story preview and both area actions in Live diagnostics. Verify prepared
       dialogue continues when optional speaker announcements lack cloning access;
       changed voice settings must allow retry. Check recovery of an already fully
       observed current line after one missing edge glyph, while genuinely
       unreadable frames keep waiting and Stop remains available. Portable tests
       and the macOS setup preview do not qualify native capture or model access.
 
-## Active - Windows empty capture frame pool
+## Active - Remaining Windows capture modes
 
-- [ ] On Windows, rebuild and qualify Reading setup, calibration and continued
-      capture for the selected game window, including waiting for the first
-      frame and draining the frame pool. Verify display capture and diagnostic
-      video through the shared source loop; portable checks do not qualify WGC.
+- [ ] On Windows, verify explicit display capture and diagnostic video through
+      the shared source loop.
 
 ## Active - Source build and native component readiness
 

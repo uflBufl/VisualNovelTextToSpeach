@@ -8663,6 +8663,9 @@ class TrayApplicationTest(unittest.TestCase):
         with patch("vntts.app.show_calibration_overlay") as show:
             tray._open_calibration_overlay(None, Image.new("RGB", (800, 600)))
             self.assertEqual(show.call_args.kwargs["story_dialogue_region"], dialogue)
+            self.assertEqual(
+                show.call_args.kwargs["story_recognizer"], controller.preview_story_area
+            )
             self.assertEqual(show.call_args.kwargs["capture_region"], dialogue)
             save = show.call_args.kwargs["save_region"]
             with patch("vntts.app.save_story_region") as persist:
@@ -8674,6 +8677,24 @@ class TrayApplicationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "selected game changed"):
                     save(story)
                 self.assertEqual(persist.call_count, 1)
+
+    def test_diagnostics_story_action_opens_story_calibration(self):
+        controller = Mock()
+        controller.get_latest_diagnostic.return_value = None
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        with (
+            patch.object(tray, "refresh_diagnostics"),
+            patch.object(tray, "calibrate_story_area") as calibrate,
+            patch("vntts.app.macos_permission_warnings", return_value=()),
+        ):
+            tray.open_diagnostics()
+            tray.diagnostics_dialog.story_area_button.click()
+            calibrate.assert_called_once_with()
 
     def test_settings_story_area_button_saves_and_requests_setup(self):
         dialog = SettingsDialog(AppSettings(discover_text_layouts=False))
@@ -9257,7 +9278,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray.live_stop_runner.active)
         self.assertIsNone(tray._live_stop_generation)
         self.assertTrue(dialog.calibrate_button.isEnabled())
-        self.assertEqual(dialog.calibrate_button.text(), "Change capture area...")
+        self.assertEqual(dialog.calibrate_button.text(), "Change dialogue area...")
         self.assertIn("pool unavailable", dialog.warning.toPlainText())
         self.assertIn("pool unavailable", tray.dashboard.status.text())
 
@@ -11204,6 +11225,18 @@ class TrayApplicationTest(unittest.TestCase):
         with patch.object(tray_application, "_save_setup_capture_regions") as save:
             wizard.calibration_page.save_region(region)
         save.assert_called_once_with(wizard.draft_settings, region, None)
+        image = Image.new("RGB", (800, 600))
+        story = DialogRegion(0, 0.1, 1, 0.9)
+        cancelled = Event()
+        wizard.draft_settings = wizard.draft_settings.updated(ocr_minimum_confidence=75)
+        wizard.calibration_page.story_recognizer(image, story, region, cancelled)
+        tray_application.controller.preview_story_area.assert_called_once_with(
+            image,
+            story,
+            region,
+            cancelled,
+            minimum_confidence=75,
+        )
         self.assertEqual(
             wizard.calibration_page.capture_region,
             tray_application.controller._capture_region.return_value,

@@ -106,6 +106,70 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(dialog.speaker_note.text(), "")
         dialog.close()
 
+    def test_story_snapshot_labels_and_clears_dialogue_speaker_image(self):
+        dialog = DiagnosticsDialog()
+        image = Image.new("L", (64, 20), "white")
+        dialog.set_snapshot(
+            DiagnosticSnapshot(image, character="Marcus", speaker_image=image)
+        )
+        dialog.set_snapshot(
+            DiagnosticSnapshot(
+                image,
+                text="Story text",
+                processed_image=image,
+                preprocessing_profile="caption-ppocr",
+            )
+        )
+        self.assertEqual(dialog.speaker.text(), "Narrator")
+        self.assertEqual(dialog.text.text(), "Story text")
+        self.assertIsNone(dialog.speaker_processed_pixmap)
+        self.assertIn("No speaker image", dialog.speaker_processed_preview.text())
+        self.assertTrue(dialog.speaker_processed_preview.isHidden())
+        self.assertTrue(dialog.enlarge_speaker_button.isHidden())
+        self.assertEqual(dialog.processed_label.text(), "Detected story text crop")
+        self.assertIn("internally", dialog.processed_preview.toolTip())
+        self.assertEqual(
+            dialog.enlarge_processed_button.accessibleName(),
+            "Enlarge detected story text crop",
+        )
+        self.assertIn(
+            "Detected story text crop",
+            dialog._capture_dialog(processed=True).windowTitle(),
+        )
+        dialog.set_snapshot(
+            DiagnosticSnapshot(image, speaker_image=image, processed_image=image)
+        )
+        self.assertEqual(dialog.processed_label.text(), "Dialogue OCR image")
+        self.assertIn("preprocessing", dialog.processed_preview.toolTip())
+        self.assertTrue(dialog.enlarge_speaker_button.isEnabled())
+        self.assertFalse(dialog.speaker_processed_preview.isHidden())
+        self.assertFalse(dialog.enlarge_speaker_button.isHidden())
+        dialog.close()
+
+    def test_area_actions_and_pending_lifecycle(self):
+        dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
+        story_requested = Mock()
+        dialogue_requested = Mock()
+        dialog.story_area_requested.connect(story_requested)
+        dialog.calibration_requested.connect(dialogue_requested)
+        dialog.story_area_button.click()
+        dialog.calibrate_button.click()
+        story_requested.assert_called_once_with()
+        dialogue_requested.assert_called_once_with()
+        dialog.request_refresh()
+        self.assertFalse(dialog.story_area_button.isEnabled())
+        self.assertFalse(dialog.calibrate_button.isEnabled())
+        dialog.set_calibration_pending(True)
+        dialog.cancel_refresh()
+        self.assertFalse(dialog.story_area_button.isEnabled())
+        self.assertFalse(dialog.calibrate_button.isEnabled())
+        self.assertFalse(dialog.refresh_button.isEnabled())
+        dialog.set_calibration_pending(False)
+        self.assertTrue(dialog.story_area_button.isEnabled())
+        self.assertTrue(dialog.calibrate_button.isEnabled())
+        self.assertTrue(dialog.refresh_button.isEnabled())
+        dialog.close()
+
     def test_dialog_renders_snapshot_and_latencies(self):
         dialog = DiagnosticsDialog()
         self.assertLessEqual(dialog.width(), 700)

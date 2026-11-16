@@ -96,6 +96,24 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.assertEqual(wizard.capture_regions(), (self.dialogue, self.story))
         self.assertEqual(page.capture_region, self.dialogue)
 
+    def test_story_selection_passes_draft_preview_to_frozen_overlay(self):
+        wizard = self.wizard()
+        page = wizard.calibration_page
+        page.finish_calibration(self.dialogue)
+        preview = Mock()
+        page.story_recognizer = preview
+        page._capture_story_area = True
+        page._capture_binding = (
+            self.settings.capture_mode,
+            self.settings.game_window_title,
+        )
+        image = Image.new("RGB", (640, 480))
+        with patch("vntts.onboarding_ui.show_calibration_overlay") as show:
+            page._capture_finished((None, image), None)
+        self.assertIs(show.call_args.kwargs["background"], image)
+        self.assertIs(show.call_args.kwargs["story_recognizer"], preview)
+        self.assertEqual(show.call_args.kwargs["story_dialogue_region"], self.dialogue)
+
     def test_dialogue_only_choice_survives_back_navigation(self):
         wizard = self.wizard()
         page = wizard.calibration_page

@@ -169,8 +169,107 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.addCleanup(review.close)
         recognizer.assert_not_called()
         self.assertTrue(review.save_button.isEnabled())
-        self.assertTrue(review.result_text.isHidden())
+        self.assertIn("preview is unavailable", review.result_text.toPlainText())
         self.assertEqual(review.save_button.text(), "Confirm story area")
+
+    def test_story_review_uses_frozen_full_frame_and_saves_only_after_confirmation(
+        self,
+    ):
+        background = Image.new("RGB", (800, 600), "navy")
+        dialogue = DialogRegion(0.1, 0.7, 0.8, 0.25)
+        crop = Image.new("RGB", (200, 40), "white")
+        recognize = Mock(
+            return_value=OCRResult(
+                "Narrator",
+                "A central story phrase.",
+                96,
+                "caption-ppocr",
+                1,
+                processed_image=crop,
+            )
+        )
+        save = Mock()
+        overlay = DialogRegionOverlay(
+            background=background,
+            story_dialogue_region=dialogue,
+            story_recognizer=recognize,
+            save_region=save,
+        )
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        overlay.resize(800, 600)
+        overlay._review_rectangle(QRect(0, 60, 800, 540))
+        review = overlay._review
+        self.wait_for(lambda: review.save_button.isEnabled())
+        frozen, selected, covered, cancelled = recognize.call_args.args
+        self.assertIsNot(frozen, background)
+        self.assertEqual(frozen.size, background.size)
+        self.assertEqual(selected, DialogRegion(0, 0.1, 1, 0.9))
+        self.assertEqual(covered, dialogue)
+        self.assertFalse(cancelled.is_set())
+        self.assertIn("A central story phrase.", review.result_text.toPlainText())
+        self.assertFalse(review.story_text_preview.isHidden())
+        self.assertEqual(review.story_text_preview.pixmap().size(), QSize(640, 128))
+        review.show_enlarged_capture()
+        self.assertIn("story area", review.capture_preview.windowTitle())
+        save.assert_not_called()
+        review.accept()
+        save.assert_called_once_with(selected)
+        self.assertTrue(cancelled.is_set())
+
+    def test_story_preview_explains_empty_ambiguous_and_failed_results(self):
+        for result, error, expected in (
+            (
+                OCRResult("Narrator", "", 0, "story-area-empty", 0),
+                None,
+                "No story phrase",
+            ),
+            (
+                OCRResult("Narrator", "", 0, "layout-pending", 0),
+                None,
+                "Multiple text blocks",
+            ),
+            (None, OSError("model unavailable"), "model unavailable"),
+        ):
+            with self.subTest(expected=expected):
+                review = CalibrationReviewDialog(
+                    Image.new("RGB", (800, 450)),
+                    story_area=True,
+                )
+                self.addCleanup(review.deleteLater)
+                self.addCleanup(review.close)
+                review._recognition_finished(result, error)
+                self.assertIn(expected, review.result_text.toPlainText())
+                self.assertTrue(review.save_button.isEnabled())
+                self.assertTrue(review.story_text_preview.isHidden())
+
+    def test_story_preview_cancel_discards_late_result_without_saving(self):
+        entered, release, cancelled = Event(), Event(), []
+        pool = QThreadPool()
+        self.enterContext(release_and_wait_for_pool(pool, release))
+
+        def recognize(stop):
+            cancelled.append(stop)
+            entered.set()
+            release.wait(3)
+            return OCRResult("Narrator", "Late phrase.", 99, "caption-ppocr", 1)
+
+        review = CalibrationReviewDialog(
+            Image.new("RGB", (800, 450)),
+            story_area=True,
+            story_preview=recognize,
+            thread_pool=pool,
+        )
+        self.addCleanup(review.deleteLater)
+        self.addCleanup(review.close)
+        self.wait_for(entered.is_set)
+        self.assertFalse(review.save_button.isEnabled())
+        review.reject()
+        self.assertTrue(cancelled[0].is_set())
+        release.set()
+        self.assertTrue(pool.waitForDone(3000))
+        self.application.processEvents()
+        self.assertNotIn("Late phrase.", review.result_text.toPlainText())
 
     def test_story_selection_must_keep_dialogue_and_only_save_after_confirmation(self):
         saved = []
@@ -421,7 +520,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay = DialogRegionOverlay(
             background=Image.new("RGB", (1051, 816)),
             capture_region=DialogRegion(0, 0, 1, 1),
-            story_dialogue_region=DialogRegion(200 / 1051, 555 / 816, 750 / 1051, 160 / 816),
+            story_dialogue_region=DialogRegion(
+                200 / 1051, 555 / 816, 750 / 1051, 160 / 816
+            ),
             reviewer=lambda _image: QDialog(),
             save_region=saved.append,
         )
@@ -429,7 +530,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.addCleanup(overlay.close)
         overlay.resize(1051, 816)
         overlay.show()
-        for name, value in (("Left", 80), ("Top", 220), ("Width", 869), ("Height", 500)):
+        for name, value in (
+            ("Left", 80),
+            ("Top", 220),
+            ("Width", 869),
+            ("Height", 500),
+        ):
             overlay.bounds_inputs[name].setValue(value)
 
         overlay._review_bounds()
@@ -443,7 +549,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay._review_bounds()
         self.assertIsNotNone(overlay._review)
         overlay._review.accept()
-        self.assertEqual(saved, [DialogRegion(80 / 1051, 220 / 816, 870 / 1051, 500 / 816)])
+        self.assertEqual(
+            saved, [DialogRegion(80 / 1051, 220 / 816, 870 / 1051, 500 / 816)]
+        )
 
     def test_one_selection_reviews_and_saves_the_whole_capture(self):
         save = Mock()

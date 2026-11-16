@@ -72,6 +72,9 @@ from vntts.window_capture import (
 )
 
 ReviewerFactory = Callable[[Image.Image], QDialog]
+StoryAreaRecognizer = Callable[
+    [Image.Image, DialogRegion, DialogRegion, Event], OCRResult
+]
 CALIBRATION_OCR_TIMEOUT_SECONDS = 10.0
 DIALOG_REGION_GUIDANCE = (
     "Allow for the tallest dialogue box: extra lines can move the speaker name upwards. "
@@ -175,9 +178,11 @@ class CalibrationReviewDialog(QDialog):
         recognizer: Callable[[Image.Image], OCRResult] = recognize_dialog_image_result,
         thread_pool: QThreadPool | None = None,
         story_area: bool = False,
+        story_preview: Callable[[Event], OCRResult] | None = None,
     ) -> None:
         super().__init__(parent)
         self._ocr_cancelled = Event()
+        self.story_area = story_area
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._recognition_finished)
         self.setWindowTitle("Confirm dialogue capture")
@@ -225,6 +230,7 @@ class CalibrationReviewDialog(QDialog):
             self.enlarge_button, alignment=Qt.AlignmentFlag.AlignRight
         )
         body_layout.addWidget(self.result_text, 1)
+        self._create_story_text_preview(body_layout)
         body_layout.addWidget(self.progress)
         self.body_scroll = QScrollArea()
         self.body_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -240,30 +246,71 @@ class CalibrationReviewDialog(QDialog):
         self.setTabOrder(self.save_button, self.retry_button)
         self.setTabOrder(self.retry_button, self.cancel_button)
         if story_area:
-            self.setWindowTitle("Confirm story area")
-            self.preview.setAccessibleName("Allowed story area preview")
-            note.setText(
-                "Only text fully inside this area may be discovered outside the dialogue box. "
-                "Keep menus, buttons and chapter labels outside it. "
-                'Use "Draw again" to adjust the area.'
-            )
-            self.result_text.hide()
-            self.progress.hide()
-            self.save_button.setText("Confirm story area")
-            self.save_button.setAccessibleName("Confirm story area")
-            self.save_button.setToolTip("Save the allowed story text area")
-            self.save_button.setEnabled(True)
+            self._configure_story_preview(note, story_preview)
         else:
             self._start_recognition(image.copy(), recognizer)
+
+    def _create_story_text_preview(self, body_layout: QVBoxLayout) -> None:
+        self.story_text_preview = QLabel()
+        self.story_text_preview.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.story_text_preview.setMinimumHeight(48)
+        self.story_text_preview.setMaximumHeight(140)
+        self.story_text_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.story_text_preview.setAccessibleName("Detected story text crop")
+        self.story_text_preview.setToolTip(
+            "The detected story text region from the captured image. "
+            "The model handles line preprocessing internally."
+        )
+        self.story_text_preview.hide()
+        self.story_input_label = QLabel("Detected story text crop")
+        self.story_input_label.setWordWrap(True)
+        self.story_input_label.hide()
+        body_layout.addWidget(self.story_input_label)
+        body_layout.addWidget(self.story_text_preview)
+
+    def _configure_story_preview(
+        self, note: QLabel, story_preview: Callable[[Event], OCRResult] | None
+    ) -> None:
+        self.setWindowTitle("Confirm story area")
+        self.resize(760, 560)
+        self.preview.setAccessibleName("Allowed story area preview")
+        note.setText(
+            "Only text fully inside this area may be discovered outside the dialogue box. "
+            "Keep menus, buttons and chapter labels outside it. "
+            'Use "Draw again" to adjust the area.'
+        )
+        self.result_text.setAccessibleName("Story area recognition result")
+        self.result_text.setPlainText("Looking for story text in this frozen image...")
+        self.save_button.setText("Confirm story area")
+        self.save_button.setAccessibleName("Confirm story area")
+        self.save_button.setToolTip("Save the allowed story text area")
+        if story_preview is None:
+            self.progress.hide()
+            self.result_text.setPlainText(
+                "Story text preview is unavailable. You can still confirm the allowed area."
+            )
+            self.save_button.setEnabled(True)
+        else:
+            self.runner.start(story_preview, self._ocr_cancelled)
 
     def show_enlarged_capture(self) -> None:
         if self.capture_preview is None:
             dialog = QDialog(self)
-            dialog.setWindowTitle("Captured dialogue - full size")
+            dialog.setWindowTitle(
+                "Allowed story area - full size"
+                if self.story_area
+                else "Captured dialogue - full size"
+            )
             dialog.resize(900, 540)
             image = QLabel()
             image.setPixmap(self.preview_pixmap)
-            image.setAccessibleName("Full-size captured dialogue image")
+            image.setAccessibleName(
+                "Full-size allowed story area image"
+                if self.story_area
+                else "Full-size captured dialogue image"
+            )
             scroll = QScrollArea()
             scroll.setAccessibleName("Full-size capture scroll area")
             scroll.setWidget(image)
@@ -359,6 +406,9 @@ class CalibrationReviewDialog(QDialog):
 
     def _recognition_finished(self, result: object, error: Exception | None) -> None:
         self.progress.hide()
+        if self.story_area:
+            self._story_recognition_finished(result, error)
+            return
         if error is not None:
             self.result_text.setPlainText(
                 f"OCR preview failed: {error}\n\nDraw again, or save the selected area without recognized text."
@@ -395,6 +445,43 @@ class CalibrationReviewDialog(QDialog):
         self.save_button.setAccessibleName(self.save_button.text())
         self.save_button.setEnabled(True)
 
+    def _story_recognition_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
+        if error is not None:
+            message = f"Story text preview failed: {error}"
+        elif not isinstance(result, OCRResult):
+            message = "Story text preview returned an invalid result."
+        elif result.profile == "layout-pending":
+            message = (
+                "No single readable story phrase was selected. Multiple text blocks or "
+                "low recognition confidence require waiting during Reading."
+            )
+        elif not result.text.strip():
+            message = (
+                "No story phrase was found outside the dialogue box in this frozen image. "
+                "Try again while a central phrase is visible."
+            )
+        else:
+            message = f"Story text:\n{result.text}\n\nRecognition confidence: {result.confidence:.1f}%"
+            if result.processed_image is not None:
+                pixmap = pixmap_from_pil(result.processed_image)
+                self.story_text_preview.setPixmap(
+                    pixmap.scaled(
+                        640,
+                        140,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                self.story_text_preview.show()
+                self.story_input_label.show()
+        self.result_text.setPlainText(
+            message
+            + "\n\nConfirm saves only the allowed area. It does not start reading."
+        )
+        self.save_button.setEnabled(True)
+
     def _cancel_recognition(self) -> None:
         self._ocr_cancelled.set()
         self.runner.cancel()
@@ -421,6 +508,7 @@ class DialogRegionOverlay(QWidget):
         save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_dialogue_region: DialogRegion | None = None,
+        story_recognizer: StoryAreaRecognizer | None = None,
     ) -> None:
         super().__init__()
         platform = sys.platform if platform is None else platform
@@ -432,6 +520,7 @@ class DialogRegionOverlay(QWidget):
             pixmap_from_pil(background) if background is not None else None
         )
         self.story_dialogue_region = story_dialogue_region
+        self.story_recognizer = story_recognizer
         self.reviewer = reviewer or (
             (lambda image: CalibrationReviewDialog(image, story_area=True))
             if story_dialogue_region is not None
@@ -649,7 +738,7 @@ class DialogRegionOverlay(QWidget):
                 return
             crop = region.crop(self.background)
             self.hide()
-            review = self.reviewer(crop)
+            review = self._create_review(crop, region)
             review.setParent(self, review.windowFlags())
             self._review = review
             review.finished.connect(
@@ -669,6 +758,20 @@ class DialogRegionOverlay(QWidget):
                 else "dialogue area"
             )
             self._selection_failed(f"Unable to review the {area}: {error}")
+
+    def _create_review(self, crop: Image.Image, region: DialogRegion) -> QDialog:
+        recognize = self.story_recognizer
+        dialogue = self.story_dialogue_region
+        if recognize is None or dialogue is None or self.background is None:
+            return self.reviewer(crop)
+        frozen = self.background.copy()
+        return CalibrationReviewDialog(
+            crop,
+            story_area=True,
+            story_preview=lambda cancelled: recognize(
+                frozen, region, dialogue, cancelled
+            ),
+        )
 
     def _complete_review(
         self, source: QDialog, region: DialogRegion, result: int
@@ -939,6 +1042,7 @@ def show_calibration_overlay(
     save_region: Callable[[DialogRegion], None] | None = None,
     capture_region: DialogRegion | None = None,
     story_dialogue_region: DialogRegion | None = None,
+    story_recognizer: StoryAreaRecognizer | None = None,
 ) -> DialogRegionOverlay:
     if background is None:
         if geometry is not None:
@@ -951,6 +1055,7 @@ def show_calibration_overlay(
         save_region=save_region,
         capture_region=capture_region,
         story_dialogue_region=story_dialogue_region,
+        story_recognizer=story_recognizer,
     )
     if geometry is None:
         overlay.showFullScreen()

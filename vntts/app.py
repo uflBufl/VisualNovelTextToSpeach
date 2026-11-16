@@ -3702,6 +3702,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     ),
                     capture_region=self.controller._story_region() or region,
                     story_dialogue_region=region,
+                    story_recognizer=self.controller.preview_story_area,
                 )
             else:
                 overlay = show_calibration_overlay(
@@ -3805,6 +3806,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
             self.diagnostics_dialog.calibration_requested.connect(self.calibrate)
+            self.diagnostics_dialog.story_area_requested.connect(
+                self.calibrate_story_area
+            )
             self.diagnostics_dialog.remediation_requested.connect(
                 self._run_diagnostics_remediation
             )
@@ -3949,6 +3953,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             capture_region=self.controller._capture_region(),
             story_region=self.controller._story_region(),
+            story_recognizer=lambda image, story, dialogue, cancelled: (
+                self.controller.preview_story_area(
+                    image,
+                    story,
+                    dialogue,
+                    cancelled,
+                    minimum_confidence=wizard.draft_settings.ocr_minimum_confidence,
+                )
+            ),
         )
         self.onboarding_wizard = wizard
         self._onboarding_preview_settings = None

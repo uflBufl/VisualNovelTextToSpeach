@@ -24,6 +24,7 @@ from vntts.ui_text import copy_text_button, make_text_copyable
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
     calibration_requested = Signal()
+    story_area_requested = Signal()
     remediation_requested = Signal(str)
     closed = Signal()
 
@@ -34,6 +35,8 @@ class DiagnosticsDialog(QDialog):
         self.setWindowTitle("Live diagnostics")
         self.resize(700, 540)
         self.refresh_in_flight = False
+        self.calibration_pending = False
+        self.story_profile = False
         self.refresh_timeout_ms = refresh_timeout_ms
         self.refresh_generation = 0
         self.concealed_for_capture = False
@@ -83,12 +86,16 @@ class DiagnosticsDialog(QDialog):
         self.enlarge_speaker_button.setEnabled(False)
         self.enlarge_speaker_button.clicked.connect(self.enlarge_speaker_image)
         self.enlarge_speaker_processed_button = self.enlarge_speaker_button
-        self.calibrate_button = QPushButton("Change capture area...")
+        self.calibrate_button = QPushButton("Change dialogue area...")
         set_action_icon(self.calibrate_button, "scan")
         self.calibrate_button.setAccessibleName(
             "Change the capture area containing speaker and dialogue"
         )
         self.calibrate_button.clicked.connect(self.calibration_requested.emit)
+        self.story_area_button = QPushButton("Set / change story area...")
+        set_action_icon(self.story_area_button, "scan")
+        self.story_area_button.setAccessibleName("Set or change the story text area")
+        self.story_area_button.clicked.connect(self.story_area_requested.emit)
 
     def _create_text_fields(self) -> None:
         self.speaker = QLabel("-")
@@ -208,6 +215,7 @@ class DiagnosticsDialog(QDialog):
         capture_header.addWidget(QLabel("Captured image"))
         capture_header.addStretch()
         capture_header.addWidget(self.calibrate_button)
+        capture_header.addWidget(self.story_area_button)
         capture_header.addWidget(self.enlarge_button)
         self._create_technical_details()
         body = QWidget()
@@ -225,11 +233,13 @@ class DiagnosticsDialog(QDialog):
 
     def _create_technical_details(self) -> None:
         processed_header = QHBoxLayout()
-        processed_header.addWidget(QLabel("Dialogue OCR image"))
+        self.processed_label = QLabel("Dialogue OCR image")
+        processed_header.addWidget(self.processed_label)
         processed_header.addStretch()
         processed_header.addWidget(self.enlarge_processed_button)
         speaker_processed_header = QHBoxLayout()
-        speaker_processed_header.addWidget(QLabel("Speaker OCR image"))
+        self.speaker_processed_label = QLabel("Speaker OCR image")
+        speaker_processed_header.addWidget(self.speaker_processed_label)
         speaker_processed_header.addStretch()
         speaker_processed_header.addWidget(self.enlarge_speaker_button)
         self.processed_preview.setToolTip(
@@ -283,10 +293,17 @@ class DiagnosticsDialog(QDialog):
         preview.setAutoFillBackground(True)
         return preview
 
+    def _update_action_state(self) -> None:
+        enabled = not self.calibration_pending and not self.refresh_in_flight
+        self.calibrate_button.setEnabled(enabled)
+        self.story_area_button.setEnabled(enabled)
+        self.refresh_button.setEnabled(enabled)
+
     def set_calibration_pending(self, pending: bool) -> None:
-        self.calibrate_button.setEnabled(not pending)
+        self.calibration_pending = pending
+        self._update_action_state()
         self.calibrate_button.setText(
-            "Stopping reading..." if pending else "Change capture area..."
+            "Stopping reading..." if pending else "Change dialogue area..."
         )
         self.calibrate_button.setAccessibleName(
             "Stopping reading before capture calibration"
@@ -299,13 +316,13 @@ class DiagnosticsDialog(QDialog):
         QTimer.singleShot(0, self, self._scale_preview)
 
     def request_refresh(self) -> None:
-        if self.refresh_in_flight:
+        if self.refresh_in_flight or self.calibration_pending:
             return
         self.set_warning("")
         self.refresh_in_flight = True
         self.refresh_generation += 1
         generation = self.refresh_generation
-        self.refresh_button.setEnabled(False)
+        self._update_action_state()
         self.refresh_status.setText(
             "Capturing current dialogue... "
             + (
@@ -340,7 +357,7 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
-        self.refresh_button.setEnabled(True)
+        self._update_action_state()
         self.refresh_status.setText(message)
         self.restore_after_capture()
 
@@ -360,6 +377,7 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
+        self._update_action_state()
         self.concealed_for_capture = False
         self.closed.emit()
         super().done(result)
@@ -382,6 +400,33 @@ class DiagnosticsDialog(QDialog):
         finally:
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, previous)
 
+    def _set_recognition_layout(self, story_profile: bool) -> None:
+        self.story_profile = story_profile
+        self.speaker_processed_label.setVisible(not self.story_profile)
+        self.enlarge_speaker_button.setVisible(not self.story_profile)
+        self.speaker_processed_preview.setVisible(not self.story_profile)
+        self.processed_label.setText(
+            "Detected story text crop" if self.story_profile else "Dialogue OCR image"
+        )
+        self.speaker_processed_label.setText(
+            "Speaker image" if self.story_profile else "Speaker OCR image"
+        )
+        self.processed_preview.setToolTip(
+            "Detected story text crop; the model handles preprocessing internally."
+            if self.story_profile
+            else "The OCR input after preprocessing and any dialogue crop."
+        )
+        self.enlarge_button.setAccessibleName(
+            "Enlarge captured story region"
+            if self.story_profile
+            else "Enlarge captured dialogue region"
+        )
+        self.enlarge_processed_button.setAccessibleName(
+            "Enlarge detected story text crop"
+            if self.story_profile
+            else "Enlarge processed dialogue OCR image"
+        )
+
     def set_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         source_pixmap = (
             pixmap_from_pil(snapshot.image) if snapshot.image is not None else None
@@ -391,6 +436,7 @@ class DiagnosticsDialog(QDialog):
         )
         self._finish_refresh(f"Showing capture from {self.last_capture_time}.")
         self.set_warning("")
+        self._set_recognition_layout(snapshot.preprocessing_profile == "caption-ppocr")
         self.speaker.setText(snapshot.character or "Narrator")
         self.speaker_note.setText(snapshot.speaker_note)
         self.speaker_note.setVisible(bool(snapshot.speaker_note))
@@ -429,7 +475,9 @@ class DiagnosticsDialog(QDialog):
             if snapshot.processed_image is not None
             else None
         )
-        speaker_image = getattr(snapshot, "speaker_image", None)
+        speaker_image = (
+            None if self.story_profile else getattr(snapshot, "speaker_image", None)
+        )
         self.speaker_processed_pixmap = (
             pixmap_from_pil(speaker_image) if speaker_image is not None else None
         )
@@ -444,12 +492,16 @@ class DiagnosticsDialog(QDialog):
         if self.processed_pixmap is None:
             self.processed_preview.clear()
             self.processed_preview.setText(
-                "No processed OCR image is available for this snapshot."
+                "No detected story text image is available for this snapshot."
+                if self.story_profile
+                else "No processed OCR image is available for this snapshot."
             )
         if self.speaker_processed_pixmap is None:
             self.speaker_processed_preview.clear()
             self.speaker_processed_preview.setText(
-                "No processed speaker OCR image is available for this snapshot."
+                "No speaker image is available for story text."
+                if self.story_profile
+                else "No processed speaker OCR image is available for this snapshot."
             )
         self._scale_preview()
 
@@ -525,9 +577,17 @@ class DiagnosticsDialog(QDialog):
         if speaker:
             title = "Processed speaker OCR image - enlarged"
         elif processed:
-            title = "Processed OCR dialogue image - enlarged"
+            title = (
+                "Detected story text crop - enlarged"
+                if self.story_profile
+                else "Processed OCR dialogue image - enlarged"
+            )
         else:
-            title = "Captured dialogue region - enlarged"
+            title = (
+                "Captured story region - enlarged"
+                if self.story_profile
+                else "Captured dialogue region - enlarged"
+            )
         dialog.setWindowTitle(title)
         dialog.resize(900, 540)
         image = QLabel()
