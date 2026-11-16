@@ -20,6 +20,7 @@ from vntts.settings import (
 )
 
 if TYPE_CHECKING:
+    from vntts.ocr import DialogRegion
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 
 
@@ -137,7 +138,13 @@ class ConfigurationApplyMixin:
 
         def _sync_active_profile(self) -> bool: ...
 
-        def _save_settings_candidate(self, candidate: AppSettings) -> Path: ...
+        def _save_settings_candidate(
+            self,
+            candidate: AppSettings,
+            *,
+            dialog_region: DialogRegion | None = None,
+            story_region: DialogRegion | None = None,
+        ) -> Path: ...
 
         def _runtime_settings(
             self, settings: AppSettings | None = None

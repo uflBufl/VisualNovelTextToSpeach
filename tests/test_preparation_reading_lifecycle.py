@@ -18,6 +18,7 @@ from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.game_pack import import_game_pack  # noqa: E402
+from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 
 
@@ -79,7 +80,10 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.enterContext(
             patch.dict(
                 os.environ,
-                {"VNTTS_SETTINGS_FILE": str(self.root / "settings.json")},
+                {
+                    "VNTTS_SETTINGS_FILE": str(self.root / "settings.json"),
+                    "VNTTS_DIALOG_REGION_FILE": str(self.root / "region.json"),
+                },
             )
         )
         self.enterContext(patch("vntts.app.check_audio_runtime"))
@@ -194,6 +198,8 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         pool = ManualThreadPool()
         tray.onboarding_test_runner.thread_pool = pool
         tray.configuration_runner.thread_pool = pool
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.show_page(len(wizard.pages) - 1)
         wizard.test_page.run_test()
         pool.run_next()
@@ -221,7 +227,11 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.assertEqual(panel.settings.speech_rate_percent, 100)
         self.assertTrue(tray.settings.onboarding_completed)
         persisted = load_app_settings(self.root / "settings.json", environment={})
-        for name in ("speech_rate_percent", "force_live_narrator", "audio_source_policy"):
+        for name in (
+            "speech_rate_percent",
+            "force_live_narrator",
+            "audio_source_policy",
+        ):
             self.assertEqual(getattr(persisted, name), getattr(saved, name))
         self.assertIsNone(persisted.generated_audio_manifest)
         self.assertEqual(
@@ -232,7 +242,9 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         controller.toggle_live.assert_not_called()
         with (
             patch.object(tray, "schedule_hotkeys"),
-            patch.object(tray, "_start_live_with_available_scope", return_value=True) as start,
+            patch.object(
+                tray, "_start_live_with_available_scope", return_value=True
+            ) as start,
         ):
             tray.toggle_live()
         start.assert_called_once_with()
@@ -242,10 +254,14 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         )
         self.assertTrue(panel.generating)
 
-    def test_cancelled_or_unsaved_setup_restores_runtime_and_leaves_generation_running(self):
+    def test_cancelled_or_unsaved_setup_restores_runtime_and_leaves_generation_running(
+        self,
+    ):
         for outcome in ("cancel", "save-error"):
             with self.subTest(outcome=outcome):
-                tray, controller, panel, saved, wizard, pool = self._setup_during_generation()
+                tray, controller, panel, saved, wizard, pool = (
+                    self._setup_during_generation()
+                )
                 with patch.object(
                     tray, "_save_settings_candidate", side_effect=OSError("disk full")
                 ):
@@ -264,10 +280,14 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
-    def test_setup_tracks_finished_story_order_and_keeps_the_same_generation_source(self):
+    def test_setup_tracks_finished_story_order_and_keeps_the_same_generation_source(
+        self,
+    ):
         for completed in (False, True):
             with self.subTest(completed=completed):
-                tray, controller, panel, _saved, wizard, pool = self._setup_during_generation()
+                tray, controller, panel, _saved, wizard, pool = (
+                    self._setup_during_generation()
+                )
                 sequence = self.root / "finished-sequence.json"
                 sequence.write_text("{}")
                 panel.current_settings = panel.current_settings.updated(
@@ -281,7 +301,9 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                     pool.run_next()
                     self.application.processEvents()
                 self.assertEqual(controller.settings.live_sequence_plan, str(sequence))
-                self.assertEqual(tray._runtime_settings().live_sequence_plan, str(sequence))
+                self.assertEqual(
+                    tray._runtime_settings().live_sequence_plan, str(sequence)
+                )
                 self.assertEqual(panel.has_pending_work(), not completed)
                 controller.speech_backend.progress_line_observed("line", "hash")
                 self.application.processEvents()
@@ -304,9 +326,13 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(panel.observations, [])
 
-    def test_setup_from_reading_is_available_during_generation_and_defers_activation(self):
+    def test_setup_from_reading_is_available_during_generation_and_defers_activation(
+        self,
+    ):
         tray, _controller, panel, _saved = self._tray()
-        tray.settings = tray.settings.updated(onboarding_completed=False, game_window_title="Game")
+        tray.settings = tray.settings.updated(
+            onboarding_completed=False, game_window_title="Game"
+        )
         tray.dashboard.set_configuration(tray.settings)
         tray.set_ready(False)
         tray.dashboard.prepare_reading_button.click()
@@ -342,7 +368,9 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                     panel.current_settings = None
                 with patch(
                     "vntts.app.check_audio_runtime",
-                    side_effect=RuntimeError("audio missing") if blocker == "audio" else None,
+                    side_effect=RuntimeError("audio missing")
+                    if blocker == "audio"
+                    else None,
                 ):
                     tray._read_prepared_story(True)
                 self.assertIn(reason, panel.reading_status.text())

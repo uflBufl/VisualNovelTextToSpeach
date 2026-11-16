@@ -2877,7 +2877,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return
         if self.narrator_dialog is not None:
-            self._set_reading_status("Save or cancel your voice selection before reading.")
+            self._set_reading_status(
+                "Save or cancel your voice selection before reading."
+            )
             self.dashboard.show_voices()
             return
         if not self._audio_runtime_available():
@@ -2924,8 +2926,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if (
             runtime_settings is not None
             and isinstance(self.controller.settings, AppSettings)
-            and not restart_required_setting_changes(self.controller.settings, runtime_settings)
-            and self.controller.settings.live_sequence_mode == runtime_settings.live_sequence_mode
+            and not restart_required_setting_changes(
+                self.controller.settings, runtime_settings
+            )
+            and self.controller.settings.live_sequence_mode
+            == runtime_settings.live_sequence_mode
             and self._attach_preparation_reading(
                 runtime_settings, start_live=start_live, sequence_reason=sequence_reason
             )
@@ -2949,12 +2954,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _set_reading_status(self, message: str) -> None:
+        if self.settings.onboarding_completed and self.settings.discover_text_layouts:
+            try:
+                story_area = self.controller._story_region()
+            except CaptureRegionNeedsCalibration:
+                story_area = None
+            if story_area is None:
+                message += (
+                    " Only the dialogue area is configured. Use Set story area in Settings "
+                    "to include central story text."
+                )
         self.set_status(message)
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.set_reading_status(message)
 
     def _attach_preparation_reading(
-        self, runtime_settings: AppSettings, *, start_live: bool, sequence_reason: SequenceUnavailableReason | None = None
+        self,
+        runtime_settings: AppSettings,
+        *,
+        start_live: bool,
+        sequence_reason: SequenceUnavailableReason | None = None,
     ) -> bool:
         generation = self._begin_controller_lifecycle()
         applied = self.session_owner.attach(generation, runtime_settings)
@@ -2965,7 +2984,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "Unable to connect prepared audio. Select Read to try again."
             )
             return True
-        self._retain_preparation_reading(runtime_settings, sequence_reason=sequence_reason)
+        self._retain_preparation_reading(
+            runtime_settings, sequence_reason=sequence_reason
+        )
         if self.controller.is_ready:
             self._controller_ready = True
             backend = getattr(self.controller, "speech_backend", None)
@@ -3891,7 +3912,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
 
     def _run_diagnostics_remediation(self, remediation: str) -> None:
-        if remediation == "macos-permissions":
+        if remediation == "story-area":
+            self.calibrate_story_area()
+        elif remediation == "macos-permissions":
             self.open_macos_permissions()
         elif remediation == "settings":
             self.open_settings()
@@ -3921,8 +3944,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         wizard = OnboardingWizard(
             self.settings,
             reading_setup=True,
-            save_region=self._save_calibration_region,
+            save_region=lambda region: self._save_setup_capture_regions(
+                wizard.draft_settings, region, None
+            ),
             capture_region=self.controller._capture_region(),
+            story_region=self.controller._story_region(),
         )
         self.onboarding_wizard = wizard
         self._onboarding_preview_settings = None
@@ -4632,6 +4658,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.open_macos_permissions
             )
             self.readiness_dialog.calibration_requested.connect(self.calibrate)
+            self.readiness_dialog.story_area_requested.connect(
+                self.calibrate_story_area
+            )
             self.readiness_dialog.voices_requested.connect(self.open_speaker_mapping)
             self.readiness_dialog.reading_requested.connect(
                 self._open_reading_from_readiness
@@ -4856,7 +4885,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if error is not None:
             detail = str(error).strip() or (
                 "Timed out while waiting for reading to stop. Please try again."
-                if isinstance(error, TimeoutError) else type(error).__name__
+                if isinstance(error, TimeoutError)
+                else type(error).__name__
             )
             message = f"Unable to stop reading: {detail}"
             self.set_status(message)

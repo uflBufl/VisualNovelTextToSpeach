@@ -40,6 +40,7 @@ from vntts.ui_text import copy_text_button, make_text_copyable, shortcut_tooltip
 
 
 class ReadinessDialog(QDialog):
+    story_area_requested = Signal()
     reading_requested = Signal()
     settings_requested = Signal()
     permissions_requested = Signal()
@@ -443,6 +444,7 @@ class ReadinessDialog(QDialog):
             )
             return
         actions = {
+            "story-area": ("Set story area", "scan"),
             "settings": ("Open Settings", "settings"),
             "permissions": ("Open Permissions", "key-round"),
             "calibration": ("Open Calibration", "scan"),
@@ -470,7 +472,9 @@ class ReadinessDialog(QDialog):
         if result.status == "warning":
             blocker = any(item.status == "error" for item in self._results)
             self.remediation_reason.setText(
-                f"{result.name} has a fallback. "
+                result.message
+                if remediation == "story-area"
+                else f"{result.name} has a fallback. "
                 + (
                     "Resolve the errors before reading. "
                     if blocker
@@ -498,6 +502,7 @@ class ReadinessDialog(QDialog):
                 )
             return
         signals = {
+            "story-area": self.story_area_requested,
             "settings": self.settings_requested,
             "permissions": self.permissions_requested,
             "calibration": self.calibration_requested,

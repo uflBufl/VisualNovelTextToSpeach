@@ -22,6 +22,10 @@ _DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
 class StaleDocumentError(OSError):
     """A document changed since it was loaded and must be reopened."""
 
+    def __init__(self, message: str, *, publication_started: bool = False) -> None:
+        super().__init__(message)
+        self.publication_started = publication_started
+
 
 def read_versioned_json_snapshot(
     path: str | Path,
@@ -161,20 +165,49 @@ def write_versioned_json_if_unchanged(
     document_name: str,
 ) -> bytes:
     """Reject stale whole-document writes while keeping atomic publication."""
+    return _write_encoded_json_if_unchanged(
+        path,
+        _encode_versioned_json(schema_version, fields),
+        revision=revision,
+        document_name=document_name,
+    )
+
+
+def write_json_if_unchanged(
+    path: Path,
+    fields: Mapping[str, object],
+    *,
+    revision: bytes | None,
+    document_name: str,
+) -> bytes:
+    """CAS-publish a JSON object, including legacy documents without a schema field."""
+    raw = (json.dumps(dict(fields), ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    return _write_encoded_json_if_unchanged(
+        path, raw, revision=revision, document_name=document_name
+    )
+
+
+def _write_encoded_json_if_unchanged(
+    path: Path, raw: bytes, *, revision: bytes | None, document_name: str
+) -> bytes:
     lock_path = path.with_name(f"{path.name}.lock")
     with exclusive_advisory_lock(lock_path, blocking=True):
         if file_revision(path) != revision:
             raise StaleDocumentError(
                 f"{document_name} changed on disk; reopen before saving"
             )
-        raw = _encode_versioned_json(schema_version, fields)
         published_revision = sha256(raw).digest()
         atomic_write_bytes(path, raw)
         updated = file_revision(path)
         if updated is None:
-            raise OSError(f"{document_name} disappeared after saving")
+            raise StaleDocumentError(
+                f"{document_name} disappeared after saving", publication_started=True
+            )
         if updated != published_revision:
             raise StaleDocumentError(
-                f"{document_name} changed while saving; reopen before saving"
+                f"{document_name} changed while saving; reopen before saving",
+                publication_started=True,
             )
         return published_revision

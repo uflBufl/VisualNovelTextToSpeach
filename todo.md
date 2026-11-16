@@ -1,5 +1,15 @@
 # TODO
 
+## Active - Support 29 native Reading qualification
+
+- [ ] On Windows, confirm separate Dialogue and Story areas during setup and
+      read central story phrases in the selected game window. Verify prepared
+      dialogue continues when optional speaker announcements lack cloning access;
+      changed voice settings must allow retry. Check recovery of an already fully
+      observed current line after one missing edge glyph, while genuinely
+      unreadable frames keep waiting and Stop remains available. Portable tests
+      and the macOS setup preview do not qualify native capture or model access.
+
 ## Active - Windows empty capture frame pool
 
 - [ ] On Windows, rebuild and qualify Reading setup, calibration and continued

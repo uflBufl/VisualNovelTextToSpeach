@@ -754,6 +754,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.diagnostics_page.complete)
         wizard.next_page()
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.next_page()
         wizard.test_page.set_result(True, "Spoke one line")
         wizard.previous_page()
@@ -907,6 +908,8 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.accept()
         self.assertFalse(wizard.settings().onboarding_completed)
 
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.1, 0.2, 0.8, 0.7))
         wizard.test_page.set_result(True, "Success")
         wizard.accept()
 
@@ -944,6 +947,12 @@ class OnboardingWizardTest(unittest.TestCase):
         ):
             with self.subTest(successful=successful, message=message):
                 wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+                wizard.calibration_page.finish_calibration(
+                    DialogRegion(0.1, 0.7, 0.8, 0.2)
+                )
+                wizard.calibration_page.finish_story_area(
+                    DialogRegion(0.05, 0.1, 0.9, 0.8)
+                )
                 wizard.show_page(len(wizard.pages) - 1)
                 page = wizard.test_page
                 page.run_test()
@@ -1024,6 +1033,7 @@ class OnboardingWizardTest(unittest.TestCase):
         first = DialogRegion(0.1, 0.2, 0.4, 0.16)
         changed = DialogRegion(0.1, 0.4, 0.4, 0.2)
         wizard.calibration_page.finish_calibration(first)
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.show_page(len(wizard.pages) - 1)
         wizard.test_page.set_result(True, "Spoke from first area")
         wizard.previous_page()
@@ -1159,6 +1169,9 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIs(wizard.pages[wizard.current_page_index], wizard.calibration_page)
         self.assertTrue(wizard.calibration_page.button.isDefault())
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertTrue(wizard.calibration_page.story_button.isDefault())
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.8, 0.8))
         self.assertTrue(wizard.next_button.isDefault())
         wizard.next_page()
         requests = []
@@ -1706,6 +1719,8 @@ class OnboardingWizardTest(unittest.TestCase):
 
     def test_successful_test_has_one_explicit_finish_handoff(self):
         wizard = OnboardingWizard(AppSettings())
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.show_page(len(wizard.pages) - 1)
 
         wizard.test_page.set_result(True, "Success. Recognized Rhiannon: Hello.")
@@ -1754,6 +1769,7 @@ class OnboardingWizardTest(unittest.TestCase):
 
         wizard.next_page()
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.8, 0.8))
         wizard.next_page()
         wizard.test_page.button.click()
         self.assertEqual(len(test_requests), 1)

@@ -3103,6 +3103,37 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_reading_status_explains_missing_story_permission_and_clears_after_selection(
+        self,
+    ):
+        from vntts.ocr import save_story_region
+
+        tray = TrayApplication(
+            self.application,
+            AppSettings(
+                onboarding_completed=True,
+                capture_mode="window",
+                game_window_title="Fixture",
+            ),
+            controller_factory=lambda settings, **options: AppController(
+                settings, tts_factory=Mock(), **options
+            ),
+        )
+        tray._set_reading_status("Reading is ready.")
+        self.assertIn("Set story area", tray.dashboard.status.text())
+        self.assertIn("central story text", tray.dashboard.status.text())
+        region = DialogRegion(0, 0, 1, 1)
+        save_dialog_region(region, Path(os.environ["VNTTS_DIALOG_REGION_FILE"]))
+        save_story_region(
+            region,
+            Path(os.environ["VNTTS_DIALOG_REGION_FILE"]),
+            capture_mode="window",
+            game_window_title="Fixture",
+        )
+        tray._set_reading_status("Reading is ready.")
+        self.assertEqual(tray.dashboard.status.text(), "Reading is ready.")
+        tray.shutdown()
+
     def test_uncertain_ocr_keeps_last_dialogue_and_reports_only_status(self):
         tray = TrayApplication(
             self.application,
@@ -11169,10 +11200,10 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertIsNotNone(wizard)
         self.assertTrue(wizard.isVisible())
-        self.assertEqual(
-            wizard.calibration_page.save_region,
-            tray_application._save_calibration_region,
-        )
+        region = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        with patch.object(tray_application, "_save_setup_capture_regions") as save:
+            wizard.calibration_page.save_region(region)
+        save.assert_called_once_with(wizard.draft_settings, region, None)
         self.assertEqual(
             wizard.calibration_page.capture_region,
             tray_application.controller._capture_region.return_value,
@@ -11225,6 +11256,8 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.run_onboarding()
         wizard = tray_application.onboarding_wizard
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.test_page.set_result(True, "Success. Recognized Rhiannon: Hello.")
 
         with patch(
@@ -11317,6 +11350,8 @@ class TrayApplicationTest(unittest.TestCase):
         return saved, controller, tray, pool, wizard
 
     def _complete_onboarding_preview(self, wizard, pool):
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.show_page(len(wizard.pages) - 1)
         wizard.test_page.run_test()
         pool.run_next()

@@ -2041,6 +2041,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 {
                     "manifest.json",
                     "sanitized-settings.json",
+                    "capture-configuration.json",
                     "active-content.json",
                     "pregeneration.json",
                     "runtime-events.json",

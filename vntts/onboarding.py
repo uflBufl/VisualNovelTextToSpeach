@@ -16,6 +16,8 @@ from vntts.hotkeys import (
 from vntts.macos import get_macos_permission_status
 from vntts.model_assets import ModelAssetManager
 from vntts.native_capture import SOURCE_BUILD_COMMAND, probe_capture_worker
+from vntts.ocr import CaptureRegionNeedsCalibration
+from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.release_backends import packaged_speech_backend_available
 from vntts.runtime_preparation import (
     Cancellation,
@@ -62,6 +64,7 @@ class OnboardingDiagnostics:
         model_path_resolver: Callable[[str], str | Path] | None = None,
         permission_status_provider: Callable[[], Mapping[str, bool | None]]
         | None = None,
+        profile_store_loader: Callable[[], GameProfileStore] | None = None,
     ) -> None:
         self.tesseract_probe = tesseract_probe
         self.audio_probe = audio_probe or probe_audio_output
@@ -70,6 +73,7 @@ class OnboardingDiagnostics:
         self.permission_status_provider = (
             permission_status_provider or get_macos_permission_status
         )
+        self.profile_store_loader = profile_store_loader or GameProfileStore.load
 
     def run(
         self, settings: AppSettings, *, cancellation: Cancellation = None
@@ -94,6 +98,7 @@ class OnboardingDiagnostics:
             lambda: self._check_audio(cancellation=cancellation),
             lambda: self._check_model(settings, cancellation=cancellation),
             lambda: self._check_voice_manifest(settings, cancellation=cancellation),
+            lambda: self._check_story_area(settings),
         ):
             check_runtime_cancelled(cancellation)
             results.append(probe())
@@ -105,6 +110,38 @@ class OnboardingDiagnostics:
         if permission_result is not None:
             results.insert(3, permission_result)
         return tuple(results)
+
+    def _check_story_area(self, settings: AppSettings) -> DiagnosticResult:
+        if not settings.discover_text_layouts:
+            return DiagnosticResult(
+                "Story area",
+                "ok",
+                "Text layout discovery is disabled; only the Dialogue area is read.",
+            )
+        try:
+            region = resolve_story_region(settings, self.profile_store_loader())
+        except CaptureRegionNeedsCalibration:
+            return DiagnosticResult(
+                "Story area",
+                "warning",
+                "Saved capture areas need recalibration. Set Story area for the current game window. "
+                "Dialogue-only reading remains available after Dialogue area calibration.",
+                "story-area",
+            )
+        if region is None:
+            return DiagnosticResult(
+                "Story area",
+                "warning",
+                "Text layout discovery is enabled, but no permitted Story area contains the Dialogue "
+                "area for the current capture target. Story phrases outside Dialogue area cannot be read. "
+                "Set Story area to include all story text; Dialogue-only reading remains available.",
+                "story-area",
+            )
+        return DiagnosticResult(
+            "Story area",
+            "ok",
+            "Story area is permitted for this capture target and contains Dialogue area.",
+        )
 
     def moss_installation_space(
         self, settings: AppSettings

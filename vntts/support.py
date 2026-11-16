@@ -35,9 +35,15 @@ from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
+from vntts.ocr import (
+    CAPTURE_COORDINATE_SPACE,
+    CaptureRegionNeedsCalibration,
+    get_dialog_region,
+)
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION, OCRReviewMetadata
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.path_safety import open_regular_binary
+from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.settings import AppSettings
 from vntts.support_timeline_acquisition import (
     INPUT_DIAGNOSTIC_FIELDS,
@@ -2815,6 +2821,7 @@ class SupportBundleBuilder:
         audio_lifecycle: AudioLifecycleLog | None = None,
         voice_library: VoiceLibrary | None = None,
         diagnostic_session: "ReadingDiagnosticSession | SavedDiagnosticSession | None" = None,
+        profile_store_loader: Callable[[], GameProfileStore] | None = None,
     ) -> None:
         self.settings = settings
         self.event_log = event_log
@@ -2827,6 +2834,7 @@ class SupportBundleBuilder:
         self.audio_lifecycle = audio_lifecycle or AudioLifecycleLog()
         self.voice_library = voice_library
         self.diagnostic_session = diagnostic_session
+        self.profile_store_loader = profile_store_loader or GameProfileStore.load
 
     def build(self, path: str | Path) -> Path:
         path = Path(path).expanduser()
@@ -2862,6 +2870,9 @@ class SupportBundleBuilder:
                 ),
             },
             "sanitized-settings.json": sanitize_settings(self.settings),
+            "capture-configuration.json": collect_capture_configuration(
+                self.settings, self.profile_store_loader()
+            ),
             "active-content.json": active_content,
             "pregeneration.json": {
                 **preparation,
@@ -2939,6 +2950,44 @@ class SupportBundleBuilder:
                     ):
                         shutil.copyfileobj(original, output)
         return path
+
+
+def collect_capture_configuration(
+    settings: AppSettings, profile_store: GameProfileStore
+) -> SupportDocument:
+    """Report effective capture permissions and geometry without target names or paths."""
+    report: SupportDocument = {
+        "discover_text_layouts_enabled": settings.discover_text_layouts,
+        "profile_selected": settings.active_profile_id is not None,
+        "capture_mode": settings.capture_mode,
+        "coordinate_space": CAPTURE_COORDINATE_SPACE,
+        "story_area_present": False,
+        "story_area_permitted": False,
+        "story_area": None,
+        "dialogue_area": None,
+        "story_area_contains_dialogue": None,
+    }
+    try:
+        story = resolve_story_region(settings, profile_store)
+        profile = profile_store.get(settings.active_profile_id)
+        dialogue = get_dialog_region(
+            profile.dialog_region if profile is not None else None,
+            coordinate_space=profile.coordinate_space if profile is not None else None,
+        )
+    except CaptureRegionNeedsCalibration:
+        report.update(available=False, reason="capture-region-needs-calibration")
+        return report
+    report.update(
+        available=True,
+        story_area_present=story is not None,
+        story_area_permitted=story is not None,
+        story_area=story.to_json() if story is not None else None,
+        dialogue_area=dialogue.to_json(),
+        story_area_contains_dialogue=story.contains(dialogue)
+        if story is not None
+        else None,
+    )
+    return report
 
 
 def collect_voice_bindings(library: VoiceLibrary | None) -> SupportDocument:
