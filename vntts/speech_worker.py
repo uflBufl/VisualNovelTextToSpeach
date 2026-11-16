@@ -1605,7 +1605,13 @@ class IsolatedSpeechBackend:
                     self._apply_result_metrics(result)
                     return result
                 elif message_type in {"error", "fatal", "reader-error", "eof"}:
-                    raise TTSSynthesisError(
+                    error_type = (
+                        TTSConfigurationError
+                        if message_type == "error"
+                        and document.get("error_type") == "TTSConfigurationError"
+                        else TTSSynthesisError
+                    )
+                    raise error_type(
                         document.get("error")
                         or f"{self.name} isolated worker stopped during render"
                     )
@@ -1900,7 +1906,12 @@ class IsolatedSpeechBackend:
             if document.get("request_id") != request_id:
                 continue
             if document.get("type") == "error":
-                raise TTSSynthesisError(_required_text(document, "error"))
+                error_type = (
+                    TTSConfigurationError
+                    if document.get("error_type") == "TTSConfigurationError"
+                    else TTSSynthesisError
+                )
+                raise error_type(_required_text(document, "error"))
             return document.get("value")
 
     def set_volume(self, volume: object) -> None:

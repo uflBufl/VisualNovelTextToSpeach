@@ -608,6 +608,58 @@ class DeferredWorkerStartupTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_parent_preserves_only_explicit_configuration_errors_from_worker(self):
+        for command in ("prime", "render"):
+            for wire_error, expected in (
+                ("TTSConfigurationError", TTSConfigurationError),
+                ("TTSSynthesisError", TTSSynthesisError),
+                ("ValueError", TTSSynthesisError),
+                (None, TTSSynthesisError),
+            ):
+                with self.subTest(command=command, wire_error=wire_error):
+                    with (
+                        patch.object(IsolatedSpeechBackend, "_start_worker"),
+                        patch(
+                            "vntts.speech_worker._runtime_paths",
+                            return_value=(
+                                Path("runtime"),
+                                Path("runtime/python"),
+                                Path("site"),
+                            ),
+                        ),
+                    ):
+                        backend = IsolatedSpeechBackend(
+                            "pocket-tts", CharacterVoiceRegistry()
+                        )
+                    response = (
+                        {
+                            "type": "error",
+                            "request_id": "request-1",
+                            "error": "Voice cloning unavailable",
+                            "error_type": wire_error,
+                        },
+                        b"",
+                    )
+                    with (
+                        patch.object(
+                            backend, "_ensure_worker", return_value=FakeProcess(None)
+                        ),
+                        patch.object(backend, "_send"),
+                        patch.object(backend, "_next_frame", return_value=response),
+                        patch("vntts.speech_worker.uuid.uuid4") as uuid4,
+                    ):
+                        uuid4.return_value.hex = "request-1"
+                        with self.assertRaisesRegex(
+                            expected, "Voice cloning unavailable"
+                        ) as caught:
+                            if command == "prime":
+                                backend.prime("Narrator")
+                            else:
+                                backend.render(
+                                    SynthesisRequest("Narrator", "Hello.")
+                                ).collect()
+                    self.assertIs(type(caught.exception), expected)
+
     def test_mlx_metadata_uses_selected_device_not_accelerator_availability(self):
         for selected_type, metal_available, expected in (
             ("cpu", True, "cpu"),

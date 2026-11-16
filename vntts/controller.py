@@ -135,7 +135,7 @@ from vntts.runtime_config import (
     initialize_voice_registry,
     initialize_voice_router,
 )
-from vntts.services.tts_engine import TTSEngine
+from vntts.services.tts_engine import TTSConfigurationError, TTSEngine
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
@@ -717,6 +717,9 @@ class AppController:
         self.voice_prime_lock = Lock()
         self.speaker_announcement_lock = Lock()
         self.last_visible_speaker_key = None
+        self.unavailable_speaker_announcement_configuration: (
+            tuple[object, ...] | None
+        ) = None
         self.primed_voice_keys: set[str] = set()
         self.reported_unknown_speakers: set[str] = set()
         self.pending_unknown_speakers: set[str] = set()
@@ -795,6 +798,8 @@ class AppController:
         return self.runtime_lifecycle.start()
 
     def prepare_startup(self) -> None:
+        with self.speaker_announcement_lock:
+            self.unavailable_speaker_announcement_configuration = None
         self.runtime_lifecycle.prepare_startup()
 
     def request_shutdown(self) -> None:
@@ -2076,7 +2081,7 @@ class AppController:
                     canonical_routing = True
                     canonical_event_changed = event.event_id != previous_event_id
         speech_deferred = self._offer_unknown_speaker_mapping(character, text)
-        self._prime_observed_voice(character)
+        self._prime_observed_voice(character, text)
         if not owned_confirmation:
             self._prime_likely_chapter_voice(character, text)
         if canonical_event_changed:
@@ -3306,7 +3311,7 @@ class AppController:
     def _enqueue_selected_sequence_line(
         self, line: ChapterDialogue, *, manual_continuation: bool = False
     ) -> bool:
-        self._prime_observed_voice(line.speaker)
+        self._prime_observed_voice(line.speaker, line.text)
         self._prime_likely_chapter_voice(line.speaker, line.text)
         self.history.finish_current()
         self._record_and_display_dialogue(line.speaker, line.text)
@@ -3919,7 +3924,13 @@ class AppController:
             and source_audio_check(character, text) is True
         )
 
-    def _prime_observed_voice(self, character: str) -> bool:
+    def _observation_needs_live_voice(self, character: str, text: str) -> bool:
+        check = getattr(self.speech_backend, "needs_live_voice_for_observation", None)
+        return not (callable(check) and check(character, text) is False)
+
+    def _prime_observed_voice(self, character: str, text: str | None = None) -> bool:
+        if text and not self._observation_needs_live_voice(character, text):
+            return False
         prime = getattr(self.speech_backend, "prime", None)
         if not callable(prime) or self.speech_executor is None:
             return False
@@ -3944,7 +3955,9 @@ class AppController:
         return True
 
     def _prime_likely_chapter_voice(self, character: str, text: str) -> bool:
-        if self.voice_router is None:
+        if self.voice_router is None or not self._observation_needs_live_voice(
+            character, text
+        ):
             return False
         registry = getattr(self.voice_router, "registry", None)
         if registry is None:
@@ -4541,7 +4554,7 @@ class AppController:
                     announcement = materialized_announcement
             except Exception as error:
                 announcement, announced_speaker = None, None
-                self.error_handler(error)
+                self._report_speaker_announcement_error(error)
                 self.status_handler(
                     "Speaker announcement could not be prepared; continuing dialogue"
                 )
@@ -4599,7 +4612,7 @@ class AppController:
                         audio.announced_speaker,
                     )
                 except Exception as error:
-                    self.error_handler(error)
+                    self._report_speaker_announcement_error(error)
                     self.status_handler(
                         "Speaker announcement failed; continuing dialogue"
                     )
@@ -4613,7 +4626,9 @@ class AppController:
         )
         source_audio_lead_deadline = getattr(audio, "source_audio_lead_deadline", None)
         if source_audio_lead_deadline is not None:
-            source_audio_lead_seconds = max(0.0, source_audio_lead_deadline - monotonic())
+            source_audio_lead_seconds = max(
+                0.0, source_audio_lead_deadline - monotonic()
+            )
         source_audio_lead_ms = (
             round(source_audio_lead_seconds * 1000)
             if source_audio_lead_seconds > 0
@@ -4904,6 +4919,11 @@ class AppController:
             announcement_speaker or visible_speaker
         ) or ("unknown" if is_unattributed_speaker(visible_speaker) else "narrator")
         with self.speaker_announcement_lock:
+            if (
+                self.unavailable_speaker_announcement_configuration
+                == self._speaker_announcement_configuration()
+            ):
+                return None, None
             if speaker_key == self.last_visible_speaker_key:
                 return None, None
             if announcement_speaker is None:
@@ -4962,6 +4982,31 @@ class AppController:
             announcement_speaker,
         )
 
+    def _speaker_announcement_configuration(self) -> tuple[object, ...]:
+        backend = getattr(self.speech_backend, "live_backend", self.speech_backend)
+        registry = getattr(backend, "registry", None)
+        return (
+            id(backend),
+            id(getattr(backend, "process", None)),
+            getattr(backend, "narrator_reference", None),
+            registry.resolve("Narrator") if registry is not None else None,
+            self.settings.pocket_gated_model_accepted,
+            self.settings.effective_speaker_announcement_mode,
+        )
+
+    def _report_speaker_announcement_error(self, error: Exception) -> None:
+        if isinstance(error, TTSConfigurationError):
+            with self.speaker_announcement_lock:
+                configuration = self._speaker_announcement_configuration()
+                if self.unavailable_speaker_announcement_configuration == configuration:
+                    return
+                self.unavailable_speaker_announcement_configuration = configuration
+            error = TTSConfigurationError(
+                "Speaker announcements are unavailable; dialogue will continue. "
+                f"Fix the live narrator configuration and restart reading setup: {error}"
+            )
+        self.error_handler(error)
+
     def _speaker_announcement_candidate(
         self, mode: str, visible_speaker: str, dialogue_route: object
     ) -> str | None:
@@ -4994,6 +5039,15 @@ class AppController:
     ) -> PlaybackOutcome:
         speaker_key = normalize_character_name(announced_speaker) or "unknown"
         with self.speaker_announcement_lock:
+            if (
+                self.unavailable_speaker_announcement_configuration
+                == self._speaker_announcement_configuration()
+            ):
+                return PlaybackOutcome(
+                    PlaybackStatus.PASSTHROUGH_UNOBSERVED,
+                    0.0,
+                    audio_source="live-accessibility-announcement",
+                )
             if speaker_key == self.last_visible_speaker_key:
                 return PlaybackOutcome(
                     PlaybackStatus.PASSTHROUGH_UNOBSERVED,
@@ -5010,7 +5064,7 @@ class AppController:
             try:
                 raise_playback_failure(outcome)
             except Exception as error:
-                self.error_handler(error)
+                self._report_speaker_announcement_error(error)
         return outcome
 
     def _dispatch_speaker_announcement(

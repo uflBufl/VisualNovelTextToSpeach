@@ -385,7 +385,7 @@ class ChapterVoicePreloader:
         return line
 
     def resolve_exact_with_result(
-        self, character: object, text: object
+        self, character: object, text: object, *, update_context: bool = True
     ) -> tuple[ChapterDialogue | None, str]:
         """Return an exact line plus an explicit match result for diagnostics."""
         speaker_key = _normalize(character)
@@ -437,9 +437,15 @@ class ChapterVoicePreloader:
             selected = closest[0]
         else:
             return None, "ambiguous"
-        self.current_match = ChapterMatch(
-            selected.chapter, selected.sequence, 1.0, selected.story_order
-        )
+        return self._finish_exact_resolution(selected, match_result, update_context)
+
+    def _finish_exact_resolution(
+        self, selected: ChapterDialogue, match_result: str, update_context: bool
+    ) -> tuple[ChapterDialogue, str]:
+        if update_context:
+            self.current_match = ChapterMatch(
+                selected.chapter, selected.sequence, 1.0, selected.story_order
+            )
         return selected, match_result
 
     def equivalent_speech_candidates(

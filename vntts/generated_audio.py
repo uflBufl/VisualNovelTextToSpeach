@@ -7,6 +7,7 @@ import io
 import logging
 import wave
 from collections.abc import Callable, Iterable
+from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock, RLock
@@ -866,6 +867,76 @@ class GeneratedAudioFallbackBackend:
             and line.text_sha256
             and line.has_original_speech
         )
+
+    def needs_live_voice_for_observation(self, character: str, text: str) -> bool:
+        """Probe prepared-only speech without reserving a route or moving its cursor."""
+        if not isinstance(self.line_resolver, ChapterVoicePreloader):
+            return True
+        # Equivalent matching also writes diagnostics; keep those on a snapshot.
+        resolver = copy(self.line_resolver)
+        line, _result = resolver.resolve_exact_with_result(
+            character, text, update_context=False
+        )
+        overridden = self.voice_override is not None and self.voice_override(character)
+        if line is None or not line.line_id or not line.text_sha256:
+            return not self._has_prepared_equivalent_observation(
+                resolver, character, text, overridden
+            )
+        if self.live_mode_active and line.has_original_speech:
+            return False
+        if self.library is None:
+            return True
+        if self.library.find_audio_event_omission(line.line_id, line.text_sha256):
+            return False
+        if overridden:
+            return True
+        if (
+            self.audio_source_policy in {"prefer-generated", "prefer-game-audio"}
+            and self.speed == 1.0
+        ):
+            prepared, _state = self.library.find_with_preflight(
+                line.line_id, line.text_sha256
+            )
+            if prepared is not None:
+                return False
+        return not self.library.runtime_progress or self._has_compatible_live_fallback(
+            line.line_id, line.text_sha256
+        )
+
+    def _has_prepared_equivalent_observation(
+        self,
+        resolver: ChapterVoicePreloader,
+        character: str,
+        text: str,
+        overridden: bool,
+    ) -> bool:
+        if (
+            self.library is None
+            or self.audio_source_policy not in {"prefer-generated", "prefer-game-audio"}
+            or self.speed != 1.0
+            or overridden
+        ):
+            return False
+        for candidate in resolver.equivalent_speech_candidates(character, text):
+            if candidate.line_id and candidate.text_sha256:
+                prepared, _state = self.library.find_with_preflight(
+                    candidate.line_id, candidate.text_sha256
+                )
+                if prepared is not None:
+                    return True
+        return False
+
+    def _has_compatible_live_fallback(self, line_id: str, text_sha256: str) -> bool:
+        if self.library is None or self.live_backend is None:
+            return False
+        fallback = self.library.find_live_fallback(line_id, text_sha256)
+        if fallback is None:
+            return False
+        try:
+            _validate_live_fallback_backend(self.live_backend, fallback)
+        except ValueError:
+            return False
+        return True
 
     def has_generated_line(self, line: ChapterDialogue) -> bool:
         """Reserve a verified generation for safe early-prefix expansion."""
