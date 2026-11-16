@@ -10,7 +10,7 @@ import math
 import os
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import NotRequired, Protocol, TypedDict, runtime_checkable
@@ -76,7 +76,9 @@ class StoryResolver(Protocol):
     def dialogue(self) -> Sequence[StoryLine]: ...
 
     @property
-    def by_chapter(self) -> Mapping[str, Sequence[StoryLine]]: ...
+    def has_dialogue(self) -> bool: ...
+
+    def chapter_rows(self, chapter: str) -> Sequence[StoryLine]: ...
 
     def resolve_exact_with_result(
         self, character: str, text: str
@@ -340,7 +342,7 @@ class LiveReplayCaptureSession:
             return None, "outside-capture-chapter"
         if self.story_chapter is None and chapter is not None:
             self.story_chapter = chapter
-            rows = self.story_resolver.by_chapter.get(chapter, ())
+            rows = self.story_resolver.chapter_rows(chapter)
             self.story_chapter_line_ids = tuple(
                 row.line_id for row in rows if row.line_id is not None
             )
@@ -765,7 +767,7 @@ def _load_capture_story(story_path: Path) -> tuple[StoryResolver, str]:
     payload = read_regular_bytes(story_path)
     digest = hashlib.sha256(payload).hexdigest()
     resolver = ChapterVoicePreloader.load_snapshot(story_path, payload)
-    if not resolver.dialogue:
+    if not resolver.has_dialogue:
         raise LiveReplayCaptureError("Story index has no usable dialogue")
     if sha256_file(story_path) != digest:
         raise LiveReplayCaptureError("Story index changed while loading")

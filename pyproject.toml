@@ -30,6 +30,7 @@ dependencies = [
     "transformers>=5.17,<6",
     "pytesseract>=0.3.13",
     "rapidocr>=3.9.2,<4",
+    "rapidfuzz>=3.14,<4",
     "onnxruntime>=1.29,<2",
     "numpy>=2.5,<3",
     "soundfile>=0.14,<0.15",

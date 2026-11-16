@@ -362,58 +362,31 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the indexed-catalog migration in RUN-17-01 before implementing
-it. Keep the separate pre-resolver startup delay in scope for diagnosis; faster
-matching alone does not explain that interval.
-Supplemental voice coverage
-and ASR changes remain deferred; resource classification cannot suppress narration.
-Reuse the recorded Hansel chapter; Windows acceptance needs its own host.
+Next action: qualify indexed first-observation search and initial Read/restart
+on the native Mac in RUN-17-01. Keep the separate pre-resolver startup delay in
+scope; faster matching alone does not explain that interval. Supplemental voice
+coverage and ASR changes remain deferred; resource classification cannot suppress
+narration. Reuse recorded Hansel evidence; Windows acceptance needs its own host.
 
-- [ ] **RUN-17-01 - Replace full-scan matching with an indexed search architecture.**
-      Implementation plan awaiting agreement:
-      - Extend the existing disposable StoryCatalog during import/admission with
-        dialogue payloads, versioned search keys, exact/prefix B-trees and FTS5
-        fragment postings. Bind source and optional semantic-evidence identity;
-        publish atomically and rebuild known obsolete derived schemas. Keep
-        generation/audio identities and reusable recordings unchanged.
-      - Retrieve exact/prefix candidates first, then conservative typo candidates
-        using indexed disjoint fragments and a native RapidFuzz distance lower
-        bound. Include short seeds where trigram pigeonhole coverage fails;
-        ordinary trigram MATCH alone is insufficient for short OCR. Preserve
-        the existing semantic validator, rejected margin
-        competitors, visible-speaker policy, crop recovery and original-audio
-        priority. Query continuation witnesses separately; do not impose a
-        candidate cap or interpret an empty lexical key as a universal prefix.
-        Cover short/symbol-only observations explicitly; insufficient evidence
-        must remain ambiguous. Use bounded active-chapter hydration/cache.
-      - Migrate startup, chapter/global matching, ReadingCatalog, prepared-audio
-        discovery and their consumers to the shared indexed catalog. Remove
-        full-catalog dialogue/MatchingText copies, superseded dictionaries and
-        global scans in the same migration. Preserve selected-snapshot scope,
-        canonical hydration, cancellation and stale-result leases; use executing
-        thread read connections and keep heavy work outside UI/cursor locks.
-      - Gate with candidate-recall and semantic-equivalence oracle checks,
-        affected catalog/discovery/matching regressions, complete-corpus startup,
-        warm/query latency and process memory measurements, then a short native
-        confirmation. Verify packaged SQLite FTS5 and RapidFuzz on macOS/Windows;
-        no custom positional index unless measured integrated latency needs it.
-      Finished Page session44b8d8f398cf4a64b9ec0999c2cbb64b has full, exact,
-      confidently named Kakania20 and Isolde27 observations, yet their first
-      story-result-resolution calls take19.933s and32.450s after the OCR worker
-      finishes. Later anchored observations, including real noisy named/narrator
-      no-matches, stay below39ms. Do not reopen the completed anchored-prefix fix
-      or blame game-voice waiting. Preserve speech completeness/continuations,
-      ambiguity, visible-speaker and original-audio policy. The first cold Read
-      also took57.18s to
-      its first resolution, of which only1.618s was the resolver: separate that
-      pre-resolver startup interval rather than attributing it to the same cause.
-      The third Read click exceeded the bridge's5s main-thread timeout before
-      completing; inspect initial Read UI work without assuming a modal dialog.
-      Use private profiling/existing evidence, not permanent high-volume metrics;
-      a new game run is unnecessary for diagnosis. Gate: reproduce the measured
-      paths, agree the implementation plan, run focused regressions/offline
-      acceptance, then a short native confirmation. Evidence:
-      indexed-recorder-native-20261117/analysis-evidence.json and saved journals.
+- [ ] **RUN-17-01 - Qualify indexed search and first Read/restart on the native host.**
+      On an accessible main-story scene such as Finished Page, start Read without
+      a manually connected chapter, then Stop/Read again. Check canonical speaker,
+      full-text/continuation decisions, original-audio waiting and generated/live
+      fallback. Confirm that a ready catalog opens without a complete source parse
+      or rich full-catalog allocation, that matching stays outside the UI/cursor
+      lock, and that Stop prevents late publication/playback/keys. Include the
+      actual startup crop-recovery path in timings: offline unanchored short crops
+      can still require a broader candidate search than the recorded exact calls.
+      Initial index construction belongs to content admission/update and must not
+      repeat on Read. Verify that it reports progress on its existing background
+      path when rebuilding an already imported catalog. The earlier cold Read
+      took57.18s to its first resolution, with only1.618s in matching; localize any
+      remaining pre-resolver delay and the Read click's UI timeout separately.
+      Keep focused existing diagnostic events; no permanent high-volume tracing,
+      larger timeouts or recognition-policy changes on an unverified hypothesis.
+      Windows: exercise packaged FTS5/RapidFuzz and indexed query/cancellation on
+      its host; shared Python logic and dependency collection are not native
+      acceptance. Prior native evidence: indexed-recorder-native-20261117.
 
 - [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
       The user heard game speech overlap our narration after She closes her eyes.

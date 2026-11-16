@@ -171,11 +171,19 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         unrelated = dialogue("An unrelated catalog row.", "unrelated", chapter="other")
         preloader = ChapterVoicePreloader((row, unrelated))
         preloader.dialogue = NoCatalogScan(preloader.dialogue)
-        preloader.by_chapter[unrelated.chapter] = NoCatalogScan((unrelated,))
-        self.assertIs(preloader.resolve_indexed_complete("Ada", row.text)[0], row)
-        self.assertIsNone(
-            preloader.resolve_indexed_complete("Ada", "A noisy incomplete prefix")[0]
-        )
+        chapter_rows = preloader.chapter_rows
+
+        def bounded_chapter(chapter):
+            self.assertNotEqual(chapter, unrelated.chapter)
+            return chapter_rows(chapter)
+
+        with patch.object(preloader, "chapter_rows", side_effect=bounded_chapter):
+            self.assertIs(preloader.resolve_indexed_complete("Ada", row.text)[0], row)
+            self.assertIsNone(
+                preloader.resolve_indexed_complete("Ada", "A noisy incomplete prefix")[
+                    0
+                ]
+            )
 
     def controller(self):
         fixture = concurrency.StoryRecognitionConcurrencyTests()

@@ -1,7 +1,10 @@
+import gc
 import hashlib
 import os
 import sqlite3
 import unittest
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -9,11 +12,15 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts_artifacts.story_index import load_story_index_document
+from vntts_artifacts.story_index import (
+    load_story_index_document,
+    write_story_index_document,
+)
 
 from tests.story_fixtures import write_story_index
 from tests.symlink_support import symlink_or_skip
 from vntts import story_catalog
+from vntts.dialogue_search import projection_may_match, text_projection
 from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
@@ -378,6 +385,7 @@ class StoryCatalogTest(unittest.TestCase):
         story = load_story_index_document(self.path)
         original_fstat = story_catalog.os.fstat
         calls = 0
+        source_inode = self.path.stat().st_ino
 
         def changed_ctime(descriptor):
             nonlocal calls
@@ -387,8 +395,11 @@ class StoryCatalogTest(unittest.TestCase):
                 for name in dir(info)
                 if name.startswith("st_")
             }
-            calls += 1
-            if calls == 3:  # Regular-file admission, then before/after the source read.
+            if info.st_ino == source_inode:
+                calls += 1
+            if (
+                info.st_ino == source_inode and calls == 3
+            ):  # Regular-file admission, then before/after the source read.
                 values["st_ctime_ns"] += 1000
             return SimpleNamespace(**values)
 
@@ -456,7 +467,10 @@ class StoryCatalogTest(unittest.TestCase):
         self.assertEqual(self.catalog.read_bytes(), original)
         storage.save(document, story=load_story_index_document(self.path))
         with closing(sqlite3.connect(self.catalog)) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                story_catalog._VERSION,
+            )
         self.assertIsNotNone(
             storage.record_locations(
                 self.first.story_index_sha256,
@@ -499,6 +513,536 @@ class StoryCatalogTest(unittest.TestCase):
                         )
                 finally:
                     sidecar.unlink()
+
+    def dialogue_projections(self, owner):
+        return {
+            row.line_id: text_projection(row.text)
+            for row in owner.dialogues(owner.line_ids())
+        }
+
+    def dialogue_catalog(self):
+        storage, document = self.indexed_catalog()
+        owner = storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        )
+        self.addCleanup(owner.close)
+        return owner
+
+    def test_dialogue_queries_reuse_owner_without_reopening_source_or_sql(self):
+        from vntts.chapter_voice_preload import (
+            ChapterVoicePreloader,
+            _normalize,
+            _normalize_exact_text,
+        )
+        from vntts.dialog import is_symbol_only_text
+
+        expected = ChapterVoicePreloader.dialogue_from_story_index(
+            self.path, load_story_index_document(self.path)
+        )
+        owner = self.dialogue_catalog()
+        with (
+            patch(
+                "vntts.story_catalog.open_regular_binary",
+                side_effect=AssertionError("source read"),
+            ),
+            patch(
+                "vntts.story_catalog.sqlite3.connect",
+                side_effect=AssertionError("SQL reopen"),
+            ),
+        ):
+            self.assertEqual(owner.count, len(expected))
+            self.assertEqual(
+                owner.dialogues(tuple(row.line_id for row in expected)), expected
+            )
+            for line in expected:
+                self.assertTrue(owner.line_exists(line.line_id))
+                self.assertTrue(owner.chapter_exists(line.chapter))
+                self.assertIn(line.line_id, owner.line_ids(line.chapter))
+                self.assertIn(
+                    line.line_id,
+                    owner.exact_ids(
+                        _normalize(line.speaker),
+                        is_symbol_only_text(line.text),
+                        _normalize_exact_text(line.text),
+                    ),
+                )
+                self.assertIn(
+                    line.line_id, owner.normalized_ids(None, _normalize(line.text))
+                )
+                self.assertIn(_normalize(line.speaker), owner.speakers(line.chapter))
+            self.assertEqual(
+                owner.has_original_speech(),
+                any(row.has_original_speech for row in expected),
+            )
+            self.assertFalse(owner.line_exists("absent"))
+            self.assertFalse(owner.chapter_exists("absent"))
+
+    def test_fts_seeds_keep_every_full_and_prefix_edit_witness(self):
+        owner = self.dialogue_catalog()
+        keys = self.dialogue_projections(owner)
+        for line_id, key in keys.items():
+            for prefix, limit in ((False, 4), (True, 3)):
+                source = key[: max(5, len(key) - 4)] if prefix else key
+                for operation in ("unchanged", "delete", "insert", "replace"):
+                    observed = source
+                    if operation == "delete":
+                        observed = observed[:1] + observed[2:]
+                    elif operation == "insert":
+                        observed = observed[:1] + "x" + observed[1:]
+                    elif operation == "replace":
+                        observed = "x" + observed[1:]
+                    with self.subTest(
+                        line_id=line_id, prefix=prefix, operation=operation
+                    ):
+                        self.assertIn(
+                            line_id, dict(owner.iter_seed_rows(observed, limit, prefix))
+                        )
+        with self.assertRaises(ValueError):
+            tuple(owner.iter_seed_rows("invalid", -1))
+
+    def test_dialogue_owner_reads_canonical_selected_rows_and_rejects_stale_source(
+        self,
+    ):
+        owner = self.dialogue_catalog()
+        selected = owner.line_ids()[-1:]
+        document = owner.records(selected)
+        self.assertEqual(tuple(row.line_id for row in document.records), selected)
+        self.path.write_bytes(self.path.read_bytes() + b"\n")
+        with self.assertRaisesRegex(StoryCatalogError, "source changed"):
+            owner.dialogues(selected)
+        with self.assertRaisesRegex(StoryCatalogError, "source changed"):
+            owner.records(selected)
+
+    def test_dialogue_owner_pins_separate_read_connections_for_worker_threads(self):
+        owner = self.dialogue_catalog()
+        expected = owner.line_ids()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            self.assertEqual(worker.submit(owner.line_ids).result(), expected)
+        self.assertEqual(len(owner._connections), 2)
+        owner.close()
+        with self.assertRaisesRegex(StoryCatalogError, "closed"):
+            owner.line_ids()
+
+    def test_dialogue_owner_rejects_changed_evidence_without_query_hashing(self):
+        owner = self.dialogue_catalog()
+        evidence = self.path.with_name("source-audio-semantic-evidence.json")
+        evidence.write_bytes(evidence.read_bytes() + b"\n")
+        with self.assertRaisesRegex(StoryCatalogError, "evidence changed"):
+            owner.exact_ids(None, False, "generate me.")
+
+    def test_dialogue_query_cancellation_resets_sql_progress_handler(self):
+        from vntts.chapter_voice_preload import StoryMatchingCancelled
+
+        owner = self.dialogue_catalog()
+        calls = 0
+
+        def cancelled():
+            nonlocal calls
+            calls += 1
+            return calls > 1
+
+        with self.assertRaises(StoryMatchingCancelled), owner.query(cancelled):
+            owner._connection().execute(
+                "WITH RECURSIVE values_(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM values_ WHERE n<100000) "
+                "SELECT sum(n) FROM values_"
+            ).fetchone()
+        self.assertTrue(owner.line_exists("reverse1999:3"))
+        self.assertEqual(owner.dialogues(("absent",)), ())
+
+    def test_line_id_stream_is_lazy_and_selects_only_original_rows(self):
+        owner = self.dialogue_catalog()
+        expected = owner.line_ids()
+        originals = tuple(
+            row.line_id for row in owner.dialogues(expected) if row.has_original_speech
+        )
+        queries = []
+        connection = owner._connection()
+        connection.set_trace_callback(queries.append)
+        self.addCleanup(connection.set_trace_callback, None)
+        with patch.object(
+            owner, "line_ids", side_effect=AssertionError("full identity tuple")
+        ):
+            stream = owner.iter_line_ids()
+            self.assertEqual(queries, [])
+            self.assertEqual(next(stream), expected[0])
+            self.assertEqual(tuple(stream), expected[1:])
+            self.assertEqual(tuple(owner.iter_line_ids(original_only=True)), originals)
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT line_id FROM dialogue WHERE original_speech=1 ORDER BY id"
+        ).fetchall()
+        self.assertTrue(any("dialogue_original" in row[3] for row in plan), plan)
+
+    def test_prefix_range_keeps_all_matches_and_uses_projection_index(self):
+        owner = self.dialogue_catalog()
+        ids = owner.line_ids()
+        projections = self.dialogue_projections(owner)
+        for line_id, projection in projections.items():
+            prefix = projection[:3]
+            with self.subTest(line_id=line_id):
+                expected = tuple(
+                    key for key in ids if projections[key].startswith(prefix)
+                )
+                self.assertEqual(
+                    tuple(key for key, _ in owner.iter_seed_rows(prefix, 0, True)),
+                    expected,
+                )
+                chapter = owner.dialogues((line_id,))[0].chapter
+                self.assertIn(
+                    line_id, dict(owner.iter_seed_rows(prefix, 0, True, chapter))
+                )
+                self.assertEqual(
+                    tuple(owner.iter_seed_rows(prefix, 0, True, "absent")), ()
+                )
+        self.assertEqual(tuple(owner.iter_seed_rows("\U0010ffff", 0, True)), ())
+        plan = (
+            owner._connection()
+            .execute(
+                "EXPLAIN QUERY PLAN SELECT line_id FROM dialogue WHERE projection>=? AND projection<? ORDER BY id",
+                ("gen", "geo"),
+            )
+            .fetchall()
+        )
+        self.assertTrue(any("dialogue_projection" in row[3] for row in plan), plan)
+
+    def test_candidate_lane_scopes_partition_every_unfiltered_result(self):
+        owner = self.dialogue_catalog()
+        ids = owner.line_ids()
+        expected = {
+            original: {
+                row.line_id
+                for row in owner.dialogues(ids)
+                if row.has_original_speech == original
+            }
+            for original in (False, True)
+        }
+        queries = [("a", 4, True)]
+        for projection in self.dialogue_projections(owner).values():
+            queries.extend(
+                (
+                    (projection[:1], 0, True),
+                    (projection, 4, False),
+                    (projection, 0, False),
+                    (projection, 4, True),
+                )
+            )
+        for projection, distance, prefix in queries:
+            unfiltered = set(dict(owner.iter_seed_rows(projection, distance, prefix)))
+            lanes = {
+                original: set(
+                    dict(
+                        owner.iter_seed_rows(
+                            projection, distance, prefix, original=original
+                        )
+                    )
+                )
+                for original in (False, True)
+            }
+            self.assertEqual(lanes[False] | lanes[True], unfiltered)
+            self.assertFalse(lanes[False] & lanes[True])
+            for original in (False, True):
+                self.assertEqual(lanes[original], unfiltered & expected[original])
+        plan = (
+            owner._connection()
+            .execute(
+                "EXPLAIN QUERY PLAN SELECT line_id FROM dialogue WHERE projection_length>=? AND original_speech=? ORDER BY id",
+                (0, 0),
+            )
+            .fetchall()
+        )
+        self.assertTrue(any("dialogue_original" in row[3] for row in plan), plan)
+
+    def test_positional_seeds_preserve_shifted_unicode_full_and_prefix_witnesses(self):
+        story = load_story_index_document(self.path)
+        base = story.records[-1].to_record()
+        query = "abcdefghijklmnopqr"
+        pairs = tuple(query[index : index + 2] for index in range(0, len(query), 2))
+        split_pairs = (
+            "".join(pair[0] + "x" + pair[1] for pair in pairs[:-1]) + pairs[-1]
+        )
+        texts = (
+            "αβγδεζηθικλμνξοπρστυφχψω東京大阪名古屋abcdefghijklmnopqrstuv",
+            "Старинный фонарь освещает забытый проход за старым домом.",
+            split_pairs,
+        )
+        story = write_story_index_document(
+            self.path,
+            story.metadata,
+            [
+                {
+                    **base,
+                    "line_id": f"shift:{index}",
+                    "sequence": index,
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+                for index, text in enumerate(texts)
+            ],
+        )
+        document = {
+            **self.document(),
+            "source_story_index_sha256": hashlib.sha256(
+                self.path.read_bytes()
+            ).hexdigest(),
+            "selections": [],
+        }
+        storage = StoryCatalog(self.catalog)
+        storage.save(document, story=story)
+        with storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        ) as owner:
+            projections = self.dialogue_projections(owner)
+            for line_id in ("shift:0", "shift:1"):
+                key = projections[line_id]
+                for distance in (3, 4):
+                    for prefix in (False, True):
+                        observed = key[:-8] if prefix else key
+                        variants = (
+                            "x" * distance + observed,
+                            observed[distance:],
+                            observed[:7] + "x" * distance + observed[7:],
+                            observed[:7] + observed[7 + distance :],
+                        )
+                        for variant in variants:
+                            with self.subTest(
+                                line_id=line_id,
+                                distance=distance,
+                                prefix=prefix,
+                                variant=variant,
+                            ):
+                                self.assertIn(
+                                    line_id,
+                                    dict(
+                                        owner.iter_seed_rows(
+                                            variant,
+                                            max_distance=distance,
+                                            prefix=prefix,
+                                        )
+                                    ),
+                                )
+            # Only the final pair survives eight internal insertions, beyond position 18.
+            self.assertIn("shift:2", dict(owner.iter_seed_rows(query, max_distance=8)))
+
+    def test_streamed_seed_rows_keep_all_scoped_projected_witnesses(self):
+        owner = self.dialogue_catalog()
+        rows = owner.dialogues(owner.line_ids())
+        projections = self.dialogue_projections(owner)
+        for projection in ("", "a", "gen", *projections.values()):
+            for distance in (0, 4):
+                for prefix in (False, True):
+                    for chapter in (None, "1", "absent"):
+                        for original in (None, False, True):
+                            options = dict(
+                                max_distance=distance,
+                                prefix=prefix,
+                                chapter=chapter,
+                                original=original,
+                            )
+                            scope = {
+                                row.line_id
+                                for row in rows
+                                if (chapter is None or row.chapter == chapter)
+                                and (
+                                    original is None
+                                    or row.has_original_speech == original
+                                )
+                            }
+                            witnesses = {
+                                key
+                                for key in scope
+                                if projection_may_match(
+                                    projection,
+                                    projections[key],
+                                    distance=distance,
+                                    prefix=prefix,
+                                )
+                            }
+                            with self.subTest(projection=projection, **options):
+                                found = dict(
+                                    owner.iter_seed_rows(projection, **options)
+                                )
+                                self.assertLessEqual(witnesses, found.keys())
+                                self.assertLessEqual(found.keys(), scope)
+                                self.assertEqual(
+                                    found, {key: projections[key] for key in found}
+                                )
+                                if distance == 0:
+                                    self.assertEqual(found.keys(), witnesses)
+
+    def test_streamed_prefix_yields_before_consuming_the_whole_candidate_set(self):
+        story = load_story_index_document(self.path)
+        base = story.records[-1].to_record()
+        text = "Shared opening for every voice."
+        story = write_story_index_document(
+            self.path,
+            story.metadata,
+            [
+                {
+                    **base,
+                    "line_id": f"bulk:{index}",
+                    "chapter": "bulk",
+                    "sequence": index,
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                }
+                for index in range(600)
+            ],
+        )
+        document = {
+            **self.document(),
+            "source_story_index_sha256": hashlib.sha256(
+                self.path.read_bytes()
+            ).hexdigest(),
+            "selections": [],
+        }
+        storage = StoryCatalog(self.catalog)
+        storage.save(document, story=story)
+        owner = storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        )
+        self.addCleanup(owner.close)
+        connection = owner._connection()
+        consumed = []
+        queries = []
+
+        class TrackedCursor:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            def fetchmany(self, size):
+                rows = self.cursor.fetchmany(size)
+                consumed.extend(rows)
+                return rows
+
+            def close(self):
+                self.cursor.close()
+
+        class TrackedConnection:
+            def execute(self, sql, parameters):
+                queries.append(sql)
+                return TrackedCursor(connection.execute(sql, parameters))
+
+        with patch.object(owner, "_connection", return_value=TrackedConnection()):
+            candidates = owner.iter_seed_rows("shared", max_distance=0, prefix=True)
+            self.assertEqual(consumed, [])
+            first = next(candidates)
+            self.assertEqual(first[0], "bulk:0")
+            self.assertLess(len(consumed), owner.count)
+            self.assertEqual(len(consumed), 256)
+            rest = tuple(candidates)
+            self.assertEqual(len(queries), 1)
+            self.assertEqual(
+                (first, *rest),
+                tuple(
+                    (f"bulk:{index}", "sharedopeningforeveryvoice")
+                    for index in range(600)
+                ),
+            )
+
+    def test_unreferenced_owner_closes_its_retained_sql_connections(self):
+        storage, document = self.indexed_catalog()
+        owner = storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        )
+        connection = owner._connection()
+        reference = weakref.ref(owner)
+        del owner
+        gc.collect()
+        self.assertIsNone(reference())
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
+    def test_future_search_semantics_are_preserved_and_refused_by_dialogue_owner(self):
+        storage, document = self.indexed_catalog()
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            connection.execute(
+                "UPDATE metadata SET cache_version=?",
+                (story_catalog_schema_version + 1,),
+            )
+            connection.commit()
+        original = self.catalog.read_bytes()
+        with self.assertRaisesRegex(StoryCatalogError, "identity changed"):
+            storage.open_dialogue(
+                self.path,
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                cache_version=story_catalog_schema_version,
+            )
+        self.assertEqual(self.catalog.read_bytes(), original)
+        with self.assertRaisesRegex(
+            StoryCatalogError, "future story catalog cache version"
+        ):
+            storage.save(document, story=load_story_index_document(self.path))
+        self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_worker_owner_refuses_obsolete_search_semantics(self):
+        storage, document = self.indexed_catalog()
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            connection.execute("UPDATE metadata SET cache_version=0")
+            connection.commit()
+        original = self.catalog.read_bytes()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            result = worker.submit(
+                storage.open_dialogue,
+                self.path,
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                cache_version=story_catalog_schema_version,
+            )
+            with self.assertRaisesRegex(StoryCatalogError, "identity changed"):
+                result.result()
+        self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_fts_shadow_schema_change_is_preserved_and_rejected(self):
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            connection.execute(
+                "ALTER TABLE dialogue_grams_config ADD COLUMN foreign_value TEXT"
+            )
+            connection.commit()
+        original = self.catalog.read_bytes()
+        with self.assertRaisesRegex(StoryCatalogError, "schema changed"):
+            StoryCatalog(self.catalog).save(
+                self.document(), story=load_story_index_document(self.path)
+            )
+        self.assertEqual(self.catalog.read_bytes(), original)
+
+    def test_exact_v2_schema_rebuilds_without_reading_legacy_rows(self):
+        self.catalog.unlink()
+        document = self.document()
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            for statement in story_catalog._V2_SCHEMA:
+                connection.execute(statement)
+            connection.execute(f"PRAGMA application_id={story_catalog._APPLICATION_ID}")
+            connection.execute("PRAGMA user_version=2")
+            StoryCatalog._write(connection, document)
+            connection.commit()
+        storage = StoryCatalog(self.catalog)
+        self.assertIsNone(
+            storage.load(
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                document["schema_version"],
+            )
+        )
+        storage.save(document, story=load_story_index_document(self.path))
+        with storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        ) as owner:
+            self.assertTrue(owner.line_exists("reverse1999:3"))
 
     def indexed_catalog(self):
         document = self.document()

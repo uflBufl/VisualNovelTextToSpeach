@@ -3,24 +3,33 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import stat
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from contextlib import AbstractContextManager, closing, contextmanager
+from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import overload
+from typing import TYPE_CHECKING, overload
 
 from vntts_artifacts.story_index import StoryIndexDocument
 
 from vntts.audio_store import _sync_directory, _sync_regular_file
+from vntts.dialogue_search import text_projection as _projection
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, is_json_object
 from vntts.path_safety import open_regular_binary
 
+if TYPE_CHECKING:
+    from vntts.chapter_voice_preload import ChapterDialogue
+
 _APPLICATION_ID = 0x564E5343
-_VERSION = 2
+_VERSION = 3
+_GRAM_BUCKET = 8
 _SCALARS = (
     "selection_id",
     "title",
@@ -58,7 +67,7 @@ _LEGACY_SCHEMA = (
     "CREATE TABLE selection_lines (selection_ordinal INTEGER NOT NULL REFERENCES selections(ordinal), "
     "ordinal INTEGER NOT NULL, line_id TEXT NOT NULL, PRIMARY KEY(selection_ordinal, ordinal)) STRICT, WITHOUT ROWID",
 )
-_SCHEMA = (
+_V2_SCHEMA = (
     *_LEGACY_SCHEMA,
     "CREATE TABLE record_source (id INTEGER PRIMARY KEY CHECK(id=1), source_size INTEGER NOT NULL, "
     "header_length INTEGER NOT NULL, header_sha256 TEXT NOT NULL, record_count INTEGER NOT NULL, "
@@ -66,6 +75,62 @@ _SCHEMA = (
     "CREATE TABLE record_locations (line_id TEXT PRIMARY KEY, source_offset INTEGER NOT NULL, "
     "source_length INTEGER NOT NULL, row_sha256 TEXT NOT NULL) STRICT, WITHOUT ROWID",
 )
+_SCHEMA = (
+    *_V2_SCHEMA,
+    "CREATE TABLE dialogue_source (id INTEGER PRIMARY KEY CHECK(id=1), header BLOB NOT NULL) STRICT",
+    "CREATE TABLE dialogue (id INTEGER PRIMARY KEY, line_id TEXT NOT NULL UNIQUE, "
+    "chapter TEXT NOT NULL, speaker TEXT NOT NULL, speaker_key TEXT NOT NULL, symbol_only INTEGER NOT NULL, "
+    "exact_key TEXT NOT NULL, normalized_key TEXT NOT NULL, projection TEXT NOT NULL, "
+    "projection_length INTEGER NOT NULL, original_speech INTEGER NOT NULL, "
+    "full_source_audio INTEGER NOT NULL, voice_character TEXT, payload TEXT NOT NULL) STRICT",
+    "CREATE INDEX dialogue_chapter ON dialogue(chapter, id)",
+    "CREATE INDEX dialogue_speaker ON dialogue(speaker_key, id)",
+    "CREATE INDEX dialogue_exact ON dialogue(symbol_only, exact_key, speaker_key)",
+    "CREATE INDEX dialogue_normalized ON dialogue(normalized_key, speaker_key)",
+    "CREATE INDEX dialogue_projection ON dialogue(projection)",
+    "CREATE INDEX dialogue_length ON dialogue(projection_length)",
+    "CREATE INDEX dialogue_original ON dialogue(original_speech)",
+    "CREATE INDEX dialogue_full_audio ON dialogue(full_source_audio)",
+    "CREATE VIRTUAL TABLE dialogue_grams USING fts5(tokens, tokenize='ascii', detail='none', content='')",
+    "CREATE VIRTUAL TABLE dialogue_frequency USING fts5vocab(dialogue_grams, 'row')",
+)
+
+
+@lru_cache(maxsize=1)
+def _schema_objects() -> set[tuple[str, str, str | None]]:
+    # SQLite owns FTS shadow schemas; compare with this runtime's template.
+    with closing(sqlite3.connect(":memory:")) as connection:
+        for statement in _SCHEMA:
+            connection.execute(statement)
+        return set(
+            connection.execute(
+                "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+            )
+        )
+
+
+def _gram_token(gram: str, bucket: int) -> str:
+    return f"p{bucket}q{len(gram)}g{gram.encode().hex()}"
+
+
+def _gram_tokens(key: str) -> str:
+    return " ".join(
+        sorted(
+            {
+                _gram_token(key[index : index + width], index // _GRAM_BUCKET)
+                for width in (1, 2, 3)
+                for index in range(len(key) - width + 1)
+            }
+        )
+    )
+
+
+def _prefix_predicate(projection: str) -> tuple[str, tuple[object, ...]]:
+    for index in range(len(projection) - 1, -1, -1):
+        if ord(projection[index]) < 0x10FFFF:
+            upper = projection[:index] + chr(ord(projection[index]) + 1)
+            return "projection>=? AND projection<?", (projection, upper)
+    return "projection>=?", (projection,)
 
 
 class StoryCatalogError(ValueError):
@@ -160,12 +225,17 @@ class StoryCatalog:
 
     @contextmanager
     def _connection(
-        self, *, allow_legacy: bool = False
+        self, *, allow_legacy: bool = False, reusable: bool = False
     ) -> Iterator[sqlite3.Connection]:
         self._safe_path()
         try:
             with closing(
-                sqlite3.connect(self.path.absolute().as_uri() + "?mode=ro", uri=True)
+                sqlite3.connect(
+                    self.path.absolute().as_uri() + "?mode=ro",
+                    uri=True,
+                    # Owners execute per thread; only explicit close crosses threads.
+                    check_same_thread=not reusable,
+                )
             ) as connection:
                 connection.row_factory = sqlite3.Row
                 connection.execute("PRAGMA trusted_schema = OFF")
@@ -174,19 +244,31 @@ class StoryCatalog:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if connection.execute("PRAGMA application_id").fetchone()[
                     0
-                ] != _APPLICATION_ID or version not in (1, _VERSION):
+                ] != _APPLICATION_ID or version not in (1, 2, _VERSION):
                     raise StoryCatalogError("Unsupported story catalog schema")
-                objects = {
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                if version == _VERSION:
+                    objects = {
+                        tuple(row)
+                        for row in connection.execute(
+                            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    valid_schema = objects == _schema_objects()
+                else:
+                    objects = {
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                        )
+                    }
+                    valid_schema = objects == set(
+                        _LEGACY_SCHEMA if version == 1 else _V2_SCHEMA
                     )
-                }
-                if objects != set(_LEGACY_SCHEMA if version == 1 else _SCHEMA):
+                if not valid_schema:
                     raise StoryCatalogError("Story catalog schema changed")
                 if connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
                     raise StoryCatalogError("Unsupported story catalog journal mode")
-                if version == 1 and not allow_legacy:
+                if version != _VERSION and not allow_legacy:
                     raise _LegacyStoryCatalog(
                         "Story catalog requires a derived rebuild"
                     )
@@ -325,6 +407,23 @@ class StoryCatalog:
                 return self._record_locations(connection, source, line_ids)
         except _LegacyStoryCatalog:
             return None
+
+    def open_dialogue(
+        self,
+        source_path: Path,
+        story_sha256: str,
+        evidence_sha256: str,
+        *,
+        cache_version: int,
+    ) -> DialogueCatalog:
+        """Pin one SQL revision; original source rows remain payload authority."""
+        return DialogueCatalog(
+            self,
+            source_path,
+            story_sha256,
+            evidence_sha256,
+            cache_version=cache_version,
+        )
 
     @staticmethod
     def _validate_record_source(
@@ -477,6 +576,24 @@ class StoryCatalog:
     ) -> None:
         if type(semantic_valid) is not bool or story.path.is_symlink():
             raise StoryCatalogError("Story catalog source identity is invalid")
+        from vntts.chapter_voice_preload import (
+            ChapterVoicePreloader,
+            _normalize,
+            _normalize_exact_text,
+            _source_audio_evidence_payload,
+        )
+        from vntts.dialog import is_symbol_only_text
+
+        evidence_path = story.path.with_name("source-audio-semantic-evidence.json")
+        evidence_signature = _file_signature(evidence_path)
+        if (
+            hashlib.sha256(_source_audio_evidence_payload(story.path)).hexdigest()
+            != document["source_audio_semantic_evidence_sha256"]
+        ):
+            raise StoryCatalogError("Story catalog source evidence changed")
+        dialogue = iter(
+            ChapterVoicePreloader.dialogue_from_story_index(story.path, story)
+        )
         digest = hashlib.sha256()
         try:
             with open_regular_binary(story.path) as stream:
@@ -484,6 +601,9 @@ class StoryCatalog:
                 header = stream.readline()
                 cls._matching_source_json(header, story.metadata)
                 digest.update(header)
+                connection.execute(
+                    "INSERT INTO dialogue_source VALUES (1, ?)", (header,)
+                )
                 offset = len(header)
                 records = iter(story.records)
                 count = 0
@@ -507,6 +627,32 @@ class StoryCatalog:
                             hashlib.sha256(raw).hexdigest(),
                         ),
                     )
+                    line = next(dialogue)
+                    projection = _projection(record.text)
+                    row_id = count + 1
+                    connection.execute(
+                        "INSERT INTO dialogue VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            row_id,
+                            record.line_id,
+                            record.chapter,
+                            record.speaker,
+                            _normalize(record.speaker),
+                            int(is_symbol_only_text(record.text)),
+                            _normalize_exact_text(record.text),
+                            _normalize(record.text),
+                            projection,
+                            len(projection),
+                            int(line.has_original_speech),
+                            int(line.has_full_source_audio),
+                            record.voice_character,
+                            json.dumps(asdict(line), ensure_ascii=False),
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO dialogue_grams(rowid, tokens) VALUES (?, ?)",
+                        (row_id, _gram_tokens(projection)),
+                    )
                     digest.update(raw)
                     offset += len(raw)
                     count += 1
@@ -525,7 +671,8 @@ class StoryCatalog:
         )
         # Windows stat() and fstat() can expose different meanings for ctime.
         if (
-            next(records, None) is not None
+            _file_signature(evidence_path) != evidence_signature
+            or next(records, None) is not None
             or offset != before.st_size
             or digest.hexdigest() != document["source_story_index_sha256"]
             or before.st_ctime_ns != after.st_ctime_ns
@@ -591,3 +738,452 @@ class StoryCatalog:
                         for position, value in enumerate(selection[field])
                     ),
                 )
+
+
+def _file_signature(path: Path) -> tuple[int, ...] | None:
+    try:
+        info = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+class DialogueCatalog:
+    """Indexed dialogue with one pinned read transaction per executing thread."""
+
+    def __init__(
+        self,
+        catalog: StoryCatalog,
+        source_path: Path,
+        story_sha256: str,
+        evidence_sha256: str,
+        *,
+        cache_version: int,
+    ) -> None:
+        from vntts.content_revision import source_signature
+
+        self.catalog = catalog
+        self.source_path = Path(source_path).expanduser().absolute()
+        self.source_sha256 = story_sha256
+        self.evidence_sha256 = evidence_sha256
+        self.cache_version = cache_version
+        self.signature = source_signature(self.source_path)
+        self._evidence_path = self.source_path.with_name(
+            "source-audio-semantic-evidence.json"
+        )
+        self._evidence_signature = _file_signature(self._evidence_path)
+        self._connections: dict[
+            int, tuple[AbstractContextManager[sqlite3.Connection], sqlite3.Connection]
+        ] = {}
+        self._lock = threading.Lock()
+        self._closed = False
+        try:
+            from vntts.chapter_voice_preload import _source_audio_evidence_payload
+
+            if (
+                hashlib.sha256(
+                    _source_audio_evidence_payload(self.source_path)
+                ).hexdigest()
+                != evidence_sha256
+            ):
+                raise StoryCatalogError("Story catalog source evidence changed")
+            connection = self._connection()
+            self._source = connection.execute(
+                "SELECT * FROM record_source WHERE id=1"
+            ).fetchone()
+            header = connection.execute(
+                "SELECT header FROM dialogue_source WHERE id=1"
+            ).fetchone()
+            if self._source is None or header is None:
+                raise StoryCatalogError("Story catalog dialogue source is missing")
+            catalog._validate_record_source(self._source, story_sha256, evidence_sha256)
+            self.header = bytes(header[0])
+            if (
+                len(self.header) != self._source["header_length"]
+                or hashlib.sha256(self.header).hexdigest()
+                != self._source["header_sha256"]
+                or self.signature[3] != self._source["source_size"]
+            ):
+                raise StoryCatalogError("Story catalog dialogue source changed")
+            metadata = decode_json(self.header)
+            if not is_json_object(metadata):
+                raise StoryCatalogError("Story catalog dialogue header is invalid")
+            self.metadata = metadata
+            self.count: int = self._source["record_count"]
+            if (
+                connection.execute("SELECT count(*) FROM dialogue").fetchone()[0]
+                != self.count
+            ):
+                raise StoryCatalogError("Story catalog dialogue count changed")
+            with open_regular_binary(self.source_path) as stream:
+                if stream.read(len(self.header)) != self.header:
+                    raise StoryCatalogError("Story catalog source header changed")
+            self.validate_current()
+        except BaseException:
+            self.close()
+            raise
+
+    def _connection(self) -> sqlite3.Connection:
+        self.validate_current()
+        identity = threading.get_ident()
+        with self._lock:
+            pair = self._connections.get(identity)
+            if pair is None:
+                manager = self.catalog._connection(reusable=True)
+                connection = manager.__enter__()
+                try:
+                    row = connection.execute(
+                        "SELECT story_sha256, evidence_sha256, cache_version FROM metadata WHERE id=1"
+                    ).fetchone()
+                    if row is None or tuple(row) != (
+                        self.source_sha256,
+                        self.evidence_sha256,
+                        self.cache_version,
+                    ):
+                        raise StoryCatalogError(
+                            "Story catalog dialogue identity changed"
+                        )
+                except BaseException:
+                    manager.__exit__(None, None, None)
+                    raise
+                self._connections[identity] = (manager, connection)
+                return connection
+            return pair[1]
+
+    def validate_current(self) -> None:
+        from vntts.content_revision import source_signature
+
+        if self._closed:
+            raise StoryCatalogError("Story catalog dialogue owner is closed")
+        if _file_signature(self._evidence_path) != self._evidence_signature:
+            raise StoryCatalogError("Story catalog source evidence changed")
+        if source_signature(self.source_path) != self.signature:
+            raise StoryCatalogError("Story catalog source changed")
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            for manager, _connection in self._connections.values():
+                manager.__exit__(None, None, None)
+            self._connections.clear()
+
+    def __del__(self) -> None:
+        # A replaced reading snapshot may release its last owner on a worker.
+        if hasattr(self, "_lock"):
+            try:
+                self.close()
+            except sqlite3.Error:
+                pass
+
+    def __enter__(self) -> DialogueCatalog:
+        self.validate_current()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def _ids(
+        self, where: str = "1", parameters: Sequence[object] = ()
+    ) -> tuple[str, ...]:
+        return tuple(
+            row[0]
+            for row in self._connection().execute(
+                f"SELECT line_id FROM dialogue WHERE {where} ORDER BY id", parameters
+            )
+        )
+
+    def chapter_ids(self) -> tuple[str, ...]:
+        return tuple(
+            row[0]
+            for row in self._connection().execute(
+                "SELECT chapter FROM dialogue GROUP BY chapter ORDER BY min(id)"
+            )
+        )
+
+    def chapter_exists(self, chapter: str) -> bool:
+        return (
+            self._connection()
+            .execute("SELECT 1 FROM dialogue WHERE chapter=? LIMIT 1", (chapter,))
+            .fetchone()
+            is not None
+        )
+
+    def line_exists(self, line_id: str) -> bool:
+        return (
+            self._connection()
+            .execute("SELECT 1 FROM dialogue WHERE line_id=?", (line_id,))
+            .fetchone()
+            is not None
+        )
+
+    def line_ids(self, chapter: str | None = None) -> tuple[str, ...]:
+        return self._ids() if chapter is None else self._ids("chapter=?", (chapter,))
+
+    def iter_line_ids(self, *, original_only: bool = False) -> Iterator[str]:
+        where = " WHERE original_speech=1" if original_only else ""
+        with closing(
+            self._connection().execute(
+                f"SELECT line_id FROM dialogue{where} ORDER BY id"
+            )
+        ) as cursor:
+            while True:
+                self.validate_current()
+                batch = cursor.fetchmany(256)
+                if not batch:
+                    return
+                yield from (row[0] for row in batch)
+
+    def speakers(self, chapter: str | None = None) -> dict[str, str]:
+        where, parameters = ("1", ()) if chapter is None else ("chapter=?", (chapter,))
+        return dict(
+            self._connection().execute(
+                f"SELECT speaker_key, speaker FROM dialogue WHERE {where} GROUP BY speaker_key ORDER BY min(id)",
+                parameters,
+            )
+        )
+
+    def has_original_speech(self) -> bool:
+        return (
+            self._connection()
+            .execute("SELECT 1 FROM dialogue WHERE original_speech=1 LIMIT 1")
+            .fetchone()
+            is not None
+        )
+
+    def has_full_source_audio(self) -> bool:
+        return (
+            self._connection()
+            .execute("SELECT 1 FROM dialogue WHERE full_source_audio=1 LIMIT 1")
+            .fetchone()
+            is not None
+        )
+
+    def voice_role_for_id(self, line_id: str) -> str | None:
+        row = (
+            self._connection()
+            .execute("SELECT voice_character FROM dialogue WHERE line_id=?", (line_id,))
+            .fetchone()
+        )
+        return row[0] if row else None
+
+    @contextmanager
+    def query(self, cancelled: Callable[[], bool] | None = None) -> Iterator[None]:
+        connection = self._connection()
+        if cancelled is None:
+            yield
+            return
+        from vntts.chapter_voice_preload import StoryMatchingCancelled
+
+        if cancelled():
+            raise StoryMatchingCancelled()
+        connection.set_progress_handler(lambda: int(cancelled()), 1000)
+        try:
+            yield
+        except sqlite3.OperationalError as error:
+            if cancelled():
+                raise StoryMatchingCancelled() from error
+            raise StoryCatalogError(
+                f"Unable to query story catalog: {error}"
+            ) from error
+        finally:
+            connection.set_progress_handler(None, 0)
+
+    def exact_ids(
+        self,
+        speaker_key: str | None,
+        symbol_only: bool,
+        exact_key: str,
+    ) -> tuple[str, ...]:
+        where = "symbol_only=? AND exact_key=?"
+        parameters: tuple[object, ...] = (int(symbol_only), exact_key)
+        if speaker_key is not None:
+            where += " AND speaker_key=?"
+            parameters += (speaker_key,)
+        return self._ids(where, parameters)
+
+    def normalized_ids(
+        self, speaker_key: str | None, normalized_key: str
+    ) -> tuple[str, ...]:
+        return (
+            self._ids("normalized_key=?", (normalized_key,))
+            if speaker_key is None
+            else self._ids(
+                "normalized_key=? AND speaker_key=?", (normalized_key, speaker_key)
+            )
+        )
+
+    def _selected(self, line_ids: Sequence[str]) -> dict[str, sqlite3.Row]:
+        unique = tuple(dict.fromkeys(line_ids))
+        rows: dict[str, sqlite3.Row] = {}
+        connection = self._connection()
+        for start in range(0, len(unique), 900):
+            batch = unique[start : start + 900]
+            placeholders = ",".join("?" for _ in batch)
+            rows.update(
+                (row["line_id"], row)
+                for row in connection.execute(
+                    f"SELECT line_id, payload FROM dialogue WHERE line_id IN ({placeholders})",
+                    batch,
+                )
+            )
+        return rows
+
+    def dialogues(self, line_ids: Sequence[str]) -> tuple[ChapterDialogue, ...]:
+        from vntts.chapter_voice_preload import ChapterDialogue
+
+        rows = self._selected(line_ids)
+        result = []
+        try:
+            for key in line_ids:
+                if key not in rows:
+                    continue
+                line = ChapterDialogue(**json.loads(rows[key]["payload"]))
+                if line.line_id != key:
+                    raise StoryCatalogError(
+                        "Story catalog dialogue line identity changed"
+                    )
+                result.append(line)
+        except (KeyError, ValueError, TypeError) as error:
+            raise StoryCatalogError("Story catalog dialogue payload changed") from error
+        return tuple(result)
+
+    def iter_seed_rows(
+        self,
+        projection: str,
+        max_distance: int = 4,
+        prefix: bool = False,
+        chapter: str | None = None,
+        original: bool | None = None,
+    ) -> Iterator[tuple[str, str]]:
+        """Stream identities and projections together, without a second SQL lookup."""
+        where, parameters = self._seed_where(
+            projection, max_distance, prefix, chapter, original
+        )
+        with closing(
+            self._connection().execute(
+                f"SELECT line_id, projection FROM dialogue WHERE {where} ORDER BY id",
+                parameters,
+            )
+        ) as cursor:
+            while True:
+                self.validate_current()
+                batch = cursor.fetchmany(256)
+                if not batch:
+                    return
+                yield from ((row[0], row[1]) for row in batch)
+
+    def _seed_where(
+        self,
+        projection: str,
+        max_distance: int,
+        prefix: bool,
+        chapter: str | None,
+        original: bool | None,
+    ) -> tuple[str, Sequence[object]]:
+        if max_distance < 0:
+            raise ValueError("The edit limit must be nonnegative")
+        blocks = max_distance + 1
+        if max_distance == 0:
+            where, values = (
+                _prefix_predicate(projection)
+                if prefix
+                else ("projection=?", (projection,))
+            )
+            conditions = [where]
+            parameters = list(values)
+        elif len(projection) < blocks:
+            conditions = ["projection_length>=?"]
+            parameters = [len(projection) - max_distance]
+            if not prefix:
+                conditions.append("projection_length<=?")
+                parameters.append(len(projection) + max_distance)
+        else:
+            width = min(3, len(projection) // blocks)
+            connection = self._connection()
+            tokens: list[str] = []
+            frequencies: dict[str, int] = {}
+            for block in range(blocks):
+                offset = len(projection) * block // blocks
+                value = projection[offset : len(projection) * (block + 1) // blocks]
+                options = []
+                for relative in range(len(value) - width + 1):
+                    position = offset + relative
+                    terms = tuple(
+                        _gram_token(value[relative : relative + width], bucket)
+                        for bucket in range(
+                            max(0, position - max_distance) // _GRAM_BUCKET,
+                            (position + max_distance) // _GRAM_BUCKET + 1,
+                        )
+                    )
+                    frequency = 0
+                    for token in terms:
+                        if token not in frequencies:
+                            row = connection.execute(
+                                "SELECT doc FROM dialogue_frequency WHERE term=?",
+                                (token,),
+                            ).fetchone()
+                            frequencies[token] = row[0] if row else 0
+                        frequency += frequencies[token]
+                    options.append((frequency, terms))
+                # A surviving block may shift by the whole edit budget in either direction.
+                tokens.extend(min(options)[1])
+            conditions = [
+                "id IN (SELECT rowid FROM dialogue_grams WHERE dialogue_grams MATCH ?)",
+                "projection_length>=?",
+            ]
+            parameters = [
+                " OR ".join(sorted(set(tokens))),
+                len(projection) - max_distance,
+            ]
+            if not prefix:
+                conditions.append("projection_length<=?")
+                parameters.append(len(projection) + max_distance)
+        if chapter is not None:
+            conditions.append("chapter=?")
+            parameters.append(chapter)
+        if original is not None:
+            conditions.append("original_speech=?")
+            parameters.append(int(original))
+        return " AND ".join(conditions), parameters
+
+    def records(self, line_ids: Sequence[str]) -> StoryIndexDocument:
+        """Hydrate only requested canonical rows and verify each stored byte hint."""
+        from vntts.content_revision import _signature
+        from vntts.story_index_snapshot import load_story_index_snapshot
+
+        connection = self._connection()
+        locations = self.catalog._record_locations(connection, self._source, line_ids)
+        if locations is None:
+            raise StoryCatalogError("Story catalog selected line identities changed")
+        rows = []
+        with open_regular_binary(self.source_path) as stream:
+            if _signature(os.fstat(stream.fileno()))[:-1] != self.signature[:-1]:
+                raise StoryCatalogError("Story catalog source changed")
+            for line_id, offset, length, digest in locations:
+                stream.seek(offset)
+                raw = stream.read(length)
+                if hashlib.sha256(raw).hexdigest() != digest:
+                    raise StoryCatalogError("Story catalog source row changed")
+                actual = decode_json(raw)
+                if not is_json_object(actual) or actual.get("line_id") != line_id:
+                    raise StoryCatalogError(
+                        "Story catalog source line identity changed"
+                    )
+                rows.append(raw)
+            if _signature(os.fstat(stream.fileno()))[:-1] != self.signature[:-1]:
+                raise StoryCatalogError("Story catalog source changed")
+        self.validate_current()
+        metadata = dict(self.metadata)
+        metadata.pop("selection_origin", None)
+        metadata["line_count"] = len(rows)
+        payload = (
+            json.dumps(metadata, ensure_ascii=False).encode() + b"\n" + b"".join(rows)
+        )
+        return load_story_index_snapshot(self.source_path, payload)

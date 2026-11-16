@@ -18,7 +18,6 @@ from vntts_artifacts.generated_audio import (
 from vntts_artifacts.story_index import StoryIndexError
 
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
-from vntts.content_revision import ContentRevision, source_signature
 from vntts.current_voice import CurrentVoiceSnapshot, RecordedReferenceSources
 from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
@@ -38,12 +37,12 @@ from vntts.path_safety import (
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
     PregenerationSetupError,
-    story_game_id,
+    open_reading_catalog,
 )
 from vntts.preparation_catalog import PreparationCatalogError
+from vntts.prepared_dialogue_store import PreparedDialogueStore, canonical_identity
 from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
-from vntts.story_index_snapshot import load_story_index_snapshot
 from vntts.voices import synthesis_character_for_line
 
 
@@ -147,58 +146,14 @@ class PreparedAudioSnapshot:
 
     @cached_property
     def preloader(self) -> ChapterVoicePreloader:
-        by_id: defaultdict[str, list[tuple[tuple[str, str], ChapterDialogue]]] = (
-            defaultdict(list)
+        return ChapterVoicePreloader.from_store(
+            PreparedDialogueStore(
+                tuple(
+                    (source.game_id, source.preloader.store) for source in self.sources
+                ),
+                tuple(catalog.store for catalog in self.catalogs),
+            )
         )
-        for source in self.sources:
-            for line in source.preloader.dialogue:
-                if line.line_id:
-                    by_id[line.line_id].append((source.scope, line))
-        current = {
-            line.line_id: line
-            for catalog in self.catalogs
-            for line in catalog.dialogue
-            if line.line_id
-        }
-        rows = []
-        for line_id, candidates in by_id.items():
-            catalog_line = current.pop(line_id, None)
-            if catalog_line is not None:
-                rows.append(
-                    next(
-                        (
-                            line
-                            for _scope, line in sorted(
-                                candidates,
-                                key=lambda pair: pair[1].has_full_source_audio,
-                                reverse=True,
-                            )
-                            if _canonical_identity(line)
-                            == _canonical_identity(catalog_line)
-                            and line.source_audio_id == catalog_line.source_audio_id
-                            and line.source_audio_status
-                            == catalog_line.source_audio_status
-                            and line.source_audio_authoritative
-                            and line.source_audio_duration_seconds is not None
-                        ),
-                        catalog_line,
-                    )
-                )
-                continue
-            if len({scope[0] for scope, _line in candidates}) != 1:
-                continue
-            if len({_canonical_identity(line) for _scope, line in candidates}) == 1:
-                rows.append(
-                    next(
-                        (
-                            line
-                            for _scope, line in candidates
-                            if line.has_full_source_audio
-                        ),
-                        candidates[0][1],
-                    )
-                )
-        return ChapterVoicePreloader((*rows, *current.values()))
 
     def library_for(
         self,
@@ -229,28 +184,7 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
     ) -> None:
         self.sources = sources
         self.entry_filter = entry_filter
-        current = {
-            (catalog.game_id, line.line_id): line
-            for catalog in catalogs
-            for line in catalog.dialogue
-        }
-        self.full_source_audio_lines = {
-            (source.game_id, _canonical_identity(line))
-            for source in sources
-            for line in source.preloader.dialogue
-            if line.has_original_speech
-            and (
-                (catalog_line := current.get((source.game_id, line.line_id))) is None
-                or (catalog_line.source_audio_id, catalog_line.source_audio_status)
-                == (line.source_audio_id, line.source_audio_status)
-            )
-        }
-        self.full_source_audio_lines.update(
-            (catalog.game_id, _canonical_identity(line))
-            for catalog in catalogs
-            for line in catalog.dialogue
-            if line.has_original_speech
-        )
+        self.catalogs = catalogs
         self.reference_sources: dict[Path, RecordedReferenceSources] = {}
         self.invalid_reference_manifests: set[Path] = set()
         if isinstance(entry_filter, CurrentVoiceSnapshot):
@@ -297,7 +231,7 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
             games.add(source.game_id)
             line = source.preloader.line_for_id(line_id)
             if line is not None:
-                canonical_lines.add(_canonical_identity(line))
+                canonical_lines.add(canonical_identity(line))
             if self._matches(entry, source):
                 candidates.append((entry, source.library))
         if len(games) > 1 or len(canonical_lines) != 1:
@@ -307,15 +241,41 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
             key=lambda pair: (pair[0].audio_sha256, str(pair[1].manifest_path)),
         )
 
+    def _has_original_speech(self, game_id: str, line: ChapterDialogue) -> bool:
+        current = next(
+            (
+                row
+                for catalog in reversed(self.catalogs)
+                if catalog.game_id == game_id
+                and (row := catalog.store.line_for_id(line.line_id or "")) is not None
+            ),
+            None,
+        )
+        identity = canonical_identity(line)
+        if (
+            current is not None
+            and canonical_identity(current) == identity
+            and current.has_original_speech
+        ):
+            return True
+        return any(
+            source.game_id == game_id
+            and (row := source.preloader.line_for_id(line.line_id)) is not None
+            and canonical_identity(row) == identity
+            and row.has_original_speech
+            and (
+                current is None
+                or (current.source_audio_id, current.source_audio_status)
+                == (row.source_audio_id, row.source_audio_status)
+            )
+            for source in self.sources
+        )
+
     def _matches(
         self, entry: GeneratedAudioEntryLike, source: PreparedAudioSource
     ) -> bool:
         line = source.preloader.line_for_id(entry.line_id)
-        if (
-            line is not None
-            and (source.game_id, _canonical_identity(line))
-            in self.full_source_audio_lines
-        ):
+        if line is not None and self._has_original_speech(source.game_id, line):
             return False
         if not isinstance(self.entry_filter, CurrentVoiceSnapshot):
             return self.entry_filter(entry)
@@ -327,6 +287,8 @@ class DiscoveredAudioLibrary(GeneratedAudioLibrary):
             else None
         )
         voice_role = source.voice_roles.get(entry.line_id)
+        if voice_role is None:
+            voice_role = source.preloader.store.voice_role_for_id(entry.line_id)
         if voice_role and re.fullmatch(r".+__vntts_[0-9a-f]{12}", voice_role):
             voice_role = None
         role = (
@@ -406,10 +368,6 @@ def _name_key(value: str) -> str:
     return " ".join(re.findall(r"\w+", value.casefold()))
 
 
-def _canonical_identity(line: ChapterDialogue) -> tuple[object, ...]:
-    return line.line_id, line.text_sha256, line.speaker, line.text, line.chapter
-
-
 def _bound_component(root: Path, binding: object) -> tuple[Path, str]:
     if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
         raise ValueError("Prepared pack component binding is invalid")
@@ -480,7 +438,8 @@ def discover_prepared_audio(
         manifest = manifest.absolute()
         if manifest.suffix == ".sqlite3":
             require_registered_output(manifest.parent)
-        watched.update((story, manifest))
+        evidence = story.with_name("source-audio-semantic-evidence.json")
+        watched.update((story, manifest, evidence))
         if manifest in sources:
             return
         old = prior_sources.get(manifest.resolve())
@@ -492,7 +451,10 @@ def discover_prepared_audio(
             and (story_hash is None or old.story_sha256 == story_hash)
             and old.voice_manifest == voice_manifest
             and old.voice_manifest_sha256 == voice_manifest_sha256
-            and all(unchanged(value) for value in (story, manifest, voice_manifest))
+            and all(
+                unchanged(value)
+                for value in (story, manifest, voice_manifest, evidence)
+            )
             and (
                 queue_hash is None
                 or old.library.index.metadata.get("source_queue_sha256") == queue_hash
@@ -503,23 +465,24 @@ def discover_prepared_audio(
                 watched.add(voice_manifest)
             return
         canonical_game: str | None
-        if old is not None and old.story_index == story and unchanged(story):
+        if (
+            old is not None
+            and old.story_index == story
+            and unchanged(story)
+            and unchanged(evidence)
+        ):
             actual_hash = old.story_sha256
             preloader = old.preloader
             canonical_game = old.game_id
             game_name = old.game_name
             voice_roles = old.voice_roles
         else:
-            payload = read_regular_bytes(story)
-            actual_hash = hashlib.sha256(payload).hexdigest()
-            story_document = load_story_index_snapshot(story, payload)
-            canonical_game = story_game_id(story_document)
-            game_name = str(story_document.game or "")
-            preloader = ChapterVoicePreloader.load_snapshot(story, payload)
-            voice_roles = {
-                record.line_id: record.voice_character
-                for record in story_document.records
-            }
+            catalog = open_reading_catalog(story, game_id=game or None)
+            actual_hash = catalog.revision.source_sha256
+            canonical_game = catalog.game_id
+            game_name = catalog.game_name
+            preloader = ChapterVoicePreloader.from_store(catalog.store)
+            voice_roles = {}
         if story_hash is not None and actual_hash != story_hash:
             raise ValueError("Prepared story checksum changed")
         if canonical_game and game and canonical_game != game:
@@ -587,6 +550,7 @@ def discover_prepared_audio(
                 for value in (
                     path,
                     old.story_index,
+                    old.story_index.with_name("source-audio-semantic-evidence.json"),
                     old.library.manifest_path,
                     old.voice_manifest,
                 )
@@ -595,7 +559,13 @@ def discover_prepared_audio(
             and (not content_hash or content_hash == old.content_sha256)
         ):
             sources[old.library.manifest_path] = old
-            watched.update((old.story_index, old.library.manifest_path))
+            watched.update(
+                (
+                    old.story_index,
+                    old.story_index.with_name("source-audio-semantic-evidence.json"),
+                    old.library.manifest_path,
+                )
+            )
             if old.voice_manifest is not None:
                 watched.add(old.voice_manifest)
             return
@@ -771,11 +741,14 @@ def discover_prepared_audio(
     for path in sorted(paths):
         path = path.absolute()
         bank = path.with_name("english-bank-index.json")
-        watched.update((path, bank))
+        evidence = path.with_name("source-audio-semantic-evidence.json")
+        watched.update((path, bank, evidence))
 
         def add_catalog() -> None:
             old = prior_catalogs.get(path)
-            if old is not None and unchanged(path) and unchanged(bank):
+            if old is not None and all(
+                unchanged(value) for value in (path, bank, evidence)
+            ):
                 catalogs.append(old)
                 return
             known = next(
@@ -790,33 +763,31 @@ def discover_prepared_audio(
                 name = _name_key(header.get("game", ""))
                 if not name or f" {name} " not in f" {_name_key(game_window_title)} ":
                     return
-            signature = source_signature(path)
-            payload = read_regular_bytes(path)
-            document = load_story_index_snapshot(path, payload)
-            game = story_game_id(document, provider_id=path.parent.parent.name)
-            if game is None:
-                game = (
-                    known.game_id
-                    if known is not None
-                    else next(
-                        (
-                            source.game_id
-                            for source in sources.values()
-                            if source.catalog_story_index == path
-                        ),
-                        None,
-                    )
+            game = (
+                known.game_id
+                if known is not None
+                else next(
+                    (
+                        source.game_id
+                        for source in sources.values()
+                        if source.catalog_story_index == path
+                    ),
+                    None,
                 )
-            if game:
+            )
+            catalog = open_reading_catalog(
+                path,
+                provider_id=path.parent.parent.name,
+                game_id=game,
+            )
+            if catalog.game_id:
                 catalogs.append(
                     ReadingCatalog(
-                        game,
-                        str(document.game or ""),
-                        ContentRevision.capture(
-                            path, payload, document, signature=signature
-                        ),
-                        ChapterVoicePreloader.dialogue_from_story_index(path, document),
-                        root / game if root is not None else None,
+                        catalog.game_id,
+                        catalog.game_name,
+                        catalog.revision,
+                        catalog.store,
+                        root / catalog.game_id if root is not None else None,
                     )
                 )
 

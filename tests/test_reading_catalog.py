@@ -103,18 +103,20 @@ class ReadingCatalogTests(unittest.TestCase):
         scoped = self.snapshot.for_settings(
             AppSettings(game_window_title="Reverse: 1999")
         )
-        self.assertEqual(set(scoped.preloader.by_chapter), {"100630"})
+        self.assertEqual(set(scoped.preloader.store.chapter_ids()), {"100630"})
         self.assertFalse(
             self.snapshot.for_settings(
                 AppSettings(game_window_title="Other game")
             ).catalogs
         )
         explicit = self.snapshot.for_settings(AppSettings(story_index=str(self.source)))
-        self.assertEqual(explicit.preloader.dialogue, scoped.preloader.dialogue)
+        self.assertEqual(
+            tuple(explicit.preloader.dialogue), tuple(scoped.preloader.dialogue)
+        )
 
     def test_changed_catalog_is_reloaded_but_unchanged_catalog_is_reused(self):
         with patch(
-            "vntts.prepared_audio_discovery.load_story_index_snapshot",
+            "vntts.prepared_audio_discovery.open_reading_catalog",
             side_effect=AssertionError("reloaded unchanged catalog"),
         ):
             unchanged = discover_prepared_audio(

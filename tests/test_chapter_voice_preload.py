@@ -323,10 +323,10 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                     ("Bea",),
                 )
                 self.assertEqual(
-                    [row.line_id for row in preloader.by_chapter["1"]],
+                    [row.line_id for row in preloader.chapter_rows("1")],
                     ["test:24", "test:111", "test:26"],
                 )
-        self.assertEqual(projected.by_chapter, indexed.by_chapter)
+        self.assertEqual(projected.chapter_rows("1"), indexed.chapter_rows("1"))
 
     def test_duplicate_exact_dialogue_uses_story_distance(self):
         preloader = ChapterVoicePreloader(

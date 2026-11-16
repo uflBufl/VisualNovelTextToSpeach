@@ -975,7 +975,7 @@ class AppController:
         text: str,
         *,
         preloader: ChapterVoicePreloader,
-        line_ids: Sequence[str],
+        line_ids: Sequence[str] | None,
         prefer_synthesis: bool,
     ) -> tuple[ChapterDialogue | None, object]:
         """Resolve one complete startup line inside the configured sequence."""
@@ -988,22 +988,15 @@ class AppController:
         )
         return match.line, match.method
 
-    def _initial_live_sequence_line_ids_locked(self) -> tuple[str, ...]:
+    def _initial_live_sequence_line_ids_locked(self) -> tuple[str, ...] | None:
         plan = self.live_sequence_plan
-        line_ids = (
-            tuple(
-                line.line_id
-                for line in self.chapter_voice_preloader.dialogue
-                if line.line_id and line.text_sha256
-            )
-            if plan is None or self.settings.live_sequence_mode == "off"
-            else tuple(
-                event.line_id
-                for event in plan.events.values()
-                if event.is_speech and event.line_id is not None
-            )
+        if plan is None or self.settings.live_sequence_mode == "off":
+            return None
+        return tuple(
+            event.line_id
+            for event in plan.events.values()
+            if event.is_speech and event.line_id is not None
         )
-        return line_ids
 
     def _story_matching_owner_locked(self) -> tuple[object, ...]:
         cursor, reader = self.story_cursor, self.live_reader
@@ -1095,7 +1088,7 @@ class AppController:
             ),
         }
         if tracker_options["complete_dialogue_only"] and (
-            self.chapter_voice_preloader.dialogue or self.automatic_prepared_reading
+            self.chapter_voice_preloader.has_dialogue or self.automatic_prepared_reading
         ):
             tracker_options["incomplete_dialogue_probe"] = lambda character, text: (
                 self.chapter_voice_preloader.is_unique_incomplete_prefix(
@@ -1169,9 +1162,7 @@ class AppController:
             self.settings.speech_backend if live_backend is None else live_backend.name
         )
         self._refresh_prepared_audio(force=True)
-        has_original = any(
-            row.has_original_speech for row in self.chapter_voice_preloader.dialogue
-        )
+        has_original = self.chapter_voice_preloader.has_original_speech
         if policy == "live-tts-only" and not has_original:
             self.status_handler(f"Audio policy: live TTS only ({live_name})")
             return None
@@ -1245,7 +1236,7 @@ class AppController:
         snapshot = self.prepared_audio_snapshot
         if snapshot is not None:
             for catalog in snapshot.catalogs:
-                row = catalog.by_line_id.get(line.line_id or "")
+                row = catalog.store.line_for_id(line.line_id or "")
                 if row is not None and (
                     row.speaker,
                     row.text,
@@ -1268,7 +1259,7 @@ class AppController:
             return
         if not any(
             row.source_audio_main_story and not row.has_full_source_audio
-            for row in self.chapter_voice_preloader.by_chapter.get(line.chapter, ())
+            for row in self.chapter_voice_preloader.chapter_rows(line.chapter)
         ):
             return
         catalog = self._reading_catalog_for(line)
@@ -1409,7 +1400,7 @@ class AppController:
                     current is not None
                     and same_game
                     and same_profile
-                    and current.chapter in preloader.by_chapter
+                    and current.chapter in preloader.store.chapter_ids()
                 ):
                     preloader.current_match = current
                 else:
@@ -1879,7 +1870,7 @@ class AppController:
                     else None
                 )
                 current_line = (
-                    preloader.by_line_id.get(chunk.line_id)
+                    preloader.line_for_id(chunk.line_id)
                     if chunk is not None and chunk.line_id is not None
                     else None
                 )
@@ -1901,9 +1892,10 @@ class AppController:
                 ):
                     confirmation_candidate_ids = tuple(
                         row.line_id
-                        for row in preloader.by_chapter.get(current_line.chapter, ())
+                        for row in preloader.chapter_rows(current_line.chapter)
                         if row.line_id
                     )
+            line_ids: tuple[str, ...] | None
             backend = self.speech_backend
             expected_prefix = self._expected_sequence_prefix_line_locked()
             chapter_line_ids = self._chapter_sequence_line_ids_locked()
@@ -1925,12 +1917,17 @@ class AppController:
                     and event.line_id is not None
                 )
             else:
-                rows = (
-                    preloader.dialogue
+                line_ids = (
+                    None
                     if preloader.current_match is None
-                    else preloader.by_chapter.get(preloader.current_match.chapter, ())
+                    else tuple(
+                        row.line_id
+                        for row in preloader.chapter_rows(
+                            preloader.current_match.chapter
+                        )
+                        if row.line_id
+                    )
                 )
-                line_ids = tuple(row.line_id for row in rows if row.line_id)
             preloader = self._story_matching_snapshot_locked()
             owner = self._story_matching_owner_locked()
             lease.owner = owner
@@ -1961,7 +1958,7 @@ class AppController:
             if expected_prefix is not None:
                 evidence = compare_text(
                     prepare_text(result.text),
-                    preloader.matching_text[expected_prefix],
+                    preloader.matching_shape(expected_prefix),
                     limit=0,
                 )
                 if not evidence.complete and evidence.prefix_distance == 0:
@@ -2762,7 +2759,7 @@ class AppController:
                     observed = _normalize_story_text(text)
                     speaker = _normalize_story_text(character)
                     evidence = compare_text(
-                        prepare_text(text), preloader.matching_text[expected], limit=0
+                        prepare_text(text), preloader.matching_shape(expected), limit=0
                     )
                     prefix_matches = evidence.complete or evidence.prefix_distance == 0
                     speaker_matches = bool(
@@ -4301,15 +4298,19 @@ class AppController:
         if self.automatic_prepared_reading:
             preloader = self.chapter_voice_preloader
             match = preloader.current_match
-            rows = (
-                preloader.by_chapter.get(match.chapter, ())
+            line_ids = (
+                tuple(
+                    row.line_id
+                    for row in preloader.chapter_rows(match.chapter)
+                    if row.line_id
+                )
                 if match
-                else preloader.dialogue
+                else None
             )
             line, _method = preloader.resolve_complete_among(
                 routed_character,
                 routed_text,
-                (row.line_id for row in rows if row.line_id),
+                line_ids,
                 update_context=False,
                 prefer_synthesis=match is None,
                 fully_observed_line_id=self._fully_observed_line_id(),

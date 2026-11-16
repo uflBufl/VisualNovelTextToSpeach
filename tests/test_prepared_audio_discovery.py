@@ -19,7 +19,11 @@ from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.document_identity import sha256_file
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.path_safety import read_regular_bytes
-from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
+from vntts.pregeneration_setup import (
+    PregenerationJobStore,
+    inspect_story_index,
+    open_reading_catalog,
+)
 from vntts.prepared_audio_discovery import (
     PreparedAudioSnapshot,
     discover_prepared_audio,
@@ -37,6 +41,58 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
         return ContentRevision.capture(
             path, payload, load_story_index_snapshot(path, payload), signature=signature
         )
+
+    def test_candidate_and_archive_queries_do_not_enumerate_dialogue(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, text, text_hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            snapshot = discover_prepared_audio(game_pack=pack)
+            store = snapshot.sources[0].preloader.store
+            with patch.object(
+                store, "iter_rows", side_effect=AssertionError("enumerated dialogue")
+            ):
+                preloader = snapshot.preloader
+                self.assertTrue(preloader.has_dialogue)
+                line = preloader.line_for_id(line_id)
+                self.assertEqual(preloader.resolve_exact(line.speaker, text), line)
+                library = snapshot.library_for(lambda _entry: True)
+                self.assertTrue(library.has_entry(line_id, text_hash))
+
+                def candidates(*_args, **_kwargs):
+                    yield line
+                    self.fail("consumed candidates past the first witness")
+
+                with patch.object(store, "iter_candidates", side_effect=candidates):
+                    self.assertIs(next(preloader.store.iter_candidates(text)), line)
+
+    def test_optional_semantic_evidence_invalidates_source_and_catalog_reuse(self):
+        with TemporaryDirectory() as temporary:
+            pack, _line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            snapshot = discover_prepared_audio(game_pack=pack)
+            story_index = snapshot.sources[0].story_index
+            snapshot = discover_prepared_audio(game_pack=pack, story_index=story_index)
+            evidence = story_index.with_name("source-audio-semantic-evidence.json")
+            for payload in (b"{}", b"{ }", None):
+                with self.subTest(payload=payload):
+                    if payload is None:
+                        evidence.unlink()
+                    else:
+                        evidence.write_bytes(payload)
+                    self.assertTrue(snapshot.changed())
+                    with patch(
+                        "vntts.prepared_audio_discovery.open_reading_catalog",
+                        wraps=open_reading_catalog,
+                    ) as opened:
+                        refreshed = discover_prepared_audio(
+                            game_pack=pack, story_index=story_index, previous=snapshot
+                        )
+                    self.assertTrue(opened.called)
+                    self.assertIsNot(refreshed.sources[0], snapshot.sources[0])
+                    self.assertIsNot(refreshed.catalogs[0], snapshot.catalogs[0])
+                    snapshot = refreshed
 
     def test_catalog_merge_preserves_qualified_partial_original_evidence(self):
         with TemporaryDirectory() as temporary:
@@ -68,6 +124,148 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             snapshot = PreparedAudioSnapshot((source,), catalogs=(catalog,))
             self.assertIs(snapshot.preloader.line_for_id(line_id), partial)
             self.assertFalse(partial.has_original_speech)
+
+    def test_original_iteration_queries_only_originals_and_applies_current_metadata(
+        self,
+    ):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            original = replace(
+                source.preloader.line_for_id(line_id),
+                source_audio_status="available",
+                source_audio_completeness="full",
+                source_audio_authoritative=True,
+                source_audio_duration_seconds=1.0,
+            )
+            source = replace(source, preloader=type(source.preloader)((original,)))
+            current = replace(
+                original,
+                source_audio_status="absent",
+                source_audio_id=None,
+                source_audio_completeness="unknown",
+                source_audio_authoritative=False,
+                source_audio_duration_seconds=None,
+            )
+            catalog = ReadingCatalog(
+                source.game_id,
+                source.game_name,
+                self.revision(source.story_index),
+                (current,),
+            )
+            with (
+                patch.object(
+                    source.preloader.store,
+                    "iter_rows",
+                    side_effect=AssertionError("enumerated dialogue"),
+                ),
+                patch.object(
+                    source.preloader.store,
+                    "iter_original_rows",
+                    side_effect=lambda: iter((original,)),
+                ),
+                patch.object(
+                    catalog.store,
+                    "iter_rows",
+                    side_effect=AssertionError("enumerated catalog"),
+                ),
+                patch.object(
+                    catalog.store, "iter_original_rows", return_value=iter(())
+                ),
+            ):
+                self.assertEqual(
+                    tuple(
+                        PreparedAudioSnapshot(
+                            (source,)
+                        ).preloader.store.iter_original_rows()
+                    ),
+                    (original,),
+                )
+                self.assertEqual(
+                    tuple(
+                        PreparedAudioSnapshot(
+                            (source,), catalogs=(catalog,)
+                        ).preloader.store.iter_original_rows()
+                    ),
+                    (),
+                )
+
+    def test_replaced_catalog_text_cannot_match_an_obsolete_archive_candidate(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            old = source.preloader.line_for_id(line_id)
+            current = replace(old, text="The current canonical text.")
+            catalog = ReadingCatalog(
+                source.game_id,
+                source.game_name,
+                self.revision(source.story_index),
+                (current,),
+            )
+            preloader = PreparedAudioSnapshot((source,), catalogs=(catalog,)).preloader
+            self.assertIsNone(preloader.resolve_exact(old.speaker, text))
+            self.assertIs(
+                preloader.resolve_exact(current.speaker, current.text), current
+            )
+
+    def test_candidate_lanes_follow_resolved_original_authority(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            source = discover_prepared_audio(game_pack=pack).sources[0]
+            absent = source.preloader.line_for_id(line_id)
+            full = replace(
+                absent,
+                source_audio_status="available",
+                source_audio_id="original-voice",
+                source_audio_completeness="full",
+                source_audio_authoritative=True,
+                source_audio_duration_seconds=1.0,
+            )
+            raw = replace(
+                full,
+                source_audio_completeness="unknown",
+                source_audio_authoritative=False,
+                source_audio_duration_seconds=None,
+            )
+            main_story = replace(raw, source_audio_main_story=True)
+            for archived, current, expected in (
+                (absent, main_story, main_story),
+                (full, raw, full),
+                (full, absent, absent),
+            ):
+                with self.subTest(archived=archived, current=current):
+                    archived_source = replace(
+                        source, preloader=type(source.preloader)((archived,))
+                    )
+                    catalog = ReadingCatalog(
+                        source.game_id,
+                        source.game_name,
+                        self.revision(source.story_index),
+                        (current,),
+                    )
+                    store = PreparedAudioSnapshot(
+                        (archived_source,), catalogs=(catalog,)
+                    ).preloader.store
+                    rows = store.candidates(text, prefix=False)
+                    original = store.candidates(text, prefix=False, original=True)
+                    synthesis = store.candidates(text, prefix=False, original=False)
+                    self.assertEqual(rows, (expected,))
+                    self.assertEqual(
+                        original, (expected,) if expected.has_original_speech else ()
+                    )
+                    self.assertEqual(
+                        synthesis, () if expected.has_original_speech else (expected,)
+                    )
+                    self.assertEqual(
+                        {row.line_id for row in rows},
+                        {row.line_id for row in (*original, *synthesis)},
+                    )
 
     def test_current_catalog_replaces_obsolete_original_audio_authority(self):
         with TemporaryDirectory() as temporary:

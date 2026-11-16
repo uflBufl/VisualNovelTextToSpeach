@@ -47,9 +47,10 @@ from vntts.story_index_snapshot import load_story_index_snapshot
 
 if TYPE_CHECKING:
     from vntts.pregeneration_queue import PregenerationInput
+    from vntts.reading_catalog import ReadingCatalog
 
 job_schema_version = 1
-story_catalog_schema_version = 9
+story_catalog_schema_version = 11
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -325,6 +326,8 @@ def inspect_story_index(
             document = (
                 load_verified_story_index_document(path, checksum)
                 if selected_snapshot
+                else load_story_index_snapshot(path, read_regular_bytes(path))
+                if persistent_cache
                 else _cached_story_index_document(str(path), checksum)
             )
             selections = _story_selections(
@@ -388,19 +391,90 @@ def inspect_story_index(
     return content
 
 
-def _story_catalog_path(checksum: str) -> Path:
+def _story_catalog_path(checksum: str, evidence_sha256: str) -> Path:
+    identity = hashlib.sha256(f"{checksum}:{evidence_sha256}".encode()).hexdigest()
     return (
         Path(get_local_data_directory())
         / "pregeneration"
         / "story-catalogs"
-        / f"{checksum}.sqlite3"
+        / f"{identity}-v{story_catalog_schema_version}.sqlite3"
+    )
+
+
+def open_reading_catalog(
+    path: PathInput,
+    *,
+    provider_id: str = "local-story-index",
+    game_id: str | None = None,
+    audio_root: Path | None = None,
+) -> ReadingCatalog:
+    """Admit once, then query the derived index without loading the whole corpus."""
+    from vntts.chapter_voice_preload import ChapterVoicePreloader
+    from vntts.content_revision import ContentRevision, source_signature
+    from vntts.dialogue_search import IndexedDialogueStore, MemoryDialogueStore
+    from vntts.reading_catalog import ReadingCatalog
+
+    path = Path(path).expanduser().absolute()
+    signature = source_signature(path)
+    content = inspect_story_index(path, provider_id=provider_id, game_id=game_id)
+    evidence_sha256 = hashlib.sha256(_source_audio_evidence_payload(path)).hexdigest()
+    if path.stat().st_size >= story_catalog_minimum_bytes:
+        catalog = StoryCatalog(
+            _story_catalog_path(content.story_index_sha256, evidence_sha256)
+        )
+        if (
+            _has_selection_origin(path)
+            and catalog.load(
+                content.story_index_sha256,
+                evidence_sha256,
+                story_catalog_schema_version,
+            )
+            is None
+        ):
+            # Admit the selection itself; the parent index must never widen its scope.
+            document = load_verified_story_index_document(
+                path, content.story_index_sha256
+            )
+            _save_story_catalog(content, evidence_sha256, document)
+        owner = catalog.open_dialogue(
+            path,
+            content.story_index_sha256,
+            evidence_sha256,
+            cache_version=story_catalog_schema_version,
+        )
+        if owner.signature != signature:
+            owner.close()
+            raise StoryContentChanged("Story content changed during reading admission")
+        return ReadingCatalog(
+            content.game_id or "",
+            content.game,
+            ContentRevision.from_catalog(owner),
+            IndexedDialogueStore(owner),
+            audio_root,
+        )
+    payload = read_regular_bytes(path)
+    if hashlib.sha256(payload).hexdigest() != content.story_index_sha256:
+        raise StoryContentChanged("Story content changed during reading admission")
+    document = load_story_index_snapshot(path, payload)
+    store = MemoryDialogueStore(
+        ChapterVoicePreloader.dialogue_from_story_index(path, document),
+        voice_roles={
+            record.line_id: record.voice_character for record in document.records
+        },
+    )
+    return ReadingCatalog(
+        content.game_id or "",
+        content.game,
+        ContentRevision.capture(path, payload, document, signature=signature),
+        store,
+        audio_root,
     )
 
 
 def _load_story_catalog(
     path: Path, checksum: str, provider_id: str, evidence_sha256: str
 ) -> GameContent | None:
-    catalog = _story_catalog_path(checksum)
+    catalog = _story_catalog_path(checksum, evidence_sha256)
     try:
         document = StoryCatalog(catalog).load(
             checksum, evidence_sha256, story_catalog_schema_version
@@ -486,7 +560,7 @@ def _save_story_catalog(
     story: StoryIndexDocument | None = None,
 ) -> None:
     try:
-        catalog = _story_catalog_path(content.story_index_sha256)
+        catalog = _story_catalog_path(content.story_index_sha256, evidence_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
         StoryCatalog(catalog).save(
             {
@@ -649,7 +723,7 @@ def load_verified_story_records(
         evidence_sha256 = hashlib.sha256(evidence).hexdigest()
         try:
             locations = StoryCatalog(
-                _story_catalog_path(expected_sha256)
+                _story_catalog_path(expected_sha256, evidence_sha256)
             ).record_locations(expected_sha256, evidence_sha256, selected)
             if locations is not None:
                 if source_order:

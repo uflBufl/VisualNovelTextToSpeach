@@ -11,6 +11,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vntts.story_catalog import DialogueCatalog
 
 from vntts_artifacts.story_index import StoryIndexDocument, StoryIndexError
 
@@ -45,6 +49,7 @@ class ContentRevision:
     _signature: SourceSignature
     _metadata: bytes
     _chapters: Mapping[str, tuple[tuple[int, int, str], ...]]
+    _catalog: DialogueCatalog | None = None
 
     @classmethod
     def capture(
@@ -80,12 +85,30 @@ class ContentRevision:
             MappingProxyType({key: tuple(value) for key, value in chapters.items()}),
         )
 
+    @classmethod
+    def from_catalog(cls, catalog: DialogueCatalog) -> ContentRevision:
+        """Reuse admitted SQL locations without retaining a corpus-sized map."""
+        catalog.validate_current()
+        return cls(
+            catalog.source_path,
+            catalog.source_sha256,
+            catalog.signature,
+            catalog.header,
+            MappingProxyType({}),
+            catalog,
+        )
+
     def validate_current(self) -> None:
+        if self._catalog is not None:
+            self._catalog.validate_current()
         if source_signature(self.source_path) != self._signature:
             raise StoryIndexError("Content revision source changed")
 
     def read_chapter(self, chapter: str) -> StoryIndexDocument:
         """Read and verify only the chapter rows admitted in this revision."""
+        if self._catalog is not None:
+            self.validate_current()
+            return self._catalog.records(self._catalog.line_ids(chapter))
         rows = []
         with open_regular_binary(self.source_path) as stream:
             # Windows descriptor ctime can differ from path stat ctime.

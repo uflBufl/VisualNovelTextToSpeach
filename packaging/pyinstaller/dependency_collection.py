@@ -19,6 +19,7 @@ def collect_packaged_dependencies(datas, binaries, hidden_imports):
         "ko_speech_tools",
         "trainer",
         "rapidocr",
+        "rapidfuzz",
         "onnxruntime",
     ):
         package_datas, package_binaries, package_imports = collect_all(package)

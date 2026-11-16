@@ -301,7 +301,7 @@ class PregenerationSetupTest(unittest.TestCase):
                     side_effect=AssertionError("source catalog was parsed again"),
                 ):
                     second = inspect_story_index(path, provider_id="second")
-                self.assertNotIn(b"Generate me.", catalog.read_bytes())
+                self.assertIn(b"Generate me.", catalog.read_bytes())
                 catalog.write_bytes(b"invalid cache")
                 _cached_story_index_document.cache_clear()
                 rebuilt = inspect_story_index(path, provider_id="rebuilt")

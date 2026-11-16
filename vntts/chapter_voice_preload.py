@@ -1,14 +1,17 @@
 import math
 import re
 import unicodedata
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from copy import copy
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
+from itertools import chain
 from pathlib import Path
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
+from weakref import finalize
 
 from durable_file import atomic_output_path
 from r1999extractor.source_audio_policy import has_full_main_story_source_audio
@@ -20,6 +23,7 @@ from vntts_artifacts.story_index import (
     load_story_index_document,
 )
 
+from vntts.audio_cache import BoundedCache
 from vntts.cleanup import temporary_directory
 from vntts.dialog import is_symbol_only_text, symbol_text_key
 from vntts.document_identity import is_lowercase_sha256
@@ -35,6 +39,9 @@ from vntts.story_text_matching import (
     compare_text,
     prepare_text,
 )
+
+if TYPE_CHECKING:
+    from vntts.dialogue_search import DialogueStore
 
 VERIFIED_SOURCE_AUDIO_COMPLETION = "verified-media-duration-seconds"
 SourceAudioExtension: TypeAlias = tuple[str, str | None, float | None, str, bool]
@@ -133,48 +140,75 @@ class ChapterVoicePreloader:
     def __init__(
         self, dialogue: Iterable[ChapterDialogue] = (), *, lookahead_rows: int = 80
     ) -> None:
-        self.dialogue = tuple(dialogue)
+        from vntts.dialogue_search import MemoryDialogueStore
+
+        source = MemoryDialogueStore(dialogue)
+        self.store: DialogueStore = source
+        self.dialogue: Sequence[ChapterDialogue] = source.rows
+        self._indexed_line_count: int | None = len(self.dialogue)
         self.last_resolution_diagnostics: ResolutionDiagnostics = {}
         self.lookahead_rows = max(1, int(lookahead_rows))
-        self.by_speaker: defaultdict[str, list[ChapterDialogue]] = defaultdict(list)
-        self.by_line_id: dict[str, ChapterDialogue] = {}
-        self.by_chapter: defaultdict[str, list[ChapterDialogue]] = defaultdict(list)
-        self.by_chapter_speaker: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
-            defaultdict(list)
+        self._matching_shapes: BoundedCache[ChapterDialogue, MatchingText] = (
+            BoundedCache(512)
         )
-        self.by_exact_dialogue: defaultdict[
-            tuple[str, bool, str], list[ChapterDialogue]
-        ] = defaultdict(list)
-        self.by_normalized_dialogue: defaultdict[
-            tuple[str, str], list[ChapterDialogue]
-        ] = defaultdict(list)
-        self.normalized_text: dict[ChapterDialogue, str] = {}
-        self.matching_text: dict[ChapterDialogue, MatchingText] = {}
-        self.speaker_names: dict[str, str] = {}
-        for row in self.dialogue:
-            if row.line_id:
-                self.by_line_id[row.line_id] = row
-            speaker_key = _normalize(row.speaker)
-            self.by_speaker[speaker_key].append(row)
-            self.speaker_names.setdefault(speaker_key, row.speaker)
-            self.by_chapter[row.chapter].append(row)
-            self.by_chapter_speaker[(row.chapter, speaker_key)].append(row)
-            self.normalized_text[row] = _normalize(row.text)
-            self.matching_text[row] = prepare_text(row.text)
-            self.by_exact_dialogue[
-                (
-                    speaker_key,
-                    is_symbol_only_text(row.text),
-                    _normalize_exact_text(row.text),
-                )
-            ].append(row)
-            self.by_normalized_dialogue[
-                (speaker_key, self.normalized_text[row])
-            ].append(row)
-        for rows in self.by_chapter.values():
-            rows.sort(key=_story_position)
+        self._normalized_shapes: BoundedCache[ChapterDialogue, str] = BoundedCache(512)
+        self.speaker_names = self.store.speakers()
         self.current_match: ChapterMatch | None = None
         self._matching_cancelled: Callable[[], bool] | None = None
+
+    @classmethod
+    def from_store(
+        cls, store: DialogueStore, *, lookahead_rows: int = 80
+    ) -> "ChapterVoicePreloader":
+        from vntts.dialogue_search import (
+            DialogueRows,
+            IndexedDialogueStore,
+            MemoryDialogueStore,
+        )
+
+        preloader = cls(lookahead_rows=lookahead_rows)
+        preloader.store = store
+        preloader.dialogue = DialogueRows(store)
+        preloader._indexed_line_count = (
+            len(store)
+            if isinstance(store, (IndexedDialogueStore, MemoryDialogueStore))
+            else None
+        )
+        preloader.speaker_names = store.speakers()
+        return preloader
+
+    @property
+    def has_dialogue(self) -> bool:
+        return self.store.has_dialogue
+
+    @property
+    def has_original_speech(self) -> bool:
+        return self.store.has_original_speech
+
+    @property
+    def has_full_source_audio(self) -> bool:
+        return self.store.has_full_source_audio
+
+    def chapter_rows(self, chapter: str) -> tuple[ChapterDialogue, ...]:
+        return self.store.chapter_rows(chapter)
+
+    def matching_shape(self, row: ChapterDialogue) -> MatchingText:
+        shape = self._matching_shapes.get(row)
+        if shape is None:
+            shape = prepare_text(row.text)
+            self._matching_shapes.put(row, shape)
+        return shape
+
+    def normalized_shape(self, row: ChapterDialogue) -> str:
+        from vntts.dialogue_search import MemoryDialogueStore
+
+        if isinstance(self.store, MemoryDialogueStore):
+            return self.store.normalized_values[row]
+        value = self._normalized_shapes.get(row)
+        if value is None:
+            value = _normalize(row.text)
+            self._normalized_shapes.put(row, value)
+        return value
 
     def matching_snapshot(
         self, *, cancelled: Callable[[], bool] | None = None
@@ -191,15 +225,7 @@ class ChapterVoicePreloader:
 
     def has_exact_observation(self, character: object, text: object) -> bool:
         """Check the existing index before expanding an incomplete chapter query."""
-        return bool(
-            self.by_exact_dialogue.get(
-                (
-                    _normalize(character),
-                    is_symbol_only_text(text),
-                    _normalize_exact_text(text),
-                )
-            )
-        )
+        return bool(self.store.exact_rows(text, speaker=_normalize(character)))
 
     @classmethod
     def from_document(
@@ -262,7 +288,12 @@ class ChapterVoicePreloader:
         cls, path: str | Path, payload: bytes, *, lookahead_rows: int = 80
     ) -> ChapterVoicePreloader:
         """Load captured story bytes with their optional checksum-bound evidence."""
-        with temporary_directory(prefix="vntts-story-snapshot-") as directory:
+        from vntts.dialogue_search import IndexedDialogueStore
+
+        with ExitStack() as stack:
+            directory = stack.enter_context(
+                temporary_directory(prefix="vntts-story-snapshot-")
+            )
             snapshot = Path(directory) / "story-index.jsonl"
             snapshot.write_bytes(payload)
             evidence = Path(path).with_name("source-audio-semantic-evidence.json")
@@ -275,7 +306,11 @@ class ChapterVoicePreloader:
             except OSError:
                 # Unavailable optional evidence cannot authorise source audio.
                 pass
-            return cls.load_optional(snapshot, lookahead_rows=lookahead_rows)
+            preloader = cls.load_optional(snapshot, lookahead_rows=lookahead_rows)
+            if isinstance(preloader.store, IndexedDialogueStore):
+                # Matching snapshots share the admitted file until its last SQL owner retires.
+                finalize(preloader.store.catalog, stack.pop_all().close)
+            return preloader
 
     @classmethod
     def load_optional(
@@ -283,6 +318,19 @@ class ChapterVoicePreloader:
     ) -> ChapterVoicePreloader:
         if not path:
             return cls(lookahead_rows=lookahead_rows)
+        from vntts.pregeneration_setup import (
+            open_reading_catalog,
+            story_catalog_minimum_bytes,
+        )
+
+        try:
+            indexed = Path(path).stat().st_size >= story_catalog_minimum_bytes
+        except OSError:
+            indexed = False
+        if indexed:
+            return cls.from_store(
+                open_reading_catalog(path).store, lookahead_rows=lookahead_rows
+            )
         document: StoryIndexDocument | None
         try:
             document = load_story_index_document(path)
@@ -394,7 +442,7 @@ class ChapterVoicePreloader:
         return line
 
     def line_for_id(self, line_id: object) -> ChapterDialogue | None:
-        return self.by_line_id.get(str(line_id))
+        return self.store.line_for_id(str(line_id))
 
     def story_title_for(self, chapter: str, line_id: object = None) -> str | None:
         line = self.line_for_id(line_id)
@@ -402,7 +450,7 @@ class ChapterVoicePreloader:
             return line.story_title
         # Silent events have no line ID. Only an unambiguous chapter identifies
         # their story; a chapter may contain several distinct collections.
-        titles = {row.story_title for row in self.by_chapter.get(chapter, ())}
+        titles = {row.story_title for row in self.chapter_rows(chapter)}
         return next(iter(titles)) if len(titles) == 1 else None
 
     def select_line_id(self, line_id: object) -> ChapterDialogue | None:
@@ -423,16 +471,12 @@ class ChapterVoicePreloader:
         exact_text = _normalize_exact_text(text)
         if not exact_text:
             return None, "no-match"
-        all_candidates: Sequence[ChapterDialogue] = self.by_exact_dialogue.get(
-            (speaker_key, is_symbol_only_text(text), exact_text),
-            (),
-        )
+        all_candidates = self.store.exact_rows(text, speaker=speaker_key)
         match_result = "exact"
         normalized_text = _normalize(text)
         if not all_candidates and normalized_text:
-            all_candidates = self.by_normalized_dialogue.get(
-                (speaker_key, normalized_text),
-                (),
+            all_candidates = self.store.exact_rows(
+                text, speaker=speaker_key, normalized=True
             )
             match_result = "normalized-exact"
         if match_result == "normalized-exact":
@@ -440,7 +484,7 @@ class ChapterVoicePreloader:
             all_candidates = tuple(
                 row
                 for row in all_candidates
-                if compare_text(observed, self.matching_text[row], limit=0).complete
+                if compare_text(observed, self.matching_shape(row), limit=0).complete
             )
         if not all_candidates:
             return None, "no-match"
@@ -495,15 +539,13 @@ class ChapterVoicePreloader:
         observed = prepare_text(text)
         candidates = tuple(
             row
-            for row in self.by_exact_dialogue.get(
-                (speaker, symbol_only, exact_text), ()
-            )
+            for row in self.store.exact_rows(text, speaker=speaker)
             if row.line_id
             and row.text_sha256
             and not row.has_original_speech
             and (
                 symbol_only
-                or compare_text(observed, self.matching_text[row], limit=0).complete
+                or compare_text(observed, self.matching_shape(row), limit=0).complete
             )
         )
         if not candidates:
@@ -512,9 +554,9 @@ class ChapterVoicePreloader:
             return candidates if self.line_for_id(line_id) in candidates else ()
 
         scope = (
-            self.dialogue
+            self.store.candidates(text)
             if self.current_match is None
-            else self.by_chapter.get(self.current_match.chapter, ())
+            else self.chapter_rows(self.current_match.chapter)
         )
         representatives: dict[tuple[str, bool, str], ChapterDialogue] = {}
         for row in scope:
@@ -566,7 +608,7 @@ class ChapterVoicePreloader:
         valid = tuple(
             row
             for line_id in allowed
-            if (row := self.by_line_id.get(line_id)) is not None
+            if (row := self.line_for_id(line_id)) is not None
             and row.text_sha256
             and is_symbol_only_text(row.text) == is_symbol_only_text(text)
         )
@@ -588,13 +630,13 @@ class ChapterVoicePreloader:
                 if (
                     _normalize_exact_text(row.text)
                     if exact
-                    else self.normalized_text[row]
+                    else self.normalized_shape(row)
                 )
                 == observed
                 and (not require_speaker or _normalize(row.speaker) == speaker_key)
                 and (
                     exact
-                    or compare_text(shape, self.matching_text[row], limit=0).complete
+                    or compare_text(shape, self.matching_shape(row), limit=0).complete
                 )
             ]
             if candidates:
@@ -613,7 +655,7 @@ class ChapterVoicePreloader:
         self,
         character: object,
         text: object,
-        line_ids: Iterable[object],
+        line_ids: Iterable[object] | None,
         *,
         update_context: bool = True,
         prefer_synthesis: bool = False,
@@ -640,23 +682,12 @@ class ChapterVoicePreloader:
     ) -> tuple[ChapterDialogue | None, str]:
         """Discover exact text through the index, retaining chapter completeness."""
         self._check_matching_cancelled()
-        exact_text = _normalize_exact_text(text)
-        normalized_text = _normalize(text)
-        symbol_only = is_symbol_only_text(text)
-        indexed: dict[ChapterDialogue, None] = {}
-        for speaker in self.speaker_names:
-            self._check_matching_cancelled()
-            exact_rows = self.by_exact_dialogue.get(
-                (speaker, symbol_only, exact_text), ()
+        indexed = dict.fromkeys(
+            (
+                *self.store.exact_rows(text),
+                *self.store.exact_rows(text, normalized=True),
             )
-            normalized_rows = (
-                self.by_normalized_dialogue.get((speaker, normalized_text), ())
-                if normalized_text and not symbol_only
-                else ()
-            )
-            for row in (*exact_rows, *normalized_rows):
-                if row.line_id and row.text_sha256:
-                    indexed[row] = None
+        )
         line, method = self.resolve_complete_among(
             character,
             text,
@@ -674,21 +705,22 @@ class ChapterVoicePreloader:
         line, method = self.resolve_complete_among(
             character,
             text,
-            (
-                row.line_id
-                for chapter in chapters
-                for row in self.by_chapter.get(chapter, ())
-            ),
+            (row.line_id for chapter in chapters for row in self.chapter_rows(chapter)),
             update_context=False,
             prefer_synthesis=prefer_synthesis,
             fully_observed_line_id=fully_observed_line_id,
         )
-        if line is None or line not in indexed or method not in {
-            "expected-exact",
-            "expected-text-only",
-            "expected-normalized-exact",
-            "expected-normalized-text-only",
-        }:
+        if (
+            line is None
+            or line not in indexed
+            or method
+            not in {
+                "expected-exact",
+                "expected-text-only",
+                "expected-normalized-exact",
+                "expected-normalized-text-only",
+            }
+        ):
             return None, method
         return self._finish_exact_resolution(line, method, update_context)
 
@@ -714,7 +746,7 @@ class ChapterVoicePreloader:
         self,
         character: object,
         text: object,
-        line_ids: Iterable[object],
+        line_ids: Iterable[object] | None = None,
         *,
         allow_prefix: bool = False,
         recover_crop_noise: bool = False,
@@ -722,14 +754,58 @@ class ChapterVoicePreloader:
         update_context: bool = True,
         prefer_synthesis: bool = False,
         fully_observed_line_id: str | None = None,
+        _continuations: Callable[[str, int], Iterable[ChapterDialogue]] | None = None,
+        _crop_candidates: Callable[
+            [bool | None, Callable[[ChapterDialogue], bool] | None],
+            tuple[ChapterDialogue, ...],
+        ]
+        | None = None,
     ) -> StoryObservationMatch:
         """Assess the same source coverage for canonical text and cursor ownership."""
         self._check_matching_cancelled()
+        if line_ids is None:
+            with self.store.query(self._matching_cancelled):
+                rows = self._indexed_candidates(
+                    text,
+                    allow_prefix=allow_prefix,
+                    prefer_synthesis=prefer_synthesis,
+                )
+
+                def crop_candidates(
+                    original: bool | None,
+                    predicate: Callable[[ChapterDialogue], bool] | None,
+                ) -> tuple[ChapterDialogue, ...]:
+                    return self._indexed_crop_candidates(
+                        text,
+                        allow_prefix=allow_prefix,
+                        prefer_synthesis=prefer_synthesis,
+                        allow_speaker_evidence=allow_speaker_evidence,
+                        original=original,
+                        predicate=predicate,
+                    )
+
+                if is_symbol_only_text(text) and not rows and self.has_dialogue:
+                    return StoryObservationMatch(None, "expected-no-match")
+                return self.resolve_observation_among(
+                    character,
+                    text,
+                    (row.line_id for row in rows),
+                    allow_prefix=allow_prefix,
+                    recover_crop_noise=recover_crop_noise,
+                    allow_speaker_evidence=allow_speaker_evidence,
+                    update_context=update_context,
+                    prefer_synthesis=prefer_synthesis,
+                    fully_observed_line_id=fully_observed_line_id,
+                    _continuations=lambda span, distance: self.store.iter_candidates(
+                        span, distance=distance
+                    ),
+                    _crop_candidates=crop_candidates if recover_crop_noise else None,
+                )
         allowed = tuple(dict.fromkeys(str(value) for value in line_ids if value))
         valid = tuple(
             row
             for line_id in allowed
-            if (row := self.by_line_id.get(line_id)) is not None and row.text_sha256
+            if (row := self.line_for_id(line_id)) is not None and row.text_sha256
         )
         expected_positions: set[tuple[str, int]] = set()
         current = self.current_match
@@ -739,7 +815,7 @@ class ChapterVoicePreloader:
             successor = next(
                 (
                     _story_position(candidate)
-                    for candidate in self.by_chapter.get(current.chapter, ())
+                    for candidate in self.chapter_rows(current.chapter)
                     if _story_position(candidate) > position
                 ),
                 None,
@@ -755,7 +831,11 @@ class ChapterVoicePreloader:
             eligible = tuple(row for row in valid if not row.has_original_speech)
             originals = tuple(row for row in valid if row.has_original_speech)
 
-            def resolve(rows: Iterable[ChapterDialogue]) -> StoryObservationMatch:
+            def resolve(
+                rows: Iterable[ChapterDialogue],
+                predicate: Callable[[ChapterDialogue], bool],
+                original: bool | None = None,
+            ) -> StoryObservationMatch:
                 return self.resolve_observation_among(
                     character,
                     text,
@@ -765,12 +845,34 @@ class ChapterVoicePreloader:
                     allow_speaker_evidence=allow_speaker_evidence,
                     update_context=False,
                     fully_observed_line_id=fully_observed_line_id,
+                    _continuations=(
+                        (
+                            lambda span, distance: (
+                                row
+                                for row in _continuations(span, distance)
+                                if predicate(row)
+                            )
+                        )
+                        if _continuations is not None
+                        else None
+                    ),
+                    _crop_candidates=(
+                        (
+                            lambda _original, _predicate: _crop_candidates(
+                                original, predicate
+                            )
+                        )
+                        if _crop_candidates is not None
+                        else None
+                    ),
                 )
 
-            match = resolve(eligible)
+            match = resolve(eligible, lambda row: not row.has_original_speech, False)
             speaker = _normalize(character) if allow_speaker_evidence else ""
-            if match.method == "expected-no-match" and originals:
-                match = resolve(originals)
+            if match.method == "expected-no-match" and (
+                originals or _crop_candidates is not None
+            ):
+                match = resolve(originals, lambda row: row.has_original_speech, True)
             elif speaker and (
                 match.method == "expected-incomplete"
                 or (
@@ -783,7 +885,13 @@ class ChapterVoicePreloader:
                 if named_originals:
                     # Synthesis filtering must not hide an expected original.
                     diagnostics = self.last_resolution_diagnostics.copy()
-                    canonical = resolve((*eligible, *named_originals))
+                    canonical = resolve(
+                        (*eligible, *named_originals),
+                        lambda row: (
+                            not row.has_original_speech
+                            or _normalize(row.speaker) == speaker
+                        ),
+                    )
                     if (
                         canonical.line is not None
                         and canonical.line.has_original_speech
@@ -805,8 +913,7 @@ class ChapterVoicePreloader:
         normalized = _normalize(text)
         observed = prepare_text(text)
         self.last_resolution_diagnostics = {
-            "indexed_line_count": len(self.dialogue),
-            "indexed_chapter_count": len(self.by_chapter),
+            "indexed_chapter_count": len(self.store.chapter_ids()),
             "allowed_line_count": len(allowed),
             "eligible_line_count": len(valid),
             "normalized_text_characters": len(normalized),
@@ -818,6 +925,10 @@ class ChapterVoicePreloader:
             ),
             "missing_identity_candidate_count": len(allowed) - len(valid),
         }
+        if self._indexed_line_count is not None:
+            self.last_resolution_diagnostics["indexed_line_count"] = (
+                self._indexed_line_count
+            )
 
         def finish(match: StoryObservationMatch) -> StoryObservationMatch:
             self.last_resolution_diagnostics["match_result"] = match.method
@@ -844,18 +955,32 @@ class ChapterVoicePreloader:
             )
             return finish(StoryObservationMatch(row, method, complete=row is not None))
         valid = tuple(row for row in valid if not is_symbol_only_text(row.text))
-        if not valid or not observed.alphanumeric_length:
+        if not observed.alphanumeric_length:
             return finish(StoryObservationMatch(None, "expected-no-match"))
+        if not valid:
+            if _crop_candidates is None:
+                return finish(StoryObservationMatch(None, "expected-no-match"))
+            return self.resolve_observation_among(
+                character,
+                text,
+                (row.line_id for row in _crop_candidates(None, None)),
+                allow_prefix=allow_prefix,
+                recover_crop_noise=recover_crop_noise,
+                allow_speaker_evidence=allow_speaker_evidence,
+                update_context=update_context,
+                fully_observed_line_id=fully_observed_line_id,
+                _continuations=_continuations,
+            )
 
         def budget(row: ChapterDialogue) -> int:
             return sum(
-                self.matching_text[row].alphanumeric_length >= boundary
+                self.matching_shape(row).alphanumeric_length >= boundary
                 for boundary in (3, 60, 120)
             )
 
         prepared = {str(text): observed}
         comparison_cache: dict[tuple[str, ChapterDialogue], TextEvidence] = {}
-        exact_shape = any(observed == self.matching_text[row] for row in valid)
+        exact_shape = any(observed == self.matching_shape(row) for row in valid)
 
         def compare(span: str, row: ChapterDialogue) -> TextEvidence:
             self._check_matching_cancelled()
@@ -869,7 +994,7 @@ class ChapterVoicePreloader:
                     row,
                     shape,
                     compare_text(
-                        shape, self.matching_text[row], limit=0 if exact_shape else 4
+                        shape, self.matching_shape(row), limit=0 if exact_shape else 4
                     ),
                     speaker,
                     current,
@@ -892,6 +1017,19 @@ class ChapterVoicePreloader:
             )
             for item in raw
         ):
+            if _crop_candidates is not None:
+                expanded = dict.fromkeys((*valid, *_crop_candidates(None, None)))
+                return self.resolve_observation_among(
+                    character,
+                    text,
+                    (row.line_id for row in expanded),
+                    allow_prefix=allow_prefix,
+                    recover_crop_noise=True,
+                    allow_speaker_evidence=allow_speaker_evidence,
+                    update_context=update_context,
+                    fully_observed_line_id=fully_observed_line_id,
+                    _continuations=_continuations,
+                )
             crops: list[tuple[ChapterDialogue, str, bool, bool]] = []
             for row in valid:
                 for crop, speaker_in_crop, suffix_trimmed in _observation_crops(
@@ -938,8 +1076,8 @@ class ChapterVoicePreloader:
             strict = _normalize_exact_text(item.observed) == _normalize_exact_text(
                 item.line.text
             )
-            normalized_equal = (
-                _normalize(item.observed) == self.normalized_text[item.line]
+            normalized_equal = _normalize(item.observed) == self.normalized_shape(
+                item.line
             )
             level = (
                 0
@@ -956,12 +1094,14 @@ class ChapterVoicePreloader:
             full.sort(key=priority)
             best = full[0]
             peers = {item.line for item in full if priority(item) == priority(best)}
+            named_scope = False
             if speaker:
                 speaker_rows = {
                     row for row in valid if _normalize(row.speaker) == speaker
                 }
                 named = peers & speaker_rows
                 if named:
+                    named_scope = True
                     peers = named
                     valid = tuple(row for row in valid if row in speaker_rows)
                     comparisons = [
@@ -988,11 +1128,18 @@ class ChapterVoicePreloader:
                 and expected(row)
             )
             continuation = False
-            for other in valid:
+            for other in chain(
+                valid,
+                _continuations(best.observed, best.evidence.distance)
+                if _continuations is not None
+                else (),
+            ):
+                self._check_matching_cancelled()
                 if (
                     other == row
-                    or self.matching_text[other].alphanumeric_length
-                    <= self.matching_text[row].alphanumeric_length
+                    or (named_scope and _normalize(other.speaker) != speaker)
+                    or self.matching_shape(other).alphanumeric_length
+                    <= self.matching_shape(row).alphanumeric_length
                 ):
                     continue
                 # Fully seen current text cannot still be typing its exact successor.
@@ -1028,7 +1175,7 @@ class ChapterVoicePreloader:
                         if _normalize(row.speaker) == speaker
                         else "expected-text-only"
                     )
-                elif normalized == self.normalized_text[row]:
+                elif normalized == self.normalized_shape(row):
                     method = (
                         "expected-normalized-exact"
                         if _normalize(row.speaker) == speaker
@@ -1056,7 +1203,7 @@ class ChapterVoicePreloader:
                 has_speaker_evidence = allow_speaker_evidence and (
                     item.speaker_in_crop or speaker == _normalize(item.line.speaker)
                 )
-                canonical_length = self.matching_text[item.line].alphanumeric_length
+                canonical_length = self.matching_shape(item.line).alphanumeric_length
                 enough = (
                     length >= 20
                     or (has_speaker_evidence and length >= 12)
@@ -1117,6 +1264,124 @@ class ChapterVoicePreloader:
             )
         )
 
+    def _indexed_candidates(
+        self,
+        text: object,
+        *,
+        allow_prefix: bool,
+        prefer_synthesis: bool,
+    ) -> tuple[ChapterDialogue, ...]:
+        observed = prepare_text(text)
+        exact_lanes = {
+            row.has_original_speech
+            for row in self.store.exact_rows(text)
+            if self.matching_shape(row) == observed
+        }
+        limit = (
+            0
+            if (False in exact_lanes if prefer_synthesis else bool(exact_lanes))
+            else 4
+        )
+        rows = self.store.candidates(text, prefix=allow_prefix, distance=limit)
+        if is_symbol_only_text(text):
+            return rows
+        candidates = dict.fromkeys(rows)
+
+        def viable(row: ChapterDialogue) -> bool:
+            self._check_matching_cancelled()
+            shape = self.matching_shape(row)
+            budget = sum(
+                shape.alphanumeric_length >= boundary for boundary in (3, 60, 120)
+            )
+            evidence = compare_text(observed, shape)
+            return (evidence.complete and evidence.distance <= budget) or (
+                evidence.prefix_distance is not None
+                and evidence.prefix_distance <= budget
+            )
+
+        guarded = {row.has_original_speech for row in rows if viable(row)}
+        if not allow_prefix and not (
+            (not prefer_synthesis and guarded) or len(guarded) == 2
+        ):
+            # A witness per synthesis lane suffices for an incomplete result.
+            for row in self.store.iter_candidates(text, distance=3):
+                lane = row.has_original_speech
+                if lane not in guarded and viable(row):
+                    guarded.add(lane)
+                    candidates[row] = None
+                if (not prefer_synthesis and guarded) or len(guarded) == 2:
+                    break
+        return tuple(candidates)
+
+    def _indexed_crop_candidates(
+        self,
+        text: object,
+        *,
+        allow_prefix: bool,
+        prefer_synthesis: bool,
+        allow_speaker_evidence: bool,
+        original: bool | None = None,
+        predicate: Callable[[ChapterDialogue], bool] | None = None,
+    ) -> tuple[ChapterDialogue, ...]:
+        # Query a finite superset; row-dependent crop guards remain in the validator.
+        candidates: dict[ChapterDialogue, None] = {}
+        observed = prepare_text(text)
+        tokens = tuple(re.finditer(r"\S+", str(text)))
+        for start in range(min(8, len(tokens))):
+            for dropped in range(min(4, len(tokens) - start)):
+                self._check_matching_cancelled()
+                if not start and not dropped:
+                    continue
+                span = str(text)[
+                    tokens[start].start() : tokens[len(tokens) - dropped - 1].end()
+                ]
+                candidates.update(
+                    dict.fromkeys(
+                        row
+                        for row in self.store.candidates(
+                            span, prefix=allow_prefix, original=original
+                        )
+                        if predicate is None or predicate(row)
+                    )
+                )
+                if not allow_prefix:
+                    witnessed: set[bool] = set()
+                    shape = prepare_text(span)
+                    if shape.protected_content != observed.protected_content:
+                        continue
+                    for row in self.store.iter_candidates(
+                        span, distance=3, original=original
+                    ):
+                        if predicate is not None and not predicate(row):
+                            continue
+                        lane = row.has_original_speech
+                        if lane in witnessed or not any(
+                            crop == span
+                            for crop, _named, _trimmed in _observation_crops(
+                                str(text), row, allow_speaker_evidence
+                            )
+                        ):
+                            continue
+                        source = self.matching_shape(row)
+                        evidence = compare_text(shape, source)
+                        budget = sum(
+                            source.alphanumeric_length >= boundary
+                            for boundary in (3, 60, 120)
+                        )
+                        if (
+                            evidence.prefix_distance is not None
+                            and evidence.prefix_distance <= budget
+                        ):
+                            candidates[row] = None
+                            witnessed.add(lane)
+                        if (
+                            (original is not None and witnessed)
+                            or (not prefer_synthesis and witnessed)
+                            or len(witnessed) == 2
+                        ):
+                            break
+        return tuple(candidates)
+
     def _recover_current_edge_glyph(
         self,
         row: ChapterDialogue,
@@ -1127,7 +1392,7 @@ class ChapterVoicePreloader:
         fully_observed_line_id: str | None,
         raw_observation: bool,
     ) -> TextEvidence:
-        source = self.matching_text[row]
+        source = self.matching_shape(row)
         if (
             raw_observation
             and row.line_id == fully_observed_line_id
@@ -1191,7 +1456,7 @@ class ChapterVoicePreloader:
             return [row for row in rows if self._matches_prefix(row, observed)]
 
         if self.current_match is not None:
-            nearby = matches(self.by_chapter.get(self.current_match.chapter, ()))
+            nearby = matches(self.chapter_rows(self.current_match.chapter))
             if len(nearby) == 1:
                 selected = nearby[0]
                 self.current_match = ChapterMatch(
@@ -1203,7 +1468,7 @@ class ChapterVoicePreloader:
                 return selected
             return None
 
-        candidates = matches(self.dialogue)
+        candidates = matches(self.store.candidates(text, distance=0))
         if len(candidates) != 1:
             return None
         selected = candidates[0]
@@ -1229,7 +1494,7 @@ class ChapterVoicePreloader:
         return (
             len(candidates) == 1
             and not compare_text(
-                observed, self.matching_text[candidates[0]], limit=0
+                observed, self.matching_shape(candidates[0]), limit=0
             ).complete
         )
 
@@ -1250,21 +1515,26 @@ class ChapterVoicePreloader:
 
         if self.current_match is not None:
             nearby = matches(
-                self.by_chapter_speaker.get(
-                    (self.current_match.chapter, speaker_key),
-                    (),
-                )
+                row
+                for row in self.chapter_rows(self.current_match.chapter)
+                if _normalize(row.speaker) == speaker_key
             )
             if nearby:
                 # A filtered local owner must not make another chapter unique.
                 return eligible(nearby)
-        return eligible(matches(self.by_speaker.get(speaker_key, ())))
+        # Projection retrieval preserves the original MatchingText boundaries.
+        rows = self.store.candidates(
+            observed.key.replace("\x00", " ").replace("\x01", " "), distance=0
+        )
+        return eligible(
+            matches(row for row in rows if _normalize(row.speaker) == speaker_key)
+        )
 
     def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:
         self._check_matching_cancelled()
         if not row.line_id or not row.text_sha256 or not observed.alphanumeric_length:
             return False
-        evidence = compare_text(observed, self.matching_text[row], limit=0)
+        evidence = compare_text(observed, self.matching_shape(row), limit=0)
         return evidence.complete or evidence.prefix_distance == 0
 
     def canonical_speaker(
@@ -1304,7 +1574,7 @@ class ChapterVoicePreloader:
     def recommend(
         self, character: object, text: object, *, limit: int = 3
     ) -> tuple[str, ...]:
-        if limit <= 0 or not self.dialogue:
+        if limit <= 0 or not self.has_dialogue:
             return ()
         # Voice warmup must not change the story scope used by OCR resolution.
         match = self.current_match or self._match(character, text)
@@ -1312,7 +1582,7 @@ class ChapterVoicePreloader:
             return ()
 
         current_speaker = _normalize(character)
-        chapter_rows = self.by_chapter.get(match.chapter, ())
+        chapter_rows = self.chapter_rows(match.chapter)
         nearby = [
             row
             for row in chapter_rows
@@ -1337,11 +1607,11 @@ class ChapterVoicePreloader:
 
     def live_voice_preflight_rows(self) -> tuple[ChapterDialogue, ...] | None:
         """Return the current chapter lookahead, or ``None`` before it is known."""
-        if not self.dialogue:
+        if not self.has_dialogue:
             return ()
         if self.current_match is None:
             return None
-        rows = self.by_chapter.get(self.current_match.chapter, ())
+        rows = self.chapter_rows(self.current_match.chapter)
         return tuple(
             row
             for row in rows
@@ -1351,10 +1621,13 @@ class ChapterVoicePreloader:
     def _match(self, character: object, text: object) -> ChapterMatch | None:
         speaker = _normalize(character)
         normalized_text = _normalize(text)
-        candidates: Sequence[ChapterDialogue] = self.by_speaker.get(speaker, ())
+        indexed = self.store.candidates(text)
+        candidates: Sequence[ChapterDialogue] = tuple(
+            row for row in indexed if _normalize(row.speaker) == speaker
+        )
         speaker_matched = bool(candidates)
         if not candidates:
-            candidates = self.dialogue
+            candidates = indexed
 
         if len(normalized_text) < 8:
             chapters = {row.chapter for row in candidates}
@@ -1366,7 +1639,7 @@ class ChapterVoicePreloader:
         best_row = None
         best_score = 0.0
         for row in candidates:
-            candidate_text = self.normalized_text[row]
+            candidate_text = self.normalized_shape(row)
             if not candidate_text:
                 continue
             if normalized_text in candidate_text or candidate_text in normalized_text:

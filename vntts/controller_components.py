@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager, ExitStack
 from contextvars import copy_context
 from dataclasses import dataclass, field
 from functools import partial
+from itertools import chain
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkable
@@ -516,6 +517,23 @@ class RuntimeLifecycleComponent:
                             for entry in routed.library.index.entries
                         )
                 else:
+                    ready_candidates = chain(
+                        controller.chapter_voice_preloader.store.iter_original_rows(),
+                        (
+                            line
+                            for entry in (
+                                routed.library.index.entries
+                                if routed.library is not None
+                                else ()
+                            )
+                            if (
+                                line := controller.chapter_voice_preloader.line_for_id(
+                                    entry.line_id
+                                )
+                            )
+                            is not None
+                        ),
+                    )
                     ready = any(
                         not controller._has_manual_voice_override(line.speaker)
                         and (
@@ -524,7 +542,7 @@ class RuntimeLifecycleComponent:
                             )
                             or routed.has_generated_line(line)
                         )
-                        for line in controller.chapter_voice_preloader.dialogue
+                        for line in ready_candidates
                     )
             if ready:
                 controller.status_handler(
@@ -1328,7 +1346,7 @@ class LiveSessionComponent:
     def _voice_preflight_allows_start(self) -> bool:
         controller = self.controller
         if (
-            not controller.chapter_voice_preloader.dialogue
+            not controller.chapter_voice_preloader.has_dialogue
             and not controller._revalidate_live_speaker_corpus()
         ):
             controller.status_handler(
@@ -1758,7 +1776,7 @@ class VoiceAssignmentComponent:
         scope: tuple[ChapterDialogue | str, ...] | None = (
             controller.chapter_voice_preloader.live_voice_preflight_rows()
         )
-        if not controller.chapter_voice_preloader.dialogue:
+        if not controller.chapter_voice_preloader.has_dialogue:
             if controller.live_speaker_corpus_error:
                 return None
             if controller.live_speaker_corpus is not None:

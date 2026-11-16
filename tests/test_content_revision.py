@@ -1,3 +1,4 @@
+import hashlib
 import os
 import unittest
 from contextlib import contextmanager
@@ -55,6 +56,35 @@ class ContentRevisionTest(unittest.TestCase):
         self.assertEqual(len(reads), len(chapter.records))
         self.assertLess(sum(reads), len(self.payload))
         self.assertEqual(chapter.metadata["line_count"], len(chapter.records))
+
+    def test_catalog_revision_uses_bounded_sql_chapter_locations(self):
+        from vntts.story_catalog import StoryCatalog
+
+        storage = StoryCatalog(self.source.with_suffix(".sqlite3"))
+        evidence_sha256 = hashlib.sha256(
+            self.source.with_name("source-audio-semantic-evidence.json").read_bytes()
+        ).hexdigest()
+        storage.save(
+            {
+                "schema_version": 1,
+                "source_story_index_sha256": self.revision.source_sha256,
+                "source_audio_semantic_evidence_sha256": evidence_sha256,
+                "game": self.document.game,
+                "selections": [],
+            },
+            story=self.document,
+        )
+        with storage.open_dialogue(
+            self.source, self.revision.source_sha256, evidence_sha256, cache_version=1
+        ) as owner:
+            revision = ContentRevision.from_catalog(owner)
+            self.assertEqual(dict(revision._chapters), {})
+            self.assertEqual(revision.source_sha256, self.revision.source_sha256)
+            self.assertEqual(
+                revision.read_chapter("other").records,
+                self.revision.read_chapter("other").records,
+            )
+            self.assertEqual(revision.read_chapter("absent").records, ())
 
     def test_rejects_source_changed_after_payload_capture(self):
         self.source.write_bytes(self.payload + b"\n")

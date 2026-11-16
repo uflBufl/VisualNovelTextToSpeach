@@ -20,6 +20,7 @@ from vntts.dialog_capture import (
     detect_standalone_ellipsis_frame,
     recognize_live_frame,
 )
+from vntts.dialogue_search import MemoryDialogueStore
 from vntts.live_replay import load_live_replay_corpus
 from vntts.live_replay_capture import (
     LiveReplayCaptureError,
@@ -47,11 +48,19 @@ class FakeStoryResolver:
             for chapter in {line.chapter for line in self.known.values()}
         }
         self.dialogue = tuple(self.known.values())
+        self.store = MemoryDialogueStore()
         self.speaker_names = {
             "rhiannon": "Rhiannon",
             "hotelier": "Hotelier",
             "narrator": "Narrator",
         }
+
+    @property
+    def has_dialogue(self):
+        return bool(self.dialogue)
+
+    def chapter_rows(self, chapter):
+        return self.by_chapter.get(chapter, ())
 
     @staticmethod
     def _line(line_id, chapter, speaker, text):

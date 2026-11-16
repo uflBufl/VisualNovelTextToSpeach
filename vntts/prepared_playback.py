@@ -19,7 +19,7 @@ from vntts.versioned_json import (
 def project_prepared_pack(
     settings: AppSettings, imported: GamePackImport
 ) -> AppSettings:
-    dialogue = ChapterVoicePreloader.load_optional(imported.story_index).dialogue
+    preloader = ChapterVoicePreloader.load_optional(imported.story_index)
     return imported.apply_to(settings).updated(
         live_sequence_mode=(
             "audio-manual"
@@ -31,7 +31,7 @@ def project_prepared_pack(
         ),
         audio_source_policy=(
             "prefer-game-audio"
-            if any(line.has_full_source_audio for line in dialogue)
+            if preloader.has_full_source_audio
             else "prefer-generated"
         ),
         force_live_narrator=False,
