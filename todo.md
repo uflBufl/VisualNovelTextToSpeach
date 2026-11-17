@@ -370,7 +370,14 @@ deferred implementation; centered-caption checks are included.
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption
       return in Hansel. Source54 is a central timed caption, not lower dialogue;
-      use full-window observation when seeking it. Then exercise the remaining
+      source59 repeats a quote in the lower dialogue, so it does not qualify
+      central-caption return. Initialize reading before seeking the timed segment:
+      disable automatic advance on an ambiguous opening observation, wait until
+      ready, verify current_match is still unset, then Stop and seek. Do not start
+      a cold controller only when53 appears; that initialization outlasted53/54
+      in the recorded attempt. Preserve the game's automatic transitions, use
+      full-window observation and never hold the game to force admission.
+      Then exercise the remaining
       chapter-switch and GUI cancellation gates below. Retain diagnostic
       route/control/media proof, stop recordings and close the app/game afterward.
       Remove qualified requirements; preserve unexercised gates and real failures.
