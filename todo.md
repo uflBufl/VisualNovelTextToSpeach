@@ -435,10 +435,24 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish the requested Mac verification pass. Indexed Mac
+Next action: propose the OCR57 repair below, then finish the remaining Mac
+verification gates. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
+
+- [ ] **RUN-17-02 - Recover known original speech after letter/number OCR confusion.**
+      Native Hansel100631:57 has full original voice610017348 but was routed to
+      live MOSS after OCR read `I'll` as `[1l`. The actual complete text was
+      `Even if I die, [1l still turn Kakania completely against Isolde.`.
+      Matching protects the internal1 as numeric content and also exceeds the
+      current edit budget;56 and58 correctly used game audio. Propose bounded
+      candidate-aware letter recovery while preserving real numbers, negations,
+      complete-text/continuation checks and unique identity. Do not globally
+      increase edit distance or discard numeric protection. Replay the recorded
+      prefix/full observations through the controller and verify57 selects game
+      audio, without changing genuinely unreadable-frame waiting. Evidence:
+      native-followup-20261117, native session f23c15bf98d240118c2f2e4b4f7b7426.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption
@@ -450,6 +464,10 @@ deferred implementation; centered-caption checks are included.
       a cold controller only when53 appears; that initialization outlasted53/54
       in the recorded attempt. Preserve the game's automatic transitions, use
       full-window observation and never hold the game to force admission.
+      The latest warm attempt also started too late:53 was already visible in
+      video before the manual key, and the first reader frame was56. Trigger Read
+      from the bounded observer when53 appears, without a model/tool round trip
+      after seeking52; do not treat this orchestration miss as a matcher failure.
       Then exercise the remaining
       chapter-switch and GUI cancellation gates below. Retain diagnostic
       route/control/media proof, stop recordings and close the app/game afterward.
@@ -462,17 +480,14 @@ deferred implementation; centered-caption checks are included.
       On Windows10, exercise packaged FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **RUN-16-01 - Qualify PlotVoc after the early-prefix repair.**
-      In Hansel and Gretel, continue from Marcus100631:58 to the repeated quote59,
-      `What really scared me...`. Confirm that the game's PlotVoc speech plays
-      without our earlier Narrator recording53 or live synthesis overlapping it,
-      including while the text is still typewriting, and that automatic advance
-      respects original-audio completion. Full-text and recorded incremental OCR
-      now pass offline; do not repeat producer, duration or prefix research.
+- [ ] **RUN-16-01 - Qualify delayed PlotVoc completion timing.**
       For cue groups with delayed starts, verify the scheduled end against actual
-      playback before closing their native timing gate. Book reading remains out
-      of scope. Local evidence: hansel-plotvoc-live-20261117/prefix-fix-replay.json;
-      the preceding native failure remains in the same directory's results.json.
+      speech playback before closing their native timing gate. Require source-clip
+      correlation or another speech-specific end measurement; nonzero game BGM
+      and a silent VNTTS stream do not establish the original clip's ending.
+      Do not repeat the solved producer/prefix/overlap investigation. Evidence
+      limits: native-followup-20261117/pcm-metrics.json. Book reading remains out
+      of scope.
 
 - [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
       Remaining integration gate: use GUI Stop while first-time original-duration
