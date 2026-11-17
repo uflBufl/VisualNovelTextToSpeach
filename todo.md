@@ -362,24 +362,10 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish full-order OCR lifecycle verification in the full automated
-test gate below. Preserve
-behavioral assertions and repair product code wherever they expose a real defect.
-Run changed-test selection first, then the complete affected modules; finish
-with full exact discovery to verify the order-dependent failure. Commit each
-logical repair and remove its TODO only after its gate passes. Then finish
-the requested Mac verification pass. Indexed Mac
+Next action: finish the requested Mac verification pass. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
-
-- [ ] **Isolate OCR lifecycle in the full-suite punctuation test.**
-      The visual-ellipsis transition in tests.test_live_frame_ocr_evidence reports
-      `OCR service is shutting down` only in the full remainder; the module passes
-      alone. Retain the full-discovery order and find the owner that leaves the
-      service closed before sparse warmup. Repair fixture/startup ownership without
-      reopening a deliberately shut-down production service on an arbitrary OCR
-      call. Gate: full-order execution passes, not only an isolated retry.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption
