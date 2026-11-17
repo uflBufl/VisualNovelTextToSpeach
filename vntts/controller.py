@@ -81,6 +81,7 @@ from vntts.live import (
     LiveDialogReader,
     LivePipelineMetrics,
     RecognizedDialog,
+    ScreenObservation,
     SilentDialogRoute,
     SpeechChunk,
 )
@@ -587,6 +588,7 @@ class AppController:
         tts_factory: Callable[..., object] = TTSEngine,
         status_handler: Callable[..., object] = print,
         dialog_handler: Callable[..., object] | None = None,
+        screen_observation_handler: Callable[[ScreenObservation], object] | None = None,
         diagnostic_handler: Callable[[object], object] | None = None,
         sequence_status_handler: Callable[[LiveSequenceStatus], object] | None = None,
         unknown_speaker_handler: Callable[[str], object] | None = None,
@@ -687,8 +689,9 @@ class AppController:
         self.sequence_advance_leases: set[SequenceEventLease] = set()
         self.tts_factory = tts_factory
         self.status_handler = status_handler
-        self.dialog_handler = dialog_handler or status_handler
-        self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
+        self._initialize_observation_handlers(
+            dialog_handler, screen_observation_handler, diagnostic_handler
+        )
         self.sequence_status_handler = sequence_status_handler or (
             lambda _snapshot: None
         )
@@ -706,6 +709,18 @@ class AppController:
         self.live_session = LiveSessionComponent(self)
         self.voice_assignments = VoiceAssignmentComponent(self)
         self.diagnostics = DiagnosticsComponent(self)
+
+    def _initialize_observation_handlers(
+        self,
+        dialog_handler: Callable[..., object] | None,
+        screen_observation_handler: Callable[[ScreenObservation], object] | None,
+        diagnostic_handler: Callable[[object], object] | None,
+    ) -> None:
+        self.dialog_handler = dialog_handler or self.status_handler
+        self.screen_observation_handler = screen_observation_handler or (
+            lambda _observation: None
+        )
+        self.diagnostic_handler = diagnostic_handler or (lambda _snapshot: None)
 
     def _initialize_runtime_state(self) -> None:
         self.tts = None
@@ -1821,6 +1836,7 @@ class AppController:
                 canonical_line.line_id,
                 exact_match=canonical_exact,
                 allow_unheard_replacement=replacement,
+                observed_text=raw_result.text if raw_result is not None else text,
             )
         return character, text
 

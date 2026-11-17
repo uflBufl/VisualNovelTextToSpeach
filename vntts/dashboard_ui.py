@@ -355,22 +355,21 @@ class ControlDashboard(QMainWindow):
         dialogue_font = self.dialogue.font()
         dialogue_font.setPointSize(dialogue_font.pointSize() + 2)
         self.dialogue.setFont(dialogue_font)
-        self._fit_dialogue_height()
+        self._fit_text_height(self.dialogue, 4)
         self.dialogue.installEventFilter(self)
 
-    def _fit_dialogue_height(self) -> None:
-        line_height = ceil(
-            QFontMetricsF(self.dialogue.font(), self.dialogue).lineSpacing()
-        )
-        margins = 2 * (
-            ceil(self.dialogue.document().documentMargin()) + self.dialogue.frameWidth()
-        )
+    def _fit_text_height(self, field: QPlainTextEdit, lines: int) -> None:
+        line_height = ceil(QFontMetricsF(field.font(), field).lineSpacing())
+        margins = 2 * (ceil(field.document().documentMargin()) + field.frameWidth())
         # Qt treats a line exactly on the viewport boundary as partially visible.
-        self.dialogue.setFixedHeight(line_height * 4 + margins + 1)
+        field.setFixedHeight(line_height * lines + margins + 1)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.dialogue and event.type() == QEvent.Type.FontChange:
-            self._fit_dialogue_height()
+        if event.type() == QEvent.Type.FontChange:
+            if watched is self.dialogue:
+                self._fit_text_height(self.dialogue, 4)
+            elif watched is self.recognition:
+                self._fit_text_height(self.recognition, 2)
         return super().eventFilter(watched, event)
 
     def _build_detail_widgets(self) -> None:
@@ -553,6 +552,9 @@ class ControlDashboard(QMainWindow):
         card = QGroupBox("Current dialogue")
         self.dialogue_card = card
         card_layout = QVBoxLayout(card)
+        self.selected_reading_label = QLabel("Selected for reading")
+        self.selected_reading_label.setBuddy(self.dialogue)
+        card_layout.addWidget(self.selected_reading_label)
         self.speaker.setStyleSheet("font-weight: 600;")
         card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
@@ -588,7 +590,28 @@ class ControlDashboard(QMainWindow):
         self.current_audio.hide()
         self.speaker.hide()
         card_layout.addWidget(self.current_audio)
+        card_layout.addWidget(self._build_recognition_area())
         return card
+
+    def _build_recognition_area(self) -> QWidget:
+        self.recognition = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.recognition.setAccessibleName("Last recognized on screen")
+        self.recognition.setPlaceholderText("No dialogue text was recognized.")
+        self._fit_text_height(self.recognition, 2)
+        self.recognition.installEventFilter(self)
+        self.recognition_area = QWidget()
+        recognition_layout = QVBoxLayout(self.recognition_area)
+        recognition_layout.setContentsMargins(0, 0, 0, 0)
+        recognition_label = QLabel("Last recognized on screen")
+        recognition_label.setBuddy(self.recognition)
+        recognition_layout.addWidget(recognition_label)
+        recognition_layout.addWidget(self.recognition)
+        self.recognition_note = QLabel("Recognition is uncertain.")
+        self.recognition_note.setWordWrap(True)
+        recognition_layout.addWidget(self.recognition_note)
+        self.recognition_note.hide()
+        self.recognition_area.hide()
+        return self.recognition_area
 
     def _build_reading_page(
         self,
@@ -802,6 +825,16 @@ class ControlDashboard(QMainWindow):
             )
             if text:
                 parts.append(text)
+        if not self.recognition_area.isHidden():
+            parts.append(
+                "Last recognized on screen:\n"
+                + (self.recognition.toPlainText() or self.recognition.placeholderText())
+                + (
+                    "\n" + self.recognition_note.text()
+                    if not self.recognition_note.isHidden()
+                    else ""
+                )
+            )
         parts.extend(
             (
                 self.status.toolTip() or self.status.text(),
@@ -1127,6 +1160,20 @@ class ControlDashboard(QMainWindow):
         self.speaker.setVisible(bool(text))
         self._update_dialogue_title()
 
+    def set_recognition(self, text: str | None, *, uncertain: bool = False) -> None:
+        if self.recognition.toPlainText() != (text or ""):
+            self.recognition.setPlainText(text or "")
+        self.recognition_note.setVisible(text is not None and uncertain)
+        description = (
+            "Recognition is uncertain." if uncertain and text is not None else ""
+        )
+        if text == "":
+            description = (
+                description + " " + self.recognition.placeholderText()
+            ).strip()
+        self.recognition.setAccessibleDescription(description)
+        self.recognition_area.setVisible(text is not None)
+
     def _update_dialogue_title(self) -> None:
         text = self._dialogue_text or (
             "Waiting for dialogue in the game."
@@ -1259,6 +1306,8 @@ class ControlDashboard(QMainWindow):
             button.setToolTip(description)
 
     def set_live(self, running: bool) -> None:
+        if self._live and not running:
+            self.set_recognition(None)
         self._live = bool(running)
         if running:
             self.show_reading()

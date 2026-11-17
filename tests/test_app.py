@@ -7,7 +7,7 @@ from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Lock, get_ident
+from threading import Event, Lock, Thread, get_ident
 from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, Mock, call, patch
 
@@ -61,7 +61,7 @@ from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
-from vntts.live import LiveDialogReader  # noqa: E402
+from vntts.live import LiveDialogReader, ScreenObservation  # noqa: E402
 from vntts.live_tracking import SpeechChunk  # noqa: E402
 from vntts.ocr import (  # noqa: E402
     CaptureRegionNeedsCalibration,
@@ -281,6 +281,43 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray.dialog_action.toolTip(), f"Cornerstone: {text}")
         self.assertLessEqual(len(tray.dialog_action.text()), 96)
         self.assertIn(text, tray.dashboard._copy_details())
+
+    def test_screen_observation_signal_is_separate_and_rejects_old_readers(self):
+        controller = Mock()
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        owner = controller.live_reader
+        tray.set_dialog("Ada", "The complete prepared sentence.")
+
+        def emit(observation):
+            worker = Thread(
+                target=tray.signals.screen_observation_changed.emit,
+                args=(observation,),
+            )
+            worker.start()
+            worker.join()
+
+        emit(ScreenObservation("The complete", False, lambda: True, owner))
+        self.application.processEvents()
+        self.assertEqual(tray.dashboard.recognition.toPlainText(), "The complete")
+        self.assertEqual(
+            tray.dashboard.dialogue.toPlainText(), "The complete prepared sentence."
+        )
+        for stale in (
+            ScreenObservation("late", False, lambda: False, owner),
+            ScreenObservation("old reader", False, lambda: True, object()),
+        ):
+            emit(stale)
+            self.application.processEvents()
+            self.assertEqual(tray.dashboard.recognition.toPlainText(), "The complete")
+
+        emit(ScreenObservation("pending old reader", False, lambda: True, owner))
+        controller.live_reader = Mock()
+        self.application.processEvents()
+        self.assertEqual(tray.dashboard.recognition.toPlainText(), "The complete")
 
     def test_audio_setup_reports_short_cause_and_preserves_instructions(self):
         tray = TrayApplication(

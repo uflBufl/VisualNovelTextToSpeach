@@ -112,7 +112,7 @@ from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder, hotkey_recording_errors
 from vntts.hotkeys import macos_hotkey_limitation, validate_hotkey_assignments
-from vntts.live import LiveDialogReader
+from vntts.live import LiveDialogReader, ScreenObservation
 from vntts.macos import (
     configure_macos_launch_at_login,
     get_macos_permission_status,
@@ -280,6 +280,7 @@ def create_application_icon(style: QStyle, *, platform: str | None = None) -> QI
 class AppSignals(QObject):
     status_changed = Signal(str)
     dialog_changed = Signal(str, str)
+    screen_observation_changed = Signal(object)
     ready_changed = Signal(bool)
     live_changed = Signal(bool)
     speech_paused_changed = Signal(bool)
@@ -2052,6 +2053,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             profile_store=self.profile_store,
             status_handler=self.signals.status_changed.emit,
             dialog_handler=self.signals.dialog_changed.emit,
+            screen_observation_handler=self.signals.screen_observation_changed.emit,
             diagnostic_handler=self.signals.diagnostics_changed.emit,
             sequence_status_handler=self.signals.sequence_status_changed.emit,
             unknown_speaker_handler=self.signals.unknown_speaker.emit,
@@ -2358,6 +2360,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.signals.status_changed.connect(self.set_status)
         self.signals.dialog_changed.connect(self.set_dialog)
+        self.signals.screen_observation_changed.connect(self.set_screen_observation)
         self.signals.ready_changed.connect(self.set_ready)
         self.signals.live_changed.connect(self.set_live)
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
@@ -5849,6 +5852,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             trace.message(),
             **trace.support_fields(),
         )
+
+    def set_screen_observation(self, observation: object) -> None:
+        if (
+            isinstance(observation, ScreenObservation)
+            and observation.reader is self.controller.live_reader
+            and observation.is_active()
+            and not self._shutting_down
+        ):
+            self.dashboard.set_recognition(
+                observation.text, uncertain=observation.uncertain
+            )
 
     def set_dialog(self, character: str, text: str) -> None:
         if not text:

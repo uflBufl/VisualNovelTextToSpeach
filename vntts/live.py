@@ -3,7 +3,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from threading import TIMEOUT_MAX, Condition, Event, Lock, RLock, Timer
 from time import monotonic
@@ -44,6 +44,15 @@ class RecognizedDialog:
     line_id: str
     exact_match: bool = True
     allow_unheard_replacement: bool = True
+    observed_text: str | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class ScreenObservation:
+    text: str
+    uncertain: bool
+    is_active: Callable[[], bool] = field(repr=False, compare=False)
+    reader: "LiveDialogReader" = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -416,6 +425,7 @@ class LiveDialogReader:
         frame_routed: Callable[[Frame, FrameFingerprint, str, str | None, str], None]
         | None = None,
         frame_observed: Callable[[Frame, FrameFingerprint, str], None] | None = None,
+        screen_observed: Callable[[ScreenObservation], object] | None = None,
         line_id_resolver: Callable[[str | None, str], str | None] | None = None,
         interrupt_speech: Callable[[], object] | None = None,
         dialog_observed: Callable[[str | None, str], DialogObservationDecision]
@@ -445,7 +455,7 @@ class LiveDialogReader:
         self.ocr_executor = ocr_executor
         self.playback_executor = playback_executor
         self.capture_frame = capture_frame
-        self._initialize_recognition(recognize_frame, ocr_uncertain)
+        self._initialize_recognition(recognize_frame, ocr_uncertain, screen_observed)
         self.frame_fingerprint = frame_fingerprint or (lambda _frame: None)
         self.frame_equivalent = frame_equivalent or (lambda _before, _after: False)
         self.frame_presence = frame_presence or (lambda _frame: True)
@@ -577,7 +587,9 @@ class LiveDialogReader:
         self,
         recognize_frame: Callable[[Frame], Observation | RecognizedDialog],
         ocr_uncertain: Callable[[OCRUncertainError, Callable[[], bool]], object] | None,
+        screen_observed: Callable[[ScreenObservation], object] | None,
     ) -> None:
+        self.screen_observed = screen_observed or (lambda _observation: None)
         self.recognize_frame = recognize_frame
         self.ocr_uncertain = ocr_uncertain or (lambda _error, _is_current: None)
 
@@ -588,6 +600,7 @@ class LiveDialogReader:
         self.pending_transition_text = ""
 
     def _reset_frame_observations(self) -> None:
+        self._screen_observation_serial = 0
         self._fully_observed_dialog: RecognizedDialog | None = None
         self._layout_context = ("dialogue", "dialogue", True)
         self.reading_session: ReadingSession | None = None
@@ -2033,6 +2046,7 @@ class LiveDialogReader:
         with self.state_lock:
             recognition_epoch = self.frame_route_epoch
             recognition_run_id = self.run_id
+            recognition_queue_epoch = self.queue_epoch
             generation = self.active_generation
         self._ocr_progress("recognizing")
         started = monotonic()
@@ -2080,6 +2094,17 @@ class LiveDialogReader:
             if not is_current():
                 outcome = "stale"
                 return None
+            self._publish_screen_observation(
+                uncertainty.result.text
+                if uncertainty is not None
+                else recognized.observed_text
+                if isinstance(recognized, RecognizedDialog)
+                and recognized.observed_text is not None
+                else text,
+                uncertainty is not None,
+                recognition_run_id,
+                recognition_queue_epoch,
+            )
             if uncertainty is not None:
                 self._ocr_callback(
                     "reporting-uncertainty", self.ocr_uncertain, uncertainty, is_current
@@ -2132,6 +2157,38 @@ class LiveDialogReader:
                 else None,
                 **freshness,
             )
+
+    def _publish_screen_observation(
+        self, text: str, uncertain: bool, run_id: str, queue_epoch: int
+    ) -> None:
+        with self.state_lock:
+            self._screen_observation_serial += 1
+            serial = self._screen_observation_serial
+
+        def is_active() -> bool:
+            with self.state_lock:
+                return bool(
+                    self.run_id == run_id
+                    and self.queue_epoch == queue_epoch
+                    and self._screen_observation_serial == serial
+                    and not self.stop_event.is_set()
+                    and not self.paused
+                    and not self.emergency_stopped
+                    and not self.is_shutting_down
+                )
+
+        try:
+            self._ocr_callback(
+                "publishing-screen-observation",
+                self.screen_observed,
+                ScreenObservation(text, uncertain, is_active, self),
+            )
+        except Exception as error:
+            try:
+                self.report_error(error)
+            except Exception:
+                # Display feedback must not interrupt recognition or speech.
+                pass
 
     def _accept_routed_frame(self, fingerprint: FrameFingerprint) -> None:
         with self.state_lock:

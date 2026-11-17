@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from vntts.dialog_capture import OCRUncertainError
-from vntts.live import LiveDialogReader, _TrackerAdmissionDiagnostics
+from vntts.live import LiveDialogReader, RecognizedDialog, _TrackerAdmissionDiagnostics
 from vntts.live_tracking import IncrementalDialogTracker
 from vntts.ocr import OCRPreviewCancelled, OCRResult
 
@@ -16,6 +16,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         self.clock.start()
         self.addCleanup(self.clock.stop)
         self.events = []
+        self.screen_observations = []
         self.focused = True
         self.purpose = "legacy"
         self.owner = None
@@ -33,6 +34,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
             ocr_purpose=lambda: self.purpose,
             stable_frame_owner=lambda: self.owner,
             pipeline_event_handler=lambda *a, **kw: self.events.append((a, kw)),
+            screen_observed=self.screen_observations.append,
         )
         self.frame = SimpleNamespace(
             provenance=SimpleNamespace(
@@ -82,6 +84,50 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         self.assertEqual(event["attempt_ms"], 250)
         self.assertNotIn("private dialogue", repr(event))
         self.assertNotIn("Narrator", repr(event))
+        observation = self.screen_observations[-1]
+        self.assertEqual(observation.text, "private dialogue")
+        self.assertFalse(observation.uncertain)
+        self.assertTrue(observation.is_active())
+
+    def test_screen_prefix_does_not_replace_canonical_speech_or_its_identity(self):
+        canonical = RecognizedDialog(
+            "Ada", "A complete prepared sentence.", "line", observed_text="A complete"
+        )
+        self.reader.recognize_frame = Mock(return_value=canonical)
+        result = self.recognize()
+        self.assertIs(result.dialog, canonical)
+        self.assertEqual(self.screen_observations[-1].text, "A complete")
+        self.assertEqual(
+            canonical,
+            RecognizedDialog("Ada", canonical.text, "line", observed_text="A"),
+        )
+        self.reader.speech_executor.submit.assert_not_called()
+
+    def test_delayed_screen_observations_expire_on_replacement_and_session_changes(
+        self,
+    ):
+        self.recognize()
+        previous = self.screen_observations[-1]
+        self.events.clear()
+        self.recognize()
+        self.assertFalse(previous.is_active())
+        self.assertTrue(self.screen_observations[-1].is_active())
+        for barrier in ("clear", "pause", "stop", "run"):
+            with self.subTest(barrier=barrier):
+                self.reader.paused = False
+                self.reader.stop_event.clear()
+                self.events.clear()
+                self.recognize()
+                observation = self.screen_observations[-1]
+                if barrier == "clear":
+                    self.reader.clear_queue()
+                elif barrier == "pause":
+                    self.reader.paused = True
+                elif barrier == "stop":
+                    self.reader.stop_event.set()
+                else:
+                    self.reader.run_id = "new-run"
+                self.assertFalse(observation.is_active())
 
     def test_late_results_keep_old_run_and_never_enter_tracker(self):
         for barrier, reason in (
@@ -100,6 +146,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         ):
             with self.subTest(barrier=barrier):
                 self.events.clear()
+                self.screen_observations.clear()
                 self.reader.stop_event.clear()
                 self.reader.paused = False
                 self.reader.emergency_stopped = False
@@ -142,6 +189,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
 
                 self.reader.recognize_frame = recognize
                 self.assertIsNone(self.recognize())
+                self.assertEqual(self.screen_observations, [])
                 event = self.event()[1]
                 self.assertEqual(event["outcome"], "stale")
                 self.assertEqual(event["reason"], reason)
@@ -161,16 +209,20 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
         self.reader.ocr_uncertain = Mock()
         self.assertIsNone(self.recognize())
         self.reader.ocr_uncertain.assert_called_once()
+        self.assertEqual(self.screen_observations[-1].text, error.result.text)
+        self.assertTrue(self.screen_observations[-1].uncertain)
         event = self.event()[1]
         self.assertEqual(
             (event["outcome"], event["ocr_confidence"], event["minimum_confidence"]),
             ("uncertain", 39, 60),
         )
         self.events.clear()
+        self.screen_observations.clear()
         self.reader.ocr_uncertain.reset_mock()
         self.focused = False
         self.assertIsNone(self.recognize())
         self.reader.ocr_uncertain.assert_not_called()
+        self.assertEqual(self.screen_observations, [])
         self.assertEqual(self.event()[1]["outcome"], "stale")
 
     def test_cancel_and_error_always_record_one_terminal_outcome(self):
@@ -194,6 +246,7 @@ class OCRAttemptDiagnosticsTest(unittest.TestCase):
 
     def test_broken_diagnostics_and_error_reporter_preserve_result_and_error(self):
         self.reader.pipeline_event_handler = Mock(side_effect=ValueError("sink"))
+        self.reader.screen_observed = Mock(side_effect=ValueError("screen sink"))
         self.reader.report_error = Mock(side_effect=ValueError("reporter"))
         self.assertEqual(self.recognize(), ("Narrator", "private dialogue"))
         error = RuntimeError("recognition failed")

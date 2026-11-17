@@ -451,6 +451,164 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.close()
         dashboard.deleteLater()
 
+    def test_recognition_remains_separate_from_the_selected_full_dialogue(self):
+        dashboard = ControlDashboard(AppSettings())
+        self.assertTrue(dashboard.recognition_area.isHidden())
+        canonical = "Your room is ready. Please follow me to the elevator."
+        dashboard.set_dialogue("Hotelier", canonical)
+        dashboard.set_recognition("Your room is rea")
+        self.assertEqual(
+            dashboard.selected_reading_label.text(), "Selected for reading"
+        )
+        self.assertEqual(dashboard.dialogue.toPlainText(), canonical)
+        self.assertEqual(dashboard.recognition.toPlainText(), "Your room is rea")
+        self.assertFalse(dashboard.recognition_area.isHidden())
+        self.assertTrue(dashboard.recognition_note.isHidden())
+        self.assertEqual(
+            dashboard.recognition.accessibleName(), "Last recognized on screen"
+        )
+        dashboard.copy_details_button.click()
+        details = self.application.clipboard().text()
+        self.assertIn(canonical, details)
+        self.assertIn("Last recognized on screen:\nYour room is rea", details)
+        dashboard.deleteLater()
+
+    def test_recognition_distinguishes_empty_uncertain_and_reset_observations(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.set_recognition("")
+        self.assertFalse(dashboard.recognition_area.isHidden())
+        self.assertEqual(dashboard.recognition.toPlainText(), "")
+        self.assertIn("No dialogue text", dashboard.recognition.placeholderText())
+        self.assertIn("No dialogue text", dashboard.recognition.accessibleDescription())
+        self.assertTrue(dashboard.recognition_note.isHidden())
+        for text in ("<A literal phrase> & unfinished", ""):
+            with self.subTest(text=text):
+                dashboard.set_recognition(text, uncertain=True)
+                self.assertEqual(dashboard.recognition.toPlainText(), text)
+                self.assertFalse(dashboard.recognition_note.isHidden())
+                self.assertIn("uncertain", dashboard.recognition_note.text())
+                self.assertIn(
+                    "uncertain", dashboard.recognition.accessibleDescription()
+                )
+                self.assertIn("Recognition is uncertain.", dashboard._copy_details())
+        self.assertIn("No dialogue text was recognized.", dashboard._copy_details())
+        dashboard.set_recognition(None)
+        self.assertTrue(dashboard.recognition_area.isHidden())
+        self.assertTrue(dashboard.recognition_note.isHidden())
+        self.assertEqual(dashboard.recognition.toPlainText(), "")
+        self.assertEqual(dashboard.recognition.accessibleDescription(), "")
+        self.assertNotIn("Last recognized on screen:", dashboard._copy_details())
+        dashboard.deleteLater()
+
+    def test_recognition_refresh_preserves_selection_and_scroll(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.set_live(True)
+        text = "A long recognized phrase. " * 80 + "Unfinished ending"
+        dashboard.set_recognition(text)
+        dashboard.show()
+        self.application.processEvents()
+        cursor = dashboard.recognition.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(
+            QTextCursor.MoveOperation.PreviousWord, QTextCursor.MoveMode.KeepAnchor
+        )
+        dashboard.recognition.setTextCursor(cursor)
+        dashboard.recognition.ensureCursorVisible()
+        selection = dashboard.recognition.textCursor().selectedText()
+        scroll_position = dashboard.recognition.verticalScrollBar().value()
+        self.assertTrue(selection)
+        self.assertGreater(scroll_position, 0)
+        dashboard.set_recognition(text, uncertain=True)
+        dashboard.set_live(True)
+        dashboard.set_runtime_controls(RuntimeControlState(ready=True, live=True))
+        self.application.processEvents()
+        self.assertEqual(dashboard.recognition.textCursor().selectedText(), selection)
+        self.assertEqual(
+            dashboard.recognition.verticalScrollBar().value(), scroll_position
+        )
+        dashboard.set_recognition("A changed observation")
+        self.assertFalse(dashboard.recognition.textCursor().hasSelection())
+        self.assertEqual(dashboard.recognition.verticalScrollBar().value(), 0)
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_recognition_resets_on_stop_and_preserves_an_observation_before_live_state(
+        self,
+    ):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.set_recognition("First observation during startup")
+        dashboard.set_live(False)
+        self.assertFalse(dashboard.recognition_area.isHidden())
+        dashboard.set_live(True)
+        self.assertFalse(dashboard.recognition_area.isHidden())
+        self.assertEqual(
+            dashboard.recognition.toPlainText(), "First observation during startup"
+        )
+        dashboard.set_recognition("A live observation")
+        dashboard.set_live(True)
+        self.assertEqual(dashboard.recognition.toPlainText(), "A live observation")
+        dashboard.set_live(False)
+        self.assertTrue(dashboard.recognition_area.isHidden())
+        self.assertEqual(dashboard.recognition.toPlainText(), "")
+        dashboard.set_recognition("An observation while stopped")
+        dashboard.set_live(False)
+        self.assertEqual(
+            dashboard.recognition.toPlainText(), "An observation while stopped"
+        )
+        dashboard.set_live(True)
+        self.assertFalse(dashboard.recognition_area.isHidden())
+        self.assertEqual(
+            dashboard.recognition.toPlainText(), "An observation while stopped"
+        )
+        dashboard.deleteLater()
+
+    def test_recognition_wraps_and_copies_at_large_fonts_without_growing_window(self):
+        for point_size in (14, 28):
+            with self.subTest(point_size=point_size):
+                dashboard = ControlDashboard(AppSettings())
+                dashboard.setFont(QFont(dashboard.font().family(), point_size))
+                dashboard.show_reading()
+                dashboard.set_dialogue("Hotelier", "The complete selected dialogue.")
+                dashboard.set_recognition("First line\nSecond line")
+                dashboard.resize(860, 560)
+                dashboard.show()
+                self.application.processEvents()
+                window_size = dashboard.size()
+                field_height = dashboard.recognition.height()
+                self.assertEqual(dashboard.recognition.verticalScrollBar().maximum(), 0)
+                self.assertLessEqual(
+                    field_height,
+                    dashboard.recognition.fontMetrics().lineSpacing() * 2 + 16,
+                )
+                text = "<A literal phrase> & a sentence that wraps. " * 80
+                dashboard.set_recognition(text)
+                self.application.processEvents()
+                self.assertEqual(dashboard.recognition.toPlainText(), text)
+                self.assertEqual(dashboard.size(), window_size)
+                self.assertEqual(dashboard.recognition.height(), field_height)
+                self.assertGreater(
+                    dashboard.recognition.verticalScrollBar().maximum(), 0
+                )
+                self.assertEqual(
+                    dashboard.recognition.horizontalScrollBar().maximum(), 0
+                )
+                self.assertTrue(dashboard.recognition.isReadOnly())
+                self.assertTrue(dashboard.recognition.tabChangesFocus())
+                dashboard.content_scroll.ensureWidgetVisible(dashboard.recognition)
+                dashboard.recognition.setFocus()
+                QTest.keySequence(
+                    dashboard.recognition, QKeySequence.StandardKey.SelectAll
+                )
+                QTest.keySequence(dashboard.recognition, QKeySequence.StandardKey.Copy)
+                self.assertEqual(self.application.clipboard().text(), text)
+                self.assertEqual(
+                    dashboard.dialogue.toPlainText(), "The complete selected dialogue."
+                )
+                dashboard._quitting = True
+                dashboard.close()
+                dashboard.deleteLater()
+
     def test_empty_reading_card_shows_only_observed_dialogue_and_playback(self):
         dashboard = ControlDashboard(AppSettings())
         self.assertTrue(dashboard.speaker.isHidden())

@@ -622,6 +622,7 @@ class RuntimeLifecycleComponent:
             capture_frame=controller._capture_live_frame,
             recognize_frame=controller._recognize_live_frame,
             frame_routed=controller._bind_live_frame_evidence,
+            screen_observed=controller.screen_observation_handler,
             ocr_uncertain=controller._admit_live_ocr_uncertainty,
             frame_fingerprint=fingerprint_dialog_frame,
             frame_equivalent=DialogFrameEquivalence(

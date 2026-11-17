@@ -43,11 +43,11 @@ Recheck archived findings against current main before implementation.
       The layout span still excludes model preparation and is not retained
       separately in the timeline. Preserve Story coverage and current-frame,
       confidence and ownership gates while attributing the remaining delay.
-- [ ] **Recognition versus prepared-text display:** review the Reading progress
-      presentation. Exact/unique-prefix source matching replaces partial observed
-      text with the complete canonical phrase and its speaker; users cannot infer
-      live OCR progress from that display. Make the distinction understandable
-      without synthetic typing or removing safe prepared-audio early admission.
+- [ ] Qualify the separate Reading screen-feedback field on Windows during
+      typewriter dialogue with and without prepared audio. The last recognized
+      fragment must remain distinct from the complete line selected for reading,
+      including uncertain/empty observations; verify copying, Stop/restart and
+      enlarged fonts while generation runs. Preserve early prepared playback.
 - [ ] **Repeated generation validation:** profile operation `c7cde714...` ending
       08:23:45 UTC separately from Reading. Total1064.1s includes accumulated
       state-validation939.8s and final-validation60.4s. Native renders finish much

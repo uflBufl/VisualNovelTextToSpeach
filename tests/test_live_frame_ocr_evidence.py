@@ -280,6 +280,20 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         self.assertEqual(recognized, ("Ada", prefix))
         self.assertFalse(self.reader.frame_equivalent(before, after))
 
+    def test_canonical_resolution_retains_observed_body_separately(self):
+        text = "The prepared story contains this complete sentence."
+        line = ChapterDialogue("line", "chapter", 1, "Ada", text, text_sha256(text))
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
+        raw = text.replace("sentence", "sentenee")
+
+        recognized = self.recognize(
+            self.frame(), OCRResult("Ada", raw, 95, "balanced", 1)
+        )
+
+        self.assertIsInstance(recognized, RecognizedDialog)
+        self.assertEqual(recognized.text, text)
+        self.assertEqual(recognized.observed_text, raw)
+
     def test_corrections_are_shared_by_spoken_text_and_frame_evidence(self):
         before, after = self.frame(), self.frame()
         self.controller.correction_dictionary = OCRCorrectionDictionary(
