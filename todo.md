@@ -362,10 +362,21 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish the requested Mac verification pass below. Indexed Mac
+Next action: restore the completion-matching regression gate below, then finish
+the requested Mac verification pass. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
+
+- [ ] **Restore completion-matching tests after the indexed-catalog migration.**
+      tests.test_complete_story_matching still uses the removed preloader
+      by_line_id and matching_text fields and fails with AttributeError before
+      exercising matching. Pass explicit IDs from each bounded fixture and check
+      snapshot.store sharing through the current API; preserve completion,
+      ambiguity, cancellation and isolated query-state assertions. Do not restore
+      catalog-wide dictionaries in product code. Run the entire affected module
+      together with indexed matching, tracker and controller regressions before
+      the next game run. Reproduced on addbb8eb; no implementation yet.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption
