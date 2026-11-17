@@ -46,7 +46,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         ) as compare:
             with self.assertRaises(StoryMatchingCancelled):
                 snapshot.resolve_complete_among(
-                    first.speaker, first.text, snapshot.by_line_id
+                    first.speaker, first.text, (first.line_id, second.line_id)
                 )
         self.assertEqual(compare.call_count, 1)
         self.assertEqual(preloader.current_match.sequence, first.sequence)
@@ -59,12 +59,13 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         preloader.select_line_id(first.line_id)
         preloader.last_resolution_diagnostics = {"match_result": "previous"}
         snapshot = preloader.matching_snapshot()
-        self.assertIs(snapshot.matching_text, preloader.matching_text)
-        self.assertIs(snapshot.by_line_id, preloader.by_line_id)
+        self.assertIs(snapshot.store, preloader.store)
+        self.assertIs(snapshot.line_for_id(second.line_id), second)
+        self.assertIs(snapshot.matching_shape(second), preloader.matching_shape(second))
         self.assertIs(snapshot.dialogue, preloader.dialogue)
         previous = preloader.current_match
         selected, _ = snapshot.resolve_complete_among(
-            second.speaker, second.text, snapshot.by_line_id
+            second.speaker, second.text, (first.line_id, second.line_id)
         )
         self.assertIs(selected, second)
         self.assertEqual(snapshot.current_match.sequence, second.sequence)
@@ -348,7 +349,12 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                     match = resolver.resolve_observation_among(
                         speaker,
                         text,
-                        resolver.by_line_id,
+                        (
+                            long.line_id,
+                            short.line_id,
+                            following.line_id,
+                            previous.line_id,
+                        ),
                         update_context=False,
                         prefer_synthesis=prefer_synthesis,
                         allow_prefix=allow_prefix,
@@ -382,7 +388,13 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 match = resolver.resolve_observation_among(
                     "Ada",
                     observed,
-                    resolver.by_line_id,
+                    (
+                        earlier.line_id,
+                        previous.line_id,
+                        short.line_id,
+                        middle.line_id,
+                        longer.line_id,
+                    ),
                     recover_crop_noise=True,
                     update_context=False,
                 )
@@ -393,7 +405,10 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         resolver = ChapterVoicePreloader((previous, short, longer))
         resolver.select_line_id(short.line_id)
         match = resolver.resolve_observation_among(
-            "Ada", short.text, resolver.by_line_id, update_context=False
+            "Ada",
+            short.text,
+            (previous.line_id, short.line_id, longer.line_id),
+            update_context=False,
         )
         self.assertIsNone(match.line)
         self.assertEqual(match.method, "expected-incomplete")
@@ -411,7 +426,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 selected, method = resolver.resolve_complete_among(
                     speaker,
                     successor.text,
-                    resolver.by_line_id,
+                    (current.line_id, successor.line_id),
                     update_context=False,
                 )
                 self.assertIsNone(selected)
@@ -419,7 +434,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 selected, method = resolver.resolve_complete_among(
                     speaker,
                     successor.text,
-                    resolver.by_line_id,
+                    (current.line_id, successor.line_id),
                     update_context=False,
                     fully_observed_line_id=current.line_id,
                 )
@@ -431,7 +446,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                     match = resolver.resolve_observation_among(
                         speaker,
                         successor.text,
-                        resolver.by_line_id,
+                        (current.line_id, successor.line_id),
                         allow_prefix=allow_prefix,
                         update_context=False,
                         fully_observed_line_id=current.line_id,
@@ -453,7 +468,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 match = resolver.resolve_observation_among(
                     "Ada",
                     successor.text,
-                    resolver.by_line_id,
+                    (current.line_id, successor.line_id, foreign.line_id),
                     fully_observed_line_id=observed_line_id,
                     update_context=False,
                 )
@@ -477,7 +492,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 match = resolver.resolve_observation_among(
                     "Ada",
                     candidate.text,
-                    resolver.by_line_id,
+                    (current.line_id, candidate.line_id),
                     fully_observed_line_id=current.line_id,
                     update_context=False,
                 )
@@ -496,7 +511,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 match = resolver.resolve_observation_among(
                     "Ada",
                     observed,
-                    resolver.by_line_id,
+                    (current.line_id, successor.line_id),
                     recover_crop_noise=True,
                     fully_observed_line_id=current.line_id,
                     update_context=False,
@@ -507,7 +522,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         selected, method = resolver.resolve_complete_among(
             "Ada",
             current.text,
-            resolver.by_line_id,
+            (current.line_id, successor.line_id),
             fully_observed_line_id=current.line_id,
             update_context=False,
         )
@@ -537,7 +552,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 match = resolver.resolve_observation_among(
                     "Ada",
                     original.text,
-                    resolver.by_line_id,
+                    (original.line_id, longer.line_id),
                     prefer_synthesis=True,
                     update_context=False,
                 )

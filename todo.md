@@ -362,29 +362,17 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: restore the completion-matching regression gate below, then finish
+Next action: repair the remaining restart/audio, boundary OCR and full-order
+OCR lifecycle failures in the full automated test gate below. Preserve
+behavioral assertions and repair product code wherever they expose a real defect.
+Run changed-test selection first, then the complete affected modules; finish
+with full exact discovery to verify the order-dependent failure. Commit each
+logical repair and remove its TODO only after its gate passes. Then finish
 the requested Mac verification pass. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
 
-- [ ] **Restore completion-matching tests after the indexed-catalog migration.**
-      tests.test_complete_story_matching still uses the removed preloader
-      by_line_id and matching_text fields and fails with AttributeError before
-      exercising matching. Pass explicit IDs from each bounded fixture and check
-      snapshot.store sharing through the current API; preserve completion,
-      ambiguity, cancellation and isolated query-state assertions. Do not restore
-      catalog-wide dictionaries in product code. Run the entire affected module
-      together with indexed matching, tracker and controller regressions before
-      the next game run. Reproduced on addbb8eb; no implementation yet.
-
-- [ ] **Reconcile indexed-discovery regression expectations with current context.**
-      The full Mac suite fails the duplicate-position and named-speaker tests in
-      tests.test_indexed_story_discovery. The former explicitly selects a current
-      chapter; the latter retains the context published by its first lookup.
-      Current matching intentionally uses that context. Separate fresh-context
-      ambiguity from current-position resolution in these fixtures and preserve
-      both behaviors before treating either assertion as a product defect.
 - [ ] **Diagnose prepared-audio restoration in the fresh-install journey.**
       tests.test_fresh_install_gui_journey reproducibly fails its second process:
       settings and voice bindings restore, but the production backend exposes no

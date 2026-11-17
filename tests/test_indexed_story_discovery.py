@@ -74,19 +74,35 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         first = dialogue("A complete discovery.", "first", chapter="first")
         second = replace(first, line_id="second", chapter="second")
         preloader = ChapterVoicePreloader((first, second))
-        previous = ChapterMatch("first", 1, 1.0)
-        preloader.current_match = previous
         selected, result = preloader.resolve_indexed_complete("Ada", first.text)
         self.assertIsNone(selected)
         self.assertEqual(result, "expected-ambiguous")
-        self.assertIs(preloader.current_match, previous)
+        self.assertIsNone(preloader.current_match)
+
+    def test_duplicate_text_prefers_the_current_position(self):
+        first = dialogue("A complete discovery.", "first", chapter="first")
+        second = replace(first, line_id="second", chapter="second")
+        for current in (first, second):
+            with self.subTest(current=current.line_id):
+                preloader = ChapterVoicePreloader((first, second))
+                preloader.select_line_id(current.line_id)
+                previous = preloader.current_match
+                selected, result = preloader.resolve_indexed_complete(
+                    "Ada", first.text, update_context=False
+                )
+                self.assertIs(selected, current)
+                self.assertEqual(result, "expected-exact")
+                self.assertIs(preloader.current_match, previous)
 
     def test_named_speaker_disambiguates_complete_text(self):
         first = dialogue("A complete discovery.", "first")
         second = replace(first, line_id="second", speaker="Bea", chapter="other")
         preloader = ChapterVoicePreloader((first, second))
         self.assertIs(preloader.resolve_indexed_complete("Bea", first.text)[0], second)
+        self.assertEqual(preloader.current_match.chapter, second.chapter)
+        preloader.current_match = None
         self.assertIsNone(preloader.resolve_indexed_complete("", first.text)[0])
+        self.assertIsNone(preloader.current_match)
 
     def test_discovery_checks_longer_continuations_in_the_candidate_chapter(self):
         short = dialogue("The lantern illuminated the forgotten passage.", "short")
