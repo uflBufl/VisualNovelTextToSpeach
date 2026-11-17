@@ -457,13 +457,12 @@ acceptance is outside this pass. Book reading remains deferred.
       matching; full native timing and historical R1 remain unqualified. The
       independently recovered native-3805 is not evidence for more recovery code.
       Evidence: `pre-ocr-latency-20261117/report.md` and `comparison.json`.
-- [ ] **Align Reading messages with committed work.** The same transition showed
-      a narrator-fallback warning for unaccepted menu speaker `EEE`, without
-      actual speech, and retained `Measuring selected game speech...` after
-      duration preparation completed. Publish role fallback feedback for accepted
-      speech, and finish/clear preparation progress when that operation ends.
-      Check actual Reading/preparation consumers before implementation; this is
-      separate from the deferred status-strip redesign.
+- [ ] **Finish original-speech timing progress.** Replace stale
+      `Measuring selected game speech...` after duration preparation completes.
+      Publish timing-specific ready/failure/cancellation after provider and load
+      finish; retain Stop/catalog-removal cancellation suppression, cache/retry
+      semantics and the original exception. Validate success, error and late
+      completion; then commit this independently from fallback notices.
 
 - [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
       During the next actual content update, verify visible progress for rebuilding

@@ -2359,15 +2359,12 @@ class AppController:
                     character, text = line.speaker, line.text
                     canonical_routing = True
                     canonical_event_changed = event.event_id != previous_event_id
-        speech_deferred = self._offer_unknown_speaker_mapping(character, text)
         self._prime_observed_voice(character, text)
         if not owned_confirmation:
             self._prime_likely_chapter_voice(character, text)
         if canonical_event_changed:
             self.history.finish_current()
         self._record_and_display_dialogue(character, text)
-        if speech_deferred:
-            return False
         if early_prefix:
             return CanonicalDialogRoute(character, text)
         return (
@@ -3380,14 +3377,6 @@ class AppController:
             previous_event_id,
         ):
             return False
-        if self._defer_explicit_sequence_voice_decision(
-            event,
-            line,
-            running,
-            pipeline_stage,
-            previous_event_id,
-        ):
-            return False
         self.sequence_admitted_chunks.clear()
         self.sequence_playback_leases.clear()
         if running:
@@ -3442,29 +3431,6 @@ class AppController:
         self.status_handler(
             "Story event was not selected: its canonical line is unavailable"
         )
-        return True
-
-    def _defer_explicit_sequence_voice_decision(
-        self,
-        event: LiveSequenceEvent,
-        line: ChapterDialogue | None,
-        running: bool,
-        pipeline_stage: str,
-        previous_event_id: str | None,
-    ) -> bool:
-        if (
-            not running
-            or line is None
-            or not self._offer_unknown_speaker_mapping(line.speaker, line.text)
-        ):
-            return False
-        self._report_explicit_live_sequence_outcome(
-            pipeline_stage,
-            previous_event_id,
-            event,
-            "voice-decision-deferred",
-        )
-        self._publish_live_sequence_status()
         return True
 
     def _enqueue_explicit_sequence_line(self, line: ChapterDialogue | None) -> bool:
@@ -4916,6 +4882,11 @@ class AppController:
             else:
                 raise TypeError("Speech backend does not implement prepare_playback()")
             prepared = self._materialize_live_route(prepared, chunk)
+            reader = self.live_reader
+            if not self.shutdown_requested.is_set() and (
+                reader is None or reader.is_playback_current(chunk)
+            ):
+                self._offer_unknown_speaker_mapping(chunk.character, chunk.text)
             try:
                 announcement, announced_speaker = self._prepare_speaker_announcement(
                     chunk, prepared

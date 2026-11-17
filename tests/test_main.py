@@ -4441,10 +4441,7 @@ class MainTest(unittest.TestCase):
         generated_backend.has_generated_line.assert_called_once_with(
             preloader.dialogue[1]
         )
-        controller._offer_unknown_speaker_mapping.assert_called_once_with(
-            "Rhiannon",
-            "Second canonical line that remains stable.",
-        )
+        controller._offer_unknown_speaker_mapping.assert_not_called()
         controller.live_reader.confirm_pending_auto_advance.assert_called_once_with()
         self.assertEqual(controller.story_cursor.current_event_id, "event-2")
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
@@ -6376,6 +6373,71 @@ class MainTest(unittest.TestCase):
                         controller.allow_unscoped_live_reading, allow_unscoped
                     )
 
+    def test_observed_menu_speaker_is_not_offered_before_speech_preparation(self):
+        offered = []
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="off"),
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = SimpleNamespace(registry=CharacterVoiceRegistry())
+        controller.speech_backend = StubTypedPlaybackBackend()
+
+        controller._dialog_observed("EEE", "Hansel and Gretel E lucevan le stelle")
+        self.assertEqual(offered, [])
+        self.assertEqual(controller.reported_unknown_speakers, set())
+        self.assertEqual(controller.pending_unknown_speakers, set())
+
+        controller._dialog_observed("Selone", "A completed dialogue.")
+        controller._prepare_live_chunk(
+            SpeechChunk(1, "Selone", "A completed dialogue.")
+        )
+        self.assertEqual(offered, ["Selone"])
+        controller._prepare_live_chunk(SpeechChunk(2, "Selone", "Another dialogue."))
+        self.assertEqual(offered, ["Selone"])
+
+    def test_cancelled_preparation_does_not_offer_a_voice(self):
+        offered = []
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="off"),
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = SimpleNamespace(registry=CharacterVoiceRegistry())
+        reader = self._sequence_reader(controller)
+        chunk = reader._admit_chunk(SpeechChunk(1, "Selone", "A cancelled line."))
+        self.assertIsNotNone(chunk)
+        backend = StubTypedPlaybackBackend()
+
+        def prepare(_character, _text):
+            reader.emergency_stop()
+            return backend.prepared
+
+        backend.prepare_playback = prepare
+        controller.speech_backend = backend
+        controller._prepare_live_chunk(chunk)
+
+        self.assertEqual(offered, [])
+        self.assertEqual(controller.pending_unknown_speakers, set())
+
+    def test_one_time_read_still_offers_a_voice_after_capture_stop(self):
+        offered = []
+        controller = AppController(
+            AppSettings(speaker_announcement_mode="off"),
+            unknown_speaker_handler=offered.append,
+        )
+        controller.voice_router = SimpleNamespace(registry=CharacterVoiceRegistry())
+        controller.speech_backend = StubTypedPlaybackBackend()
+        reader = self._sequence_reader(controller)
+        reader.capture_future = Future()
+        self.assertTrue(reader.stop())
+        reader.capture_future.set_result(None)
+        self.assertTrue(reader.stop_event.is_set())
+        chunk = reader._admit_chunk(SpeechChunk(1, "Selone", "A one-time read."))
+        self.assertIsNotNone(chunk)
+
+        controller._prepare_live_chunk(chunk)
+
+        self.assertEqual(offered, ["Selone"])
+
     def test_controller_reports_each_narrator_fallback_once_without_blocking(self):
         offered = []
         statuses = []
@@ -6390,9 +6452,9 @@ class MainTest(unittest.TestCase):
         controller.voice_router.registry.resolve_closest.return_value = None
         controller.voice_router.registry.resolve.return_value = None
 
-        controller._dialog_observed("Selone", "First line")
-        controller._dialog_observed("Selone", "Second line")
-        controller._dialog_observed("Narrator", "Scene description")
+        controller._offer_unknown_speaker_mapping("Selone", "First line")
+        controller._offer_unknown_speaker_mapping("Selone", "Second line")
+        controller._offer_unknown_speaker_mapping("Narrator", "Scene description")
 
         self.assertEqual(offered, ["Selone"])
         self.assertIn("Using the narrator for Selone", statuses[-1])
@@ -6409,8 +6471,12 @@ class MainTest(unittest.TestCase):
         controller.voice_router.registry.resolve_closest.return_value = None
         controller.voice_router.registry.resolve.return_value = None
 
-        self.assertTrue(controller._dialog_observed("???", "Unattributed line"))
-        self.assertTrue(controller._dialog_observed("Selone", "Named line"))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("???", "Unattributed line")
+        )
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selone", "Named line")
+        )
 
         self.assertEqual(offered, ["Selone"])
 
@@ -6442,13 +6508,17 @@ class MainTest(unittest.TestCase):
         controller.speech_backend = SimpleNamespace()
 
         self.assertEqual(controller.unresolved_live_speakers(), ("Selene",))
-        self.assertTrue(controller._dialog_observed("Selene", "This is not Selone."))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selene", "This is not Selone.")
+        )
         self.assertEqual(offered, ["Selene"])
 
         controller.allow_narrator_fallback("Selone")
         controller.reported_unknown_speakers.clear()
         controller.pending_unknown_speakers.clear()
-        self.assertTrue(controller._dialog_observed("Selene", "This is not Selone."))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selene", "This is not Selone.")
+        )
         self.assertEqual(offered, ["Selene", "Selene"])
 
     def test_controller_uses_narrator_for_unknown_voice_without_waiting(self):
@@ -6463,9 +6533,13 @@ class MainTest(unittest.TestCase):
         controller.voice_router.registry.resolve_closest.return_value = None
         controller.voice_router.registry.resolve.return_value = None
 
-        self.assertTrue(controller._dialog_observed("Selone", "First line"))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selone", "First line")
+        )
         self.assertTrue(controller.allow_narrator_fallback("Selone"))
-        self.assertTrue(controller._dialog_observed("Selone", "First line"))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Selone", "First line")
+        )
 
         self.assertEqual(offered, ["Selone"])
 
@@ -6483,7 +6557,9 @@ class MainTest(unittest.TestCase):
         controller.speech_backend = Mock()
         controller.speech_backend.will_use_source_audio.return_value = True
 
-        self.assertTrue(controller._dialog_observed("Fledgling", "Coo..."))
+        self.assertFalse(
+            controller._offer_unknown_speaker_mapping("Fledgling", "Coo...")
+        )
 
         self.assertEqual(offered, [])
 
@@ -6497,7 +6573,7 @@ class MainTest(unittest.TestCase):
         controller.voice_router = Mock()
         controller.voice_router.registry.resolve.return_value = Mock()
 
-        controller._dialog_observed("Kamuta", "A line")
+        controller._offer_unknown_speaker_mapping("Kamuta", "A line")
 
         self.assertEqual(offered, [])
 
@@ -6517,9 +6593,9 @@ class MainTest(unittest.TestCase):
         controller.live_reader.toggle.return_value = True
         controller.speech_backend = Mock()
 
-        controller._dialog_observed("Hotelier", "A one-time read.")
+        controller._offer_unknown_speaker_mapping("Hotelier", "A one-time read.")
         controller.toggle_live()
-        controller._dialog_observed("Hotelier", "The first live line.")
+        controller._offer_unknown_speaker_mapping("Hotelier", "The first live line.")
 
         self.assertEqual(offered, ["Hotelier", "Hotelier"])
 
@@ -6937,6 +7013,9 @@ class MainTest(unittest.TestCase):
         controller.live_reader.toggle.assert_called_once_with()
         self.assertIsNone(preloader.current_match)
         self.assertTrue(controller._dialog_observed("Selone", "Line"))
+        self.assertEqual(offered, [])
+        controller.speech_backend = StubTypedPlaybackBackend()
+        controller._prepare_live_chunk(SpeechChunk(1, "Selone", "Line"))
         self.assertEqual(offered, ["Selone"])
         self.assertIsNone(preloader.current_match)
         controller._live_sequence_audio_active = Mock(return_value=True)
