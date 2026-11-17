@@ -447,9 +447,19 @@ deferred implementation; centered-caption checks are included.
       `Even if I die, [1l still turn Kakania completely against Isolde.`.
       Matching protects the internal1 as numeric content and also exceeds the
       current edit budget;56 and58 correctly used game audio. Propose bounded
-      candidate-aware letter recovery while preserving real numbers, negations,
-      complete-text/continuation checks and unique identity. Do not globally
-      increase edit distance or discard numeric protection. Replay the recorded
+      candidate-aware letter recovery: a separate OCR-confusion comparison for
+      the current/next position of an already identified chapter. Permit visual
+      vertical-stroke alternatives only in an alphabetic candidate word and a
+      mixed OCR glyph token; standalone observed numbers and numeric/negative
+      spans in the canonical candidate remain strict. Keep ordinary edit budgets;
+      `[1l` versus `I'll` must fit through visual substitution plus the remaining
+      ordinary edit, without a word-specific replacement. Mark recovered evidence
+      as approximate even when visual substitutions have zero cost, so competitor
+      margins and continuation checks still apply. Global indexed discovery keeps
+      its existing semantics. Independent OCR attempts on the retained video frame
+      did not reliably recover the token; do not add an unqualified second pass.
+      This comparison policy is proposed, not implemented or user-approved yet.
+      Replay the recorded
       prefix/full observations through the controller and verify57 selects game
       audio, without changing genuinely unreadable-frame waiting. Evidence:
       native-followup-20261117, native session f23c15bf98d240118c2f2e4b4f7b7426.
