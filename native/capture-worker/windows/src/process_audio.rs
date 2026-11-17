@@ -262,7 +262,7 @@ fn packets(
                 qpc_100ns: qpc,
                 flags,
             };
-            clock.validate(packet, SAMPLE_RATE).map_err(str::to_owned)?;
+            clock.validate(packet, SAMPLE_RATE)?;
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
             if !silent && data.is_null() {
                 return Err("WASAPI returned null process PCM".into());
@@ -288,6 +288,7 @@ pub fn record(options: &Options, session: &mut Session) -> Result<Value, String>
         "mechanism":"WASAPI ActivateAudioInterfaceAsync process loopback",
         "scope":"selected_process_tree", "microphone":false, "global_fallback":false,
         "sample_rate":SAMPLE_RATE, "channels":CHANNELS, "sample_format":"float32_le",
+        "sample_time_basis":"wasapi_device_position",
         "audio_buffer_capacity_frames":SAMPLE_RATE * 5,
         "frames":0,"peak":0.0
     })

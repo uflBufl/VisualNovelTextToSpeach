@@ -200,27 +200,38 @@ pub struct SourceClock {
     previous: Option<Packet>,
 }
 impl SourceClock {
-    pub fn validate(&mut self, packet: Packet, rate: u32) -> Result<(), &'static str> {
+    pub fn validate(&mut self, packet: Packet, rate: u32) -> Result<(), String> {
+        let rejected = |reason| {
+            format!(
+                "{reason}; previous={:?}; rejected={packet:?}",
+                self.previous
+            )
+        };
         if packet.flags & TIMESTAMP_ERROR != 0 {
-            return Err("WASAPI process packet timestamp error");
+            return Err(rejected("WASAPI process packet timestamp error"));
         }
         // At startup there is no previous captured packet to correlate with.
         if self.previous.is_some() && packet.flags & DATA_DISCONTINUITY != 0 {
-            return Err("WASAPI process packet data discontinuity");
+            return Err(rejected("WASAPI process packet data discontinuity"));
         }
         if packet.frames == 0 || packet.qpc_100ns == 0 || rate == 0 {
-            return Err("Missing process audio source timestamp");
+            return Err(rejected("Missing process audio source timestamp"));
         }
         if let Some(previous) = self.previous {
-            if previous.device_position.checked_add(previous.frames as u64)
-                != Some(packet.device_position)
-                || packet.qpc_100ns <= previous.qpc_100ns
+            // Process-loopback virtual devices have no position and report zero.
+            let virtual_position = previous.device_position == 0 && packet.device_position == 0;
+            if !virtual_position
+                && previous.device_position.checked_add(previous.frames as u64)
+                    != Some(packet.device_position)
             {
-                return Err("Discontinuous process audio source clock");
+                return Err(rejected("Discontinuous process audio device position"));
+            }
+            if packet.qpc_100ns <= previous.qpc_100ns {
+                return Err(rejected("Non-increasing process audio QPC timestamp"));
             }
             let elapsed = qpc_seconds(packet.qpc_100ns - previous.qpc_100ns);
             if (elapsed - previous.frames as f64 / rate as f64).abs() > 0.050 {
-                return Err("Process audio source timestamp jump exceeds 50ms");
+                return Err(rejected("Process audio source timestamp jump exceeds 50ms"));
             }
         }
         self.previous = Some(packet);
@@ -363,6 +374,116 @@ mod tests {
                 SAMPLE_RATE
             )
             .is_err());
+    }
+
+    #[test]
+    fn virtual_zero_positions_use_real_qpc_without_rewriting_packets() {
+        let mut clock = SourceClock::default();
+        let (mut producer, mut consumer) = ring(1440);
+        for index in 0..3 {
+            let packet = Packet {
+                frames: 480,
+                device_position: 0,
+                qpc_100ns: 10_000_000 + index * 100_000,
+                flags: 2,
+            };
+            clock.validate(packet, SAMPLE_RATE).unwrap();
+            producer.push(packet, None).unwrap();
+            consumer
+                .consume(|actual, first, second| {
+                    assert_eq!(actual.device_position, 0);
+                    assert_eq!(actual.qpc_100ns, packet.qpc_100ns);
+                    assert_eq!(actual.flags, packet.flags);
+                    assert!(first.iter().chain(second).all(|sample| *sample == 0.0));
+                })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn virtual_positions_do_not_hide_clock_failures_and_retain_rejected_values() {
+        let first = Packet {
+            frames: 480,
+            device_position: 0,
+            qpc_100ns: 10_000_000,
+            flags: 0,
+        };
+        for (qpc_100ns, flags) in [
+            (10_000_000, 0),
+            (9_000_000, 0),
+            (11_000_000, 0),
+            (10_100_000, DATA_DISCONTINUITY),
+            (10_100_000, TIMESTAMP_ERROR),
+        ] {
+            let mut clock = SourceClock::default();
+            clock.validate(first, SAMPLE_RATE).unwrap();
+            let rejected = Packet {
+                qpc_100ns,
+                flags,
+                ..first
+            };
+            let error = clock.validate(rejected, SAMPLE_RATE).unwrap_err();
+            assert!(error.contains("previous=Some(Packet"));
+            assert!(error.contains(&format!("rejected={rejected:?}")));
+            assert_eq!(clock.previous.unwrap().qpc_100ns, first.qpc_100ns);
+            clock
+                .validate(
+                    Packet {
+                        qpc_100ns: 10_100_000,
+                        ..first
+                    },
+                    SAMPLE_RATE,
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn qpc_jump_boundary_uses_the_integer_counter_difference() {
+        let first = Packet {
+            frames: 480,
+            device_position: 0,
+            qpc_100ns: 10_000_000,
+            flags: 0,
+        };
+        for (elapsed, accepted) in [(600_000, true), (600_001, false)] {
+            let mut clock = SourceClock::default();
+            clock.validate(first, SAMPLE_RATE).unwrap();
+            assert_eq!(
+                clock
+                    .validate(
+                        Packet {
+                            qpc_100ns: first.qpc_100ns + elapsed,
+                            ..first
+                        },
+                        SAMPLE_RATE
+                    )
+                    .is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
+    fn nonzero_positions_still_require_frame_continuity() {
+        let first = Packet {
+            frames: 480,
+            device_position: 9000,
+            qpc_100ns: 10_000_000,
+            flags: 0,
+        };
+        for device_position in [0, 9000, 9479, 9481] {
+            let mut clock = SourceClock::default();
+            clock.validate(first, SAMPLE_RATE).unwrap();
+            let packet = Packet {
+                device_position,
+                qpc_100ns: 10_100_000,
+                ..first
+            };
+            let error = clock.validate(packet, SAMPLE_RATE).unwrap_err();
+            assert!(error.contains("device position"));
+            assert!(error.contains(&format!("rejected={packet:?}")));
+        }
     }
 
     #[test]

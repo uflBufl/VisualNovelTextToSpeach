@@ -43,21 +43,16 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       worker without restarting the application. Automated protocol/lifecycle
       regressions and a pinned-SDK public-asset smoke do not qualify the actual
       gated download or Windows browser interaction.
-- [ ] Repair process-loopback clock handling across `audio_buffer.rs`, `caf.rs`
-      and `reading_diagnostics_analysis.py`. Both captures accept one480-frame
-      packet then fail `Discontinuous process audio source clock`; the rejected
-      packet's positions/QPC are missing. Distinguish virtual device position
-      from file offset and acquisition continuity; retain actual QPC/flags and
-      rejected values rather than fabricating no-loss evidence. Gate: supported
-      virtual positions, real discontinuity/timestamp failures and analysis agree;
-      run Windows native clock/blob-lifetime tests, then qualify actual PCM and
-      stop/failure/teardown on Windows.
-- [ ] Flush published video journal events before the recorder readiness check.
-      `BufWriter` retains the initial events below its capacity until stop, so
-      Python reports `Recorder readiness unverified for window` and stops a valid
-      video capture after10s. Gate: the first complete event is visible during
-      capture, readiness succeeds before its deadline and normal stop retains
-      decodable video with monotonic timestamps. Run native Windows regressions.
+- [ ] Qualify process-loopback recording on Windows: run native clock and
+      activation-blob lifetime tests, then record nonzero game and Rust-output PCM
+      beyond startup. Constant-zero virtual positions must preserve actual QPC,
+      raw flags and CAF offsets. Check Stop, acquisition/writer failure and
+      teardown; a rejected clock must retain previous/current packet values.
+- [ ] Qualify video readiness on Windows: the first complete written-frame event
+      must be readable while capture remains active and satisfy readiness before
+      its deadline. Check static/changing scenes, normal stop, journal failure
+      and finalization; retain decodable video and monotonic timestamps. Run
+      native Windows recording regressions.
 
 ## Active - Support 30 Windows Reading repairs
 

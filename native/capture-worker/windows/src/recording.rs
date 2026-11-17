@@ -473,7 +473,7 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
     use serde_json::json;
     use std::{
         fs::OpenOptions,
-        io::{BufWriter, Write},
+        io::{LineWriter, Write},
         thread,
         time::Duration,
     };
@@ -509,7 +509,7 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
         session.metadata["video_resize_policy"] = json!("aspect-fit-black");
         let (video_width, video_height) = (width & !1, height & !1);
         session.save()?;
-        let mut timeline = BufWriter::new(
+        let mut timeline = LineWriter::new(
             OpenOptions::new()
                 .write(true)
                 .create_new(true)

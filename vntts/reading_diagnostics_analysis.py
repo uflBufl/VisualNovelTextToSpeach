@@ -321,7 +321,7 @@ def _capture_clock(
     gap_index = 0
     pending_gap: dict | None = None
     previous_sample: float | None = None
-    previous_count = 0
+    previous_count, previous_qpc = 0, 0
     previous_host = float("-inf")
     offsets: list[float] = []
     minimum_offset, maximum_offset = float("inf"), float("-inf")
@@ -360,6 +360,14 @@ def _capture_clock(
                 or type(qpc) is not int
                 or not 0 < qpc <= 2**64 - 1
                 or abs(host - qpc / 10_000_000) > 0.000001
+                or type(event.get("sample_time")) is not int
+                or not 0 <= event["sample_time"] <= 2**64 - 1
+                or previous_sample is not None
+                and (
+                    qpc <= previous_qpc
+                    or abs((qpc - previous_qpc) / 10_000_000 - previous_count / rate)
+                    > 0.050
+                )
             ):
                 raise ValueError("Invalid or discontinuous WASAPI packet clock")
         if (
@@ -372,7 +380,11 @@ def _capture_clock(
             raise ValueError("Invalid capture callback timeline")
         if previous_sample is not None:
             if pending_gap is None:
-                if abs(sample - previous_sample) >= 0.5 or host <= previous_host:
+                # Process-loopback's virtual device position can stay zero.
+                if (
+                    not (windows and sample == 0 and previous_sample == previous_count)
+                    and abs(sample - previous_sample) >= 0.5
+                ) or host <= previous_host:
                     raise ValueError("Discontinuous capture callback timeline")
             else:
                 missing = _number(pending_gap.get("sample_delta_frames"))
@@ -415,7 +427,11 @@ def _capture_clock(
         callback_count += 1
         frames += count
         previous_count = count
-        previous_sample, previous_host = sample + count, host
+        previous_sample, previous_host, previous_qpc = (
+            sample + count,
+            host,
+            event.get("qpc_100ns", 0),
+        )
     if (
         not offsets
         or pending_gap is not None
