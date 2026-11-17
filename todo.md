@@ -431,14 +431,14 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish the remaining foreign-donor, chapter-switch and background-
-preparation Mac gates below. Do not repeat ordinary
+Next action: localize the observed Mac pre-OCR transition delay below, then finish
+the remaining foreign-donor and background-preparation Mac gates. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
 - [ ] **Current Mac verification pass.** Finish the foreign-only donor check
-      in RUN-11-UI-02, then its chapter-switch
-      and background-preparation gates and the cold GUI cancellation gate below.
+      in RUN-11-UI-02, then its background-preparation gate and the cold GUI
+      cancellation gate below.
       Begin the ambiguous observation before a chapter has been identified; a
       same-chapter Read/restart cannot qualify fresh discovery. For timed central
       observations, warm the engine before seeking and start ordinary Read from
@@ -446,6 +446,26 @@ acceptance is outside this pass. Book reading remains deferred.
       Preserve natural game transitions rather than holding a caption for admission.
       Retain route/control/media proof and close app/game afterward. Remove only
       qualified requirements; preserve unexercised gates and real failures.
+
+- [ ] **Localize the Mac pre-OCR transition delay.** In the chapter-switch
+      session, already captured transition/menu frames waited about34s and79s
+      before visual-only admission; new-chapter OCR followed afterward. Replay
+      the retained frames with temporary phase timing and sample thread stacks
+      during a slow call to separate layout inference, caption/source matching
+      and waiting. Keep this evidence with R1; do not assume its historical stall
+      has the same cause. Original-duration preparation ran later and is not the
+      explanation. Propose the root-cause repair only after attribution; preserve
+      current-frame/ownership checks and bounded Stop. One native-3805 recovered
+      with a fresh capture stream in the same reader run; its native cause is
+      unknown and does not justify speculative recovery code. Evidence:
+      `chapter-switch-20261117/report.md` and retained runtime/timeline/media.
+- [ ] **Align Reading messages with committed work.** The same transition showed
+      a narrator-fallback warning for unaccepted menu speaker `EEE`, without
+      actual speech, and retained `Measuring selected game speech...` after
+      duration preparation completed. Publish role fallback feedback for accepted
+      speech, and finish/clear preparation progress when that operation ends.
+      Check actual Reading/preparation consumers before implementation; this is
+      separate from the deferred status-strip redesign.
 
 - [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
       During the next actual content update, verify visible progress for rebuilding
@@ -502,8 +522,6 @@ acceptance is outside this pass. Book reading remains deferred.
       isolated metadata scope is not native qualification.
       Finish the no-ready-recording native flow with RUN-16-02 before closing
       automatic original/live fallback qualification.
-      Include a clean exact switch to a genuinely different chapter through the
-      indexed discovery path; the Finished Page restarts stayed inside one chapter.
       Check a background preparation becoming ready during reading, Stop during
       discovery, and switching profiles/games. Change one role while its new
       recordings are incomplete: its previous voice must stay excluded, other
