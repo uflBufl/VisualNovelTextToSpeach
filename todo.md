@@ -435,8 +435,9 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: propose the OCR57 repair below, then finish the remaining Mac
-verification gates. Indexed Mac
+Next action: compare established OCR-aware script-matching approaches below and
+present a replacement plan before changing product matching. Then finish the
+remaining Mac verification gates. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
@@ -446,19 +447,26 @@ deferred implementation; centered-caption checks are included.
       live MOSS after OCR read `I'll` as `[1l`. The actual complete text was
       `Even if I die, [1l still turn Kakania completely against Isolde.`.
       Matching protects the internal1 as numeric content and also exceeds the
-      current edit budget;56 and58 correctly used game audio. Propose bounded
-      candidate-aware letter recovery: a separate OCR-confusion comparison for
-      the current/next position of an already identified chapter. Permit visual
-      vertical-stroke alternatives only in an alphabetic candidate word and a
-      mixed OCR glyph token; standalone observed numbers and numeric/negative
-      spans in the canonical candidate remain strict. Keep ordinary edit budgets;
-      `[1l` versus `I'll` must fit through visual substitution plus the remaining
-      ordinary edit, without a word-specific replacement. Mark recovered evidence
-      as approximate even when visual substitutions have zero cost, so competitor
-      margins and continuation checks still apply. Global indexed discovery keeps
-      its existing semantics. Independent OCR attempts on the retained video frame
-      did not reliably recover the token; do not add an unqualified second pass.
-      This comparison policy is proposed, not implemented or user-approved yet.
+      current edit budget;56 and58 correctly used game audio. Suspend the previous
+      unapproved vertical-glyph recovery proposal. Compare the current matcher
+      against a normalized edit-distance baseline using the installed RapidFuzz
+      and, if needed, Tesseract LSTM alternatives/confidences or an error model
+      measured from real OCR/canonical pairs. Do not introduce a handwritten
+      substitution table for this token. Use retained real observations, including
+      changed dialogue, prefixes, short text, names, numbers and existing crop
+      cases; keep evaluation examples separate from threshold/error-model tuning.
+      Measure wrong-line/voice routing, missed matches and latency, not only text
+      accuracy. Tesseract alternatives expose plausible I/l choices on the retained
+      reduced-resolution frame, but neither reliable sentence recovery nor runtime
+      cost is qualified. Independent second OCR attempts were also inconclusive.
+      Prefer the simplest measured approach. Present the replacement boundary and
+      explicit old heuristics to delete before implementation; keep indexed
+      retrieval, story/capture ownership and playback policy separate. Any changed
+      scoring metric must preserve retrieval recall (accepted candidates must be
+      retrieved), on both known-chapter and catalog discovery paths. Preserve
+      partial/full observation semantics and ambiguity handling. A wrapper around
+      the same special cases is not a replacement. Research notes:
+      `.codex/investigations/ocr-matching-established-approaches-20261117/`.
       Replay the recorded
       prefix/full observations through the controller and verify57 selects game
       audio, without changing genuinely unreadable-frame waiting. Evidence:
