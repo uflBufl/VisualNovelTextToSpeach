@@ -2241,6 +2241,7 @@ class AppController:
                             )
                             self._publish_live_sequence_status()
                         return False
+                    self.chapter_voice_preloader.select_line_id(line.line_id)
                     character, text = line.speaker, line.text
                     canonical_routing = True
                     canonical_event_changed = event.event_id != previous_event_id
@@ -2281,7 +2282,7 @@ class AppController:
             return None
         if plan.event_for_line(event.line_id) != event:
             return None
-        line = self.chapter_voice_preloader.select_line_id(event.line_id)
+        line = self.chapter_voice_preloader.line_for_id(event.line_id)
         if line is None or not line.text_sha256:
             return None
         if sha256(line.text.encode("utf-8")).hexdigest() != line.text_sha256:
@@ -3278,6 +3279,8 @@ class AppController:
         if running:
             self._clear_explicit_sequence_queue()
         cursor.anchor_event(event.event_id, reason)
+        if line is not None:
+            self.chapter_voice_preloader.select_line_id(line.line_id)
         self.sequence_prefix_confirmation_event_id = None
         if line is None and not self._mark_sequence_silence_locked(event.event_id):
             return False
@@ -3513,6 +3516,7 @@ class AppController:
             self.sequence_playback_leases.clear()
             reader.clear_queue(reason="indexed-current-recovery")
             cursor.anchor_event(event_id, "explicit-indexed-current-read")
+            self.chapter_voice_preloader.select_line_id(line.line_id)
             accepted = self._enqueue_selected_sequence_line(
                 line, manual_continuation=True
             )

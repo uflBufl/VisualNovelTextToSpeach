@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -138,6 +139,7 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
                 )
                 self.assertEqual(controller._fully_observed_line_id(), lines[0].line_id)
                 harness.finish_playback()
+                self.assertEqual(controller._fully_observed_line_id(), lines[0].line_id)
                 accepted = tuple(reader.accepted_chunks)
                 for background in ("ocr-a", "ocr-b"):
                     harness.push(
@@ -157,6 +159,53 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
                 self.assertEqual(harness.errors, [])
             finally:
                 harness.stop()
+
+    def test_canonical_payload_lookup_preserves_visible_story_owner(self):
+        fixture = transitions.ControllerTransitionObservationTest()
+        for checksum in (None, "0" * 64, "valid"):
+            with self.subTest(checksum=checksum):
+                controller, lines = fixture.controller()
+                successor = (
+                    lines[1]
+                    if checksum == "valid"
+                    else replace(lines[1], text_sha256=checksum)
+                )
+                controller.chapter_voice_preloader = ChapterVoicePreloader(
+                    (lines[0], successor, *lines[2:])
+                )
+                fixture.accept(controller, lines[0])
+                owner = controller.chapter_voice_preloader.current_match
+                cursor = controller.story_cursor.snapshot()
+
+                resolved = controller._canonical_sequence_line_locked("event-2")
+
+                self.assertEqual(resolved, successor if checksum == "valid" else None)
+                self.assertEqual(
+                    controller.chapter_voice_preloader.current_match, owner
+                )
+                self.assertEqual(controller.story_cursor.snapshot(), cursor)
+
+    def test_explicit_indexed_current_read_selects_visible_story_owner(self):
+        fixture = transitions.ControllerTransitionObservationTest()
+        controller, lines = fixture.controller()
+        fixture.accept(controller, lines[0])
+        controller.live_reader = Mock(run_id="run", emergency_stopped=False)
+        controller.indexed_current_recovery = (
+            lines[1],
+            "event-2",
+            "run",
+            controller.observation_serial,
+            None,
+        )
+
+        self.assertTrue(controller.read_indexed_current_dialogue())
+
+        current = controller.chapter_voice_preloader.current_match
+        self.assertEqual(
+            (current.chapter, current.sequence, current.story_order),
+            (lines[1].chapter, lines[1].sequence, lines[1].story_order),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-2")
 
     def test_low_confidence_boundary_loss_is_not_source_confirmation(self):
         fixture = transitions.ControllerTransitionObservationTest()

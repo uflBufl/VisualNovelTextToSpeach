@@ -362,8 +362,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: repair the remaining restart/audio, boundary OCR and full-order
-OCR lifecycle failures in the full automated test gate below. Preserve
+Next action: finish the remaining restart/audio and full-order OCR lifecycle
+verification in the full automated test gate below. Preserve
 behavioral assertions and repair product code wherever they expose a real defect.
 Run changed-test selection first, then the complete affected modules; finish
 with full exact discovery to verify the order-dependent failure. Commit each
@@ -380,12 +380,6 @@ deferred implementation; centered-caption checks are included.
       Trace discovery and current-voice eligibility against the saved fixture;
       establish whether restoration or its fixture is stale before choosing a
       repair. Gate: restart plays the expected prepared PCM without live synthesis.
-- [ ] **Restore the spoken-current-line boundary OCR regression gate.**
-      tests.test_prepared_current_ocr_recovery reproducibly leaves `cella.` raw
-      instead of recovering the fully observed `cellar.` after playback. Trace
-      retained completion evidence and controller matching, preserving the guards
-      against completing an unseen line or replaying accepted speech. Gate: the
-      whole module passes through the actual controller/reader fixture.
 - [ ] **Isolate OCR lifecycle in the full-suite punctuation test.**
       The visual-ellipsis transition in tests.test_live_frame_ocr_evidence reports
       `OCR service is shutting down` only in the full remainder; the module passes
