@@ -104,15 +104,19 @@ class PreparedAudioSnapshot:
         ):
             if not value:
                 continue
-            path = Path(value).expanduser().absolute()
+            path = Path(value).expanduser().resolve()
             matching = tuple(
                 source
                 for source in self.sources
                 if (
-                    getattr(source, attribute) == path
+                    (
+                        getattr(source, attribute) is not None
+                        and getattr(source, attribute).resolve() == path
+                    )
                     or (
                         attribute == "story_index"
-                        and source.catalog_story_index == path
+                        and source.catalog_story_index is not None
+                        and source.catalog_story_index.resolve() == path
                     )
                 )
             )
@@ -121,7 +125,7 @@ class PreparedAudioSnapshot:
                 games.update(
                     catalog.game_id
                     for catalog in self.catalogs
-                    if catalog.story_index == path
+                    if catalog.story_index.resolve() == path
                 )
             if len(games) == 1:
                 return self.scoped(game_id=next(iter(games)))

@@ -362,8 +362,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish the remaining restart/audio and full-order OCR lifecycle
-verification in the full automated test gate below. Preserve
+Next action: finish full-order OCR lifecycle verification in the full automated
+test gate below. Preserve
 behavioral assertions and repair product code wherever they expose a real defect.
 Run changed-test selection first, then the complete affected modules; finish
 with full exact discovery to verify the order-dependent failure. Commit each
@@ -373,13 +373,6 @@ Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
 
-- [ ] **Diagnose prepared-audio restoration in the fresh-install journey.**
-      tests.test_fresh_install_gui_journey reproducibly fails its second process:
-      settings and voice bindings restore, but the production backend exposes no
-      generated entries and tries live synthesis for the prepared narrator line.
-      Trace discovery and current-voice eligibility against the saved fixture;
-      establish whether restoration or its fixture is stale before choosing a
-      repair. Gate: restart plays the expected prepared PCM without live synthesis.
 - [ ] **Isolate OCR lifecycle in the full-suite punctuation test.**
       The visual-ellipsis transition in tests.test_live_frame_ocr_evidence reports
       `OCR service is shutting down` only in the full remainder; the module passes

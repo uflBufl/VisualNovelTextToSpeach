@@ -12,6 +12,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
 from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
 from tests.story_fixtures import write_synthetic_game_pack
+from tests.symlink_support import symlink_or_skip
 from vntts import generation_database
 from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.content_revision import ContentRevision, source_signature
@@ -602,6 +603,43 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                     )
                 ).sources
             )
+
+    def test_explicit_binding_accepts_both_paths_to_the_same_directory(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            pack, _line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                root / "pack"
+            )
+            alias = root / "alias"
+            symlink_or_skip(alias, pack.parent, target_is_directory=True)
+            alias_pack = alias / pack.name
+            for discovered_path in (pack, alias_pack):
+                snapshot = discover_prepared_audio(game_pack=discovered_path)
+                story = snapshot.sources[0].story_index
+                alias_story = alias / story.relative_to(pack.parent)
+                for key, paths in (
+                    ("game_pack", (pack, alias_pack)),
+                    ("story_index", (story, alias_story)),
+                ):
+                    for selected in paths:
+                        with self.subTest(
+                            discovered=discovered_path, selected=selected
+                        ):
+                            self.assertEqual(
+                                snapshot.for_settings(
+                                    AppSettings(**{key: str(selected)})
+                                ).sources,
+                                snapshot.sources,
+                            )
+                catalog = open_reading_catalog(story)
+                catalog_only = PreparedAudioSnapshot(catalogs=(catalog,))
+                for selected in (story, alias_story):
+                    self.assertEqual(
+                        catalog_only.for_settings(
+                            AppSettings(story_index=str(selected))
+                        ).catalogs,
+                        (catalog,),
+                    )
 
     def test_known_metadata_change_invalidates_snapshot(self):
         with TemporaryDirectory() as temporary:

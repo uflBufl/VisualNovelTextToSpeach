@@ -487,6 +487,10 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
         self.calls += 1
         renderer.name = "pocket-tts"
         renderer.model_name = "pocket-tts"
+        registry = CharacterVoiceRegistry.from_file(generation_input.voice_manifest)
+        references = sorted(
+            {path for voice in registry.unique_voices() for path in voice.references}
+        )
         run_bulk_generation(
             generation_input.queue,
             output,
@@ -494,6 +498,16 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
             provider="pocket-tts",
             model="pocket-tts",
             generation_profile=voice_plan.synthesis_profile,
+            control_files={
+                "voice_manifest": (
+                    generation_input.voice_manifest,
+                    generation_input.voice_manifest_sha256,
+                ),
+                **{
+                    f"voice_reference:{index:04d}": path
+                    for index, path in enumerate(references)
+                },
+            },
             retries=0,
             cancellation=cancel_event,
             missing_voice_policy=MissingVoicePolicy(
