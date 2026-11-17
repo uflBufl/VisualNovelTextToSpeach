@@ -492,20 +492,6 @@ acceptance is outside this pass. Book reading remains deferred.
       successful retry, but the cancellation UX gate remains open. Evidence:
       `combined-native-20261118/cold-stop-summary.json`.
 
-- [ ] **Investigate story-layout admission reading chapter-map labels.** The
-      native chapter switch read `Finished Page Hansel ai go 0 |` as live narrator
-      speech. A detected box inside the old lower dialogue crop counts as dialogue
-      presence even after the story layout disappears; stable unmatched OCR then
-      reaches the ordinary live fallback. Design a generic layout/content gate
-      before new speech admission, priming/notices and navigation. Preserve actual
-      source-free dialogue and accepted queued speech; do not require every line
-      to match a catalog or blacklist game-specific titles. Compare the retained
-      map frame with source-free dialogue and central captions before choosing
-      the repair; verify menu -> story return without a duplicate. This is the
-      ordinary-dialogue instance of the deferred layout-admission requirement,
-      not a reason to implement book reading. Evidence:
-      `combined-native-20261118/phaseA-summary.json` and `menu-offending-frame.png`.
-
 - [ ] **Current Mac verification pass.** Finish the foreign-only donor check
       in RUN-11-UI-02, then its background-preparation gate and the cold GUI
       cancellation gate below.
@@ -516,7 +502,7 @@ acceptance is outside this pass. Book reading remains deferred.
       Preserve natural game transitions rather than holding a caption for admission.
       Retain route/control/media proof and close app/game afterward. Remove only
       qualified requirements; preserve unexercised gates and real failures.
-      Observe that unaccepted menu OCR cannot announce narrator fallback and
+      Observe that unaccepted OCR cannot announce narrator fallback and
       original-speech timing progress reaches its terminal state; GUI Stop must
       suppress late notices while a subsequent one-time read remains usable.
 
@@ -613,8 +599,7 @@ acceptance is outside this pass. Book reading remains deferred.
       this centered-caption gate is complete.
       Remaining shared-architecture work needs separate concrete plans:
       - validate new-game discovery without catalog/resources, different text
-        styling, short captions and similar-looking menus; single-block geometry
-        is not a universal story/menu classifier;
+        styling and short captions;
       - plan the shared layout-format migration for dialog_region/OCRRegions,
         story_region and future document areas before adding more readers;
         migrate persisted calibration/profile/preview/replay consumers together,
@@ -635,22 +620,16 @@ acceptance is outside this pass. Book reading remains deferred.
       Verify source order, no rereading and preservation of queued speech.
       Use `.codex/investigations/text-location-20261110/` for the actual page and
       `.codex/investigations/text-location-20261109/` for normal/quote controls.
-      Choose a content/layout selector that excludes scenery and menus;
-      OCR confidence alone cannot identify story text. Compare configured
-      alternative areas with fallback-only text detection/line recognition,
-      preserving the current normal-dialogue path. Reuse the offline detector
+      Compare configured alternative reading areas with fallback-only text
+      detection/line recognition, preserving the current normal-dialogue path.
+      Reuse the offline detector
       evidence in `.codex/investigations/text-location-20261109/`.
-      Gate speech on allowed content bounds plus confirmed story-layout/session
-      evidence. Generic screen reading may use optional source enrichment but
-      must not require a catalog match. Explicit source-bound/sequence routes
-      retain strict source authority. Suspend new admission/keys when story
-      layout disappears;
-      never fall back to reading all detected screen text. Exercise main menus,
-      overlays, chapter selection and the excluded left book information card,
-      including similar-looking source-free screens and return to the story.
+      Preserve configured reading bounds. Generic screen reading may use optional
+      source enrichment but must not require a catalog match. Explicit
+      source-bound/sequence routes retain strict source authority.
       Reuse one native full-content frame; measure actual persistent OCR calls
       and median/p95 admission latency, correct text/order, duplicates, missed
-      timed text and accidental UI reading. Test layout changes and return to
+      timed text. Test layout changes and return to
       normal dialogue, with both light and dark text-page backgrounds.
       Book reading must preserve paragraph boundaries and already-read position;
       define page-advance behavior separately from per-dialogue auto-advance.
