@@ -1438,30 +1438,26 @@ class ChapterVoicePreloader:
         text: object,
         *,
         minimum_characters: int = 20,
-        candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
+        prefer_synthesis: bool = False,
     ) -> ChapterDialogue | None:
-        """Resolve one full indexed line from a sufficiently long OCR prefix."""
-        speaker_key = _normalize(character)
+        """Find an unambiguous full line without committing a partial observation."""
+        speaker_key = _normalize(character or "")
+        if speaker_key == "narrator":
+            speaker_key = ""
         prefix = _normalize(text)
         if not prefix or len(prefix) < minimum_characters:
             return None
         candidates = self._prefix_candidates(
-            speaker_key,
-            prepare_text(text),
-            candidate_filter=candidate_filter,
+            speaker_key, prepare_text(text), prefer_synthesis=prefer_synthesis
         )
         if len(candidates) != 1:
             return None
-        selected = candidates[0]
-        self.current_match = ChapterMatch(
-            selected.chapter, selected.sequence, 1.0, selected.story_order
-        )
-        return selected
+        return candidates[0]
 
     def resolve_unique_prefix_by_text(
         self, text: object, *, minimum_characters: int = 20
     ) -> ChapterDialogue | None:
-        """Resolve one indexed line when OCR lost or corrupted its nameplate."""
+        """Find one indexed line when OCR lost or corrupted its nameplate."""
         prefix = _normalize(text)
         if not prefix or len(prefix) < minimum_characters:
             return None
@@ -1473,25 +1469,10 @@ class ChapterVoicePreloader:
 
         if self.current_match is not None:
             nearby = matches(self.chapter_rows(self.current_match.chapter))
-            if len(nearby) == 1:
-                selected = nearby[0]
-                self.current_match = ChapterMatch(
-                    selected.chapter,
-                    selected.sequence,
-                    1.0,
-                    selected.story_order,
-                )
-                return selected
-            return None
+            return nearby[0] if len(nearby) == 1 else None
 
         candidates = matches(self.store.candidates(text, distance=0))
-        if len(candidates) != 1:
-            return None
-        selected = candidates[0]
-        self.current_match = ChapterMatch(
-            selected.chapter, selected.sequence, 1.0, selected.story_order
-        )
-        return selected
+        return candidates[0] if len(candidates) == 1 else None
 
     def is_unique_incomplete_prefix(
         self,
@@ -1501,7 +1482,9 @@ class ChapterVoicePreloader:
         minimum_characters: int = 10,
     ) -> bool:
         """Return whether OCR has one known line prefix but not its full text."""
-        speaker_key = _normalize(character)
+        speaker_key = _normalize(character or "")
+        if speaker_key == "narrator":
+            speaker_key = ""
         prefix = _normalize(text)
         if not prefix or len(prefix) < minimum_characters:
             return False
@@ -1519,32 +1502,26 @@ class ChapterVoicePreloader:
         speaker_key: str,
         observed: MatchingText,
         *,
-        candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
+        prefer_synthesis: bool = False,
     ) -> list[ChapterDialogue]:
         def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
-            return [row for row in rows if self._matches_prefix(row, observed)]
-
-        def eligible(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
             return [
-                row for row in rows if candidate_filter is None or candidate_filter(row)
+                row
+                for row in rows
+                if (not speaker_key or _normalize(row.speaker) == speaker_key)
+                and (not prefer_synthesis or not row.has_original_speech)
+                and self._matches_prefix(row, observed)
             ]
 
         if self.current_match is not None:
-            nearby = matches(
-                row
-                for row in self.chapter_rows(self.current_match.chapter)
-                if _normalize(row.speaker) == speaker_key
-            )
+            nearby = matches(self.chapter_rows(self.current_match.chapter))
             if nearby:
-                # A filtered local owner must not make another chapter unique.
-                return eligible(nearby)
+                return nearby
         # Projection retrieval preserves the original MatchingText boundaries.
         rows = self.store.candidates(
             observed.key.replace("\x00", " ").replace("\x01", " "), distance=0
         )
-        return eligible(
-            matches(row for row in rows if _normalize(row.speaker) == speaker_key)
-        )
+        return matches(rows)
 
     def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:
         self._check_matching_cancelled()

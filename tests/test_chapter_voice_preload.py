@@ -923,11 +923,11 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             line = preloader.resolve_unique_prefix(
                 "Kamuta",
                 "These old ones are enough",
-                candidate_filter=lambda candidate: candidate.line_id == "test:0",
             )
 
         self.assertEqual(line.line_id, "test:0")
         self.assertEqual(line.text, "These old ones are enough to carry everyone.")
+        self.assertIsNone(preloader.current_match)
 
     def test_unique_prefix_checks_current_chapter_before_global_corpus(self):
         first = ChapterDialogue(
@@ -948,16 +948,13 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         )
         preloader = ChapterVoicePreloader((first, second))
         preloader.current_match = ChapterMatch("chapter-2", 0, 1.0)
-        inspected = []
-
         line = preloader.resolve_unique_prefix(
             "Narrator",
             "The shared opening phrase",
-            candidate_filter=lambda candidate: inspected.append(candidate) or True,
         )
 
         self.assertEqual(line, second)
-        self.assertEqual(inspected, [second])
+        self.assertEqual(preloader.current_match.sequence, 0)
 
     def test_unique_prefix_keeps_global_fallback_outside_current_chapter(self):
         current = ChapterDialogue(
@@ -1011,7 +1008,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         )
 
         self.assertEqual(line, hotelier)
-        self.assertEqual(preloader.current_match.sequence, 20)
+        self.assertEqual(preloader.current_match.sequence, 19)
 
     def test_unique_text_prefix_rejects_ambiguous_current_chapter(self):
         first = ChapterDialogue(
@@ -1930,19 +1927,19 @@ class SynthesisPreferenceTest(unittest.TestCase):
                 self.assertEqual(method, expected)
                 self.assertIs(line, other if count == 1 else None)
 
-    def test_filtered_local_original_prefix_does_not_jump_chapters(self):
+    def test_local_original_prefix_does_not_jump_chapters_or_change_owner(self):
         text = "The gate is open. Follow me."
         original = self.row("original", text, full=True)
         elsewhere = self.row("elsewhere", text, chapter="2")
         preloader = ChapterVoicePreloader((original, elsewhere))
         previous = ChapterMatch("1", 1, 1.0)
         preloader.current_match = previous
-        self.assertIsNone(
+        self.assertIs(
             preloader.resolve_unique_prefix(
                 "Ada",
                 "The gate is open. Follow",
-                candidate_filter=lambda row: not row.has_full_source_audio,
-            )
+            ),
+            original,
         )
         self.assertIs(preloader.current_match, previous)
 

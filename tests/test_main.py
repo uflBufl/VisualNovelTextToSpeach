@@ -1165,24 +1165,7 @@ class MainTest(unittest.TestCase):
         controller.chapter_voice_preloader.resolve_unique_prefix.assert_called_once_with(
             "Rhiannon",
             "The complete generated",
-            candidate_filter=ANY,
-        )
-        candidate_filter = (
-            controller.chapter_voice_preloader.resolve_unique_prefix.call_args.kwargs[
-                "candidate_filter"
-            ]
-        )
-        self.assertTrue(candidate_filter(line))
-        original = replace(
-            line,
-            source_audio_status="available",
-            source_audio_authoritative=True,
-            source_audio_completeness="full",
-            source_audio_duration_seconds=1.0,
-        )
-        self.assertFalse(candidate_filter(original))
-        self.assertTrue(
-            candidate_filter(replace(original, source_audio_completeness="partial"))
+            prefer_synthesis=True,
         )
         wrapper.has_generated_line.assert_called_once_with(line)
 

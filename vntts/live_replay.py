@@ -28,7 +28,7 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
 )
 
-from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cleanup import cleanup_on_exit
 from vntts.cleanup import temporary_directory as owned_temporary_directory
 from vntts.cli import cli_error, cli_messages
@@ -1025,13 +1025,18 @@ class LiveReplayRunner:
                 resolver.is_unique_incomplete_prefix
             )
         if library is not None:
-            tracker_options["early_dialogue_resolver"] = lambda character, text: (
-                resolver.resolve_unique_prefix(
-                    character,
-                    text,
-                    candidate_filter=router.has_generated_line,
+
+            def early_dialogue(character: str, text: str) -> ChapterDialogue | None:
+                line = resolver.resolve_unique_prefix(
+                    character, text, prefer_synthesis=resolver.current_match is None
                 )
-            )
+                return (
+                    line
+                    if line is not None and router.has_generated_line(line)
+                    else None
+                )
+
+            tracker_options["early_dialogue_resolver"] = early_dialogue
         reader = LiveDialogReader(
             capture_executor=executors[0],
             ocr_executor=executors[1],

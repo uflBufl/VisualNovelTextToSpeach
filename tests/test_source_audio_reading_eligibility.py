@@ -20,6 +20,7 @@ from vntts.generated_audio import (
     SourceAudioRoute,
 )
 from vntts.live import SpeechChunk
+from vntts.live_tracking import IncrementalDialogTracker
 from vntts.ocr import OCRResult
 from vntts.playback import PreparedPlayback
 from vntts.settings import AppSettings
@@ -43,6 +44,97 @@ def story_line(line_id, text="Huh?", *, chapter=None, speaker="Ada", full=False)
 
 
 class SourceAudioReadingEligibilityTests(unittest.TestCase):
+    def test_hansel_typewriter_waits_for_upcoming_original_without_visible_name(self):
+        prefixes = (
+            '"Whe',
+            '"What really s:',
+            '"What really scared n',
+            '"What really scared me was nc',
+            '"What really scared me was not the thr:',
+            '"What really scared me was not the threat to my life, bu',
+            '"What really scared me was not the threat to my life, but the possil',
+            '"What really scared me was not the threat to my life, '
+            "but the possibility of d\\",
+            '"What really scared me was not the threat to my life, '
+            "but the possibility of dying ignor",
+        )
+        for timed in (False, True):
+            with self.subTest(timed=timed), TemporaryDirectory() as directory:
+                story = plotvoc_story(Path(directory), timed=timed)
+                preloader = ChapterVoicePreloader.load_optional(story.path)
+                controller, live = self.controller(preloader.dialogue)
+                preloader = controller.chapter_voice_preloader
+                previous = preloader.select_line_id("reverse1999:100631:58")
+                owner = preloader.current_match
+                tracker = IncrementalDialogTracker(
+                    complete_dialogue_only=True,
+                    early_dialogue_resolver=controller._resolve_early_indexed_dialogue,
+                    incomplete_dialogue_probe=preloader.is_unique_incomplete_prefix,
+                    clock=lambda: 0.0,
+                )
+                tracker.observe_identified(
+                    previous.speaker, previous.text, previous.line_id, exact=True
+                )
+                tracker.expect_new_dialog()
+
+                for prefix in prefixes:
+                    admitted, line = self.resolve(controller, prefix, "Narrator")
+                    self.assertIsNone(line)
+                    self.assertEqual(
+                        tracker.observe(admitted.character, admitted.text), []
+                    )
+                    self.assertEqual(preloader.current_match, owner)
+
+                admitted, line = self.resolve(controller, QUOTE, "Narrator")
+                self.assertEqual(line.line_id, "reverse1999:100631:59")
+                chunks = tracker.observe_identified(
+                    admitted.character, admitted.text, line.line_id, exact=True
+                )
+                self.assertEqual(
+                    [(chunk.line_id, chunk.character, chunk.text) for chunk in chunks],
+                    [(line.line_id, "Vertin", QUOTE)],
+                )
+                library = controller.speech_backend.library
+                library.find_with_preflight.assert_not_called()
+                library.reserve.assert_not_called()
+                live.prepare_playback.assert_not_called()
+
+    def test_rejected_early_generated_candidate_preserves_current_owner(self):
+        previous = story_line("previous", "The scene begins.", chapter="known")
+        candidate = replace(
+            story_line(
+                "candidate",
+                "We should leave this place before the sun rises.",
+                chapter="known",
+            ),
+            sequence=2,
+        )
+        for anchored in (False, True):
+            with self.subTest(anchored=anchored):
+                controller, live = self.controller((previous, candidate))
+                preloader = controller.chapter_voice_preloader
+                if anchored:
+                    preloader.select_line_id(previous.line_id)
+                owner = preloader.current_match
+                library = controller.speech_backend.library
+                library.find_with_preflight.side_effect = None
+                library.find_with_preflight.return_value = (
+                    None,
+                    "generated-audio-entry-missing",
+                )
+
+                self.assertIsNone(
+                    controller._resolve_early_indexed_dialogue(
+                        "Ada", "We should leave this place"
+                    )
+                )
+
+                self.assertEqual(preloader.current_match, owner)
+                library.find_with_preflight.assert_called_once_with(
+                    candidate.line_id, candidate.text_sha256
+                )
+                live.prepare_playback.assert_not_called()
+
     def test_hansel_repeated_quote_uses_upcoming_plotvoc_not_old_narrator_recording(
         self,
     ):
@@ -309,6 +401,8 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
                         original
                     )
                 )
+                if expected is None:
+                    controller.speech_backend.library.find_with_preflight.assert_not_called()
                 live.prepare_playback.assert_not_called()
 
     def test_unique_full_original_is_recognized_despite_old_generated_audio(self):

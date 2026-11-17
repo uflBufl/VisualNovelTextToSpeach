@@ -1117,11 +1117,7 @@ class AppController:
         line = self.chapter_voice_preloader.resolve_unique_prefix(
             character,
             text,
-            candidate_filter=(
-                None
-                if self.chapter_voice_preloader.current_match is not None
-                else lambda row: not row.has_full_source_audio
-            ),
+            prefer_synthesis=self.chapter_voice_preloader.current_match is None,
         )
         if line is None or not backend.has_generated_line(line):
             return None
