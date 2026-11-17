@@ -25,6 +25,11 @@ from vntts.voices import CharacterVoiceRegistry
 
 class LiveFrameOCREvidenceTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(
+            patch(
+                "vntts.controller_components.RuntimeLifecycleComponent._prepare_sparse_ocr"
+            )
+        )
         self.controller = AppController(AppSettings(ocr_minimum_confidence=80))
         self.controller.voice_router = SimpleNamespace(
             registry=CharacterVoiceRegistry()
