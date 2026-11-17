@@ -16,6 +16,11 @@ the trust-after-admission changes.
       Do not attribute the fault to Rust, MOSS or CPython from the module alone.
       Gate: identified faulting boundary, focused regression and Windows playback
       through the failing scene with normal stop/teardown.
+      On Windows, qualify automatic fatal-stack recording on the actual access
+      violation: restart normally and export support, then correlate retained
+      Python locations with the failed Reading scene. Check normal teardown too.
+      `fatal-crashes.json` is bounded stack evidence without per-run attribution;
+      it does not replace a native Windows dump or establish the crash cause.
 - [ ] Qualify completed-dialogue navigation on Windows through chapter315601
       lines77 and80 with intermittent uncertain OCR. Gate: fresh confirmation
       of the current dialogue resumes the unsent transition after audio finishes;
@@ -24,15 +29,6 @@ the trust-after-admission changes.
       prepared Reading and direct screen reading, without repeated speech or
       duplicate keys. Capture a new support export if a hold remains; the old
       archive has no pixels proving a wrong crop or artwork identity.
-- [ ] Reproduce the unresolved98-character Reading admission between prepared
-      lines72 and74. It takes live Pocket twice, fails because voice cloning is
-      unavailable, and blocks navigation until Stop/restart. This is required
-      fallback speech, separate from optional voice warm-up. Establish why
-      prepared matching did not admit the line before changing route/error
-      handling; no admitted line ID or raw text proves it was line73. Gate:
-      available prepared speech is selected when justified by current text;
-      genuinely unavailable live speech remains actionable without skipping
-      unread dialogue or granting gated-model access automatically.
 
 ## Active - Support 31 Reading and recorder defects
 

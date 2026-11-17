@@ -22,6 +22,7 @@ from vntts.settings import AppSettings
 
 class ApplicationErrorLoggingTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch("vntts.app.configure_fatal_crash_log"))
         self.enterContext(isolated_application_error_log())
         logging.getLogger().setLevel(logging.WARNING)
 

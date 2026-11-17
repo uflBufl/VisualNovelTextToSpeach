@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
 import numpy as np
+from PIL import Image
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
     GeneratedAudioIndex,
@@ -26,6 +27,8 @@ from tests.symlink_support import symlink_or_skip
 from vntts import generation_database
 from vntts.audio_output import PcmAdmission, PcmAdmissionRejected, pcm_admission_context
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.controller import AppController
+from vntts.dialog_capture import CapturedDialogFrame
 from vntts.document_identity import canonical_document_sha256
 from vntts.generated_audio import (
     AudioEventOmissionRoute,
@@ -46,10 +49,13 @@ from vntts.generated_audio import (
     _narrator_fallback_role,
     recorded_voice_identity,
 )
+from vntts.live import IncrementalDialogTracker, RecognizedDialog
+from vntts.ocr import OCRResult
 from vntts.playback import PreparedPlayback, SilentPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.voice_library import VoiceLibrary
+from vntts.voices import CharacterVoiceRegistry
 
 
 class ExplicitStreamAudioOutput(FakeAudioOutput):
@@ -718,6 +724,80 @@ class GeneratedAudioTest(unittest.TestCase):
             ],
         )
         return GeneratedAudioLibrary(GeneratedAudioIndex.load(manifest)), audio
+
+    def test_support111_merged_word_and_missing_speaker_use_prepared_speech(self):
+        canonical = (
+            "But if that's the case, his weapon shouldn't have been stuck "
+            "in the ground along your escape route."
+        )
+        # Reconstructed from both archived chunk fingerprints, before/after restart.
+        observed = canonical.replace("But if that's", "butif that’s")
+        previous_text = "This part is consistent across every account. Only the small details differ."
+        previous = ChapterDialogue(
+            "previous", "1", 0, "Elma", previous_text, text_sha256(previous_text)
+        )
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory), text=canonical)
+            for known_chapter in (False, True):
+                with self.subTest(known_chapter=known_chapter):
+                    target = self.create_resolver(
+                        speaker="Elma", text=canonical
+                    ).dialogue[0]
+                    preloader = ChapterVoicePreloader((previous, target))
+                    if known_chapter:
+                        preloader.select_line_id(previous.line_id)
+                    live = self.create_live_backend()
+                    live.prepare_playback.side_effect = RuntimeError(
+                        "Live Pocket must not be used for this prepared line"
+                    )
+                    backend = GeneratedAudioFallbackBackend(
+                        live, library, preloader, audio_output=FakeAudioOutput()
+                    )
+                    controller = AppController(
+                        AppSettings(speaker_announcement_mode="off"),
+                        chapter_voice_preloader=preloader,
+                    )
+                    controller.speech_backend = backend
+                    controller.voice_router = Mock(registry=CharacterVoiceRegistry())
+                    controller.automatic_prepared_reading = True
+                    controller._refresh_prepared_audio = Mock()
+                    controller._resolve_voice_label = Mock(return_value="Elma")
+                    frame = CapturedDialogFrame(
+                        Image.new("RGB", (300, 100)),
+                        0,
+                        recognized_result=OCRResult(
+                            "Narrator", observed, 95, "fixture", 1
+                        ),
+                    )
+
+                    recognized = controller._recognize_live_frame(frame)
+
+                    self.assertIsInstance(recognized, RecognizedDialog)
+                    self.assertEqual(recognized.observed_text, observed)
+                    self.assertEqual(recognized.character, "Elma")
+                    self.assertEqual(recognized.text, canonical)
+                    self.assertEqual(recognized.line_id, target.line_id)
+                    tracker = IncrementalDialogTracker(complete_dialogue_only=True)
+                    chunks = []
+                    for _ in range(tracker.stability_frames):
+                        chunks.extend(
+                            tracker.observe_identified(
+                                recognized.character,
+                                recognized.text,
+                                recognized.line_id,
+                                exact=recognized.exact_match,
+                            )
+                        )
+                    self.assertEqual(len(chunks), 1)
+                    admitted = controller._accept_live_chunk(chunks[0])
+                    self.assertIsNotNone(admitted)
+
+                    route = controller._prepare_live_chunk(admitted)
+
+                    self.assertIsInstance(route, GeneratedAudioRoute)
+                    self.assertEqual(route.trace.line_id, target.line_id)
+                    self.assertEqual(route.prepared.text_sha256, text_sha256(canonical))
+                    live.prepare_playback.assert_not_called()
 
     def test_returned_samples_cannot_change_cached_pcm(self):
         with TemporaryDirectory() as directory:

@@ -130,6 +130,9 @@ class TrayApplicationTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.fatal_capture = self.enterContext(
+            patch("vntts.app.configure_fatal_crash_log")
+        )
         self.enterContext(pocket_model_readiness(False))
         self.audio_runtime_check = self.enterContext(
             patch("vntts.app.check_audio_runtime")
@@ -1544,6 +1547,19 @@ class TrayApplicationTest(unittest.TestCase):
         full_controls.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_desktop_fatal_capture_is_installed_before_native_qt_startup(self):
+        def fail_native_startup():
+            self.fatal_capture.assert_called_once()
+            raise RuntimeError("native startup probe")
+
+        with (
+            patch("vntts.app.configure_bundled_dependencies"),
+            patch("vntts.app.QApplication.instance", side_effect=fail_native_startup),
+            self.assertLogs("vntts.unhandled", level="CRITICAL"),
+            self.assertRaisesRegex(RuntimeError, "native startup probe"),
+        ):
+            main([])
+
     def test_external_worker_exit_codes_are_validated_before_qt_startup(self):
         workers = (
             ("bootstrap", ["--game-content-import-worker", "reverse1999"]),
@@ -1578,6 +1594,7 @@ class TrayApplicationTest(unittest.TestCase):
                         self.assertEqual(main(arguments), code)
                 worker.assert_called_with([])
                 qt_application.assert_not_called()
+                self.fatal_capture.assert_not_called()
 
     def test_packaged_content_import_worker_runs_without_creating_qt(self):
         package = ModuleType("r1999extractor")

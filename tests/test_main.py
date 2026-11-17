@@ -223,6 +223,9 @@ def stub_live_sequence_plan(*lines):
 
 class MainTest(unittest.TestCase):
     def setUp(self):
+        self.fatal_capture = self.enterContext(
+            patch("vntts.main.configure_fatal_crash_log")
+        )
         self.enterContext(pocket_model_readiness(False))
         prepare = patch(
             "vntts.controller_components.prepare_sparse_ocr_model",
@@ -2298,6 +2301,7 @@ class MainTest(unittest.TestCase):
             result = main()
 
         self.assertEqual(result, 0)
+        self.fatal_capture.assert_called_once()
         args = listen_for_hotkeys.call_args.args
         self.assertEqual(args[:2], ("<ctrl>+h", "<ctrl>+l"))
         self.assertEqual(len(args), 4)

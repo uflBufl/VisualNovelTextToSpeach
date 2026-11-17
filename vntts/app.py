@@ -106,6 +106,7 @@ from vntts.diagnostics import (
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
+from vntts.fatal_crashes import configure_fatal_crash_log
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
@@ -6572,6 +6573,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     ):
         configure_application_error_log(get_local_data_directory() / "errors.log")
+        configure_fatal_crash_log(get_local_data_directory() / "fatal-crashes.log")
     try:
         configure_bundled_dependencies()
     except Exception:

@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from pynput import keyboard
 
+from vntts.application_directories import get_local_data_directory
 from vntts.cleanup import cleanup_on_exit
 from vntts.cli import cli_error
 from vntts.controller import (
@@ -38,6 +39,7 @@ from vntts.dialog_capture import (
     recognize_screenshot_result,
     report_runtime_error,
 )
+from vntts.fatal_crashes import configure_fatal_crash_log
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.runtime_config import (
     get_hotkey,
@@ -76,6 +78,7 @@ def listen_for_hotkeys(
 
 
 def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
+    configure_fatal_crash_log(get_local_data_directory() / "fatal-crashes.log")
     enable_windows_dpi_awareness()
     settings = load_app_settings()
     controller = AppController(settings, tts_factory=tts_factory)
