@@ -431,10 +431,26 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish fresh-context prepared-audio discovery and the remaining Mac
-verification gates below. Do not repeat ordinary Read/restart or the full Hansel
-chapter solely to measure matching. Windows acceptance is outside this pass.
-Book reading remains a separate, deferred implementation.
+Next action: fix the confirmed fresh-context equivalent-audio admission blocker
+below, then finish the remaining Mac verification gates. Do not repeat ordinary
+Read/restart or the full Hansel chapter solely to measure matching. Windows
+acceptance is outside this pass. Book reading remains deferred.
+
+- [ ] **RUN-17-03 - Admit complete equivalent speech without false continuations.**
+      Current05603de5 real-catalog preflight leaves fresh100631:54 correctly
+      ambiguous, but rejects both compatible prepared recordings and requires
+      live speech. The equivalent-audio completeness check removes punctuation,
+      so `She closes her eyes.` competes with `She closes her eyes and breathes.`
+      and comma continuations from other stories. Review a scoped implementation
+      plan with the user before changing it: retain the existing exact-text key
+      for equivalent speech and its continuation boundaries, preserve chapter
+      ambiguity and genuine typewriter waiting, and leave shared fuzzy canonical
+      matching unchanged. Check the actual duplicate/successor, real continuations
+      and affected backend/controller callers, then repeat the bounded native
+      fresh-context54 -> unique55 check. Existing local54 and foreign101014:96
+      audio have the same checksum; retain user recordings and use audio_line_id
+      to prove any cross-chapter reuse. Evidence:
+      `.codex/investigations/ambiguous-native-20261117/`.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification in RUN-11-UI-02, then its chapter-switch
