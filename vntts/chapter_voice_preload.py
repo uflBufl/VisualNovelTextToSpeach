@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, TypeAlias
 from weakref import finalize
 
 from durable_file import atomic_output_path
-from r1999extractor.source_audio_policy import has_full_main_story_source_audio
+from r1999extractor.source_audio_policy import (
+    apply_main_story_source_audio_policy,
+    effective_source_audio,
+    has_full_main_story_source_audio,
+)
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -384,7 +388,7 @@ class ChapterVoicePreloader:
         }
         completion_declared = completion_contract == VERIFIED_SOURCE_AUDIO_COMPLETION
         authoritative_line_ids = _validated_source_audio_line_ids(path, document)
-        if document is not None and completion_declared:
+        if document is not None:
             source_audio_by_line_id = {
                 line.line_id: _source_audio_extension(
                     line.document,
@@ -420,8 +424,12 @@ class ChapterVoicePreloader:
                     _line_text(line, "speaker"),
                     _line_text(line, "text"),
                     _line_optional_text(line, "text_sha256"),
-                    _line_text(line, "source_audio_status", source_audio_status),
-                    _line_optional_text(line, "source_audio_id", source_audio_id),
+                    source_audio_status
+                    if document is not None
+                    else _line_text(line, "source_audio_status", source_audio_status),
+                    source_audio_id
+                    if document is not None
+                    else _line_optional_text(line, "source_audio_id", source_audio_id),
                     source_audio_duration_seconds,
                     source_audio_completeness,
                     story_titles.get(_line_text(line, "collection_id")),
@@ -1107,6 +1115,14 @@ class ChapterVoicePreloader:
                     comparisons = [
                         item for item in comparisons if item.line in speaker_rows
                     ]
+            if len(peers) > 1 and current is not None:
+                expected_peers = {row for row in peers if expected(row)}
+                if (
+                    len(expected_peers) == 1
+                    and len({_normalize_exact_text(row.text) for row in peers}) == 1
+                ):
+                    # Repeated words keep the current occurrence or its next step.
+                    peers = expected_peers
             if len(peers) != 1:
                 return finish(StoryObservationMatch(None, "expected-ambiguous"))
             row = next(iter(peers))
@@ -1742,7 +1758,18 @@ def _source_audio_duration_seconds(
         measured = sample_count / sample_rate
     except OverflowError:
         return None
-    return value if math.isclose(value, measured, rel_tol=0, abs_tol=0.000001) else None
+    if not math.isclose(value, measured, rel_tol=0, abs_tol=0.000001):
+        return None
+    # Cue timing can extend beyond the first WEM's independently verified duration.
+    wait = entry.get("source_audio_wait_seconds", value)
+    return (
+        float(wait)
+        if isinstance(wait, int | float)
+        and not isinstance(wait, bool)
+        and math.isfinite(wait)
+        and wait >= value
+        else None
+    )
 
 
 def _source_audio_completeness(
@@ -1783,6 +1810,11 @@ def _source_audio_extension(
     completion_contract: str | None = None,
     semantic_authorized: bool = False,
 ) -> SourceAudioExtension:
+    source = effective_source_audio(entry)
+    if source is not None and source is not entry:
+        projected = dict(entry)
+        apply_main_story_source_audio_policy({}, [projected])
+        entry = projected
     source_audio_id = (
         str(entry.get("source_audio_id") or entry.get("source_voice_id") or "").strip()
         or None
@@ -1858,19 +1890,14 @@ def _source_audio_covers_full_line(
     completion_contract: str | None,
     semantic_authorized: bool,
 ) -> bool:
-    return (
-        _source_audio_status(entry) == "available"
-        and _source_audio_completeness(
+    status, _source_id, _duration, completeness, _authoritative = (
+        _source_audio_extension(
             entry,
             completion_contract=completion_contract,
-            duration_seconds=_source_audio_duration_seconds(
-                entry,
-                completion_contract=completion_contract,
-            ),
             semantic_authorized=semantic_authorized,
         )
-        == "full"
     )
+    return status == "available" and completeness == "full"
 
 
 def _has_authoritative_source_audio(

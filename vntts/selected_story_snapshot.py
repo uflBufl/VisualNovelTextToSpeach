@@ -18,6 +18,7 @@ from threading import Lock
 from types import MappingProxyType
 from typing import cast
 
+from r1999extractor.source_audio_policy import apply_main_story_source_audio_policy
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
@@ -43,6 +44,7 @@ _ANNOTATION_FIELDS = frozenset(
         "source_audio_duration_sample_rate",
         "source_audio_duration_sample_count",
         "source_audio_duration_decoder",
+        "source_audio_wait_seconds",
         "source_audio_completeness",
         "source_audio_completeness_reason",
         "source_audio_semantic_evidence_id",
@@ -369,10 +371,14 @@ def _validate_records(
             raw = source.read(length)
             if hashlib.sha256(raw).hexdigest() != expected_sha256:
                 _changed("Selected story origin checksum changed while reading a row")
-            if _record_digest(record.to_record()) != _record_digest(json.loads(raw)):
-                raise StoryIndexError(
-                    f"Selected story origin record changed: {record.line_id!r}"
-                )
+            original = json.loads(raw)
+            actual_digest = _record_digest(record.to_record())
+            if actual_digest != _record_digest(original):
+                apply_main_story_source_audio_policy({}, [original])
+                if actual_digest != _record_digest(original):
+                    raise StoryIndexError(
+                        f"Selected story origin record changed: {record.line_id!r}"
+                    )
 
 
 def _validate_selected_semantics(document: StoryIndexDocument) -> None:

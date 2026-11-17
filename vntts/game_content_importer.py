@@ -22,6 +22,7 @@ from typing import Protocol, TypeAlias
 
 from durable_file import atomic_write_json
 from r1999extractor.source_audio_policy import (
+    SOURCE_AUDIO_COMPLETENESS_POLICY,
     apply_main_story_source_audio_policy,
     has_full_main_story_source_audio,
 )
@@ -352,7 +353,9 @@ class Reverse1999GameImporter:
             inputs = saved.get("inputs")
             if (
                 type(saved.get("version")) is not int
-                or saved.get("version") != 1
+                or saved.get("version") != 2
+                or saved.get("source_audio_completeness_policy")
+                != SOURCE_AUDIO_COMPLETENESS_POLICY
                 or not isinstance(inputs, dict)
                 or len(inputs) != 3
             ):
@@ -411,7 +414,8 @@ class Reverse1999GameImporter:
             atomic_write_json(
                 story_index.parent / "source-inputs.json",
                 {
-                    "version": 1,
+                    "version": 2,
+                    "source_audio_completeness_policy": SOURCE_AUDIO_COMPLETENESS_POLICY,
                     "story_index": self._file_signature(story_index),
                     "inputs": inputs,
                 },
@@ -670,6 +674,7 @@ class Reverse1999GameImporter:
         try:
             fingerprint = {
                 "version": 2,
+                "source_audio_completeness_policy": SOURCE_AUDIO_COMPLETENESS_POLICY,
                 "source_sha256": revision.source_sha256,
                 "bank_sha256": sha256_file(bank_index),
                 "chapter": chapter,
@@ -682,7 +687,9 @@ class Reverse1999GameImporter:
                 raise GameContentImportError(
                     "Reading source-audio timing requires a main-story chapter."
                 )
-            if not any(row.source_audio_status == "available" for row in selected):
+            if not any(
+                has_full_main_story_source_audio(row.document) for row in selected
+            ):
                 raise GameContentImportError(
                     "This chapter has no installed source audio."
                 )
@@ -745,15 +752,18 @@ class Reverse1999GameImporter:
             "collection_kind",
             "source_audio_status",
             "source_audio_id",
+            "source_audio_cue_index",
             "source_bank",
             "source_media_ids",
             "available_media_ids",
         )
         if len(timed.records) != len(selected):
             return False
-        for original, measured in zip(selected, timed.records, strict=True):
+        originals = [row.to_record() for row in selected]
+        apply_main_story_source_audio_policy({}, originals)
+        for original, measured in zip(originals, timed.records, strict=True):
             if any(
-                original.document.get(field) != measured.document.get(field)
+                original.get(field) != measured.document.get(field)
                 for field in identity_fields
             ):
                 return False
@@ -978,6 +988,7 @@ class Reverse1999GameImporter:
             / "source-audio-semantics"
             / job.job_id
             / "asr16k-bounded-v1"
+            / str(SOURCE_AUDIO_COMPLETENESS_POLICY)
         )
 
     @staticmethod

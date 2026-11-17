@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from vntts.reading_catalog import ReadingCatalog
 
 job_schema_version = 1
-story_catalog_schema_version = 11
+story_catalog_schema_version = 12
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.

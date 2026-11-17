@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Timer
 from unittest.mock import Mock, patch
 
+from r1999extractor.source_audio_policy import SOURCE_AUDIO_COMPLETENESS_POLICY
 from vntts_artifacts import load_story_index_document, write_story_index_document
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -192,13 +193,19 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 path.write_bytes(b"x")
             importer = Reverse1999GameImporter(output_root=root)
             saved = {
-                "version": 1,
+                "version": 2,
+                "source_audio_completeness_policy": SOURCE_AUDIO_COMPLETENESS_POLICY,
                 "story_index": importer._file_signature(story),
                 "inputs": {
                     str(path): importer._file_signature(path) for path in inputs
                 },
             }
             self.assertFalse(importer._saved_story_inputs_changed(story, saved))
+            for outdated in (
+                saved | {"version": 1},
+                saved | {"source_audio_completeness_policy": "old-policy"},
+            ):
+                self.assertTrue(importer._saved_story_inputs_changed(story, outdated))
             for version in (True, 1.0):
                 with self.subTest(version=version):
                     self.assertTrue(
@@ -509,7 +516,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     root, successor, job, importer, run
                 )
 
-            self.assertEqual(successor.story_index.parent.name, "asr16k-bounded-v1")
+            self.assertEqual(
+                successor.story_index.parent.name, SOURCE_AUDIO_COMPLETENESS_POLICY
+            )
 
             self.assertEqual(source.read_bytes(), original)
             self.assertNotEqual(successor.story_index, source)

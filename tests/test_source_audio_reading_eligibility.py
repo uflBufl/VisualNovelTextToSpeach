@@ -1,11 +1,14 @@
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.generated_audio import text_sha256
 
 from tests.audio_output_fixtures import FakeAudioOutput
+from tests.test_plotvoc_source_audio import QUOTE, plotvoc_story
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.generated_audio import (
@@ -40,6 +43,25 @@ def story_line(line_id, text="Huh?", *, chapter=None, speaker="Ada", full=False)
 
 
 class SourceAudioReadingEligibilityTests(unittest.TestCase):
+    def test_hansel_repeated_quote_uses_upcoming_plotvoc_not_old_narrator_recording(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            story = plotvoc_story(Path(directory), timed=True)
+            preloader = ChapterVoicePreloader.load_optional(story.path)
+            controller, live = self.controller(preloader.dialogue)
+            controller.chapter_voice_preloader.select_line_id("reverse1999:100631:58")
+
+            admitted, line = self.resolve(controller, QUOTE, "Narrator")
+
+            self.assertEqual(line.line_id, "reverse1999:100631:59")
+            route = self.route(controller, admitted, line)
+            self.assertIsInstance(route, SourceAudioRoute)
+            self.assertEqual(route.prepared.source_audio_id, "610018168")
+            controller.speech_backend.library.find_with_preflight.assert_not_called()
+            controller.speech_backend.library.reserve.assert_not_called()
+            live.prepare_playback.assert_not_called()
+
     def controller(self, rows, *, generated=True):
         controller = AppController(
             AppSettings(
@@ -197,7 +219,9 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
                     library = controller.speech_backend.library
                     library.find_with_preflight.assert_not_called()
 
-    def test_known_chapter_duplicate_identity_is_not_resolved_by_audio_availability(self):
+    def test_known_chapter_duplicate_identity_is_not_resolved_by_audio_availability(
+        self,
+    ):
         original = story_line("original", chapter="known", full=True)
         unvoiced = story_line("unvoiced", chapter="known")
         controller, _live = self.controller((original, unvoiced))
@@ -217,7 +241,9 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         controller.chapter_voice_preloader.select_line_id(original.line_id)
         controller.live_reader = Mock(is_running=True)
         with (
-            patch.object(controller, "_canonical_observed_character", return_value="Ada"),
+            patch.object(
+                controller, "_canonical_observed_character", return_value="Ada"
+            ),
             patch.object(controller, "_dialog_observed", return_value=None),
         ):
             self.assertTrue(controller._enqueue_dialog("Ada", original.text))

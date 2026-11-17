@@ -389,31 +389,16 @@ deferred implementation; centered-caption checks are included.
       On Windows10, exercise packaged FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **RUN-16-01 - Include spoken story cues in original-audio eligibility.**
-      The user heard game speech overlap our narration after She closes her eyes.
-      The recorded second quote100631:59, `What really scared me...`, has blank
-      primary voice metadata but an installed spoken story cue610018168. Its exact
-      WEM correlates with game PCM and offline ASR matches the displayed quote.
-      Our reused Narrator recording53 overlaps it for about5.284s. Safe automatic
-      key timing and successful source correlation did not detect this duplicate.
-      Root cause: extractor resolves story_audio_cues separately, but source-audio
-      eligibility, duration and generation policy consider only the primary voice.
-      The installed extractor only adds audio_kind=voice_candidate; the actual
-      imported and reclassified59 still have top-level absent/unknown audio and
-      remain TTS-eligible. Implement the proposed main-story rule that an installed
-      plotvoc cue counts as full original speech without ASR. Project its effective
-      availability/media/duration into preparation, discovery and Read, preserving
-      ordinary sound effects, unvoiced53 and side-story ASR policy. This routing
-      integration is still pending; rebuilding with classification alone cannot fix it.
-      Check actual58 ->59 matching too: without bounded sequence context the equal
-      quotes can remain ambiguous, and equivalent-speech reuse may select prepared53
-      even after59 is marked original. Update derived catalogs/preparation without
-      discarding compatible recordings; source-input fingerprints currently omit
-      extractor/policy versions, so a dependency update alone does not refresh them.
-      Do not infer an unseen speaker, change fuzzy matching or add a line-specific
-      playback guard. Gate: the real cue59 excludes generation and prepared reuse
-      for that occurrence, respects original completion, and produces no overlap;
-      retain main-story no-ASR policy and anecdote/character-story ASR policy.
+- [ ] **RUN-16-01 - Verify PlotVoc original speech in the next native run.**
+      In Hansel and Gretel, continue from Marcus100631:58 to the repeated quote59,
+      `What really scared me...`. Confirm that the game's PlotVoc speech plays
+      without our earlier Narrator recording53 or live synthesis overlapping it,
+      and that automatic advance respects the original audio. The shared policy,
+      native WEM duration, old-catalog preparation, archived-audio precedence and
+      controller routing now pass offline checks; do not repeat those as research.
+      For cue groups with delayed starts, verify the scheduled end against actual
+      playback before closing their native timing gate. Book reading remains out
+      of scope. Local evidence: plotvoc-main-story-20261117/results.json.
 
 - [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
       Remaining integration gate: use GUI Stop while first-time original-duration

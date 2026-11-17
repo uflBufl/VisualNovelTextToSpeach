@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from r1999extractor.source_audio_policy import apply_main_story_source_audio_policy
 from vntts_artifacts.story_index import StoryIndexError, write_story_index_document
 
 from tests.story_fixtures import write_verified_source_story
@@ -119,6 +120,87 @@ class SelectedStorySnapshotTest(unittest.TestCase):
         self.assertEqual(reused, selected)
         self.assertEqual(reused.read_bytes(), before)
         self.assertFalse((self.root / "unused").exists())
+
+    def plotvoc_source(self):
+        self.records[0].update(
+            collection_kind="main_story",
+            source_audio_status="absent",
+            source_bank=None,
+            source_media_ids=[],
+            available_media_ids=[],
+            story_audio_cues=[
+                {
+                    "cue_index": 1,
+                    "source_audio_id": "610018168",
+                    "source_audio_status": "available",
+                    "source_bank": "plotvoc_npc512101chapter6_part05.bnk",
+                    "source_event": "play_plotvoc_chap6_npc512101_11129",
+                    "source_media_ids": [927465334],
+                    "available_media_ids": [927465334],
+                }
+            ],
+        )
+        write_story_index_document(self.source, self.metadata, self.records)
+        self.checksum = sha256_file(self.source)
+        return self.create()
+
+    def test_accepts_origin_bound_plotvoc_projection_and_timing_successor(self):
+        from vntts.source_audio_semantics import reset_stale_source_audio_semantics
+
+        selected = self.plotvoc_source()
+        original = self.source.read_bytes()
+        successor = reset_stale_source_audio_semantics(
+            self.load(selected), self.root / "prepared" / "story-index.jsonl"
+        )
+        records = [record.to_record() for record in successor.records]
+        records[0].update(
+            source_audio_duration_seconds=1.0,
+            source_audio_duration_media_id=927465334,
+            source_audio_duration_media_sha256="a" * 64,
+            source_audio_duration_sample_rate=24000,
+            source_audio_duration_sample_count=24000,
+            source_audio_duration_decoder="native",
+            source_audio_wait_seconds=1.5,
+        )
+        write_story_index_document(
+            successor.path,
+            {
+                **successor.metadata,
+                "source_audio_completion": "verified-media-duration-seconds",
+            },
+            records,
+        )
+        verified = self.load(successor.path)
+        self.assertEqual(verified.records[0].source_audio_status, "available")
+        self.assertEqual(verified.records[0].source_audio_id, "610018168")
+        self.assertEqual(verified.records[0].document["source_audio_cue_index"], 1)
+        self.assertEqual(verified.records[0].document["source_audio_wait_seconds"], 1.5)
+        self.assertEqual(self.source.read_bytes(), original)
+
+    def test_plotvoc_projection_does_not_authorize_other_source_or_text_changes(self):
+        selected = self.plotvoc_source()
+        original = selected.read_bytes()
+        for projected in (False, True):
+            for field, value in (
+                ("source_bank", "unrelated.bnk"),
+                ("source_media_ids", [99]),
+                ("available_media_ids", [99]),
+                ("source", "unrelated-source"),
+                ("text", "Unrelated text."),
+            ):
+                with self.subTest(projected=projected, field=field):
+                    document = self.load(selected)
+                    records = [record.to_record() for record in document.records]
+                    metadata = dict(document.metadata)
+                    if projected:
+                        apply_main_story_source_audio_policy(metadata, records)
+                    records[0][field] = value
+                    write_story_index_document(selected, metadata, records)
+                    with self.assertRaisesRegex(
+                        StoryIndexError, "origin record changed"
+                    ):
+                        self.load(selected)
+                    selected.write_bytes(original)
 
     def test_rejects_omitted_extra_duplicate_or_unknown_selection(self):
         for line_ids, story_ids in (
