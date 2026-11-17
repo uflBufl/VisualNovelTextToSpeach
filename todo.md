@@ -431,7 +431,7 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: localize the observed Mac pre-OCR transition delay below, then finish
+Next action: approve and implement the measured pre-OCR search repair below, then finish
 the remaining foreign-donor and background-preparation Mac gates. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
@@ -447,18 +447,24 @@ acceptance is outside this pass. Book reading remains deferred.
       Retain route/control/media proof and close app/game afterward. Remove only
       qualified requirements; preserve unexercised gates and real failures.
 
-- [ ] **Localize the Mac pre-OCR transition delay.** In the chapter-switch
-      session, already captured transition/menu frames waited about34s and79s
-      before visual-only admission; new-chapter OCR followed afterward. Replay
-      the retained frames with temporary phase timing and sample thread stacks
-      during a slow call to separate layout inference, caption/source matching
-      and waiting. Keep this evidence with R1; do not assume its historical stall
-      has the same cause. Original-duration preparation ran later and is not the
-      explanation. Propose the root-cause repair only after attribution; preserve
-      current-frame/ownership checks and bounded Stop. One native-3805 recovered
-      with a fresh capture stream in the same reader run; its native cause is
-      unknown and does not justify speculative recovery code. Evidence:
-      `chapter-switch-20261117/report.md` and retained runtime/timeline/media.
+- [ ] **Repair measured pre-OCR source-search latency (plan awaiting approval).**
+      Retained title/exit frames reproduce slow caption matching while detection
+      stays below half a second. Prefix-witness retrieval uses the broad full-match
+      edit allowance for tiny crop spans; prepared memory stores repeatedly
+      normalize unchanged source rows. Tighten crop witness queries to the actual
+      prefix acceptance budget; do the same for the ordinary initial witness path,
+      retaining the broader prefer_synthesis behavior where full rivals may still
+      be needed. Preserve separate full retrieval and all semantic validators.
+      Precompute immutable memory-store projections once. Add indexed/exhaustive
+      parity for short full/prefix/crop, Unicode/diacritics and mixed source lanes;
+      run changed/affected-consumer checks and unprofiled retained-frame comparison.
+      Keep candidate limits, menu blacklists, new timeouts and permanent metrics
+      out of this change. Defer prepared-store batching unless remaining measured
+      cost justifies it. A native repeat is the final integration gate. Evidence:
+      `pre-ocr-latency-20261117/report.md`, profiles and `unprofiled.json`.
+      The lossy offline replay establishes this shared CPU cost, not every second
+      of the native79s span or the cause of historical R1. Native-3805 recovered in
+      the same reader run; its external cause remains unestablished.
 - [ ] **Align Reading messages with committed work.** The same transition showed
       a narrator-fallback warning for unaccepted menu speaker `EEE`, without
       actual speech, and retained `Measuring selected game speech...` after
