@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic, sleep
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from PIL import Image
 
@@ -97,6 +97,118 @@ class TextDetectionWorkerTest(unittest.TestCase):
         self.assertEqual(first.lines[0].box.left, 0.1)
         self.assertEqual(self.owner.pid, pid)
         self.assertTrue(self.owner._process.is_alive())
+
+    def test_identical_pixels_reuse_result_without_another_worker_request(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            first = self.owner.detect(self.image)
+            with patch.object(
+                self.owner._connection,
+                "send_bytes",
+                wraps=self.owner._connection.send_bytes,
+            ) as send:
+                self.assertIs(self.owner.detect(self.image.copy()), first)
+                self.assertIs(self.owner.detect(self.image.convert("RGB")), first)
+                send.assert_not_called()
+
+    def test_pixel_dimension_and_region_changes_require_new_detection(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+            changed = self.image.copy()
+            changed.putpixel((0, 0), (254, 255, 255, 255))
+            resized = Image.frombytes(
+                "RGB", (100, 200), changed.convert("RGB").tobytes()
+            )
+            region = DialogRegion(0.1, 0.2, 0.7, 0.5)
+            with patch.object(
+                self.owner._connection,
+                "send_bytes",
+                wraps=self.owner._connection.send_bytes,
+            ) as send:
+                self.owner.detect(changed)
+                self.owner.detect(resized)
+                self.owner.detect(resized, allowed_region=region)
+                self.owner.detect(resized, allowed_region=region, covered_region=region)
+                self.owner.detect(
+                    resized,
+                    allowed_region=region,
+                    covered_region=region,
+                    dialogue_region=region,
+                )
+                self.assertEqual(send.call_args_list, [call(b"run")] * 5)
+
+    def test_cached_result_cannot_bypass_cancellation_or_close(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+            cancelled = Event()
+            cancelled.set()
+            with self.assertRaises(OCRPreviewCancelled):
+                self.owner.detect(self.image, cancel_event=cancelled)
+            self.owner.close()
+            self.assertIsNone(self.owner._last_detection)
+            with self.assertRaisesRegex(RuntimeError, "closed"):
+                self.owner.detect(self.image)
+
+    def test_cancel_pending_during_cached_query_discards_worker_and_result(self):
+        digest = worker.sha256
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+
+            def cancel_after_hash(pixels):
+                value = digest(pixels)
+                self.owner.cancel_pending()
+                return value
+
+            with patch.object(worker, "sha256", side_effect=cancel_after_hash):
+                with self.assertRaises(OCRPreviewCancelled):
+                    self.owner.detect(self.image)
+            self.assertIsNone(self.owner._last_detection)
+            self.assertIsNone(self.owner.pid)
+            self.assertEqual(self.owner.detect(self.image).lines[0].text, "Hello world")
+
+    def test_timeout_during_cached_query_does_not_return_previous_result(self):
+        digest = worker.sha256
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+            elapsed = [0.0]
+
+            def slow_hash(pixels):
+                value = digest(pixels)
+                elapsed[0] += self.owner.timeout_seconds + 1
+                return value
+
+            with (
+                patch.object(worker, "monotonic", side_effect=lambda: elapsed[0]),
+                patch.object(worker, "sha256", side_effect=slow_hash),
+                self.assertRaises(TimeoutError),
+            ):
+                self.owner.detect(self.image)
+            self.assertIsNone(self.owner._last_detection)
+            self.assertIsNone(self.owner.pid)
+
+    def test_dead_worker_restarts_even_when_pixels_are_identical(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            expected = self.owner.detect(self.image)
+            old_pid = self.owner.pid
+            self.owner._process.terminate()
+            self.owner._process.join(2)
+            self.assertEqual(self.owner.detect(self.image), expected)
+            self.assertNotEqual(self.owner.pid, old_pid)
+
+    def test_failed_request_discards_cached_detection(self):
+        with patch.object(worker, "_worker_main", successful_worker):
+            self.owner.detect(self.image)
+            old_pid = self.owner.pid
+            with patch.object(
+                worker,
+                "_read_detection_result",
+                side_effect=RuntimeError("Invalid response"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Invalid response"):
+                    self.owner.detect(Image.new("RGB", self.image.size, "black"))
+            self.assertIsNone(self.owner._last_detection)
+            self.assertIsNone(self.owner.pid)
+            self.owner.detect(self.image)
+            self.assertNotEqual(self.owner.pid, old_pid)
 
     def test_serializes_allowed_and_covered_regions_separately(self):
         region = DialogRegion(0.1, 0.2, 0.7, 0.5)

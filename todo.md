@@ -34,13 +34,15 @@ Recheck archived findings against current main before implementation.
       includes `Es`, `a EES` and `ESS`; source matching can still restore the
       correct character. Establish which selected crop/layout admitted artwork
       before changing name detection. Keep source-derived speaker provenance.
-- [ ] **Pre-OCR latency:** correlate capture, layout detection, queueing, OCR and
-      canonical admission separately under background generation. Compared with
-      support29, retained raw OCR median is129ms vs124ms, but frame age before OCR
-      is190ms vs55ms and capture-to-OCR is301ms vs172ms. Discovery runs synchronously
-      before OCR and its own span is not retained separately. Compare the same
-      scene with discovery enabled/disabled before optimizing; retain both region
-      coverage and confidence/ownership gates. Different scenes are not a benchmark.
+- [ ] **Pre-OCR latency qualification:** on Windows, correlate capture, layout
+      detection, queueing, OCR and canonical admission separately under actual
+      background generation. Recheck the same scene with static and changing
+      text; exact-repeat reuse does not remove inference for new pixels. The
+      archived frame age before OCR was190ms vs55ms, while raw OCR medians were
+      129ms vs124ms in different scenes, so those are not a controlled benchmark.
+      The layout span still excludes model preparation and is not retained
+      separately in the timeline. Preserve Story coverage and current-frame,
+      confidence and ownership gates while attributing the remaining delay.
 - [ ] **Recognition versus prepared-text display:** review the Reading progress
       presentation. Exact/unique-prefix source matching replaces partial observed
       text with the complete canonical phrase and its speaker; users cannot infer

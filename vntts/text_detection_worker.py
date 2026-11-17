@@ -6,6 +6,7 @@ import json
 import math
 import multiprocessing
 from collections.abc import Callable
+from hashlib import sha256
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -20,6 +21,14 @@ from vntts.ocr import DialogRegion, OCRPreviewCancelled
 
 if TYPE_CHECKING:
     from vntts.text_detection import ScreenTextDetection
+
+type _DetectionKey = tuple[
+    tuple[int, int],
+    DialogRegion | None,
+    DialogRegion | None,
+    DialogRegion | None,
+    bytes,
+]
 
 _MAX_PIXELS = 32 * 1024 * 1024
 _MAX_RESULT_BYTES = 16 * 1024 * 1024
@@ -161,6 +170,7 @@ class TextDetectionWorker:
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
         self._directory: TemporaryDirectory[str] | None = None
+        self._last_detection: tuple[_DetectionKey, ScreenTextDetection] | None = None
 
     @property
     def pid(self) -> int | None:
@@ -172,6 +182,7 @@ class TextDetectionWorker:
             self._cancel = Event()
 
     def _discard(self) -> None:
+        self._last_detection = None
         process, connection, directory = (
             self._process,
             self._connection,
@@ -301,38 +312,20 @@ class TextDetectionWorker:
                 pass
             acquired = True
             check()
-            self._ensure_worker(cancelled)
-            deadline = monotonic() + self.timeout_seconds
-            assert self._directory is not None and self._connection is not None
-            root = Path(self._directory.name)
-            (root / "image.raw").write_bytes(image.convert("RGB").tobytes())
-            (root / "request.json").write_text(
-                json.dumps(
-                    {
-                        "size": image.size,
-                        "allowed_region": (
-                            allowed_region.to_json()
-                            if allowed_region is not None
-                            else None
-                        ),
-                        "covered_region": (
-                            covered_region.to_json()
-                            if covered_region is not None
-                            else None
-                        ),
-                        "dialogue_region": (
-                            dialogue_region.to_json()
-                            if dialogue_region is not None
-                            else None
-                        ),
-                    }
-                )
+            pixels = image.convert("RGB").tobytes()
+            key = (
+                image.size,
+                allowed_region,
+                covered_region,
+                dialogue_region,
+                sha256(pixels).digest(),
             )
             check()
-            self._connection.send_bytes(b"run")
-            self._wait(b"done", check)
-            detection = _read_detection_result(root / "result.json", check)
+            self._ensure_worker(cancelled)
+            deadline = monotonic() + self.timeout_seconds
+            detection = self._request_detection(pixels, key, check)
             check()
+            self._last_detection = key, detection
             return detection
         except BaseException:
             if acquired:
@@ -341,3 +334,36 @@ class TextDetectionWorker:
         finally:
             if acquired:
                 self._lock.release()
+
+    def _request_detection(
+        self, pixels: bytes, key: _DetectionKey, check: Callable[[], float]
+    ) -> ScreenTextDetection:
+        # Reuse raw detection only; the caller still owns and routes the current frame.
+        if self._last_detection is not None and self._last_detection[0] == key:
+            return self._last_detection[1]
+        assert self._directory is not None and self._connection is not None
+        size, allowed_region, covered_region, dialogue_region, _digest = key
+        root = Path(self._directory.name)
+        (root / "image.raw").write_bytes(pixels)
+        (root / "request.json").write_text(
+            json.dumps(
+                {
+                    "size": size,
+                    "allowed_region": (
+                        allowed_region.to_json() if allowed_region is not None else None
+                    ),
+                    "covered_region": (
+                        covered_region.to_json() if covered_region is not None else None
+                    ),
+                    "dialogue_region": (
+                        dialogue_region.to_json()
+                        if dialogue_region is not None
+                        else None
+                    ),
+                }
+            )
+        )
+        check()
+        self._connection.send_bytes(b"run")
+        self._wait(b"done", check)
+        return _read_detection_result(root / "result.json", check)
