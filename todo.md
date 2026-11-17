@@ -48,11 +48,12 @@ Recheck archived findings against current main before implementation.
       fragment must remain distinct from the complete line selected for reading,
       including uncertain/empty observations; verify copying, Stop/restart and
       enlarged fonts while generation runs. Preserve early prepared playback.
-- [ ] **Repeated generation validation:** profile operation `c7cde714...` ending
-      08:23:45 UTC separately from Reading. Total1064.1s includes accumulated
-      state-validation939.8s and final-validation60.4s. Native renders finish much
-      earlier. Attribute nested/inclusive spans before choosing reuse or reducing
-      reads; preserve checkpoint/publication integrity and completed audio.
+- [ ] Qualify generation throughput on Windows using the same chapter and voice
+      settings under background Reading. Successful per-line results must avoid
+      re-auditing completed WAVs and reloading full result evidence; generation
+      steps must not rehash admitted controls or re-read state at finalization.
+      Verify cancellation, resume, priority changes and publication still retain
+      completed audio. The synthetic comparison does not qualify native speed.
 - [ ] **Recording video startup:** share one correct process-DPI initialization
       across geometry and capture. `recording.rs` calls `selected_window_size`
       before worker open; both paths set DPI awareness and the second propagates

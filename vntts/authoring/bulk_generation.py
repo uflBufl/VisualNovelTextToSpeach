@@ -497,7 +497,6 @@ class _GenerationExecutionContext:
     provenance_sha256: str
     backend: object
     render: GenerationRenderer
-    controls: Sequence[_GenerationControl]
     lease: GenerationLease
     render_prefetch: ThreadPoolExecutor
     seed: int
@@ -1927,7 +1926,6 @@ def _render_and_publish_generation_attempt(
         active["runtime_status"] = speech_runtime_label(run.backend)
         active["runtime_worker_pid"] = worker_pid
     _validate_render_result(rendered, attempt.request, run.provider)
-    _assert_control_files_unchanged(run.controls)
     if run.workspace_output_identity is not None:
         _assert_workspace_output_identity(
             run.output_argument, run.workspace_output_identity
@@ -2150,7 +2148,6 @@ def _finalize_generation_run(
     *,
     queue_path: Path,
     queue_sha256: str,
-    controls: Sequence[_GenerationControl],
     workspace_output_identity: object,
     output_argument: Path,
     lease: GenerationLease,
@@ -2163,12 +2160,9 @@ def _finalize_generation_run(
     skipped_characters: int,
     skipped_items: int,
 ) -> BulkGenerationResult:
-    _assert_sources_unchanged(queue_path, queue_sha256, controls)
     if workspace_output_identity is not None:
         _assert_workspace_output_identity(output_argument, workspace_output_identity)
     lease.assert_owned()
-    with measure_generation_phase("final-validation"):
-        state = validate_generation_output(state_path)
     captured = execution.captured_silence_failure
     if captured is not None:
         if evidence_directory is None:
@@ -2614,7 +2608,6 @@ def run_bulk_generation(
         provenance_sha256=provenance_sha256,
         control_records=control_records,
         queue_path=queue_path,
-        controls=controls,
         include_prefer_source=include_prefer_source,
         include_characters=include_characters,
         item_filter=item_filter,
@@ -2660,7 +2653,6 @@ def _run_generation_execution(
     provenance_sha256: str,
     control_records: list[JsonDocument],
     queue_path: Path,
-    controls: Sequence[_GenerationControl],
     include_prefer_source: bool,
     include_characters: Sequence[str] | None,
     item_filter: Callable[[VoiceGenerationQueueItem], bool] | None,
@@ -2757,7 +2749,6 @@ def _run_generation_execution(
                 provenance_sha256=provenance_sha256,
                 backend=backend,
                 render=render,
-                controls=controls,
                 lease=lease,
                 render_prefetch=render_prefetch,
                 seed=seed,
@@ -2775,7 +2766,6 @@ def _run_generation_execution(
         return _finalize_generation_run(
             queue_path=queue_path,
             queue_sha256=queue_sha256,
-            controls=controls,
             workspace_output_identity=workspace_output_identity,
             output_argument=output_argument,
             lease=lease,
@@ -3097,6 +3087,7 @@ def _load_or_create_state(
         _validate_state_document(
             state, output_directory, queue, queue_sha256, validate_files=False
         )
+        validate_authoring_publication_authority(state_path, state)
         return state
     state = {
         "schema": STATE_SCHEMA,

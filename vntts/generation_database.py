@@ -135,6 +135,8 @@ class GenerationProgress:
     other_terminal: int
     active: object
     ready_lines: tuple[tuple[str, str], ...]
+    pending_review: int = 0
+    cancelled: int = 0
 
 
 def state_path(output: Path) -> Path:
@@ -422,17 +424,21 @@ def read_progress(path: Path) -> GenerationProgress:
             other_terminal=counts[2],
             active=None if row[2] is None else _object(row[2]),
             ready_lines=ready,
+            pending_review=counts[3],
+            cancelled=counts[4],
         )
 
 
-def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
+def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int, int, int]:
     counts: dict[str, int] = {}
+    pending_review = 0
     for status, review, count in connection.execute(
         "SELECT status, review_status, count(*) FROM items GROUP BY status, review_status"
     ):
         if status not in _REVIEWS or review not in _REVIEWS[status]:
             raise ValueError("Generation database item status is malformed")
         counts[status] = counts.get(status, 0) + count
+        pending_review += count if review == "pending_review" else 0
     cancelled = 0
     for kind, status, review, failure, marker in connection.execute(
         "SELECT json_type(payload), json_extract(payload, '$.status'), "
@@ -453,6 +459,8 @@ def _progress_counts(connection: sqlite3.Connection) -> tuple[int, int, int]:
         counts.get("generated", 0) + counts.get("approved", 0),
         counts.get("failed", 0) - cancelled,
         counts.get("live_fallback", 0) + counts.get("omitted", 0),
+        pending_review,
+        cancelled,
     )
 
 

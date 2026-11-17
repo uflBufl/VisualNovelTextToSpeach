@@ -20,6 +20,7 @@ class OfflineGenerationResult:
     failed: int
     other_terminal: int
     pending_review: int = 0
+    cancelled: int = 0
 
     @property
     def total(self) -> int:

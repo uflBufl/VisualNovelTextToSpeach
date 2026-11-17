@@ -186,12 +186,10 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 "render-wait",
             ):
                 self.assertEqual(measurements[f"bulk-generation-{phase}"]["count"], 2)
-            self.assertIn("bulk-generation-controls-validation", measurements)
-            self.assertIn("bulk-generation-state-validation", measurements)
-            self.assertEqual(
-                measurements["bulk-generation-final-validation"]["count"], 1
-            )
-            self.assertIn("bulk-generation-database-read", measurements)
+            self.assertNotIn("bulk-generation-controls-validation", measurements)
+            self.assertNotIn("bulk-generation-state-validation", measurements)
+            self.assertNotIn("bulk-generation-final-validation", measurements)
+            self.assertNotIn("bulk-generation-database-read", measurements)
             self.assertIn("bulk-generation-database-write", measurements)
             self.assertEqual(len(log.snapshot()), len(measurements))
             self.assertEqual(
@@ -434,6 +432,59 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         (validate_items.call_count, write_controls.call_count)
                     )
             self.assertEqual(counts[0], counts[1])
+
+    def test_resume_admits_saved_state_once_and_trusts_internal_steps(self):
+        for size in (2, 6):
+            with self.subTest(size=size), TemporaryDirectory() as directory:
+                root = Path(directory)
+                queue = write_queue(
+                    root / "queue.jsonl",
+                    [queue_item(str(index)) for index in range(size)],
+                )
+                output = root / "output"
+                control = root / "reference.wav"
+                control.write_bytes(b"admitted control")
+                options = {"control_files": {"voice_reference": control}}
+                self.run_generation(
+                    queue, output, SyntheticRenderer(), limit=1, **options
+                )
+                with (
+                    patch.object(
+                        bulk_module,
+                        "_validate_state_document",
+                        wraps=bulk_module._validate_state_document,
+                    ) as validate_state,
+                    patch.object(
+                        generation_database,
+                        "read_state",
+                        wraps=generation_database.read_state,
+                    ) as read_state,
+                    patch.object(
+                        bulk_module,
+                        "sha256_control_path",
+                        wraps=bulk_module.sha256_control_path,
+                    ) as hash_control,
+                    patch.object(
+                        bulk_module,
+                        "validate_generation_output",
+                        side_effect=AssertionError("Owned state must not be reloaded"),
+                    ),
+                    patch.object(
+                        bulk_module,
+                        "_assert_sources_unchanged",
+                        side_effect=AssertionError(
+                            "Admitted inputs must not be rehashed"
+                        ),
+                    ),
+                ):
+                    result = self.run_generation(
+                        queue, output, SyntheticRenderer(), **options
+                    )
+                self.assertEqual(result.generated, size - 1)
+                self.assertEqual(result.skipped_existing, 1)
+                self.assertEqual(validate_state.call_count, 1)
+                self.assertEqual(read_state.call_count, 1)
+                self.assertEqual(hash_control.call_count, 1)
 
     def test_progress_observer_receives_detached_active_and_committed_retry_deltas(
         self,
@@ -3151,7 +3202,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(unchanged["active"]["line_id"], "wrong-line")
         self.assertEqual(unchanged["items"], {})
 
-    def test_control_byte_change_with_restored_mtime_aborts_publication(self):
+    def test_generation_uses_admitted_control_identity_until_next_operation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             item = queue_item()
@@ -3167,20 +3218,29 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
                 )
 
-            with self.assertRaisesRegex(BulkGenerationError, "changed"):
+            admitted_sha256 = sha256_file(control)
+            result = self.run_generation(
+                queue,
+                root / "output",
+                SyntheticRenderer(inspect_state=mutate_control),
+                control_files={"voice_reference": control},
+            )
+
+            state = generation_database.read_state(result.state)
+            stored = state["items"][item["queue_id"]]
+            controls = state["synthesis_controls"][
+                stored["synthesis_provenance_sha256"]
+            ]
+            self.assertEqual(result.generated, 1)
+            self.assertIsNone(state["active"])
+            self.assertEqual(controls[0]["sha256"], admitted_sha256)
+            with self.assertRaisesRegex(BulkGenerationError, "changed before"):
                 self.run_generation(
                     queue,
                     root / "output",
-                    SyntheticRenderer(inspect_state=mutate_control),
-                    control_files={"voice_reference": control},
+                    SyntheticRenderer(),
+                    control_files={"voice_reference": (control, admitted_sha256)},
                 )
-
-            state = generation_database.read_state(
-                root / "output/generation-state.sqlite3"
-            )
-            self.assertEqual(state["items"], {})
-            self.assertIsNotNone(state["active"])
-            self.assertFalse((root / "output/manifest.json").exists())
 
     def test_synthesis_control_registry_rejects_embedded_nul_paths(self):
         for path in ("nested/weights.bin", "\x00", "nested/weights\x00.bin"):

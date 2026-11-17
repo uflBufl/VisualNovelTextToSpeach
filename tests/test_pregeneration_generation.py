@@ -28,7 +28,6 @@ from vntts.authoring.bulk_generation import (
     run_bulk_generation,
 )
 from vntts.authoring.cli_generation import create_generation_parser
-from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import STATE_SCHEMA, STATE_VERSION
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
@@ -36,8 +35,8 @@ from vntts.pregeneration_generation import (
     OfflineGenerationResult,
     OfflineGenerationWorker,
     _cached_static_ready_line_ids,
+    _load_result,
     _static_ready_line_ids,
-    _terminal_counts,
 )
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import load_verified_story_index_document
@@ -374,7 +373,9 @@ class OfflineGenerationSessionTest(unittest.TestCase):
             factory("moss-tts", self.registry, self.root / "synthesis-cache")
         self.assertEqual(len(self.backends), 1)
 
-    def test_same_path_reference_mutation_rejects_before_reused_lease(self):
+    def test_retained_session_trusts_admitted_reference_bytes_until_next_operation(
+        self,
+    ):
         reference = self.root / "reference.wav"
         reference.write_bytes(b"admitted reference")
         self.registry = CharacterVoiceRegistry(
@@ -383,8 +384,7 @@ class OfflineGenerationSessionTest(unittest.TestCase):
         with self.worker.generation_session(self.generation_input, self.plan):
             self.lease().shutdown()
             reference.write_bytes(b"changed reference")
-            with self.assertRaisesRegex(BulkGenerationError, "changed during the run"):
-                self.lease()
+            self.lease().shutdown()
             self.assertEqual(len(self.backends), 1)
         with self.worker.generation_session(self.generation_input, self.plan):
             self.lease()
@@ -447,7 +447,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         self.assertIn("mixed-event", arguments)
         self.assertIn("--audio-event-spoken-projection", arguments)
 
-    def test_cancelled_records_are_pending_in_progress_and_terminal_counts(self):
+    def test_cancelled_records_remain_pending_in_progress(self):
         with TemporaryDirectory() as directory:
             inputs, _plan = generation_inputs(Path(directory))
             state = {
@@ -475,7 +475,37 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             (progress.generated, progress.failed, progress.other_terminal), (1, 1, 1)
         )
         self.assertEqual(progress.completed, 3)
-        self.assertEqual(_terminal_counts(state), (1, 1, 1))
+
+    def test_result_reports_cancelled_work_for_recovery_without_another_audit(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            output = inputs.output_directory
+            output.mkdir()
+            state = {
+                "schema": STATE_SCHEMA,
+                "schema_version": STATE_VERSION,
+                "queue_sha256": inputs.queue_sha256,
+                "items": {
+                    "ready": {"status": "generated", "review_status": "pending_review"},
+                    "cancelled": {
+                        "status": "failed",
+                        "failure": {"kind": "cancelled", "attempt_counted": False},
+                    },
+                },
+            }
+            replace_generation_state(output / "generation-state.sqlite3", state)
+            with patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                side_effect=AssertionError(
+                    "Result counters must not re-audit saved evidence"
+                ),
+            ) as load:
+                result = _load_result(output, inputs)
+
+        self.assertEqual((result.generated, result.failed, result.cancelled), (1, 0, 1))
+        self.assertEqual(result.total, 1)
+        self.assertEqual(result.pending_review, 1)
+        load.assert_not_called()
 
     def test_safe_resume_restores_the_cancelled_repair_and_custom_pause(self):
         with TemporaryDirectory() as directory:
@@ -1080,13 +1110,20 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 }
             }
 
-            with (
-                patch(
-                    "vntts.pregeneration_generation.load_generation_state",
-                    side_effect=[{"items": {}}, state, state],
-                ),
-            ):
-                result = worker.generate(generation_input, plan)
+            def publish(*_args, **_kwargs):
+                replace_generation_state(
+                    output / "generation-state.sqlite3",
+                    {
+                        "schema": STATE_SCHEMA,
+                        "schema_version": STATE_VERSION,
+                        "queue_sha256": generation_input.queue_sha256,
+                        **state,
+                    },
+                )
+                return FinishedProcess()
+
+            popen.side_effect = publish
+            result = worker.generate(generation_input, plan)
 
         self.assertEqual(popen.call_count, 2)
         parser = create_generation_parser()
@@ -1140,18 +1177,47 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 }
             }
 
-            with (
-                patch(
-                    "vntts.pregeneration_generation.load_generation_state",
-                    return_value=state,
-                ),
-            ):
+            replace_generation_state(
+                output / "generation-state.sqlite3",
+                {
+                    "schema": STATE_SCHEMA,
+                    "schema_version": STATE_VERSION,
+                    "queue_sha256": generation_input.queue_sha256,
+                    **state,
+                },
+            )
+            with patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                return_value=state,
+            ) as admit:
                 result = OfflineGenerationWorker(
                     command=("worker",), popen_factory=popen
                 ).generate(generation_input, plan)
 
         popen.assert_not_called()
+        admit.assert_called_once_with(
+            output / "generation-state.sqlite3",
+            generation_input.queue,
+            validate_files=False,
+        )
         self.assertEqual(result.total, generation_input.progress_items)
+
+    def test_inspect_admits_saved_state_before_trusting_result_counters(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            worker = OfflineGenerationWorker()
+            with (
+                patch(
+                    "vntts.pregeneration_generation.load_generation_state",
+                    side_effect=ValueError("Unknown saved queue item"),
+                ),
+                patch("vntts.pregeneration_generation._load_result") as counters,
+                self.assertRaisesRegex(
+                    OfflineGenerationError, "Unknown saved queue item"
+                ),
+            ):
+                worker.inspect(inputs)
+            counters.assert_not_called()
 
     def test_omitted_audio_event_does_not_hide_unfinished_dialogue(self):
         with TemporaryDirectory() as directory:

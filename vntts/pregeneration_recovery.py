@@ -282,13 +282,7 @@ class OfflineRecoveryWorker:
         )
         if not isinstance(voice_plan, VoicePlan):
             raise OfflineRecoveryError("Offline voice plan is invalid")
-        if generation_result.failed == 0 and (
-            generation_result.total >= generation_input.ready_items
-            or "cancelled"
-            not in _generation_queue_statuses(
-                generation_result, generation_input
-            ).values()
-        ):
+        if generation_result.failed == 0 and generation_result.cancelled == 0:
             return OfflineRecoveryResult(generation_result, 0, 0, 0, ())
         initial_failures = generation_result.failed
         current = generation_result
@@ -623,6 +617,7 @@ def _saved_generation_state(
         pending_review=sum(
             item.get("review_status") == "pending_review" for item in items.values()
         ),
+        cancelled=sum(status == "cancelled" for status in statuses.values()),
     )
     return (None if state.get("active") is not None else result), statuses
 

@@ -390,6 +390,24 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
+    def test_successful_partial_generation_trusts_result_without_reopening_state(self):
+        with TemporaryDirectory() as directory:
+            generation_input, base, voice_plan = inputs(Path(directory))
+            completed_line = replace(base, generated=1, failed=0)
+            planner = Mock(side_effect=AssertionError("No repair is needed"))
+            worker = OfflineRecoveryWorker(planner=planner)
+            with patch(
+                "vntts.pregeneration_recovery._generation_queue_statuses",
+                side_effect=AssertionError(
+                    "Successful results must not audit prior audio"
+                ),
+            ) as statuses:
+                result = worker.recover(generation_input, voice_plan, completed_line)
+
+        self.assertIs(result.generation, completed_line)
+        statuses.assert_not_called()
+        planner.assert_not_called()
+
     def test_real_generation_scope_covers_per_line_recovery_and_priority(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result, voice_plan = inputs(Path(temporary_directory))
@@ -736,7 +754,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
     def test_cancelled_saved_line_resumes_without_new_generation_or_failure_count(self):
         with TemporaryDirectory() as directory:
             generation_input, base, voice_plan = inputs(Path(directory))
-            current = replace(base, generated=0, failed=0)
+            current = replace(base, generated=0, failed=0, cancelled=1)
             completed = replace(base, generated=3, failed=0)
             generator = Mock()
             generator.inspect.return_value = current

@@ -23,11 +23,8 @@ from vntts.authoring.bulk_generation import (
     GenerationCancellationWitness,
     GenerationProgressEvent,
     GenerationProgressItem,
-    _assert_control_files_unchanged,
-    _GenerationControl,
     capture_generation_cancellation,
     reconcile_generation_cancellation,
-    snapshot_generation_control_files,
 )
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
@@ -163,7 +160,7 @@ class _GenerationBackendSession:
         self.closed = False
         self.cache_root = _synthesis_cache_directory(generation_input).resolve()
         self.original_factory = factory
-        self.controls: list[_GenerationControl] | None = None
+        self.reference_paths: frozenset[Path] | None = None
         self.runtime = RetainedWorkerRuntime(
             "moss-tts", backend_factory=self._create_backend
         )
@@ -191,7 +188,7 @@ class _GenerationBackendSession:
             self.original_factory("moss-tts", registry, self.cache_root, **options),
         )
 
-    def _admit_controls(
+    def _bind_reference_inventory(
         self, registry: CharacterVoiceRegistry, narrator_reference: object
     ) -> None:
         references = {
@@ -201,24 +198,10 @@ class _GenerationBackendSession:
         }
         if isinstance(narrator_reference, (str, Path)):
             references.add(Path(narrator_reference).expanduser().resolve())
-        paths: dict[str, str | Path | tuple[str | Path, str]] = {
-            "voice_manifest": (
-                self.generation_input.voice_manifest,
-                self.generation_input.voice_manifest_sha256,
-            ),
-            **{
-                f"voice_reference:{index:04d}": path
-                for index, path in enumerate(sorted(references))
-            },
-        }
-        if self.controls is None:
-            self.controls = snapshot_generation_control_files(paths)
-            return
-        if {Path(path).resolve() for path in references} | {
-            self.generation_input.voice_manifest.resolve()
-        } != {Path(control["path"]) for control in self.controls}:
+        if self.reference_paths is None:
+            self.reference_paths = frozenset(references)
+        elif self.reference_paths != references:
             raise OfflineGenerationError("Offline generation control inventory changed")
-        _assert_control_files_unchanged(self.controls)
 
     def factory(
         self,
@@ -232,7 +215,7 @@ class _GenerationBackendSession:
             raise OfflineGenerationError("Offline generation cache identity changed")
         if name != "moss-tts" or moss_cpp_requested(options.get("model_name")):
             return self.original_factory(name, registry, cache_root, **options)
-        self._admit_controls(registry, options.get("narrator_reference"))
+        self._bind_reference_inventory(registry, options.get("narrator_reference"))
         return self.runtime(registry, **options)
 
 
@@ -446,8 +429,19 @@ class OfflineGenerationWorker:
         return current
 
     def inspect(self, generation_input: PregenerationInput) -> OfflineGenerationResult:
-        """Reload the current validated terminal counts without starting work."""
-        return _load_result(_generation_output(generation_input), generation_input)
+        """Admit saved state before returning its transactional progress summary."""
+        output = _generation_output(generation_input)
+        try:
+            load_generation_state(
+                generation_state_path(output),
+                generation_input.queue,
+                validate_files=False,
+            )
+        except (BulkGenerationError, OSError, ValueError) as error:
+            raise OfflineGenerationError(
+                f"Offline generation result is invalid: {error}"
+            ) from error
+        return _load_result(output, generation_input)
 
     def inspect_progress(
         self, generation_input: PregenerationInput
@@ -1006,25 +1000,21 @@ def _load_result(
             "Offline generation finished without publishing its result"
         )
     try:
-        state = load_generation_state(
-            state_path, generation_input.queue, validate_files=False
-        )
+        progress = read_progress(state_path)
+        if progress.queue_sha256 != generation_input.queue_sha256:
+            raise ValueError("Generation state belongs to another queue")
     except (BulkGenerationError, OSError, ValueError) as error:
         raise OfflineGenerationError(
             f"Offline generation result is invalid: {error}"
         ) from error
-    generated, failed, other_terminal = _terminal_counts(state)
-    pending = 0
-    for item in _state_items(state).values():
-        if item.get("review_status") == "pending_review":
-            pending += 1
     return OfflineGenerationResult(
         output=output,
         state=state_path,
-        generated=generated,
-        failed=failed,
-        other_terminal=other_terminal,
-        pending_review=pending,
+        generated=progress.generated,
+        failed=progress.failed,
+        other_terminal=progress.other_terminal,
+        pending_review=progress.pending_review,
+        cancelled=progress.cancelled,
     )
 
 
@@ -1046,19 +1036,6 @@ def _state_items(
                 "Offline generation state item keys are invalid"
             )
     return result
-
-
-def _terminal_counts(state: Mapping[str, object]) -> tuple[int, int, int]:
-    counts = {"generated": 0, "failed": 0, "other": 0}
-    for item in _state_items(state).values():
-        status = generation_item_status(item)
-        if status in {"generated", "approved"}:
-            counts["generated"] += 1
-        elif status == "failed":
-            counts["failed"] += 1
-        elif status in {"live_fallback", "omitted", "not_reproducible"}:
-            counts["other"] += 1
-    return counts["generated"], counts["failed"], counts["other"]
 
 
 def _queue_ids(values: object) -> tuple[str, ...]:
