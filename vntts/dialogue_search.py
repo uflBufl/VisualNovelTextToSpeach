@@ -143,6 +143,7 @@ class MemoryDialogueStore(DialogueStore):
         self._exact: dict[tuple[bool, str], list[ChapterDialogue]] = {}
         self._normalized: dict[str, list[ChapterDialogue]] = {}
         self.normalized_values: dict[ChapterDialogue, str] = {}
+        self._projections: dict[ChapterDialogue, str] = {}
         chapters: dict[str, list[ChapterDialogue]] = {}
         for row in self.rows:
             chapters.setdefault(row.chapter, []).append(row)
@@ -153,6 +154,7 @@ class MemoryDialogueStore(DialogueStore):
             normalized = _normalize(row.text)
             self.normalized_values[row] = normalized
             self._normalized.setdefault(normalized, []).append(row)
+            self._projections[row] = text_projection(row.text)
         self._chapters = {
             key: tuple(sorted(value, key=_story_position))
             for key, value in chapters.items()
@@ -224,7 +226,7 @@ class MemoryDialogueStore(DialogueStore):
             if (original is None or row.has_original_speech == original)
             and not is_symbol_only_text(row.text)
             and projection_may_match(
-                observed, text_projection(row.text), distance=distance, prefix=prefix
+                observed, self._projections[row], distance=distance, prefix=prefix
             )
         )
 

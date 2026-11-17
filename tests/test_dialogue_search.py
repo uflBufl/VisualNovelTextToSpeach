@@ -179,6 +179,100 @@ class IndexedDialogueSearchTests(unittest.TestCase):
                         recover_crop_noise=True,
                     )
 
+    def test_short_and_unicode_full_prefix_and_crop_resolution(self):
+        preloader = self.preloader(
+            (
+                record("short", "Go."),
+                record("latin", "Read the café notice beside the gate."),
+                record("chinese", "你好世界。"),
+                record("cyrillic", "Старинный фонарь освещает забытый проход."),
+            )
+        )
+        observations = (
+            "Go.",
+            "G",
+            "Ada Go.",
+            "Read the cafe notice beside the gate.",
+            "Read the cafe notlce beside the gate.",
+            "Read the cafe notlce",
+            "Ada Read the café notlce",
+            "Read the café notice beside the gate. EXTRA",
+            "你好世界。",
+            "你好",
+            "Ada 你好世界。",
+            "Старинный фонарь освещает забытый проход.",
+            "Старинный фонарь освещает",
+            "Ada Старинный фонарь освещает",
+        )
+        for observed in observations:
+            for allow_prefix in (False, True):
+                for prefer_synthesis in (False, True):
+                    with self.subTest(
+                        observed=observed,
+                        allow_prefix=allow_prefix,
+                        prefer_synthesis=prefer_synthesis,
+                    ):
+                        self.assert_same_resolution(
+                            preloader,
+                            "Ada",
+                            observed,
+                            allow_prefix=allow_prefix,
+                            recover_crop_noise=True,
+                            prefer_synthesis=prefer_synthesis,
+                        )
+
+    def test_memory_candidate_queries_reuse_source_projections(self):
+        preloader = self.preloader(
+            (
+                record("latin", "Read the café notice beside the gate."),
+                record("cyrillic", "Старинный фонарь освещает забытый проход."),
+                record("original", "A different answer awaits us.", original=True),
+            )
+        )
+        memory = MemoryDialogueStore(preloader.store.iter_rows())
+        observations = (
+            ("Read the cafe notice", {}),
+            ("Старинный фонарь освещает", {"chapter": "chapter"}),
+            ("A different answer awaits us", {"original": True, "prefix": False}),
+        )
+        expected = tuple(
+            preloader.store.candidates(observed, **options)
+            for observed, options in observations
+        )
+        with patch("vntts.dialogue_search.prepare_text", wraps=prepare_text) as prepare:
+            actual = tuple(
+                memory.candidates(observed, **options)
+                for observed, options in observations
+            )
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            [call.args[0] for call in prepare.call_args_list],
+            [observed for observed, _options in observations],
+        )
+
+    def test_exact_synthesis_keeps_full_original_outside_observed_edit_budget(self):
+        preloader = self.preloader(
+            (
+                record("synth", "Go", speaker="Bea"),
+                record("original", "Gao", original=True),
+            )
+        )
+        observed = prepare_text("Go")
+        source = prepare_text("Gao")
+        evidence = compare_text(observed, source)
+        self.assertTrue(evidence.complete)
+        self.assertGreater(evidence.distance, edit_budget(observed))
+        self.assertLessEqual(evidence.distance, edit_budget(source))
+        candidates = preloader._indexed_candidates(
+            "Go", allow_prefix=False, prefer_synthesis=True
+        )
+        self.assertIn("original", {row.line_id for row in candidates})
+        match = self.assert_same_resolution(
+            preloader, "Ada", "Go", prefer_synthesis=True
+        )
+        self.assertEqual(match.line.line_id, "synth")
+        self.assertTrue(match.complete)
+
     def test_numeric_and_negation_edits_use_the_common_metric(self):
         preloader = self.preloader(
             (

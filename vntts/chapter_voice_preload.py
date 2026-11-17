@@ -1331,9 +1331,14 @@ class ChapterVoicePreloader:
         if not allow_prefix and not (
             (not prefer_synthesis and guarded) or len(guarded) == 2
         ):
-            # A witness per synthesis lane suffices for an incomplete result.
+            # Exact synthesis lookup can still need fuzzy full-source witnesses.
             for row in self.store.iter_candidates(
-                text, distance=retrieval_distance(observed)
+                text,
+                distance=(
+                    retrieval_distance(observed)
+                    if prefer_synthesis
+                    else edit_budget(observed)
+                ),
             ):
                 lane = row.has_original_speech
                 if lane not in guarded and viable(row):
@@ -1377,7 +1382,7 @@ class ChapterVoicePreloader:
                     witnessed: set[bool] = set()
                     shape = prepare_text(span)
                     for row in self.store.iter_candidates(
-                        span, distance=retrieval_distance(shape), original=original
+                        span, distance=edit_budget(shape), original=original
                     ):
                         if predicate is not None and not predicate(row):
                             continue
