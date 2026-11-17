@@ -443,7 +443,10 @@ acceptance is outside this pass. Book reading remains deferred.
       chapter;55 must identify Hansel and continue once. Retain the natural game
       transitions, confidence/area/body-priority guards and disabled caption
       navigation. Record actual route identities and PCM; retained-frame replay
-      does not qualify native playback. Existing local54 and foreign101014:96
+      does not qualify native playback. Include one-frame speech admission after
+      the complete-text reader/tracker change:54 must play once even if the next
+      captured text is55, with no invented line ID or late caption key. Existing
+      local54 and foreign101014:96
       audio have the same checksum: preserve both and use audio_line_id to prove
       any cross-chapter reuse. Evidence:
       `.codex/investigations/ambiguous-native-20261117/`.

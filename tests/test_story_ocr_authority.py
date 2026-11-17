@@ -57,6 +57,36 @@ def observed(text, speaker="a ae Ce", dialogue_confidence=94.9):
 
 
 class StoryOCRAuthorityTest(unittest.TestCase):
+    def test_complete_equivalent_speech_carries_readiness_without_story_identity(self):
+        line = story_line("She closes her eyes.")
+        rows = (
+            line,
+            replace(line, line_id="duplicate", chapter="other"),
+            story_line("She closes her eyes and breathes.", line_id="and"),
+            story_line("She closes her eyes, striving to remember.", line_id="comma"),
+        )
+        for text in (line.text, "she CLOSES her eyes."):
+            with self.subTest(text=text):
+                controller = self.controller(rows)
+                controller.automatic_prepared_reading = True
+                frame = CapturedDialogFrame(
+                    Image.new("RGB", (300, 100)),
+                    0,
+                    layout_kind="caption",
+                    navigation_allowed=False,
+                    recognized_result=OCRResult("Narrator", text, 98, "caption", 1),
+                )
+                with patch.object(controller, "_refresh_prepared_audio"):
+                    actual = controller._recognize_live_frame(frame)
+                self.assertIsInstance(actual, RecognizedDialog)
+                self.assertEqual(
+                    (actual.character, actual.text), ("Narrator", line.text)
+                )
+                self.assertIsNone(actual.line_id)
+                self.assertTrue(actual.exact_match)
+                self.assertFalse(actual.allow_unheard_replacement)
+                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+
     def test_hansel_letter_digit_confusion_keeps_original_speech(self):
         canonical = "Even if I die, I'll still turn Kakania completely against Isolde."
         damaged = "Even if I die, [1l still turn Kakania completely against Isolde."

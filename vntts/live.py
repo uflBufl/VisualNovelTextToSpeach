@@ -41,7 +41,7 @@ _R = TypeVar("_R")
 class RecognizedDialog:
     character: str
     text: str
-    line_id: str
+    line_id: str | None
     exact_match: bool = True
     allow_unheard_replacement: bool = True
     observed_text: str | None = field(default=None, compare=False, repr=False)
@@ -1159,6 +1159,7 @@ class LiveDialogReader:
     ) -> list[SpeechChunk] | None:
         if (
             recognition is None
+            or recognition.dialog.line_id is None
             or not recognition.dialog.allow_unheard_replacement
             or (
                 not recognition.dialog.exact_match
@@ -1935,6 +1936,7 @@ class LiveDialogReader:
                     )
                 )
                 or canonical is not None
+                and canonical.dialog.line_id is not None
                 and canonical.dialog.line_id != tracker.canonical_line_id
             )
             if changed_identity:
@@ -1986,7 +1988,8 @@ class LiveDialogReader:
             )
             with self.state_lock:
                 pending_correction = bool(
-                    canonical.dialog.allow_unheard_replacement
+                    canonical.dialog.line_id is not None
+                    and canonical.dialog.allow_unheard_replacement
                     and tracker.canonical_line_id is None
                     and tracker.committed_text
                     and tracker._texts_are_related(tracker.committed_text, text)
@@ -1998,6 +2001,13 @@ class LiveDialogReader:
                     )
                 )
             if current_identity and not pending_correction:
+                if canonical.dialog.line_id is None:
+                    return self._ocr_callback(
+                        "tracking-complete",
+                        tracker.observe_complete,
+                        canonical.dialog.character,
+                        text,
+                    )
                 if (
                     canonical.dialog.line_id in tracker.accepted_line_ids
                     and canonical.dialog.line_id != tracker.canonical_line_id

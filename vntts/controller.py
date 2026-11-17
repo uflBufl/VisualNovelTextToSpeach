@@ -1752,6 +1752,7 @@ class AppController:
 
         raw_result: OCRResult | None = None
         canonical_line: ChapterDialogue | None = None
+        equivalent_speech: ChapterDialogue | None = None
         canonical_exact = False
         reader = self.live_reader
         comparison = (
@@ -1764,7 +1765,7 @@ class AppController:
             raw_result = result
 
         def resolve_result(result: OCRResult) -> OCRResult:
-            nonlocal canonical_line, canonical_exact
+            nonlocal canonical_line, canonical_exact, equivalent_speech
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
@@ -1775,6 +1776,10 @@ class AppController:
                 )
                 line = resolution.get("line")
                 canonical_line = line if isinstance(line, ChapterDialogue) else None
+                equivalent = resolution.get("equivalent_speech")
+                equivalent_speech = (
+                    equivalent if isinstance(equivalent, ChapterDialogue) else None
+                )
                 canonical_exact = resolution.get("match_result") in {
                     "expected-exact",
                     "expected-normalized-exact",
@@ -1845,6 +1850,15 @@ class AppController:
                 allow_unheard_replacement=replacement,
                 observed_text=raw_result.text if raw_result is not None else text,
             )
+        if equivalent_speech is not None:
+            return RecognizedDialog(
+                equivalent_speech.speaker,
+                equivalent_speech.text,
+                None,
+                exact_match=True,
+                allow_unheard_replacement=False,
+                observed_text=raw_result.text if raw_result is not None else text,
+            )
         return character, text
 
     @staticmethod
@@ -1871,7 +1885,7 @@ class AppController:
         )
         line = (
             self.chapter_voice_preloader.line_for_id(observed.line_id)
-            if observed is not None
+            if observed is not None and observed.line_id is not None
             else None
         )
         current = self.chapter_voice_preloader.current_match
@@ -2013,6 +2027,7 @@ class AppController:
             preloader = self._story_matching_snapshot_locked()
             owner = self._story_matching_owner_locked()
             lease.owner = owner
+        equivalent_speech = None
         try:
             if confirmation_candidate_ids:
                 candidate, candidate_match = self._resolve_complete_exact_line(
@@ -2101,6 +2116,20 @@ class AppController:
                 )
                 if chapter_line is not None:
                     line, match = chapter_line, chapter_match
+            if (
+                line is None
+                and confident
+                and automatic_prepared_reading
+                and (plan is None or settings.live_sequence_mode == "off")
+            ):
+                equivalent_speech = next(
+                    iter(
+                        preloader.equivalent_speech_candidates(
+                            result.character, result.text
+                        )
+                    ),
+                    None,
+                )
         except StoryMatchingCancelled:
             lease.stale = True
             if resolution is not None:
@@ -2116,7 +2145,9 @@ class AppController:
                 preloader.last_resolution_diagnostics
             )
             if resolution is not None:
-                resolution.update(match_result=match, line=line)
+                resolution.update(
+                    match_result=match, line=line, equivalent_speech=equivalent_speech
+                )
             if line is not None and automatic_prepared_reading:
                 owner_preloader.select_line_id(line.line_id)
             lease.owner = self._story_matching_owner_locked()

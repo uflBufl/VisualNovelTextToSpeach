@@ -112,9 +112,7 @@ class IncrementalDialogTracker:
         self.admission_reason = "empty"
         self.first_observation: tuple[str, str, float] | None = None
 
-    def record_observation(
-        self, character: str, text: str, observed_at: float
-    ) -> None:
+    def record_observation(self, character: str, text: str, observed_at: float) -> None:
         """Retain text timing even while routing waits for a complete match."""
         if not text:
             return
@@ -325,6 +323,32 @@ class IncrementalDialogTracker:
             return [replace(chunk, line_id=line_id) for chunk in chunks]
         return self.observe_canonical(character, text, line_id)
 
+    def observe_complete(self, character: str, text: str) -> list[SpeechChunk]:
+        """Admit verified complete speech without assigning a story occurrence."""
+        now = self.clock()
+        self.record_observation(character, text, now)
+        if not text:
+            return self.observe(character, text)
+        if (
+            character == self.character
+            and not self.transition_expected
+            and self.latest_text
+            and (
+                text == self.committed_text
+                or self.canonical_line_id is None
+                and text.startswith(self.committed_text or self.latest_text)
+            )
+        ):
+            self._clear_pending_dialog()
+            self.conflicting_observation = False
+            self.observation_missing = False
+            self.latest_text = text
+            self.stable_text = text
+        else:
+            self._start_dialog(character, text, now)
+            self.stable_text = text
+        return self._emit(text, flush=True)
+
     @classmethod
     def _texts_are_related(cls, previous: str, text: str) -> bool:
         if previous.startswith(text) or text.startswith(previous):
@@ -404,7 +428,8 @@ class IncrementalDialogTracker:
         if self.silent_event_id is not None:
             return True
         if self.canonical_line_id is not None and (
-            self.early_dialogue_prefix is None or self.latest_text == self.committed_text
+            self.early_dialogue_prefix is None
+            or self.latest_text == self.committed_text
         ):
             return True
         if (
