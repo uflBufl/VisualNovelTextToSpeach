@@ -99,9 +99,9 @@ Recheck archived findings against current main before implementation.
       for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
       Remove them only when shared recognition qualifies those same cases; the
       sparse recognizer still confuses dots with bullets in some font controls.
-- [ ] Qualify unknown-chapter cross-chapter audio reuse with a fresh context:
-      begin on an ambiguous duplicate and identify the actual chapter only from
-      a unique subsequent line.
+- [ ] Qualify a foreign-only prepared-audio donor with a fresh context:
+      begin on an ambiguous duplicate whose compatible recording is available
+      only in another chapter; identify the actual chapter from a unique successor.
 - [ ] Verify genuinely partial originals separately in anecdotes/character
       stories, which retain ASR. Continue the unfinished RUN-11-UI-02 gate.
 
@@ -431,28 +431,13 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: qualify fresh-context equivalent-audio admission below, then finish
-the remaining Mac verification gates. Do not repeat ordinary
+Next action: finish the remaining foreign-donor, chapter-switch and background-
+preparation Mac gates below. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
-- [ ] **RUN-17-03 - Qualify complete ambiguous captions without chapter ownership.**
-      Repeat bounded native fresh-context100631:54 -> unique55 after the shared
-      caption/equivalent-speech fix. The complete central `She closes her eyes.`
-      must reach OCR and prepared playback without assigning a canonical line or
-      chapter;55 must identify Hansel and continue once. Retain the natural game
-      transitions, confidence/area/body-priority guards and disabled caption
-      navigation. Record actual route identities and PCM; retained-frame replay
-      does not qualify native playback. Include one-frame speech admission after
-      the complete-text reader/tracker change:54 must play once even if the next
-      captured text is55, with no invented line ID or late caption key. Existing
-      local54 and foreign101014:96
-      audio have the same checksum: preserve both and use audio_line_id to prove
-      any cross-chapter reuse. Evidence:
-      `.codex/investigations/ambiguous-native-20261117/`.
-
-- [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
-      and unique-successor identification in RUN-11-UI-02, then its chapter-switch
+- [ ] **Current Mac verification pass.** Finish the foreign-only donor check
+      in RUN-11-UI-02, then its chapter-switch
       and background-preparation gates and the cold GUI cancellation gate below.
       Begin the ambiguous observation before a chapter has been identified; a
       same-chapter Read/restart cannot qualify fresh discovery. For timed central
@@ -505,8 +490,10 @@ acceptance is outside this pass. Book reading remains deferred.
       accessible ordinary-dialogue story; book anecdotes need their own reader.
       User opened 6TH-23 Hansel and Gretel. Its canonical duplicate candidates
       100631:54/101014:96 are registered for actual discovery; current-voice audio
-      for unique successor 100631:55 is prepared. Begin the targeted check on the
-      short repeated phrase with no prior chapter ownership.
+      for unique successor 100631:55 is prepared. For the remaining donor-only
+      check, require a foreign audio_line_id; local54 must not qualify it. Existing
+      local54 and foreign96 recordings have identical checksums: preserve user
+      recordings and do not infer the donor from waveform correlation alone.
       7TH-02 The Blue and the Grey (Bang!) remains a metadata-only alternative.
       Prepare the repeated phrase only from the other chapter
       and verify reuse without anchoring there, followed by unique identification
