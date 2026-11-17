@@ -66,6 +66,14 @@ impl From<windows::core::Error> for Failure {
         )
     }
 }
+fn ensure_dpi_awareness() -> Result<(), Failure> {
+    static DPI: std::sync::OnceLock<Result<(), Failure>> = std::sync::OnceLock::new();
+    DPI.get_or_init(|| unsafe {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            .map_err(Failure::from)
+    })
+    .clone()
+}
 fn device_loss_hresult(code: u32) -> bool {
     matches!(code, 0x887A0005 | 0x887A0006 | 0x887A0007 | 0x887A0020)
 }
@@ -527,12 +535,7 @@ impl Native {
         shared: Shared,
         closed: Arc<AtomicBool>,
     ) -> Result<Self, Failure> {
-        static DPI: std::sync::OnceLock<Result<(), Failure>> = std::sync::OnceLock::new();
-        DPI.get_or_init(|| {
-            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-                .map_err(Failure::from)
-        })
-        .clone()?;
+        ensure_dpi_awareness()?;
         if !GraphicsCaptureSession::IsSupported()? {
             return Err(Failure::new(
                 "unsupported_capture",
@@ -699,8 +702,8 @@ pub fn selected_window_size(
     pid: u32,
     expected_created: u64,
 ) -> Result<(u32, u32), Failure> {
+    ensure_dpi_awareness()?;
     unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
         let result = geometry(
             &Target::Window { window_id, pid },
@@ -823,6 +826,11 @@ unsafe fn validate_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn geometry_and_capture_share_process_dpi_initialization() {
+        ensure_dpi_awareness().unwrap();
+        ensure_dpi_awareness().unwrap();
+    }
     #[test]
     fn empty_frame_pool_is_not_a_capture_failure() {
         let empty = unsafe {

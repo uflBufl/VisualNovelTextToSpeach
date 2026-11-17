@@ -54,21 +54,16 @@ Recheck archived findings against current main before implementation.
       steps must not rehash admitted controls or re-read state at finalization.
       Verify cancellation, resume, priority changes and publication still retain
       completed audio. The synthetic comparison does not qualify native speed.
-- [ ] **Recording video startup:** share one correct process-DPI initialization
-      across geometry and capture. `recording.rs` calls `selected_window_size`
-      before worker open; both paths set DPI awareness and the second propagates
-      `0x80070005`. The recording has video dimensions but no acquired frame and
-      an empty MP4. Verify selected-window video decodes, has monotonic frame
-      timestamps and survives normal stop; do not ask for elevated privileges to
-      mask repeated initialization.
-- [ ] **Recording process audio ownership:** repair the activation parameter
-      lifetime/allocator contract in Windows `process_audio.rs::activate`.
-      `PROPVARIANT/VT_BLOB` points at a Box still owned by the completion handler,
-      while windows0.62.2 drops PROPVARIANT through PropVariantClear. Both process
-      recorders exited `0xC0000374` before PCM; their CAFs contain headers only.
-      Qualify success, activation failure, cancellation and teardown on Windows;
-      use a native stack to confirm the exact crash site. No desktop/microphone
-      fallback and no claim of audible silence from missing acquisition.
+- [ ] Qualify Windows diagnostic video after the shared geometry/capture DPI
+      initialization fix. Run the Windows native regression tests; verify the
+      selected-window MP4 decodes, frame timestamps are monotonic and normal
+      start/stop retains acquired video without elevation.
+- [ ] Qualify Windows selected-process audio after the activation ownership fix.
+      Run the Windows native blob/callback lifetime tests, then verify game and
+      playback-process PCM under success, activation failure, cancellation and
+      teardown. Both archived recorders exited `0xC0000374` before PCM; confirm
+      that no heap crash remains, retaining a native stack if it recurs. No
+      desktop/microphone fallback; header-only CAFs are not audible silence.
 
 ## Active - Remaining Windows Reading qualification
 

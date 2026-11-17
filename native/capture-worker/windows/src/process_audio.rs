@@ -45,7 +45,7 @@ fn native(error: windows::core::Error) -> String {
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct Completion {
     ready: mpsc::SyncSender<()>,
-    // Keep activation storage alive even when a stopped/timed-out caller returns.
+    // Windows retains this handler until activation completes, including after stop/timeout.
     _parameters: Box<AUDIOCLIENT_ACTIVATION_PARAMS>,
 }
 impl IActivateAudioInterfaceCompletionHandler_Impl for Completion_Impl {
@@ -75,7 +75,13 @@ impl Drop for Event {
     }
 }
 
-fn activate(pid: u32, stop: &AtomicBool) -> Result<IAudioClient, String> {
+fn activation_request(
+    pid: u32,
+    ready: mpsc::SyncSender<()>,
+) -> (
+    IActivateAudioInterfaceCompletionHandler,
+    ManuallyDrop<PROPVARIANT>,
+) {
     let parameters = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -91,7 +97,8 @@ fn activate(pid: u32, stop: &AtomicBool) -> Result<IAudioClient, String> {
             .cast_mut()
             .cast(),
     };
-    let variant = PROPVARIANT {
+    // The blob borrows Completion's Box; PropVariantClear must never free it.
+    let variant = ManuallyDrop::new(PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
             Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
                 vt: VT_BLOB,
@@ -99,19 +106,24 @@ fn activate(pid: u32, stop: &AtomicBool) -> Result<IAudioClient, String> {
                 ..Default::default()
             }),
         },
-    };
-    let (send, receive) = mpsc::sync_channel(1);
+    });
     // windows::core::implement supplies IAgileObject and free-threaded marshalling.
     let completion: IActivateAudioInterfaceCompletionHandler = Completion {
-        ready: send,
+        ready,
         _parameters: parameters,
     }
     .into();
+    (completion, variant)
+}
+
+fn activate(pid: u32, stop: &AtomicBool) -> Result<IAudioClient, String> {
+    let (send, receive) = mpsc::sync_channel(1);
+    let (completion, variant) = activation_request(pid, send);
     let operation = unsafe {
         ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
-            Some(&variant),
+            Some(&*variant),
             &completion,
         )
     }
@@ -436,5 +448,69 @@ pub fn record(options: &Options, session: &mut Session) -> Result<Value, String>
         Err(error)
     } else {
         Ok(summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activation_blob_survives_caller_until_completion_is_released() {
+        let (send, receive) = mpsc::sync_channel(1);
+        let (completion, pointer) = {
+            let (completion, variant) = activation_request(1234, send);
+            assert_eq!(variant.vt(), VT_BLOB);
+            let blob = unsafe { variant.Anonymous.Anonymous.Anonymous.blob };
+            assert_eq!(
+                blob.cbSize as usize,
+                size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>()
+            );
+            let retained = completion.clone();
+            drop(completion);
+            (retained, blob.pBlobData)
+        };
+
+        {
+            let owner = completion.cast_object::<Completion>().unwrap();
+            let parameters = &*owner.get()._parameters;
+            assert_eq!(
+                pointer.cast::<AUDIOCLIENT_ACTIVATION_PARAMS>().cast_const(),
+                parameters as *const AUDIOCLIENT_ACTIVATION_PARAMS
+            );
+            assert_eq!(
+                parameters.ActivationType,
+                AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK
+            );
+            let process = unsafe { parameters.Anonymous.ProcessLoopbackParams };
+            assert_eq!(process.TargetProcessId, 1234);
+            assert_eq!(
+                process.ProcessLoopbackMode,
+                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+            );
+        }
+        unsafe { completion.ActivateCompleted(None) }.unwrap();
+        assert_eq!(receive.try_recv(), Ok(()));
+        drop(completion);
+        assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected));
+    }
+
+    #[test]
+    fn activation_completion_tolerates_abandoned_waiter() {
+        let (send, receive) = mpsc::sync_channel(1);
+        let completion = {
+            let (completion, _variant) = activation_request(1234, send);
+            completion
+        };
+        drop(receive);
+        unsafe { completion.ActivateCompleted(None) }.unwrap();
+    }
+
+    #[test]
+    fn failed_activation_releases_handler_before_borrowed_variant() {
+        let (send, receive) = mpsc::sync_channel(1);
+        let (completion, _variant) = activation_request(1234, send);
+        drop(completion);
+        assert_eq!(receive.try_recv(), Err(mpsc::TryRecvError::Disconnected));
     }
 }
