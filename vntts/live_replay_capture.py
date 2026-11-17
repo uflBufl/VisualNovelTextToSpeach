@@ -39,7 +39,7 @@ from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.path_safety import read_regular_bytes
 from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.settings import load_app_settings
-from vntts.text_detection import group_text_lines, prepare_text_detection_models
+from vntts.text_detection import prepare_text_detection_models
 from vntts.text_detection_worker import TextDetectionWorker
 from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget
 
@@ -905,12 +905,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     text_worker = TextDetectionWorker(*paths)
                 return select_caption(
                     frame,
-                    group_text_lines(
-                        text_worker.detect(
-                            frame.canonical_image,
-                            allowed_region=story_region,
-                            covered_region=frame.capture_region,
-                        )
+                    text_worker.detect(
+                        frame.canonical_image,
+                        allowed_region=story_region,
+                        covered_region=frame.capture_region,
+                        dialogue_region=frame.dialogue_text_region,
                     ),
                     settings.ocr_minimum_confidence,
                 )

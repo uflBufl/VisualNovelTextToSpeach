@@ -2912,7 +2912,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else self._preparation_sequence_reason()
             )
         self._show_preparation_reading(runtime_settings)
-        if not self.settings.onboarding_completed:
+        if not self.settings.onboarding_completed or self._story_area_needs_setup():
             self._set_reading_status(
                 "Finish Reading setup to read this story. Background preparation will continue."
                 if require_preparation
@@ -2953,6 +2953,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             runtime_settings or self._runtime_settings(),
         )
 
+    def _story_area_needs_setup(self) -> bool:
+        try:
+            return self.controller._story_region() is None
+        except CaptureRegionNeedsCalibration:
+            return True
+
     def _set_reading_status(self, message: str) -> None:
         if self.settings.onboarding_completed and self.settings.discover_text_layouts:
             try:
@@ -2961,8 +2967,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 story_area = None
             if story_area is None:
                 message += (
-                    " Only the dialogue area is configured. Use Set story area in Settings "
-                    "to include central story text."
+                    " Select the game scene once in Reading setup, including its centre "
+                    "and the dialogue box. No central text needs to be visible."
                 )
         self.set_status(message)
         if self.pregeneration_dialog is not None:
@@ -3152,7 +3158,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         if not state.can_toggle_live:
             return False
-        if state.can_initialize:
+        if state.can_initialize or self._story_area_needs_setup():
             self.prepare_reading(start_live=True)
             return False
         if not self._audio_runtime_available():

@@ -2,9 +2,28 @@
 
 from collections.abc import Callable
 from copy import copy
+from dataclasses import dataclass, field
+from weakref import WeakKeyDictionary
 
 from vntts.dialog import ocr_texts_equivalent
 from vntts.live_tracking import IncrementalDialogTracker
+
+
+@dataclass
+class _AdvanceLease:
+    attempted: bool = False
+    blocked: bool = False
+    origin_generation: int | None = None
+
+    def release(self) -> None:
+        self.attempted = False
+
+
+@dataclass
+class _TrackerAdvance:
+    generation: int
+    live_generation: int | None = None
+    lease: _AdvanceLease = field(default_factory=_AdvanceLease)
 
 
 class ReadingSession:
@@ -23,6 +42,9 @@ class ReadingSession:
         self.generation = tracker.generation
         self.restored_generation: int | None = None
         self.adjacent_tracker: IncrementalDialogTracker | None = None
+        self.advance_states: WeakKeyDictionary[
+            IncrementalDialogTracker, _TrackerAdvance
+        ] = WeakKeyDictionary()
 
     def select(self, layout_id: str, layout_kind: str) -> IncrementalDialogTracker:
         self.generation = max(self.generation, self.tracker.generation)
@@ -40,8 +62,12 @@ class ReadingSession:
                 if restored
                 else self.tracker_factory(**self.tracker_options)
             )
+            lease = self._advance_state(tracker).lease
             self.generation += 1
             tracker.generation = self.generation
+            self.advance_states[tracker] = _TrackerAdvance(
+                tracker.generation, lease=lease
+            )
             if not restored:
                 self.accepted_line_ids[layout_id] = set()
         self.layout_id = layout_id
@@ -67,7 +93,11 @@ class ReadingSession:
         if not previous.committed_text or not same_occurrence:
             return self.tracker
         occurrence = copy(previous)
+        lease = self._advance_state(previous).lease
         occurrence.generation = self.tracker.generation
+        self.advance_states[occurrence] = _TrackerAdvance(
+            occurrence.generation, lease=lease
+        )
         occurrence.history = copy(previous.history)
         occurrence.pending_history = copy(previous.pending_history)
         occurrence.accepted_line_ids = set(previous.accepted_line_ids)
@@ -79,6 +109,43 @@ class ReadingSession:
         self.adjacent_tracker = None
         return occurrence
 
-    def can_advance(self, tracker: IncrementalDialogTracker) -> bool:
-        # Returning unchanged lower dialogue cannot revive its revoked key lease.
-        return tracker.generation != self.restored_generation
+    def _advance_state(self, tracker: IncrementalDialogTracker) -> _TrackerAdvance:
+        state = self.advance_states.get(tracker)
+        if state is None or state.generation != tracker.generation:
+            state = _TrackerAdvance(tracker.generation)
+            self.advance_states[tracker] = state
+        return state
+
+    def bind_generation(
+        self, tracker: IncrementalDialogTracker, generation: int
+    ) -> None:
+        state = self._advance_state(tracker)
+        state.live_generation = generation
+        if state.lease.origin_generation is None:
+            state.lease.origin_generation = generation
+
+    def block_advance(self, generation: int, *, current: bool = False) -> None:
+        if current:
+            self._advance_state(self.tracker).lease.blocked = True
+        for state in tuple(self.advance_states.values()):
+            if generation in (state.live_generation, state.lease.origin_generation):
+                state.lease.blocked = True
+
+    def can_advance(
+        self, tracker: IncrementalDialogTracker, *, fresh: bool = False
+    ) -> bool:
+        lease = self._advance_state(tracker).lease
+        return (
+            not lease.attempted
+            and not lease.blocked
+            and (tracker.generation != self.restored_generation or fresh)
+        )
+
+    def claim_advance(
+        self, tracker: IncrementalDialogTracker, *, fresh: bool = False
+    ) -> Callable[[], None] | None:
+        if not self.can_advance(tracker, fresh=fresh):
+            return None
+        lease = self._advance_state(tracker).lease
+        lease.attempted = True
+        return lease.release

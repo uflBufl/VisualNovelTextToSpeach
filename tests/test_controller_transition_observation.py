@@ -114,6 +114,25 @@ class ControllerTransitionObservationTest(unittest.TestCase):
         self.assertFalse(controller.story_cursor.can_auto_advance)
         self.assertIsNotNone(controller._begin_sequence_playback(last))
 
+    def test_canonical_payload_lookup_preserves_the_observed_position(self):
+        controller, lines = self.controller()
+        self.accept(controller, lines[0])
+        visible = controller.story_cursor.snapshot()
+        for candidate in (
+            lines[1],
+            replace(lines[1], text=lines[1].text + " Changed."),
+            replace(lines[1], text_sha256=None),
+        ):
+            with self.subTest(candidate=candidate):
+                preloader = ChapterVoicePreloader((lines[0], candidate))
+                controller.chapter_voice_preloader = preloader
+                preloader.select_line_id(lines[0].line_id)
+                previous = preloader.current_match
+                line = controller._canonical_sequence_line_locked("event-2")
+                self.assertEqual(line, candidate if candidate == lines[1] else None)
+                self.assertIs(preloader.current_match, previous)
+                self.assertEqual(controller.story_cursor.snapshot(), visible)
+
     def test_queued_accepted_line_can_start_after_visible_cursor_moves(self):
         controller, lines = self.controller()
         queued = self.accept(controller, lines[0])
@@ -460,10 +479,12 @@ class ControllerTransitionObservationTest(unittest.TestCase):
                     controller.story_cursor.snapshot().current_line_id, lines[1].line_id
                 )
                 self.assertEqual(controller._fully_observed_line_id(), lines[1].line_id)
-                self.assertTrue(any(
-                    chunk.line_id == lines[1].line_id
-                    for chunk in harness.reader.accepted_chunks.values()
-                ))
+                self.assertTrue(
+                    any(
+                        chunk.line_id == lines[1].line_id
+                        for chunk in harness.reader.accepted_chunks.values()
+                    )
+                )
                 self.assertEqual(harness.errors, [])
             finally:
                 harness.stop()

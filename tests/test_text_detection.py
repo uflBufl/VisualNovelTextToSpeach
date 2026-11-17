@@ -11,11 +11,10 @@ import numpy as np
 from PIL import Image
 
 from vntts.asset_integrity import ModelIntegrityError
-from vntts.caption_layout import select_caption
-from vntts.dialog_capture import CapturedDialogFrame
 from vntts.model_assets import ModelDownloadCancelled
 from vntts.ocr import DialogRegion
 from vntts.text_detection import (
+    ScreenTextDetection,
     ScreenTextDetector,
     TextBlock,
     TextLine,
@@ -60,6 +59,12 @@ class TextGroupingTest(unittest.TestCase):
                 TextLine(line().box, "text", confidence)
         with self.assertRaises(ValueError):
             TextBlock(())
+        detection = ScreenTextDetection((line(),))
+        with self.assertRaises(FrozenInstanceError):
+            detection.dialogue_text_present = True
+        for invalid in (None, 0, 1, "false"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                ScreenTextDetection((), invalid)
 
 
 class TextModelPreparationTest(unittest.TestCase):
@@ -134,7 +139,10 @@ class ScreenTextDetectorTest(unittest.TestCase):
         image = Image.new("RGB", (1280, 640), (10, 20, 30))
         result = detector.detect(image)
         self.assertEqual(
-            result, (TextLine(DialogRegion(0.1, 0.1, 0.4, 0.1), "Text", 90),)
+            result,
+            ScreenTextDetection(
+                (TextLine(DialogRegion(0.1, 0.1, 0.4, 0.1), "Text", 90),)
+            ),
         )
         detected_pixels = detector._detector.call_args.args[0]
         self.assertEqual(detected_pixels.shape, (320, 640, 3))
@@ -146,10 +154,12 @@ class ScreenTextDetectorTest(unittest.TestCase):
     def test_empty_frame_detections_skip_recognition(self):
         for boxes in (None, []):
             detector = self.detector(boxes)
-            self.assertEqual(detector.detect(Image.new("RGB", (10, 10))), ())
+            self.assertEqual(
+                detector.detect(Image.new("RGB", (10, 10))), ScreenTextDetection(())
+            )
             detector._recognizer.assert_not_called()
 
-    def test_covered_dialogue_groups_skip_crops_and_recognition(self):
+    def test_covered_dialogue_lines_skip_crops_and_recognition(self):
         detector = self.detector(
             [
                 [[20, 70], [80, 70], [80, 76], [20, 76]],
@@ -161,12 +171,124 @@ class ScreenTextDetectorTest(unittest.TestCase):
                 Image.new("RGB", (100, 100)),
                 covered_region=DialogRegion(0, 0.65, 1, 0.35),
             ),
-            (),
+            ScreenTextDetection(()),
         )
         detector._crop_line.assert_not_called()
         detector._recognizer.assert_not_called()
 
-    def test_mixed_group_keeps_inside_bridge_and_low_confidence(self):
+    def test_body_detection_precedes_covered_filter_and_line_recognition(self):
+        outside = [[10, 20], [90, 20], [90, 28], [10, 28]]
+        body = [[10, 80], [90, 80], [90, 88], [10, 88]]
+        for text, confidence in (("", 0.99), ("unreadable", 0.01)):
+            with self.subTest(text=text, confidence=confidence):
+                detector = self.detector(
+                    (outside, body), texts=(text,), scores=(confidence,)
+                )
+                detection = detector.detect(
+                    Image.new("RGB", (100, 100)),
+                    allowed_region=DialogRegion(0, 0, 1, 1),
+                    covered_region=DialogRegion(0, 0.7, 1, 0.3),
+                    dialogue_region=DialogRegion(0, 0.78, 1, 0.22),
+                )
+                self.assertEqual(detection, ScreenTextDetection((), True))
+                detector._crop_line.assert_not_called()
+                detector._recognizer.assert_not_called()
+
+    def test_body_line_in_mixed_group_still_prevents_all_outside_recognition(self):
+        detector = self.detector(
+            (
+                [[10, 55], [90, 55], [90, 61], [10, 61]],
+                [[10, 68], [90, 68], [90, 74], [10, 74]],
+            )
+        )
+        self.assertEqual(
+            detector.detect(
+                Image.new("RGB", (100, 100)),
+                covered_region=DialogRegion(0, 0.65, 1, 0.35),
+                dialogue_region=DialogRegion(0, 0.7, 1, 0.3),
+            ),
+            ScreenTextDetection((), True),
+        )
+        detector._recognizer.assert_not_called()
+
+    def test_name_only_capture_does_not_claim_body_or_hide_outside_caption(self):
+        name = [[10, 70], [60, 70], [60, 76], [10, 76]]
+        caption = [[10, 30], [90, 30], [90, 36], [10, 36]]
+        for boxes, expected_text in (((name,), ()), ((name, caption), ("Text",))):
+            with self.subTest(boxes=boxes):
+                detector = self.detector(boxes)
+                detection = detector.detect(
+                    Image.new("RGB", (100, 100)),
+                    covered_region=DialogRegion(0, 0.65, 1, 0.35),
+                    dialogue_region=DialogRegion(0, 0.8, 1, 0.2),
+                )
+                self.assertFalse(detection.dialogue_text_present)
+                self.assertEqual(
+                    tuple(line.text for line in detection.lines), expected_text
+                )
+                self.assertEqual(detector._crop_line.call_count, len(expected_text))
+
+    def test_adjacent_nameplate_is_never_cropped_or_joined_to_outside_caption(self):
+        name = [[10, 70], [90, 70], [90, 76], [10, 76]]
+        caption = [[10, 58], [90, 58], [90, 64], [10, 64]]
+        for confidence in (0.95, 0.4):
+            with self.subTest(confidence=confidence):
+                detector = self.detector(
+                    (name, caption), texts=("Caption",), scores=(confidence,)
+                )
+                detection = detector.detect(
+                    Image.new("RGB", (100, 100)),
+                    covered_region=DialogRegion(0, 0.65, 1, 0.35),
+                    dialogue_region=DialogRegion(0, 0.8, 1, 0.2),
+                )
+                self.assertFalse(detection.dialogue_text_present)
+                self.assertEqual(
+                    tuple(block.text for block in group_text_lines(detection.lines)),
+                    ("Caption",),
+                )
+                self.assertEqual(detection.lines[0].confidence, confidence * 100)
+                detector._crop_line.assert_called_once()
+                self.assertEqual(float(detector._crop_line.call_args.args[1][0, 1]), 58)
+
+    def test_body_membership_uses_centers_including_exact_boundary(self):
+        region = DialogRegion(0.25, 0.25, 0.5, 0.5)
+        for left, top, right, bottom, present in (
+            (8, 48, 56, 56, True),
+            (7, 48, 55, 56, False),
+            (72, 48, 120, 56, True),
+            (73, 48, 121, 56, False),
+            (48, 8, 56, 56, True),
+            (48, 7, 56, 55, False),
+            (48, 72, 56, 120, True),
+            (48, 73, 56, 121, False),
+        ):
+            with self.subTest(box=(left, top, right, bottom)):
+                detector = self.detector(
+                    [[[left, top], [right, top], [right, bottom], [left, bottom]]]
+                )
+                detection = detector.detect(
+                    Image.new("RGB", (128, 128)), dialogue_region=region
+                )
+                self.assertEqual(detection.dialogue_text_present, present)
+                self.assertEqual(detector._crop_line.call_count, int(not present))
+
+    def test_unpermitted_body_box_cannot_claim_dialogue_presence(self):
+        detector = self.detector(
+            [
+                [[10, 70], [90, 70], [90, 80], [10, 80]],
+                [[10, 20], [90, 20], [90, 30], [10, 30]],
+            ]
+        )
+        detection = detector.detect(
+            Image.new("RGB", (100, 100)),
+            allowed_region=DialogRegion(0, 0, 1, 0.75),
+            dialogue_region=DialogRegion(0, 0.7, 1, 0.3),
+        )
+        self.assertFalse(detection.dialogue_text_present)
+        self.assertEqual(tuple(line.text for line in detection.lines), ("Text",))
+        self.assertEqual(detector._crop_line.call_count, 1)
+
+    def test_covered_bridge_does_not_join_outside_groups_or_change_confidence(self):
         image = Image.new("RGB", (100, 100))
         covered = DialogRegion(0.25, 0.25, 0.5, 0.5)
         boxes = [
@@ -174,45 +296,36 @@ class ScreenTextDetectorTest(unittest.TestCase):
             [[20, 45], [60, 45], [60, 55], [20, 55]],
             [[0, 60], [40, 60], [40, 70], [0, 70]],
         ]
-        frame = CapturedDialogFrame(
-            covered.crop(image), 0, canonical_image=image, capture_region=covered
-        )
-        for bridge, confidence, kind in (
-            ("bridge", 0.95, "caption"),
-            ("bridge", 0.4, "pending"),
-            ("", 0.95, "pending"),
-        ):
-            with self.subTest(bridge=bridge, confidence=confidence):
+        for confidence in (0.95, 0.4):
+            with self.subTest(confidence=confidence):
                 detector = self.detector(
                     boxes,
-                    texts=("First", bridge, "Last"),
-                    scores=(0.95, confidence, 0.95),
+                    texts=("First", "Last"),
+                    scores=(0.95, confidence),
                 )
-                lines = detector.detect(image, covered_region=covered)
-                self.assertEqual(detector._crop_line.call_count, 3)
+                lines = detector.detect(image, covered_region=covered).lines
+                self.assertEqual(detector._crop_line.call_count, 2)
                 self.assertEqual(
                     [line.text for line in lines],
-                    ["First", bridge, "Last"] if bridge else ["First", "Last"],
+                    ["First", "Last"],
                 )
-                result = select_caption(frame, group_text_lines(lines), 60)
-                self.assertEqual(result.layout_kind, kind)
-                self.assertFalse(result.navigation_allowed)
-                if kind == "caption":
-                    self.assertEqual(result.recognized_result.text, "First bridge Last")
-                else:
-                    self.assertIsNone(result.recognized_result)
+                self.assertEqual(lines[-1].confidence, confidence * 100)
+                self.assertEqual(
+                    tuple(block.text for block in group_text_lines(lines)),
+                    ("First", "Last"),
+                )
 
-    def test_covered_group_filter_keeps_detection_order_for_recognition(self):
+    def test_covered_filter_keeps_detection_order_for_recognition(self):
         boxes = [
             [[10, 35], [80, 35], [80, 40], [10, 40]],
             [[10, 80], [80, 80], [80, 85], [10, 85]],
             [[10, 20], [80, 20], [80, 25], [10, 25]],
         ]
         detector = self.detector(boxes, texts=("Later", "Earlier"), scores=(0.9, 0.8))
-        lines = detector.detect(
+        detection = detector.detect(
             Image.new("RGB", (100, 100)), covered_region=DialogRegion(0, 0.7, 1, 0.3)
         )
-        self.assertEqual([line.text for line in lines], ["Earlier", "Later"])
+        self.assertEqual([line.text for line in detection.lines], ["Earlier", "Later"])
         self.assertEqual(
             [float(call.args[1][0, 1]) for call in detector._crop_line.call_args_list],
             [35, 20],
@@ -234,13 +347,13 @@ class ScreenTextDetectorTest(unittest.TestCase):
                 detector = self.detector(
                     [[[left, top], [right, top], [right, bottom], [left, bottom]]]
                 )
-                lines = detector.detect(
+                detection = detector.detect(
                     Image.new("RGB", (128, 128)), covered_region=covered
                 )
-                self.assertEqual(bool(lines), retained)
+                self.assertEqual(bool(detection.lines), retained)
                 self.assertEqual(detector._crop_line.call_count, int(retained))
 
-    def test_story_permission_filters_before_covered_grouping(self):
+    def test_story_permission_filters_before_covered_lines(self):
         detector = self.detector(
             [
                 [[0, 30], [40, 30], [40, 40], [0, 40]],
@@ -253,7 +366,7 @@ class ScreenTextDetectorTest(unittest.TestCase):
             allowed_region=DialogRegion(0.1, 0.4, 0.8, 0.4),
             covered_region=covered,
         )
-        self.assertEqual(result, ())
+        self.assertEqual(result, ScreenTextDetection(()))
         detector._crop_line.assert_not_called()
         detector._recognizer.assert_not_called()
 
@@ -269,15 +382,15 @@ class ScreenTextDetectorTest(unittest.TestCase):
             ],
             texts=("Hi",),
         )
-        lines = detector.detect(
+        detection = detector.detect(
             Image.new("RGB", (100, 100)),
             allowed_region=DialogRegion(0.2, 0.2, 0.6, 0.6),
         )
-        self.assertEqual([line.text for line in lines], ["Hi"])
-        self.assertAlmostEqual(lines[0].box.left, 0.2)
-        self.assertAlmostEqual(lines[0].box.top, 0.3)
-        self.assertAlmostEqual(lines[0].box.width, 0.2)
-        self.assertAlmostEqual(lines[0].box.height, 0.1)
+        self.assertEqual([line.text for line in detection.lines], ["Hi"])
+        self.assertAlmostEqual(detection.lines[0].box.left, 0.2)
+        self.assertAlmostEqual(detection.lines[0].box.top, 0.3)
+        self.assertAlmostEqual(detection.lines[0].box.width, 0.2)
+        self.assertAlmostEqual(detection.lines[0].box.height, 0.1)
         self.assertEqual(detector._crop_line.call_count, 1)
         self.assertEqual(len(detector._recognizer.call_args.args[0]), 1)
 
@@ -288,7 +401,7 @@ class ScreenTextDetectorTest(unittest.TestCase):
                 Image.new("RGB", (100, 100)),
                 allowed_region=DialogRegion(0.2, 0.2, 0.6, 0.6),
             ),
-            (),
+            ScreenTextDetection(()),
         )
         detector._crop_line.assert_not_called()
         detector._recognizer.assert_not_called()
@@ -300,11 +413,11 @@ class ScreenTextDetectorTest(unittest.TestCase):
                 [[10, 40], [31, 40], [31, 50], [10, 50]],
             ]
         )
-        lines = detector.detect(
+        detection = detector.detect(
             Image.new("RGB", (100, 100)),
             allowed_region=DialogRegion(0, 0, 0.3, 1),
         )
-        self.assertEqual([line.text for line in lines], ["Text"])
+        self.assertEqual([line.text for line in detection.lines], ["Text"])
         self.assertEqual(detector._crop_line.call_count, 1)
         self.assertEqual(len(detector._recognizer.call_args.args[0]), 1)
 
@@ -317,9 +430,9 @@ class ScreenTextDetectorTest(unittest.TestCase):
             texts=(" lower ", "upper"),
             scores=(0.1, 0.99),
         )
-        lines = detector.detect(Image.new("RGB", (100, 100)))
-        self.assertEqual([item.text for item in lines], ["upper", "lower"])
-        self.assertEqual(lines[1].confidence, 10)
+        detection = detector.detect(Image.new("RGB", (100, 100)))
+        self.assertEqual([item.text for item in detection.lines], ["upper", "lower"])
+        self.assertEqual(detection.lines[1].confidence, 10)
 
     def test_rejects_invalid_geometry_and_mismatched_recognition(self):
         for boxes in (
@@ -335,10 +448,17 @@ class ScreenTextDetectorTest(unittest.TestCase):
             detector.detect(Image.new("RGB", (100, 100)))
 
     def test_initialization_is_lazy_and_missing_dependency_is_actionable(self):
-        with patch.dict(sys.modules, {"rapidocr": None}):
-            detector = ScreenTextDetector()
-            with self.assertRaisesRegex(RuntimeError, "uv sync"):
-                detector.detect(Image.new("RGB", (100, 100)))
+        for missing in ("rapidocr", "onnxruntime"):
+            with (
+                self.subTest(missing=missing),
+                patch.dict(
+                    sys.modules,
+                    {"rapidocr": Mock(), "onnxruntime": Mock(), missing: None},
+                ),
+            ):
+                detector = ScreenTextDetector()
+                with self.assertRaisesRegex(RuntimeError, "uv sync"):
+                    detector.detect(Image.new("RGB", (100, 100)))
 
 
 if __name__ == "__main__":

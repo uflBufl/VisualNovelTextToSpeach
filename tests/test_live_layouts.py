@@ -1,11 +1,11 @@
 import unittest
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests.test_live import FakeClock, ManualTimerScheduler, QueuedExecutor
-from vntts.live import LiveDialogReader, RecognizedDialog
+from vntts.live import AutoAdvanceAttempt, LiveDialogReader, RecognizedDialog
 from vntts.live_tracking import IncrementalDialogTracker
 
 
@@ -55,7 +55,7 @@ class LiveLayoutsTest(unittest.TestCase):
         self.recognized.append(frame)
         return "Narrator", frame.text
 
-    def push(self, text, *, kind="dialogue", allowed=None):
+    def push(self, text, *, kind="dialogue", allowed=None, complete=False):
         frame = SimpleNamespace(
             text=text,
             layout_id=kind,
@@ -67,6 +67,7 @@ class LiveLayoutsTest(unittest.TestCase):
             self.reader.latest_frame = frame
             self.reader.latest_frame_fingerprint = text
             self.reader.latest_frame_visible = True
+            self.reader.latest_frame_complete = complete
             self.reader.latest_frame_captured_at = monotonic()
             self.reader.frame_version += 1
             version = self.reader.frame_version
@@ -128,6 +129,156 @@ class LiveLayoutsTest(unittest.TestCase):
             [chunk.generation for chunk in chunks],
             sorted({chunk.generation for chunk in chunks}),
         )
+
+    def test_returned_dialogue_rearms_unsent_key_after_fresh_completion(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.speech.run_next()
+        self.playback.run_next()
+        self.stable("A temporary caption.", kind="caption")
+        self.speech.run_next()
+        self.playback.run_next()
+        self.stable("The lower dialogue.")
+        self.assertIsNone(self.reader.dialog_ready_generation)
+        self.push("The lower dialogue.", complete=True)
+        self.assertEqual(
+            self.reader.dialog_ready_generation, self.reader.active_generation
+        )
+        scheduler = ManualTimerScheduler()
+        self.reader.auto_advance = Mock()
+        with patch("vntts.live.Timer", side_effect=scheduler.create):
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+        self.reader.auto_advance.assert_called_once_with()
+        self.assertEqual(self.played, ["The lower dialogue.", "A temporary caption."])
+
+    def test_returned_dialogue_never_repeats_an_already_dispatched_key(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.speech.run_next()
+        self.playback.run_next()
+        self.push("The lower dialogue.", complete=True)
+        self.reader.auto_advance = Mock()
+        scheduler = ManualTimerScheduler()
+        with patch("vntts.live.Timer", side_effect=scheduler.create):
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+            self.stable("A temporary caption.", kind="caption")
+            self.speech.run_next()
+            self.playback.run_next()
+            self.stable("The lower dialogue.", complete=True)
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+        self.reader.auto_advance.assert_called_once_with()
+        self.assertIsNone(self.reader.dialog_ready_generation)
+
+    def test_clear_queue_blocks_restored_occurrence_but_not_new_dialogue(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.reader.clear_queue()
+        self.stable("A temporary caption.", kind="caption")
+        self.stable("The lower dialogue.", complete=True)
+        self.assertIsNone(self.reader.dialog_ready_generation)
+        self.stable("Birds gather beside the fountain.", complete=True)
+        self.push("Birds gather beside the fountain.", complete=True)
+        self.assertEqual(
+            self.reader.dialog_ready_generation, self.reader.active_generation
+        )
+
+    def test_late_audio_failure_blocks_restored_occurrence(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        original = self.reader.active_generation
+        self.stable("A temporary caption.", kind="caption")
+        self.assertFalse(
+            self.reader.block_auto_advance_for_generation(original, "Audio failed")
+        )
+        self.stable("The lower dialogue.", complete=True)
+        self.assertIsNone(self.reader.dialog_ready_generation)
+
+    def test_restored_completion_cue_must_belong_to_the_routed_frame(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.stable("A temporary caption.", kind="caption")
+        self.stable("The lower dialogue.")
+        with self.reader.state_lock:
+            self.reader.latest_frame = SimpleNamespace(
+                layout_id="dialogue", layout_kind="dialogue", navigation_allowed=True
+            )
+            self.reader.latest_frame_complete = True
+        self.reader._update_dialog_ready(
+            self.reader.reading_session.tracker, self.reader.active_generation
+        )
+        self.assertIsNone(self.reader.dialog_ready_generation)
+
+    def test_unknown_key_failure_cannot_be_retried_through_layout_switch(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.speech.run_next()
+        self.playback.run_next()
+        self.push("The lower dialogue.", complete=True)
+        self.reader.auto_advance = Mock(side_effect=OSError("Input result unknown"))
+        with patch("vntts.live.Timer", side_effect=ManualTimerScheduler().create):
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+            self.errors.clear()
+            self.stable("A temporary caption.", kind="caption")
+            self.speech.run_next()
+            self.playback.run_next()
+            self.stable("The lower dialogue.", complete=True)
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+        self.reader.auto_advance.assert_called_once_with()
+
+    def test_known_no_input_refusal_can_retry_after_layout_returns(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.speech.run_next()
+        self.playback.run_next()
+        self.push("The lower dialogue.", complete=True)
+        self.reader.auto_advance = Mock(
+            side_effect=[
+                AutoAdvanceAttempt(False, "visual-wait"),
+                AutoAdvanceAttempt(True, None),
+            ]
+        )
+        with patch("vntts.live.Timer", side_effect=ManualTimerScheduler().create):
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+            self.stable("A temporary caption.", kind="caption")
+            self.speech.run_next()
+            self.playback.run_next()
+            self.stable("The lower dialogue.", complete=True)
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+        self.assertEqual(self.reader.auto_advance.call_count, 2)
+
+    def test_key_in_flight_is_consumed_even_if_layout_changes_before_return(self):
+        self.reader.ocr_purpose = lambda: "legacy"
+        self.stable("The lower dialogue.", complete=True)
+        self.speech.run_next()
+        self.playback.run_next()
+        self.push("The lower dialogue.", complete=True)
+        entered, release = Event(), Event()
+
+        def send():
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError("Test did not release input")
+            return True
+
+        self.reader.auto_advance = Mock(side_effect=send)
+        with patch("vntts.live.Timer", side_effect=ManualTimerScheduler().create):
+            dispatch = Thread(
+                target=self.reader._dispatch_auto_advance,
+                args=(self.reader.active_generation,),
+            )
+            dispatch.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.stable("A temporary caption.", kind="caption")
+                self.speech.run_next()
+                self.playback.run_next()
+                self.stable("The lower dialogue.", complete=True)
+            finally:
+                release.set()
+                dispatch.join(2)
+            self.assertFalse(dispatch.is_alive())
+            self.reader._dispatch_auto_advance(self.reader.active_generation)
+        self.reader.auto_advance.assert_called_once_with()
 
     def test_adjacent_equivalent_layouts_keep_one_ocr_occurrence(self):
         self.reader.ocr_purpose = lambda: "legacy"

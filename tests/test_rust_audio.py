@@ -108,7 +108,9 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
         self.assertEqual(
             raised.exception.summary, "The audio component is not installed."
         )
-        self.assertIn("uv run --no-project python scripts/build.py", str(raised.exception))
+        self.assertIn(
+            "uv run --no-project python scripts/build.py", str(raised.exception)
+        )
 
     def test_missing_worker_is_actionable_and_can_be_installed_then_retried(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -466,7 +468,10 @@ class RustAudioProtocolTest(unittest.TestCase):
                     self.assertTrue(started.wait(2))
                     self.assertTrue(reader.toggle_pause())
                     deadline = time.monotonic() + 1
-                    while not marker.exists() and time.monotonic() < deadline:
+                    # Creation precedes the peer's marker-content write.
+                    while (
+                        not marker.exists() or marker.read_text() != "paused"
+                    ) and time.monotonic() < deadline:
                         time.sleep(0.01)
                     self.assertTrue(
                         marker.exists(), "Pause did not reach the prepared PCM owner"

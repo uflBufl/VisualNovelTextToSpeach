@@ -104,6 +104,26 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         self.assertIsNone(preloader.resolve_indexed_complete("", first.text)[0])
         self.assertIsNone(preloader.current_match)
 
+    def test_discovery_keeps_synthesis_preference_with_a_current_position(self):
+        generated = dialogue("A complete discovery.", "generated")
+        original = replace(
+            generated,
+            line_id="original",
+            chapter="other",
+            source_audio_status="available",
+            source_audio_id="recording",
+            source_audio_authoritative=True,
+            source_audio_completeness="full",
+            source_audio_duration_seconds=1.0,
+        )
+        preloader = ChapterVoicePreloader((generated, original))
+        preloader.select_line_id(original.line_id)
+        selected, method = preloader.resolve_indexed_complete(
+            "Ada", generated.text, prefer_synthesis=True
+        )
+        self.assertIs(selected, generated)
+        self.assertEqual(method, "expected-exact")
+
     def test_discovery_checks_longer_continuations_in_the_candidate_chapter(self):
         short = dialogue("The lantern illuminated the forgotten passage.", "short")
         for speaker, expected in (("Ada", None), ("Bea", short)):

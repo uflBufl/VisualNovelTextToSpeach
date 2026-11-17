@@ -10,9 +10,9 @@ from PIL import Image
 from vntts.controller import AppController
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.model_assets import ModelDownloadCancelled
-from vntts.ocr import DialogRegion, OCRPreviewCancelled
+from vntts.ocr import DialogRegion, OCRPreviewCancelled, OCRRegions
 from vntts.settings import AppSettings
-from vntts.text_detection import ScreenTextDetector, TextLine
+from vntts.text_detection import ScreenTextDetection, ScreenTextDetector, TextLine
 
 
 class StoryAreaPreviewTest(unittest.TestCase):
@@ -36,7 +36,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
     def test_returns_selected_production_crop_without_touching_live_state(self):
         first = self.line()
         second = self.line("Second caption line", top=0.36)
-        self.worker.detect.return_value = (first, second)
+        self.worker.detect.return_value = ScreenTextDetection((first, second))
         settings = asdict(self.controller.settings)
         profile_state = tuple(self.controller.profile_store.profiles)
         live_layout_state = vars(self.controller.live_dialog_layout).copy()
@@ -55,6 +55,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
             self.image,
             allowed_region=self.story,
             covered_region=self.dialogue,
+            dialogue_region=self.dialogue,
             cancel_event=self.cancel,
         )
         self.assertEqual(asdict(self.controller.settings), settings)
@@ -64,7 +65,9 @@ class StoryAreaPreviewTest(unittest.TestCase):
         resolve.assert_not_called()
         permission.assert_not_called()
 
-    def test_production_detector_excludes_unpermitted_and_dialogue_lines(self):
+    def test_production_detector_preserves_body_presence_before_caption_recognition(
+        self,
+    ):
         detector = ScreenTextDetector()
         detector._load_models = Mock()
         detector._detector = Mock(
@@ -84,9 +87,10 @@ class StoryAreaPreviewTest(unittest.TestCase):
             detector.detect(image, **scope)
         )
         result = self.preview()
-        self.assertEqual(result.text, "Permitted caption")
-        self.assertEqual(result.processed_image.size, (320, 12))
-        detector._crop_line.assert_called_once()
+        self.assertEqual(result.profile, "dialogue-active")
+        self.assertEqual(result.text, "")
+        detector._crop_line.assert_not_called()
+        detector._recognizer.assert_not_called()
 
     def test_absent_and_covered_text_differ_from_ambiguous_and_uncertain_text(self):
         for lines, profile in (
@@ -96,14 +100,69 @@ class StoryAreaPreviewTest(unittest.TestCase):
             ((self.line(confidence=20),), "layout-pending"),
         ):
             with self.subTest(lines=lines):
-                self.worker.detect.return_value = lines
+                self.worker.detect.return_value = ScreenTextDetection(lines)
                 result = self.preview()
                 self.assertEqual(result.profile, profile)
                 self.assertEqual(result.text, "")
                 self.assertIsNone(result.processed_image)
 
+    def test_nameplate_does_not_hide_caption_when_configured_dialogue_body_is_empty(
+        self,
+    ):
+        regions = OCRRegions(DialogRegion(0, 0, 1, 0.25), DialogRegion(0, 0.4, 1, 0.6))
+        detector = ScreenTextDetector()
+        detector._load_models = Mock()
+        detector._detector = Mock(
+            return_value=SimpleNamespace(
+                boxes=[
+                    [[40, 192], [360, 192], [360, 204], [40, 204]],
+                    [[40, 218], [100, 218], [100, 230], [40, 230]],
+                ]
+            )
+        )
+        detector._recognizer = Mock(
+            return_value=SimpleNamespace(txts=("A central phrase.",), scores=(0.95,))
+        )
+        detector._crop_line = Mock(return_value=np.zeros((12, 320, 3), dtype=np.uint8))
+        self.worker.detect.side_effect = lambda image, *, cancel_event, **scope: (
+            detector.detect(image, **scope)
+        )
+        with (
+            patch.object(
+                self.controller, "_capture_region", return_value=self.dialogue
+            ),
+            patch.object(self.controller, "_capture_ocr_regions", return_value=regions),
+        ):
+            result = self.preview()
+        self.assertEqual(result.text, "A central phrase.")
+        self.assertEqual(result.profile, "caption-ppocr")
+        detector._crop_line.assert_called_once()
+        self.assertEqual(
+            self.worker.detect.call_args.kwargs["dialogue_region"],
+            DialogRegion(0, 0.82, 1, 0.18),
+        )
+
+    def test_changed_draft_does_not_reuse_another_crop_body_split(self):
+        self.worker.detect.return_value = ScreenTextDetection((), True)
+        with (
+            patch.object(
+                self.controller,
+                "_capture_region",
+                return_value=DialogRegion(0, 0.5, 1, 0.5),
+            ),
+            patch.object(self.controller, "_capture_ocr_regions") as regions,
+        ):
+            result = self.preview()
+        self.assertEqual(result.profile, "dialogue-active")
+        self.assertEqual(
+            self.worker.detect.call_args.kwargs["dialogue_region"], self.dialogue
+        )
+        regions.assert_not_called()
+
     def test_draft_confidence_applies_only_to_preview(self):
-        self.worker.detect.return_value = (self.line(confidence=70),)
+        self.worker.detect.return_value = ScreenTextDetection(
+            (self.line(confidence=70),)
+        )
         self.controller.caption_discovery_unavailable = True
         self.assertEqual(self.preview(minimum_confidence=80).profile, "layout-pending")
         self.assertEqual(self.preview().profile, "caption-ppocr")
@@ -117,7 +176,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
         self.controller.settings = replace(
             self.controller.settings, discover_text_layouts=True
         )
-        self.worker.detect.return_value = (self.line(),)
+        self.worker.detect.return_value = ScreenTextDetection((self.line(),))
         self.assertEqual(self.preview().profile, "caption-ppocr")
         self.assertFalse(self.controller.caption_discovery_unavailable)
         frame = CapturedDialogFrame(
@@ -141,7 +200,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
         def detect(*_args, **_kwargs):
             with self.controller.caption_discovery_lock:
                 self.controller.caption_discovery = replacement
-            return (self.line(),)
+            return ScreenTextDetection((self.line(),))
 
         self.worker.detect.side_effect = detect
         self.assertEqual(self.preview().profile, "caption-ppocr")
@@ -173,7 +232,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
 
         def detect(*_args, **_kwargs):
             self.cancel.set()
-            return (self.line(),)
+            return ScreenTextDetection((self.line(),))
 
         self.worker.detect.side_effect = detect
         with self.assertRaises(OCRPreviewCancelled):
@@ -238,7 +297,7 @@ class StoryAreaPreviewTest(unittest.TestCase):
             except Exception as error:
                 errors.append(error)
 
-        self.worker.detect.return_value = (self.line(),)
+        self.worker.detect.return_value = ScreenTextDetection((self.line(),))
         with (
             patch(
                 "vntts.controller.prepare_text_detection_models", side_effect=prepare

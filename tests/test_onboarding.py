@@ -903,17 +903,23 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_finish_requires_successful_end_to_end_test(self):
-        wizard = OnboardingWizard(AppSettings())
+        wizard = OnboardingWizard(AppSettings(discover_text_layouts=False))
 
         wizard.accept()
         self.assertFalse(wizard.settings().onboarding_completed)
 
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.test_page.set_result(True, "Read the dialogue")
+        wizard.accept()
+        self.assertFalse(wizard.settings().onboarding_completed)
         wizard.calibration_page.finish_story_area(DialogRegion(0.1, 0.2, 0.8, 0.7))
+        wizard.accept()
+        self.assertFalse(wizard.settings().onboarding_completed)
         wizard.test_page.set_result(True, "Success")
         wizard.accept()
 
         self.assertTrue(wizard.settings().onboarding_completed)
+        self.assertTrue(wizard.settings().discover_text_layouts)
 
     def test_running_end_to_end_test_guards_navigation_and_cancels_truthfully(self):
         wizard = OnboardingWizard(AppSettings())

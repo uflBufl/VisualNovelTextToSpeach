@@ -19,10 +19,21 @@ from PIL import Image
 from vntts.ocr import DialogRegion, OCRPreviewCancelled
 
 if TYPE_CHECKING:
-    from vntts.text_detection import TextLine
+    from vntts.text_detection import ScreenTextDetection
 
 _MAX_PIXELS = 32 * 1024 * 1024
 _MAX_RESULT_BYTES = 16 * 1024 * 1024
+
+
+def _validate_image_size(width: int, height: int) -> None:
+    if (
+        type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+        or width * height > _MAX_PIXELS
+    ):
+        raise ValueError("Screen text image exceeds worker limit")
 
 
 def _worker_main(
@@ -46,33 +57,31 @@ def _worker_main(
                 covered_region = request.get("covered_region")
                 if covered_region is not None:
                     covered_region = DialogRegion.from_mapping(covered_region)
+                dialogue_region = request.get("dialogue_region")
+                if dialogue_region is not None:
+                    dialogue_region = DialogRegion.from_mapping(dialogue_region)
                 width, height = request["size"]
-                if (
-                    type(width) is not int
-                    or type(height) is not int
-                    or width <= 0
-                    or height <= 0
-                    or width * height > _MAX_PIXELS
-                ):
-                    raise ValueError("Screen text image exceeds worker limit")
+                _validate_image_size(width, height)
                 with (root / "image.raw").open("rb") as source:
                     pixels = source.read(width * height * 3 + 1)
                 if len(pixels) != width * height * 3:
                     raise ValueError("Invalid screen text image payload")
-                lines = detector.detect(
+                detection = detector.detect(
                     Image.frombytes("RGB", (width, height), pixels),
                     allowed_region=region,
                     covered_region=covered_region,
+                    dialogue_region=dialogue_region,
                 )
                 result = {
                     "ok": True,
+                    "dialogue_text_present": detection.dialogue_text_present,
                     "lines": [
                         {
                             "box": line.box.to_json(),
                             "text": line.text,
                             "confidence": line.confidence,
                         }
-                        for line in lines
+                        for line in detection.lines
                     ],
                 }
             except Exception as error:
@@ -88,6 +97,39 @@ def _worker_main(
         pass
     finally:
         connection.close()
+
+
+def _read_detection_result(
+    path: Path, check: Callable[[], float]
+) -> ScreenTextDetection:
+    from vntts.text_detection import ScreenTextDetection, TextLine
+
+    with path.open("rb") as source:
+        payload = source.read(_MAX_RESULT_BYTES + 1)
+    if len(payload) > _MAX_RESULT_BYTES:
+        raise RuntimeError("Screen text worker result exceeds limit")
+    result = json.loads(payload)
+    check()
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        detail = (
+            result.get("error", "invalid response")
+            if isinstance(result, dict)
+            else "invalid response"
+        )
+        raise RuntimeError(f"Screen text detection failed: {detail}")
+    if not isinstance(result.get("lines"), list):
+        raise RuntimeError("Invalid screen text worker result")
+    if type(result.get("dialogue_text_present")) is not bool:
+        raise RuntimeError("Invalid dialogue text presence in worker result")
+    lines = tuple(
+        TextLine(
+            DialogRegion.from_mapping(line["box"]),
+            line["text"],
+            line["confidence"],
+        )
+        for line in result["lines"]
+    )
+    return ScreenTextDetection(lines, result["dialogue_text_present"])
 
 
 class TextDetectionWorker:
@@ -227,15 +269,9 @@ class TextDetectionWorker:
         cancel_event: Event | None = None,
         allowed_region: DialogRegion | None = None,
         covered_region: DialogRegion | None = None,
-    ) -> tuple[TextLine, ...]:
-        from vntts.text_detection import TextLine
-
-        if (
-            image.width <= 0
-            or image.height <= 0
-            or image.width * image.height > _MAX_PIXELS
-        ):
-            raise ValueError("Screen text image exceeds worker limit")
+        dialogue_region: DialogRegion | None = None,
+    ) -> ScreenTextDetection:
+        _validate_image_size(*image.size)
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("Screen text worker is closed")
@@ -275,10 +311,19 @@ class TextDetectionWorker:
                     {
                         "size": image.size,
                         "allowed_region": (
-                            allowed_region.to_json() if allowed_region is not None else None
+                            allowed_region.to_json()
+                            if allowed_region is not None
+                            else None
                         ),
                         "covered_region": (
-                            covered_region.to_json() if covered_region is not None else None
+                            covered_region.to_json()
+                            if covered_region is not None
+                            else None
+                        ),
+                        "dialogue_region": (
+                            dialogue_region.to_json()
+                            if dialogue_region is not None
+                            else None
                         ),
                     }
                 )
@@ -286,31 +331,9 @@ class TextDetectionWorker:
             check()
             self._connection.send_bytes(b"run")
             self._wait(b"done", check)
-            with (root / "result.json").open("rb") as source:
-                payload = source.read(_MAX_RESULT_BYTES + 1)
-            if len(payload) > _MAX_RESULT_BYTES:
-                raise RuntimeError("Screen text worker result exceeds limit")
-            result = json.loads(payload)
+            detection = _read_detection_result(root / "result.json", check)
             check()
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                detail = (
-                    result.get("error", "invalid response")
-                    if isinstance(result, dict)
-                    else "invalid response"
-                )
-                raise RuntimeError(f"Screen text detection failed: {detail}")
-            if not isinstance(result.get("lines"), list):
-                raise RuntimeError("Invalid screen text worker result")
-            lines = tuple(
-                TextLine(
-                    DialogRegion.from_mapping(line["box"]),
-                    line["text"],
-                    line["confidence"],
-                )
-                for line in result["lines"]
-            )
-            check()
-            return lines
+            return detection
         except BaseException:
             if acquired:
                 self._discard()

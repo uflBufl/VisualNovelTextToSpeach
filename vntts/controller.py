@@ -157,7 +157,10 @@ from vntts.speech_worker import (
     create_qwen_worker_backend,
 )
 from vntts.story_text_matching import compare_text, prepare_text
-from vntts.text_detection import group_text_lines, prepare_text_detection_models
+from vntts.text_detection import (
+    ScreenTextDetection,
+    prepare_text_detection_models,
+)
 from vntts.text_detection_worker import TextDetectionWorker
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
@@ -1466,11 +1469,23 @@ class AppController:
         )
         if minimum is None or not 0 <= minimum <= 100:
             raise ValueError("OCR minimum confidence must be between 0 and 100")
+        frame = CapturedDialogFrame(
+            dialogue_region.crop(image),
+            0,
+            ocr_regions=(
+                self._capture_ocr_regions()
+                if self._capture_region() == dialogue_region
+                else None
+            ),
+            canonical_image=image,
+            capture_region=dialogue_region,
+        )
         discovery = self._prepare_caption_discovery(cancel_event)
-        lines = discovery.detect(
+        detection = discovery.detect(
             image,
             allowed_region=story_region,
             covered_region=dialogue_region,
+            dialogue_region=frame.dialogue_text_region,
             cancel_event=cancel_event,
         )
         with self.caption_discovery_lock:
@@ -1478,16 +1493,11 @@ class AppController:
                 raise OCRPreviewCancelled("Screen text detection cancelled")
             if self.caption_discovery is discovery:
                 self.caption_discovery_unavailable = False
-        frame = CapturedDialogFrame(
-            dialogue_region.crop(image),
-            0,
-            canonical_image=image,
-            capture_region=dialogue_region,
-        )
-        selected = select_caption(
+        selected = self._select_story_caption(
             frame,
-            group_text_lines(lines),
+            detection,
             minimum,
+            cancel_event,
         )
         if selected.recognized_result is not None:
             return selected.recognized_result
@@ -1495,7 +1505,9 @@ class AppController:
             "Narrator",
             "",
             0,
-            "layout-pending"
+            "dialogue-active"
+            if detection.dialogue_text_present
+            else "layout-pending"
             if selected.layout_kind == "pending"
             else "story-area-empty",
             0,
@@ -1554,18 +1566,69 @@ class AppController:
                 )
                 return frame
         started = monotonic()
-        lines = discovery.detect(
+        detection = discovery.detect(
             frame.canonical_image,
             allowed_region=story_region,
             covered_region=frame.capture_region,
+            dialogue_region=frame.dialogue_text_region,
             cancel_event=cancellation,
         )
         return replace(
-            select_caption(
-                frame, group_text_lines(lines), self.settings.ocr_minimum_confidence
+            self._select_story_caption(
+                frame,
+                detection,
+                self.settings.ocr_minimum_confidence,
+                cancellation,
             ),
             layout_detection_ms=(monotonic() - started) * 1000,
         )
+
+    def _select_story_caption(
+        self,
+        frame: CapturedDialogFrame,
+        detection: ScreenTextDetection,
+        minimum_confidence: float,
+        cancellation: Event,
+    ) -> CapturedDialogFrame:
+        if cancellation.is_set() or self.shutdown_requested.is_set():
+            raise OCRPreviewCancelled("Story caption selection cancelled")
+        if detection.dialogue_text_present:
+            return frame
+        with self.story_cursor_lock:
+            owner = self._story_matching_owner_locked()
+            preloader = self._story_matching_snapshot_locked()
+            corrections = self.correction_dictionary
+        fully_observed_line_id = self._fully_observed_line_id()
+
+        def match(text: str) -> StoryObservationMatch:
+            if cancellation.is_set() or self.shutdown_requested.is_set():
+                raise StoryMatchingCancelled
+            corrected, _ = corrections.correct_text(text)
+            return preloader.resolve_observation_among(
+                "",
+                corrected,
+                update_context=False,
+                recover_crop_noise=True,
+                fully_observed_line_id=fully_observed_line_id,
+            )
+
+        try:
+            selected = select_caption(
+                frame,
+                detection,
+                minimum_confidence,
+                story_matcher=match if preloader.has_dialogue else None,
+            )
+        except StoryMatchingCancelled:
+            raise OCRPreviewCancelled("Story caption selection cancelled") from None
+        with self.story_cursor_lock:
+            if (
+                cancellation.is_set()
+                or self.shutdown_requested.is_set()
+                or self._story_matching_owner_locked() != owner
+            ):
+                raise OCRPreviewCancelled("Story caption selection cancelled")
+        return selected
 
     def _record_capture_provenance(self, provenance: object) -> None:
         from vntts.capture_provenance import CaptureProvenance
@@ -2158,15 +2221,12 @@ class AppController:
     ) -> DialogObservationDecision:
         if self.shutdown_requested.is_set():
             return False
-        if not text:
-            with self.story_cursor_lock:
-                self.observation_serial += 1
-                self.indexed_current_recovery = None
-            return self._finish_observed_dialogue()
         with self.story_cursor_lock:
             self.observation_serial += 1
             self.indexed_current_recovery = None
             lease = self._story_observation_lease_locked()
+        if not text:
+            return self._finish_observed_dialogue()
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text, lease=lease)
         canonical_routing = False

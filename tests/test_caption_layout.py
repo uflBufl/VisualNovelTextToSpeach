@@ -22,11 +22,15 @@ from vntts.dialog_capture import (
 )
 from vntts.live_replay import _recognize_replay_frame, load_live_replay_corpus
 from vntts.live_replay_capture import LiveReplayCaptureSession
-from vntts.ocr import DialogRegion
+from vntts.ocr import DialogRegion, OCRRegions
 from vntts.profiles import GameProfile
 from vntts.settings import AppSettings
-from vntts.text_detection import TextBlock, TextLine
+from vntts.text_detection import ScreenTextDetection, TextBlock, TextLine
 from vntts.window_capture import DisplayCaptureTarget
+
+
+def detection(*blocks):
+    return ScreenTextDetection(tuple(line for block in blocks for line in block.lines))
 
 
 class CaptionLayoutTest(unittest.TestCase):
@@ -44,7 +48,7 @@ class CaptionLayoutTest(unittest.TestCase):
 
     def test_caption_is_text_only_and_has_no_advance_permission(self):
         original = self.frame()
-        caption = select_caption(original, (self.block(),), 60)
+        caption = select_caption(original, detection(self.block()), 60)
         self.assertEqual(caption.layout_kind, "caption")
         self.assertIs(caption.canonical_image, original.canonical_image)
         self.assertIsNone(caption.ocr_regions)
@@ -59,25 +63,90 @@ class CaptionLayoutTest(unittest.TestCase):
     def test_discovery_does_not_depend_on_screen_center_or_text_color(self):
         original = self.frame()
         for top in (0.05, 0.5):
-            caption = select_caption(original, (self.block(top=top),), 60)
+            caption = select_caption(original, detection(self.block(top=top)), 60)
             self.assertEqual(caption.layout_kind, "caption")
 
-    def test_unchanged_bottom_dialogue_does_not_hide_a_caption(self):
+    def test_visible_bottom_dialogue_takes_priority_over_a_caption(self):
         original = self.frame()
         bottom = self.block("The ordinary dialogue remains here.", top=0.8)
-        caption = select_caption(original, (bottom, self.block()), 60)
+        caption = select_caption(original, detection(bottom, self.block()), 60)
+        self.assertIs(caption, original)
+
+    def test_lower_body_wins_before_outside_confidence_ambiguity_or_source_matching(
+        self,
+    ):
+        original = self.frame()
+        for text in ("A partial", "...", "?"):
+            for confidence in (20, 95):
+                for outside in (
+                    (self.block("Ears", confidence=10),),
+                    (self.block(), self.block("Other artwork", top=0.5)),
+                ):
+                    with self.subTest(
+                        text=text, confidence=confidence, outside=outside
+                    ):
+                        matcher = Mock(
+                            side_effect=AssertionError(
+                                "Outside source matching must not run"
+                            )
+                        )
+                        selected = select_caption(
+                            original,
+                            detection(
+                                self.block(text, top=0.8, confidence=confidence),
+                                *outside,
+                            ),
+                            60,
+                            story_matcher=matcher,
+                        )
+                        self.assertIs(selected, original)
+                        matcher.assert_not_called()
+
+    def test_body_line_in_a_crossing_group_keeps_the_ordinary_crop(self):
+        original = self.frame()
+        block = TextBlock(
+            (self.block().lines[0], self.block("Dialogue", top=0.8).lines[0])
+        )
+        self.assertIs(select_caption(original, detection(block), 60), original)
+
+    def test_nameplate_is_not_dialogue_body_and_is_not_added_to_caption(self):
+        original = replace(
+            self.frame(),
+            ocr_regions=OCRRegions(
+                DialogRegion(0, 0, 1, 0.25), DialogRegion(0, 0.4, 1, 0.6)
+            ),
+        )
+        name = self.block("Ada", top=0.73, confidence=20)
+        outside = self.block(top=0.66)
+        caption = select_caption(original, detection(name, outside), 60)
         self.assertEqual(caption.layout_kind, "caption")
-        self.assertNotIn("ordinary", caption.recognized_result.text)
+        self.assertEqual(caption.recognized_result.text, outside.text)
+
+    def test_body_mapping_uses_canonical_crop_pixels(self):
+        image = Image.new("RGB", (1003, 777))
+        crop = DialogRegion(0.17, 0.41, 0.67, 0.53)
+        regions = OCRRegions(
+            DialogRegion(0, 0, 1, 0.2), DialogRegion(0.12, 0.3, 0.73, 0.6)
+        )
+        frame = CapturedDialogFrame(
+            crop.crop(image), 0, regions, canonical_image=image, capture_region=crop
+        )
+        left, top, right, bottom = crop._pixel_box(*image.size)
+        x, y, end_x, end_y = regions.dialogue._pixel_box(right - left, bottom - top)
+        self.assertEqual(
+            frame.dialogue_text_region._pixel_box(*image.size),
+            (left + x, top + y, left + end_x, top + end_y),
+        )
 
     def test_blank_and_lower_dialogue_keep_the_calibrated_reader(self):
         original = self.frame()
         for blocks in ((), (self.block(top=0.8),)):
-            self.assertIs(select_caption(original, blocks, 60), original)
+            self.assertIs(select_caption(original, detection(*blocks), 60), original)
 
     def test_confirmed_story_text_can_be_a_single_word_or_symbol(self):
         for text in ("No!", "?", "...", "Elma"):
             with self.subTest(text=text):
-                selected = select_caption(self.frame(), (self.block(text),), 60)
+                selected = select_caption(self.frame(), detection(self.block(text)), 60)
                 self.assertEqual(selected.layout_kind, "caption")
                 self.assertEqual(selected.recognized_result.text, text)
 
@@ -97,14 +166,14 @@ class CaptionLayoutTest(unittest.TestCase):
             (self.block(), self.block("Another independent block.", top=0.5)),
             (self.block(confidence=20),),
         ):
-            selected = select_caption(original, blocks, 60)
+            selected = select_caption(original, detection(*blocks), 60)
             self.assertEqual(selected.layout_kind, "pending")
             self.assertIsNone(selected.recognized_result)
             self.assertFalse(selected.navigation_allowed)
             self.assertFalse(dialog_glyphs_visible(selected))
 
     def test_caption_reuses_corrections_source_resolution_and_diagnostics(self):
-        caption = select_caption(self.frame(), (self.block(),), 60)
+        caption = select_caption(self.frame(), detection(self.block()), 60)
         canonical = replace(
             caption.recognized_result,
             character="Canonical",
@@ -176,7 +245,9 @@ class CaptionLayoutTest(unittest.TestCase):
                     capture_target=target,
                     save_screenshot=True,
                     region=DialogRegion(0, 0.7, 1, 0.3),
-                    frame_selector=lambda frame: select_caption(frame, (block,), 60),
+                    frame_selector=lambda frame: select_caption(
+                        frame, detection(block), 60
+                    ),
                 )
                 metadata = json.loads(
                     Path(output).with_suffix(".capture.json").read_text()
@@ -203,7 +274,7 @@ class CaptionLayoutTest(unittest.TestCase):
             return "detector", "recognizer"
 
         worker = Mock()
-        worker.detect.return_value = self.block().lines
+        worker.detect.return_value = ScreenTextDetection(self.block().lines)
         errors, results = [], []
 
         def select():
@@ -243,12 +314,14 @@ class CaptionLayoutTest(unittest.TestCase):
                 all(
                     call.kwargs["allowed_region"] == DialogRegion(0, 0.1, 1, 0.9)
                     and call.kwargs["covered_region"] == self.frame().capture_region
+                    and call.kwargs["dialogue_region"]
+                    == self.frame().dialogue_text_region
                     for call in worker.detect.call_args_list
                 )
             )
 
     def test_captured_caption_replay_preserves_layout_and_declares_recorded_ocr(self):
-        caption = select_caption(self.frame(), (self.block(),), 60)
+        caption = select_caption(self.frame(), detection(self.block()), 60)
         with TemporaryDirectory() as directory:
             session = LiveReplayCaptureSession(Path(directory) / "capture")
             session.observe(caption, "Narrator", caption.recognized_result.text)

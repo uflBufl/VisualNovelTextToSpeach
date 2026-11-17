@@ -264,36 +264,54 @@ class CalibrationReviewDialog(QDialog):
             "The model handles line preprocessing internally."
         )
         self.story_text_preview.hide()
+        self.check_story_button = QPushButton("Check text in this image (optional)")
+        self.check_story_button.clicked.connect(self._check_story_text)
+        self.check_story_button.hide()
         self.story_input_label = QLabel("Detected story text crop")
         self.story_input_label.setWordWrap(True)
         self.story_input_label.hide()
         body_layout.addWidget(self.story_input_label)
         body_layout.addWidget(self.story_text_preview)
+        body_layout.addWidget(
+            self.check_story_button, alignment=Qt.AlignmentFlag.AlignRight
+        )
 
     def _configure_story_preview(
         self, note: QLabel, story_preview: Callable[[Event], OCRResult] | None
     ) -> None:
+        self._story_preview = story_preview
         self.setWindowTitle("Confirm story area")
         self.resize(760, 560)
         self.preview.setAccessibleName("Allowed story area preview")
         note.setText(
-            "Only text fully inside this area may be discovered outside the dialogue box. "
-            "Keep menus, buttons and chapter labels outside it. "
+            "Confirm the game scene including its centre and the whole dialogue box. "
+            "Keep menus, buttons and chapter labels outside it. No central phrase needs "
+            "to be visible now: future story text will be found here automatically. "
             'Use "Draw again" to adjust the area.'
         )
         self.result_text.setAccessibleName("Story area recognition result")
-        self.result_text.setPlainText("Looking for story text in this frozen image...")
+        self.result_text.setPlainText(
+            "This area will be used throughout Reading. You can confirm it on any game frame. "
+            "Checking text in the current image is optional."
+        )
+        self.result_text.hide()
         self.save_button.setText("Confirm story area")
         self.save_button.setAccessibleName("Confirm story area")
         self.save_button.setToolTip("Save the allowed story text area")
-        if story_preview is None:
-            self.progress.hide()
-            self.result_text.setPlainText(
-                "Story text preview is unavailable. You can still confirm the allowed area."
-            )
-            self.save_button.setEnabled(True)
-        else:
-            self.runner.start(story_preview, self._ocr_cancelled)
+        self.progress.hide()
+        self.save_button.setEnabled(True)
+        self.check_story_button.setVisible(story_preview is not None)
+
+    def _check_story_text(self) -> None:
+        if self._story_preview is None or self.runner.active:
+            return
+        self.check_story_button.setEnabled(False)
+        self.story_text_preview.hide()
+        self.story_input_label.hide()
+        self.progress.show()
+        self.result_text.show()
+        self.result_text.setPlainText("Checking text in this frozen image...")
+        self.runner.start(self._story_preview, self._ocr_cancelled)
 
     def show_enlarged_capture(self) -> None:
         if self.capture_preview is None:
@@ -448,10 +466,18 @@ class CalibrationReviewDialog(QDialog):
     def _story_recognition_finished(
         self, result: object, error: Exception | None
     ) -> None:
+        self.check_story_button.setEnabled(True)
+        self.result_text.show()
         if error is not None:
             message = f"Story text preview failed: {error}"
         elif not isinstance(result, OCRResult):
             message = "Story text preview returned an invalid result."
+        elif result.profile == "dialogue-active":
+            message = (
+                "Text is visible in the dialogue area. Reading gives it priority "
+                "over other on-screen text. Story captions are used when the "
+                "dialogue area is empty."
+            )
         elif result.profile == "layout-pending":
             message = (
                 "No single readable story phrase was selected. Multiple text blocks or "
@@ -459,8 +485,9 @@ class CalibrationReviewDialog(QDialog):
             )
         elif not result.text.strip():
             message = (
-                "No story phrase was found outside the dialogue box in this frozen image. "
-                "Try again while a central phrase is visible."
+                "No central story text is visible in this image. This is normal: "
+                "you can confirm the area now. Text appearing here later will be found "
+                "automatically during Reading."
             )
         else:
             message = f"Story text:\n{result.text}\n\nRecognition confidence: {result.confidence:.1f}%"
@@ -531,7 +558,12 @@ class DialogRegionOverlay(QWidget):
         self.saved_region: DialogRegion | None = None
         self.save_region = save_region or self.persist
         try:
-            self.capture_region = capture_region or get_dialog_region()
+            self.capture_region = (
+                DialogRegion(0, 0, 1, 1)
+                if story_dialogue_region is not None
+                and (capture_region is None or capture_region == story_dialogue_region)
+                else capture_region or get_dialog_region()
+            )
         except CaptureRegionNeedsCalibration:
             self.capture_region = default_dialog_region
         self.save_error: str | None = None
@@ -1004,8 +1036,9 @@ class DialogRegionOverlay(QWidget):
         selected = self.origin is not None and self.current is not None
         return (
             (
-                "Select the allowed story area, including the yellow dialogue box and "
-                "where temporary story text can appear. Exclude menus, buttons and chapter labels."
+                "Select the game scene including its centre and the entire yellow dialogue box. "
+                "Exclude menus, buttons and chapter labels. Any game frame works; "
+                "no central text needs to be visible."
                 if self.story_dialogue_region is not None
                 else "Select the whole dialogue box, including the name and continue indicator. "
                 + DIALOG_REGION_GUIDANCE

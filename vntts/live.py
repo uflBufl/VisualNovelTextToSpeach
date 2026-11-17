@@ -853,10 +853,17 @@ class LiveDialogReader:
         self._maybe_auto_advance()
         return True
 
+    def _block_layout_advance_locked(self, generation: int) -> None:
+        if self.reading_session is not None:
+            self.reading_session.block_advance(
+                generation, current=generation == self.active_generation
+            )
+
     def block_auto_advance_for_generation(
         self, generation: int, reason: object
     ) -> bool:
         with self.state_lock:
+            self._block_layout_advance_locked(generation)
             if generation != self.active_generation:
                 return False
             self._cancel_auto_advance_locked()
@@ -1000,6 +1007,7 @@ class LiveDialogReader:
         self.queue_epoch += 1
         self._fully_observed_dialog = None
         self.suppressed_generation = self.active_generation
+        self._block_layout_advance_locked(self.active_generation)
         futures = tuple(self.speech_futures)
         for future in self.prepared_results:
             self.speech_futures.pop(future, None)
@@ -1722,9 +1730,7 @@ class LiveDialogReader:
                     observed_at = recognition_capture_at
                 if observed_at is None:
                     observed_at = monotonic()
-                tracker.record_observation(
-                    character or "Narrator", text, observed_at
-                )
+                tracker.record_observation(character or "Narrator", text, observed_at)
                 self._ocr_progress("routing")
                 if (
                     cached_canonical is not None
@@ -1924,10 +1930,12 @@ class LiveDialogReader:
             previous_epoch = self.frame_route_epoch
             if (
                 canonical is not None
-                and (character, text) == (canonical.dialog.character, canonical.dialog.text)
+                and (character, text)
+                == (canonical.dialog.character, canonical.dialog.text)
                 and self._recognition_state_refusal_locked(
                     canonical.epoch, canonical.run_id, True, frame
-                ) is None
+                )
+                is None
             ):
                 # Routing may advance the story owner; OCR was validated before it.
                 self._fully_observed_dialog = canonical.dialog
@@ -2641,6 +2649,8 @@ class LiveDialogReader:
                 return
             offset = self._explicit_generation_offset
             generation = tracker.generation + offset
+            if self.reading_session is not None:
+                self.reading_session.bind_generation(tracker, generation)
             self._set_generation(generation)
         self._schedule(
             replace(chunk, generation=chunk.generation + offset) for chunk in chunks
@@ -2659,7 +2669,10 @@ class LiveDialogReader:
                 and self._layout_navigation_allowed_locked()
                 and (
                     self.reading_session is None
-                    or self.reading_session.can_advance(tracker)
+                    or self.reading_session.can_advance(
+                        tracker,
+                        fresh=self._fresh_layout_confirmation_locked(),
+                    )
                 )
                 else None
             )
@@ -2669,6 +2682,15 @@ class LiveDialogReader:
             ):
                 self._cancel_auto_advance_locked()
         self._maybe_auto_advance()
+
+    def _fresh_layout_confirmation_locked(self) -> bool:
+        return bool(
+            self.latest_frame is not None
+            and self.routed_frame is self.latest_frame
+            and self.latest_frame_visible
+            and self.latest_frame_complete
+            and not self.observation_uncertain
+        )
 
     def _auto_advance_gate_details_locked(
         self, timer_serial: int | None = None
@@ -3013,6 +3035,48 @@ class LiveDialogReader:
                 self._report_auto_advance_state("visual-wait", generation, 0)
             self._maybe_auto_advance()
             return
+        self._send_auto_advance(
+            generation, same_routed, same_fingerprint, frame_equivalence_ms
+        )
+
+    def _claim_layout_advance(self, generation: int) -> Callable[[], None] | None:
+        with self.state_lock:
+            if (
+                generation != self.active_generation
+                or not self._layout_navigation_allowed_locked()
+                or self.dialog_ready_generation != generation
+                or self.auto_advance is None
+                or self.failed_auto_advance_generation == generation
+                or self.auto_advance_blocked_generation == generation
+                or self.suppressed_generation == generation
+                or self.last_auto_advance_dispatched_generation == generation
+                or self.paused
+                or self.emergency_stopped
+                or self.is_shutting_down
+                or self.stop_event.is_set()
+                or self.observation_uncertain
+                or self.current_chunk is not None
+                or self.speech_futures
+                or self.deferred_chunks
+            ):
+                return None
+            if self.reading_session is None:
+                return lambda: None
+            return self.reading_session.claim_advance(
+                self.reading_session.tracker,
+                fresh=self._fresh_layout_confirmation_locked(),
+            )
+
+    def _send_auto_advance(
+        self,
+        generation: int,
+        same_routed: bool,
+        same_fingerprint: bool,
+        frame_equivalence_ms: float,
+    ) -> None:
+        release_advance = self._claim_layout_advance(generation)
+        if release_advance is None:
+            return
         try:
             attempt = cast(Callable[[], object], self.auto_advance)()
         except Exception as error:
@@ -3029,7 +3093,9 @@ class LiveDialogReader:
             refusal_reason = None
             dispatch_id = None
         if advanced is False:
-            self._handle_auto_advance_refusal(generation, refusal_reason)
+            self._handle_auto_advance_refusal(
+                generation, refusal_reason, release_advance=release_advance
+            )
             return
         dispatched = None
         with self.state_lock:
@@ -3079,9 +3145,15 @@ class LiveDialogReader:
             timer.start()
 
     def _handle_auto_advance_refusal(
-        self, generation: int, refusal_reason: str | None
+        self,
+        generation: int,
+        refusal_reason: str | None,
+        *,
+        release_advance: Callable[[], None] = lambda: None,
     ) -> None:
         if refusal_reason == "reading-control-barrier":
+            with self.state_lock:
+                release_advance()
             self._report_auto_advance_gate(generation, "reading-control-barrier")
             # Resume rearms Pause; Clear and Stop retain their own barriers.
             return
@@ -3089,6 +3161,7 @@ class LiveDialogReader:
             refusal_reason is None and not self._is_focused()
         ):
             with self.state_lock:
+                release_advance()
                 report_focus_wait = (
                     self.auto_advance_focus_wait_generation != generation
                 )
@@ -3101,6 +3174,7 @@ class LiveDialogReader:
             self._maybe_auto_advance()
         elif refusal_reason == "visual-wait":
             with self.state_lock:
+                release_advance()
                 report_visual_wait = (
                     self.auto_advance_visual_wait_generation != generation
                 )

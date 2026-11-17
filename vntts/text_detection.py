@@ -93,6 +93,22 @@ class TextLine:
 
 
 @dataclass(frozen=True)
+class ScreenTextDetection:
+    lines: tuple[TextLine, ...]
+    dialogue_text_present: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lines, tuple) or not all(
+            isinstance(line, TextLine) for line in self.lines
+        ):
+            raise ValueError(
+                "Screen text detection requires an immutable tuple of lines"
+            )
+        if type(self.dialogue_text_present) is not bool:
+            raise ValueError("Dialogue text presence must be a boolean")
+
+
+@dataclass(frozen=True)
 class TextBlock:
     lines: tuple[TextLine, ...]
 
@@ -259,50 +275,24 @@ class ScreenTextDetector:
         *,
         allowed_region: DialogRegion | None = None,
         covered_region: DialogRegion | None = None,
-    ) -> tuple[TextLine, ...]:
+        dialogue_region: DialogRegion | None = None,
+    ) -> ScreenTextDetection:
         if image.width <= 0 or image.height <= 0:
             raise ValueError("Screen text detection requires a nonempty image")
         self._load_models()
         assert self._detector and self._recognizer and self._crop_line
         original = image.convert("RGB")
-        small = original.copy()
-        small.thumbnail((640, 640), Image.Resampling.LANCZOS)
-        pixels = np.ascontiguousarray(np.asarray(small)[:, :, ::-1])
-        output = self._detector(pixels)
-        if output.boxes is None or not len(output.boxes):
-            return ()
-        boxes = np.asarray(output.boxes, dtype=np.float64)
-        if boxes.ndim != 3 or boxes.shape[1:] != (4, 2) or not np.isfinite(boxes).all():
-            raise ValueError("Screen text detector returned malformed line boxes")
-        boxes *= np.array(
-            [original.width / small.width, original.height / small.height]
-        )
-        boxes[:, :, 0] = boxes[:, :, 0].clip(0, original.width)
-        boxes[:, :, 1] = boxes[:, :, 1].clip(0, original.height)
-        normalized: list[DialogRegion] = []
-        valid_boxes = []
-        for box in boxes:
-            left, top = box.min(axis=0) / original.size
-            right, bottom = box.max(axis=0) / original.size
-            if right <= left or bottom <= top:
-                raise ValueError("Screen text detector returned an empty line box")
-            region = DialogRegion(
-                float(left), float(top), float(right - left), float(bottom - top)
-            )
-            if allowed_region is not None and not allowed_region.contains(region):
-                continue
-            normalized.append(region)
-            valid_boxes.append(box.astype(np.float32))
+        normalized, valid_boxes = self._permitted_boxes(original, allowed_region)
+        if dialogue_region is not None and any(
+            center_in_region(region, dialogue_region) for region in normalized
+        ):
+            # Empty or uncertain line OCR must not displace visible lower dialogue.
+            return ScreenTextDetection((), dialogue_text_present=True)
         if covered_region is not None:
-            # Keep mixed groups whole: an inside line can complete a caption.
             retained = {
                 index
-                for group in _group_box_indices(normalized)
-                if any(
-                    not center_in_region(normalized[item], covered_region)
-                    for item in group
-                )
-                for index in group
+                for index, region in enumerate(normalized)
+                if not center_in_region(region, covered_region)
             }
             valid_boxes = [
                 box for index, box in enumerate(valid_boxes) if index in retained
@@ -311,7 +301,7 @@ class ScreenTextDetector:
                 region for index, region in enumerate(normalized) if index in retained
             ]
         if not valid_boxes:
-            return ()
+            return ScreenTextDetection(())
         full_pixels = np.ascontiguousarray(np.asarray(original)[:, :, ::-1])
         recognized = self._recognizer(
             [self._crop_line(full_pixels, box) for box in valid_boxes]
@@ -329,4 +319,38 @@ class ScreenTextDetector:
             line = TextLine(box, text.strip(), float(score) * 100)
             if line.text:
                 lines.append(line)
-        return tuple(sorted(lines, key=lambda line: (line.box.top, line.box.left)))
+        return ScreenTextDetection(
+            tuple(sorted(lines, key=lambda line: (line.box.top, line.box.left)))
+        )
+
+    def _permitted_boxes(
+        self, image: Image.Image, allowed_region: DialogRegion | None
+    ) -> tuple[list[DialogRegion], list[np.ndarray]]:
+        assert self._detector is not None
+        small = image.copy()
+        small.thumbnail((640, 640), Image.Resampling.LANCZOS)
+        pixels = np.ascontiguousarray(np.asarray(small)[:, :, ::-1])
+        output = self._detector(pixels)
+        if output.boxes is None or not len(output.boxes):
+            return [], []
+        boxes = np.asarray(output.boxes, dtype=np.float64)
+        if boxes.ndim != 3 or boxes.shape[1:] != (4, 2) or not np.isfinite(boxes).all():
+            raise ValueError("Screen text detector returned malformed line boxes")
+        boxes *= np.array([image.width / small.width, image.height / small.height])
+        boxes[:, :, 0] = boxes[:, :, 0].clip(0, image.width)
+        boxes[:, :, 1] = boxes[:, :, 1].clip(0, image.height)
+        normalized: list[DialogRegion] = []
+        valid_boxes = []
+        for box in boxes:
+            left, top = box.min(axis=0) / image.size
+            right, bottom = box.max(axis=0) / image.size
+            if right <= left or bottom <= top:
+                raise ValueError("Screen text detector returned an empty line box")
+            region = DialogRegion(
+                float(left), float(top), float(right - left), float(bottom - top)
+            )
+            if allowed_region is not None and not allowed_region.contains(region):
+                continue
+            normalized.append(region)
+            valid_boxes.append(box.astype(np.float32))
+        return normalized, valid_boxes

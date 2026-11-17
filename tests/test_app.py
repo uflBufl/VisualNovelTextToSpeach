@@ -3120,8 +3120,10 @@ class TrayApplicationTest(unittest.TestCase):
             ),
         )
         tray._set_reading_status("Reading is ready.")
-        self.assertIn("Set story area", tray.dashboard.status.text())
-        self.assertIn("central story text", tray.dashboard.status.text())
+        self.assertIn("Reading setup", tray.dashboard.status.text())
+        self.assertIn(
+            "No central text needs to be visible", tray.dashboard.status.text()
+        )
         region = DialogRegion(0, 0, 1, 1)
         save_dialog_region(region, Path(os.environ["VNTTS_DIALOG_REGION_FILE"]))
         save_story_region(
@@ -3132,6 +3134,24 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray._set_reading_status("Reading is ready.")
         self.assertEqual(tray.dashboard.status.text(), "Reading is ready.")
+        tray.shutdown()
+
+    def test_completed_legacy_setup_requires_story_area_before_reading(self):
+        settings = AppSettings(onboarding_completed=True)
+        controller = Mock(is_ready=True, is_live_running=False, settings=settings)
+        controller._story_region.return_value = None
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        for start in (tray.prepare_reading, tray.toggle_live):
+            with (
+                self.subTest(start=start.__name__),
+                patch.object(tray, "run_onboarding") as setup,
+            ):
+                start()
+                setup.assert_called_once_with()
+        controller._story_region.return_value = DialogRegion(0, 0, 1, 1)
+        self.assertFalse(tray._story_area_needs_setup())
         tray.shutdown()
 
     def test_uncertain_ocr_keeps_last_dialogue_and_reports_only_status(self):

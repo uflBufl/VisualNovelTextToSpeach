@@ -1371,14 +1371,12 @@ class CalibrationPage(QWizardPage):
         set_action_icon(self.button, "scan")
         self.button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.button.clicked.connect(self.calibrate)
-        self.discover_story_text = QCheckBox(
-            "Also read story text in the centre of the game"
-        )
-        self.discover_story_text.toggled.connect(self._story_text_toggled)
         self.story_instructions = QLabel(
-            "Select a separate Story area containing the dialogue box and places where "
-            "temporary story phrases appear, including the centre. Keep menus, buttons "
-            "and chapter labels outside it. The dialogue box stays a separate selection."
+            "Select the Story area once on any game frame: include the game scene, "
+            "the centre and the entire dialogue area. Keep menus, buttons and other "
+            "controls outside it. No central phrase needs to be visible: future story "
+            "captions will be found automatically inside this area. The dialogue area "
+            "stays a separate selection."
         )
         self.story_instructions.setWordWrap(True)
         self.story_button = QPushButton("Select story area...")
@@ -1392,16 +1390,12 @@ class CalibrationPage(QWizardPage):
         layout.addWidget(self.instructions)
         layout.addWidget(self.button)
         layout.addWidget(self.status)
-        layout.addWidget(self.discover_story_text)
         layout.addWidget(self.story_instructions)
         layout.addWidget(self.story_button)
         layout.addWidget(self.story_status)
         layout.addStretch()
 
     def initializePage(self) -> None:
-        self.discover_story_text.setChecked(
-            self.flow.draft_settings.discover_text_layouts
-        )
         self._refresh_story_area()
         if self.calibrated:
             return
@@ -1409,28 +1403,12 @@ class CalibrationPage(QWizardPage):
         self.status.setText("Calibration has not been completed.")
         self.completeChanged.emit()
 
-    def _story_text_toggled(self, enabled: bool) -> None:
-        self.flow.draft_settings = self.flow.draft_settings.updated(
-            discover_text_layouts=enabled
-        )
-        configuration = self.flow.configuration_page
-        configuration.original_settings = configuration.original_settings.updated(
-            discover_text_layouts=enabled
-        )
-        self.flow.test_page.successful = False
-        self._refresh_story_area()
-        self.completeChanged.emit()
-
     def _refresh_story_area(self) -> None:
-        enabled = self.discover_story_text.isChecked()
-        self.story_instructions.setVisible(enabled)
-        self.story_button.setVisible(enabled)
         self.story_button.setEnabled(self.calibrated)
-        self.story_status.setVisible(enabled)
         self.story_status.setText(
             "Story area selected. It will be saved with Reading setup."
             if self.story_region is not None
-            else "Story area is not selected. Select it to read phrases outside the dialogue box."
+            else "Select the Story area to finish Reading setup. Any game frame will do."
         )
 
     def calibrate(self, *, story_area: bool = False) -> None:
@@ -1534,7 +1512,7 @@ class CalibrationPage(QWizardPage):
                     geometry,
                     background=background,
                     save_region=lambda _region: None,
-                    capture_region=self.story_region or self.capture_region,
+                    capture_region=self.story_region,
                     story_dialogue_region=self.capture_region,
                     story_recognizer=self.story_recognizer,
                 )
@@ -1630,9 +1608,11 @@ class CalibrationPage(QWizardPage):
             visibility.restore()
 
     def isComplete(self) -> bool:
-        return self.calibrated and (
-            not self.flow.draft_settings.discover_text_layouts
-            or self.story_region is not None
+        return (
+            self.calibrated
+            and self.capture_region is not None
+            and self.story_region is not None
+            and self.story_region.contains(self.capture_region)
         )
 
 
@@ -1808,6 +1788,7 @@ class OnboardingWizard(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        settings = settings.updated(discover_text_layouts=True)
         self._initialize_state(settings, auto_discover_windows, reading_setup)
         self._build_pages(
             settings,
@@ -2038,7 +2019,6 @@ class OnboardingWizard(QDialog):
             self.calibration_page: (
                 self.calibration_page.story_button
                 if self.calibration_page.calibrated
-                and self.calibration_page.discover_story_text.isChecked()
                 and self.calibration_page.story_region is None
                 else self.calibration_page.button
             ),
@@ -2069,7 +2049,9 @@ class OnboardingWizard(QDialog):
     def accept(self) -> None:
         if not self.test_page.successful or not self.calibration_page.isComplete():
             return
-        self.completed_settings = self.draft_settings.updated(onboarding_completed=True)
+        self.completed_settings = self.draft_settings.updated(
+            onboarding_completed=True, discover_text_layouts=True
+        )
         super().accept()
 
     def reject(self) -> None:
@@ -2090,10 +2072,11 @@ class OnboardingWizard(QDialog):
         page = self.calibration_page
         return (
             page.capture_region if page.calibrated else None,
-            page.story_region if self.draft_settings.discover_text_layouts else None,
+            page.story_region,
         )
 
     def resume_after_editor(self, settings: AppSettings) -> None:
+        settings = settings.updated(discover_text_layouts=True)
         page = self.configuration_page
         before = page.original_settings
         draft_before = page.settings()

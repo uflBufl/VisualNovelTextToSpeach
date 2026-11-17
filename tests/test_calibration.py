@@ -169,7 +169,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
         self.addCleanup(review.close)
         recognizer.assert_not_called()
         self.assertTrue(review.save_button.isEnabled())
-        self.assertIn("preview is unavailable", review.result_text.toPlainText())
+        self.assertIn("any game frame", review.result_text.toPlainText())
         self.assertEqual(review.save_button.text(), "Confirm story area")
 
     def test_story_review_uses_frozen_full_frame_and_saves_only_after_confirmation(
@@ -200,7 +200,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay.resize(800, 600)
         overlay._review_rectangle(QRect(0, 60, 800, 540))
         review = overlay._review
-        self.wait_for(lambda: review.save_button.isEnabled())
+        recognize.assert_not_called()
+        self.assertTrue(review.save_button.isEnabled())
+        review.check_story_button.click()
+        self.wait_for(
+            lambda: "A central story phrase." in review.result_text.toPlainText()
+        )
         frozen, selected, covered, cancelled = recognize.call_args.args
         self.assertIsNot(frozen, background)
         self.assertEqual(frozen.size, background.size)
@@ -222,7 +227,12 @@ class DialogRegionOverlayTest(unittest.TestCase):
             (
                 OCRResult("Narrator", "", 0, "story-area-empty", 0),
                 None,
-                "No story phrase",
+                "This is normal",
+            ),
+            (
+                OCRResult("Narrator", "", 0, "dialogue-active", 0),
+                None,
+                "Reading gives it priority",
             ),
             (
                 OCRResult("Narrator", "", 0, "layout-pending", 0),
@@ -262,8 +272,9 @@ class DialogRegionOverlayTest(unittest.TestCase):
         )
         self.addCleanup(review.deleteLater)
         self.addCleanup(review.close)
+        review.check_story_button.click()
         self.wait_for(entered.is_set)
-        self.assertFalse(review.save_button.isEnabled())
+        self.assertTrue(review.save_button.isEnabled())
         review.reject()
         self.assertTrue(cancelled[0].is_set())
         release.set()
@@ -323,6 +334,8 @@ class DialogRegionOverlayTest(unittest.TestCase):
         overlay._set_suggested_keyboard_region()
         region = overlay._region_from_rectangle(QRect(overlay.origin, overlay.current))
         self.assertTrue(region.contains(dialogue))
+        self.assertEqual(region, DialogRegion(0, 0, 1, 1))
+        self.assertIsNone(overlay.saved_region)
 
     def test_capture_visibility_restores_only_surviving_owned_windows_without_activation(
         self,

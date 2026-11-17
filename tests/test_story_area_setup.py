@@ -90,6 +90,11 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.assertFalse(wizard.next_button.isEnabled())
         self.assertTrue(page.story_button.isDefault())
         self.assertIn("centre", page.story_instructions.text())
+        self.assertIn("any game frame", page.story_instructions.text())
+        self.assertIn(
+            "No central phrase needs to be visible", page.story_instructions.text()
+        )
+        self.assertIn("automatically", page.story_instructions.text())
         page.finish_story_area(self.story)
         self.assertTrue(page.isComplete())
         self.assertTrue(wizard.next_button.isEnabled())
@@ -113,19 +118,40 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.assertIs(show.call_args.kwargs["background"], image)
         self.assertIs(show.call_args.kwargs["story_recognizer"], preview)
         self.assertEqual(show.call_args.kwargs["story_dialogue_region"], self.dialogue)
+        self.assertIsNone(show.call_args.kwargs["capture_region"])
+        self.assertIsNone(page.story_region)
+        self.assertFalse(page.isComplete())
 
-    def test_dialogue_only_choice_survives_back_navigation(self):
-        wizard = self.wizard()
+    def test_saved_discovery_opt_out_cannot_skip_story_area_after_back_navigation(self):
+        wizard = self.wizard(self.settings.updated(discover_text_layouts=False))
         page = wizard.calibration_page
         page.finish_calibration(self.dialogue)
-        page.discover_story_text.setChecked(False)
-        self.assertTrue(page.isComplete())
+        self.assertFalse(page.isComplete())
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertFalse(hasattr(page, "discover_story_text"))
         wizard.show_page(0)
         wizard.next_page()
-        self.assertFalse(wizard.draft_settings.discover_text_layouts)
+        self.assertTrue(wizard.draft_settings.discover_text_layouts)
         wizard.show_page(wizard.pages.index(page))
-        self.assertFalse(page.discover_story_text.isChecked())
+        page.finish_calibration(self.dialogue)
+        self.assertFalse(page.isComplete())
         self.assertEqual(wizard.capture_regions(), (self.dialogue, None))
+        page.finish_story_area(self.story)
+        wizard.test_page.set_result(True, "Read the dialogue")
+        wizard.accept()
+        self.assertTrue(wizard.settings().onboarding_completed)
+        self.assertTrue(wizard.settings().discover_text_layouts)
+        self.assertEqual(wizard.capture_regions(), (self.dialogue, self.story))
+
+    def test_incoming_story_area_must_contain_dialogue_to_complete_setup(self):
+        wizard = self.wizard(self.settings.updated(discover_text_layouts=False))
+        page = wizard.calibration_page
+        page.finish_calibration(self.dialogue)
+        page.story_region = DialogRegion(0.1, 0.1, 0.2, 0.2)
+        self.assertFalse(page.isComplete())
+        wizard.test_page.set_result(True, "Read the dialogue")
+        wizard.accept()
+        self.assertIsNone(wizard.completed_settings)
 
     def test_cancel_does_not_publish_the_story_area(self):
         wizard = self.wizard()

@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -30,7 +30,7 @@ from vntts.live_replay_capture import (
 from vntts.ocr import DialogRegion, OCRRegions, OCRResult
 from vntts.profiles import GameProfile
 from vntts.settings import AppSettings
-from vntts.text_detection import TextLine
+from vntts.text_detection import ScreenTextDetection, TextLine
 
 
 class FakeStoryResolver:
@@ -101,9 +101,12 @@ class LiveReplayCaptureTest(unittest.TestCase):
             covered.crop(image), 0, canonical_image=image, capture_region=covered
         )
         worker, target = Mock(), Mock()
-        worker.detect.return_value = (
-            TextLine(DialogRegion(0.1, 0.3, 0.8, 0.1), "A caption.", 95),
-        )
+        worker.detect.side_effect = [
+            ScreenTextDetection(
+                (TextLine(DialogRegion(0.1, 0.3, 0.8, 0.1), "A caption.", 95),)
+            ),
+            ScreenTextDetection((), True),
+        ]
         with TemporaryDirectory() as directory:
             output = Path(directory) / "capture"
             result = SimpleNamespace(
@@ -119,6 +122,9 @@ class LiveReplayCaptureTest(unittest.TestCase):
                 self.assertEqual(selected.layout_kind, "caption")
                 self.assertEqual(selected.recognized_result.text, "A caption.")
                 self.assertFalse(selected.navigation_allowed)
+                lower_dialogue = kwargs["capture_frame"]()
+                self.assertIs(lower_dialogue, captured)
+                self.assertEqual(lower_dialogue.layout_kind, "dialogue")
                 return result
 
             with (
@@ -158,9 +164,13 @@ class LiveReplayCaptureTest(unittest.TestCase):
             ):
                 profiles.return_value.get.return_value = None
                 self.assertEqual(live_replay_capture.main([str(output)]), 0)
-            worker.detect.assert_called_once_with(
-                image, allowed_region=allowed, covered_region=covered
+            expected = call(
+                image,
+                allowed_region=allowed,
+                covered_region=covered,
+                dialogue_region=covered,
             )
+            self.assertEqual(worker.detect.call_args_list, [expected, expected])
             worker.close.assert_called_once()
             target.close.assert_called_once()
 

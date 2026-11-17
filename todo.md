@@ -1,20 +1,85 @@
 # TODO
 
-## Active - Support 29 native Reading qualification
+## Active - Support 30 Windows Reading repairs
 
-- [ ] On Windows, confirm separate Dialogue and Story areas during setup and
-      read central story phrases in the selected game window. Check the frozen
-      Story preview and both area actions in Live diagnostics. Verify prepared
-      dialogue continues when optional speaker announcements lack cloning access;
-      changed voice settings must allow retry. Check recovery of an already fully
-      observed current line after one missing edge glyph, while genuinely
-      unreadable frames keep waiting and Stop remains available. Portable tests
-      and the macOS setup preview do not qualify native capture or model access.
+Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
+`e7bf2665`, 2026-11-17. Use matching archived source; the local one-time setup
+changes were not part of this run. Recording media is empty, so sword/costume
+identity remains a user observation rather than a verified image.
 
-## Active - Remaining Windows capture modes
+Priority: fix Reading correctness first, then recognition latency/progress and
+generation throughput. Repair diagnostic recording last; missing media must
+not block fixes supported by existing evidence and deterministic regressions.
+Recheck archived findings against current main before implementation.
 
-- [ ] On Windows, verify explicit display capture and diagnostic video through
-      the shared source loop.
+- [ ] Qualify restored lower-dialogue navigation on Windows after central
+      captions and temporary layout changes. Fresh completion evidence must
+      rearm an unsent advance, while completed/uncertain input attempts, Clear,
+      audio failure and Stop must not produce a second or late key. Repeat the
+      observed holds after lines13 and17 under background generation; deterministic
+      regressions cover the shared occurrence lease but empty media does not
+      establish the exact layout sequence in the archived run.
+- [ ] Qualify dialogue-body priority on Windows with and without a prepared
+      source: visible lower dialogue must keep reading despite outside artwork,
+      multiple blocks or uncertain caption OCR. Verify the ordinary crop remains
+      active through repeated frames, Clear and Stop. With an empty body, a
+      remaining nameplate must neither block nor join a central caption.
+      Repeat the native sword-hilt and Hedone scenes, retaining exact pixels when
+      available; `5 YEARS ESS` does not prove the reported sword's identity.
+      Correlate layout/profile/selected bounds in diagnostic evidence. Detection
+      box false positives/negatives still need qualification on real scenes.
+- [ ] **Speaker crop on character artwork:** capture original/processed speaker
+      images through working Live diagnostics for the reported Hedone costume/name
+      confusion. Current raw evidence
+      includes `Es`, `a EES` and `ESS`; source matching can still restore the
+      correct character. Establish which selected crop/layout admitted artwork
+      before changing name detection. Keep source-derived speaker provenance.
+- [ ] **Pre-OCR latency:** correlate capture, layout detection, queueing, OCR and
+      canonical admission separately under background generation. Compared with
+      support29, retained raw OCR median is129ms vs124ms, but frame age before OCR
+      is190ms vs55ms and capture-to-OCR is301ms vs172ms. Discovery runs synchronously
+      before OCR and its own span is not retained separately. Compare the same
+      scene with discovery enabled/disabled before optimizing; retain both region
+      coverage and confidence/ownership gates. Different scenes are not a benchmark.
+- [ ] **Recognition versus prepared-text display:** review the Reading progress
+      presentation. Exact/unique-prefix source matching replaces partial observed
+      text with the complete canonical phrase and its speaker; users cannot infer
+      live OCR progress from that display. Make the distinction understandable
+      without synthetic typing or removing safe prepared-audio early admission.
+- [ ] **Repeated generation validation:** profile operation `c7cde714...` ending
+      08:23:45 UTC separately from Reading. Total1064.1s includes accumulated
+      state-validation939.8s and final-validation60.4s. Native renders finish much
+      earlier. Attribute nested/inclusive spans before choosing reuse or reducing
+      reads; preserve checkpoint/publication integrity and completed audio.
+- [ ] **Recording video startup:** share one correct process-DPI initialization
+      across geometry and capture. `recording.rs` calls `selected_window_size`
+      before worker open; both paths set DPI awareness and the second propagates
+      `0x80070005`. The recording has video dimensions but no acquired frame and
+      an empty MP4. Verify selected-window video decodes, has monotonic frame
+      timestamps and survives normal stop; do not ask for elevated privileges to
+      mask repeated initialization.
+- [ ] **Recording process audio ownership:** repair the activation parameter
+      lifetime/allocator contract in Windows `process_audio.rs::activate`.
+      `PROPVARIANT/VT_BLOB` points at a Box still owned by the completion handler,
+      while windows0.62.2 drops PROPVARIANT through PropVariantClear. Both process
+      recorders exited `0xC0000374` before PCM; their CAFs contain headers only.
+      Qualify success, activation failure, cancellation and teardown on Windows;
+      use a native stack to confirm the exact crash site. No desktop/microphone
+      fallback and no claim of audible silence from missing acquisition.
+
+## Active - Remaining Windows Reading qualification
+
+- [ ] Qualify the local mandatory one-time Dialogue/Story setup on an ordinary
+      frame without a text check. Cancel must retain prior areas; switching games
+      must require matching bounds. The support30 run predates these UX changes.
+- [ ] After an unavailable optional announcement, change to a working narrator
+      or engine and verify retry. Suppressing repeated failures is not external
+      Pocket cloning authorization.
+- [ ] Qualify guarded one-missing-edge-glyph recovery on an already fully observed
+      current line, while genuinely unreadable frames keep waiting. Keep this
+      separate from the new restored-layout readiness defect above.
+- [ ] Verify explicit display capture on Windows. The supplied recording and
+      support snapshots all identify selected-window capture.
 
 ## Active - Source build and native component readiness
 
@@ -24,11 +89,10 @@
       protocol independently from actual window capture. Keep package/installer
       work outside this source workflow.
 
-## Active - Reading setup during story generation
+## Active - Remaining setup transitions during story generation
 
-- [ ] Qualify on Windows: read a ready chapter from Stories while later chapters
-      continue generating; complete/cancel setup and retry without losing the
-      selected source. Native capture must be installed for this gate.
+- [ ] From a ready chapter in Stories, cancel pending setup and retry while later
+      chapters generate; keep the selected source and generation job.
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
@@ -54,14 +118,20 @@
       rendering and ASR show the current character/reference counters and elapsed
       time in the main panel, including cancel/retry and a small Windows window.
 
-## Active - SQLite runtime generation playback
+## Active - Remaining SQLite runtime generation qualification
 
-- [ ] Qualify native Windows background generation and simultaneous playback
-      using SQLite directly, including resume, cancellation, fallback and review.
-      Confirm committed audio appears without working JSON publication or replacing
-      an open database; local concurrency tests do not replace this native gate.
+- [ ] On Windows, verify resume, cancellation, fallback and review, including
+      newly committed audio becoming available to an already active reader.
+      Confirm publication does not replace an open database or require working
+      JSON.
 
 ## Active - Remaining CI qualification
+
+- [ ] On Windows and Linux, qualify early ONNX telemetry suppression through
+      ordinary startup and spawned OCR workers with a real model: inference and
+      normal process exit must work without user flags. The fresh-process/spawn
+      regressions and macOS native probes do not replace these platform gates;
+      ORT1.29's Windows telemetry provider differs from the POSIX provider.
 
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on
       hosted Windows/Linux and packaged GPU runtimes after local gates pass.
@@ -1238,10 +1308,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       sustained progress updates, cancellation and Continue retain completed
       lines without frequent state reads or another replacement failure.
 
-## Validate capture changes during background preparation on Windows
-
-- [ ] While a story is preparing and reading is active, confirm Settings and Calibrate capture remain available. Opening either stops only reading, and story preparation continues; after saving a region, restart reading and confirm capture uses the new area.
-
 ## Adopt Qwen for offline story preparation
 
 - [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
@@ -1856,26 +1922,12 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 ## Deferred - Restore pre-existing repository quality gates
 
-- [ ] Diagnose order-dependent OCR-service shutdown in the Reading regression
-      selection. `test_visual_ellipsis_with_zero_ocr_confidence_advances_once_after_fresh_ocr`
-      reports `OCR service is shutting down` after other selected modules on both
-      the unchanged baseline and current code; its module passes in a fresh process.
-      Capture/minimize the failing order and repair the responsible service owner
-      or fixture lifetime. Evidence: prefix-final-consumers and baseline-consumers
-      in finished-page-qualification-20261116; do not alter matching policy to hide it.
-
 - [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
 - [ ] Reconcile the complexity ratchet with the unchanged live-replay seal,
       missing-voice fallback, publication-contention and authoring-workbench code.
       It reports new/increased findings and stale metric allowances on these
       files at `3bee3b79`; source-progress changes introduce no new findings.
       Inspect actual complexity before updating the baseline.
-
-- [ ] Diagnose `test_fresh_install_player_journey_survives_restart`: the
-      preparation/restart journey still fails on clean `405e9b3e`: the second
-      process routes a prepared narrator line into live synthesis. Check saved
-      pack activation and the restart routing contract; preserve the real
-      fresh-install preparation/restart path rather than weakening its assertion.
 
 ## Qualify SQLite-only storage
 

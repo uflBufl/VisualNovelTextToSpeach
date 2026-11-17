@@ -1,30 +1,55 @@
 """Select temporary text blocks from the same captured window as dialogue."""
 
+from collections.abc import Callable
 from dataclasses import replace
 
+from vntts.chapter_voice_preload import StoryObservationMatch
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.ocr import OCRResult
-from vntts.text_detection import TextBlock, center_in_region
+from vntts.text_detection import ScreenTextDetection, center_in_region, group_text_lines
 
 
 def select_caption(
-    frame: CapturedDialogFrame, blocks: tuple[TextBlock, ...], minimum_confidence: float
+    frame: CapturedDialogFrame,
+    detection: ScreenTextDetection,
+    minimum_confidence: float,
+    *,
+    story_matcher: Callable[[str], StoryObservationMatch] | None = None,
 ) -> CapturedDialogFrame:
     """Select among already permitted blocks; never concatenate ambiguous groups."""
     image = frame.canonical_image
-    if image is None:
+    if image is None or detection.dialogue_text_present:
         return frame
-    candidates = [
-        block
-        for block in blocks
-        if any(
-            frame.capture_region is None
-            or not center_in_region(line.box, frame.capture_region)
-            for line in block.lines
-        )
-    ]
+    dialogue = frame.dialogue_text_region
+    if dialogue is not None and any(
+        line.text.strip() and center_in_region(line.box, dialogue)
+        for line in detection.lines
+    ):
+        return frame
+    candidates = group_text_lines(
+        line
+        for line in detection.lines
+        if frame.capture_region is None
+        or not center_in_region(line.box, frame.capture_region)
+    )
     if not candidates:
         return frame
+    if story_matcher is not None:
+        matches = [(block, story_matcher(block.text)) for block in candidates]
+        matches = [
+            (block, match)
+            for block, match in matches
+            if match.method not in {"expected-no-match", "no-expected-candidates"}
+        ]
+        if not matches:
+            return frame
+        if (
+            len(matches) != 1
+            or matches[0][1].line is None
+            or not matches[0][1].complete
+        ):
+            return replace(frame, layout_kind="pending", navigation_allowed=False)
+        candidates = (matches[0][0],)
     if len(candidates) != 1:
         return replace(frame, layout_kind="pending", navigation_allowed=False)
     candidate = candidates[0]

@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -11,6 +12,7 @@ from PIL import Image
 
 from vntts import text_detection_worker as worker
 from vntts.ocr import DialogRegion, OCRPreviewCancelled
+from vntts.text_detection import ScreenTextDetection
 
 
 def successful_worker(connection, directory, *_paths):
@@ -25,6 +27,7 @@ def successful_worker(connection, directory, *_paths):
             json.dumps(
                 {
                     "ok": True,
+                    "dialogue_text_present": False,
                     "lines": [
                         {
                             "box": {
@@ -41,6 +44,14 @@ def successful_worker(connection, directory, *_paths):
             )
         )
         connection.send_bytes(b"done")
+
+
+def result_worker(connection, directory, *_paths, result):
+    connection.send_bytes(b"ready")
+    connection.recv_bytes(16)
+    (Path(directory) / "result.json").write_text(json.dumps(result))
+    connection.send_bytes(b"done")
+    connection.recv_bytes(16)
 
 
 def hanging_worker(connection, directory, *_paths):
@@ -82,23 +93,28 @@ class TextDetectionWorkerTest(unittest.TestCase):
             first = self.owner.detect(self.image)
             pid = self.owner.pid
             self.assertEqual(self.owner.detect(self.image), first)
-        self.assertEqual(first[0].text, "Hello world")
-        self.assertEqual(first[0].box.left, 0.1)
+        self.assertEqual(first.lines[0].text, "Hello world")
+        self.assertEqual(first.lines[0].box.left, 0.1)
         self.assertEqual(self.owner.pid, pid)
         self.assertTrue(self.owner._process.is_alive())
 
     def test_serializes_allowed_and_covered_regions_separately(self):
         region = DialogRegion(0.1, 0.2, 0.7, 0.5)
         covered_region = DialogRegion(0.2, 0.3, 0.5, 0.2)
+        dialogue_region = DialogRegion(0.2, 0.4, 0.5, 0.1)
         with patch.object(worker, "_worker_main", successful_worker):
             self.owner.detect(
-                self.image, allowed_region=region, covered_region=covered_region
+                self.image,
+                allowed_region=region,
+                covered_region=covered_region,
+                dialogue_region=dialogue_region,
             )
             request = json.loads(
                 (Path(self.owner._directory.name) / "request.json").read_text()
             )
         self.assertEqual(request["allowed_region"], region.to_json())
         self.assertEqual(request["covered_region"], covered_region.to_json())
+        self.assertEqual(request["dialogue_region"], dialogue_region.to_json())
 
     def test_serializes_absent_regions_as_null(self):
         with patch.object(worker, "_worker_main", successful_worker):
@@ -108,6 +124,7 @@ class TextDetectionWorkerTest(unittest.TestCase):
             )
         self.assertIsNone(request["allowed_region"])
         self.assertIsNone(request["covered_region"])
+        self.assertIsNone(request["dialogue_region"])
 
     def test_child_validates_and_passes_allowed_region(self):
         region = DialogRegion(0.1, 0.2, 0.7, 0.5)
@@ -121,7 +138,7 @@ class TextDetectionWorkerTest(unittest.TestCase):
                 connection = Mock()
                 connection.recv_bytes.side_effect = [b"run", b"stop"]
                 with patch("vntts.text_detection.ScreenTextDetector") as detector:
-                    detector.return_value.detect.return_value = ()
+                    detector.return_value.detect.return_value = ScreenTextDetection(())
                     worker._worker_main(connection, directory, "det", "rec")
                 result = json.loads((root / "result.json").read_text())
                 if value == {"left": -1}:
@@ -152,11 +169,11 @@ class TextDetectionWorkerTest(unittest.TestCase):
                         }
                     )
                 )
-                (root / "image.raw").write_bytes(b"\0\0\0")
+                (root / "image.raw").write_bytes(bytes(3))
                 connection = Mock()
                 connection.recv_bytes.side_effect = [b"run", b"stop"]
                 with patch("vntts.text_detection.ScreenTextDetector") as detector:
-                    detector.return_value.detect.return_value = ()
+                    detector.return_value.detect.return_value = ScreenTextDetection(())
                     worker._worker_main(connection, directory, "det", "rec")
                 result = json.loads((root / "result.json").read_text())
                 if value == {"left": -1}:
@@ -168,9 +185,75 @@ class TextDetectionWorkerTest(unittest.TestCase):
                         detector.return_value.detect.call_args.kwargs,
                         {
                             "allowed_region": allowed_region,
-                            "covered_region": covered_region if value is not None else None,
+                            "covered_region": covered_region
+                            if value is not None
+                            else None,
+                            "dialogue_region": None,
                         },
                     )
+
+    def test_child_validates_dialogue_region_and_preserves_detected_presence(self):
+        region = DialogRegion(0.1, 0.7, 0.8, 0.3)
+        for value in (region.to_json(), None, {"left": -1}, True):
+            with self.subTest(value=value), TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "request.json").write_text(
+                    json.dumps(
+                        {
+                            "size": [1, 1],
+                            "allowed_region": None,
+                            "dialogue_region": value,
+                        }
+                    )
+                )
+                (root / "image.raw").write_bytes(bytes(3))
+                connection = Mock()
+                connection.recv_bytes.side_effect = [b"run", b"stop"]
+                with patch("vntts.text_detection.ScreenTextDetector") as detector:
+                    detector.return_value.detect.return_value = ScreenTextDetection(
+                        (), True
+                    )
+                    worker._worker_main(connection, directory, "det", "rec")
+                result = json.loads((root / "result.json").read_text())
+                if value in ({"left": -1}, True):
+                    self.assertFalse(result["ok"])
+                    detector.return_value.detect.assert_not_called()
+                else:
+                    self.assertTrue(result["ok"])
+                    self.assertIs(result["dialogue_text_present"], True)
+                    self.assertEqual(result["lines"], [])
+                    self.assertEqual(
+                        detector.return_value.detect.call_args.kwargs[
+                            "dialogue_region"
+                        ],
+                        region if value is not None else None,
+                    )
+
+    def test_worker_response_requires_strict_boolean_presence(self):
+        responses = [
+            {"ok": True, "lines": [], "dialogue_text_present": presence}
+            for presence in (True, False, None, 0, 1, "false", [], {})
+        ]
+        responses.append({"ok": True, "lines": []})
+        for result in responses:
+            with self.subTest(result=result):
+                self.owner.close()
+                self.owner = worker.TextDetectionWorker("det", "rec")
+                self.addCleanup(self.owner.close)
+                target = partial(result_worker, result=result)
+                with patch.object(worker, "_worker_main", target):
+                    if type(result.get("dialogue_text_present")) is bool:
+                        self.assertEqual(
+                            self.owner.detect(self.image),
+                            ScreenTextDetection((), result["dialogue_text_present"]),
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "Invalid dialogue text"
+                        ):
+                            self.owner.detect(self.image)
+                        self.assertIsNone(self.owner.pid)
+                        self.assertIsNone(self.owner._directory)
 
     def test_inference_timeout_reaps_process_and_next_request_recovers(self):
         with patch.object(worker, "_worker_main", hanging_worker):
@@ -179,7 +262,7 @@ class TextDetectionWorkerTest(unittest.TestCase):
         self.assertIsNone(self.owner.pid)
         self.assertIsNone(self.owner._directory)
         with patch.object(worker, "_worker_main", successful_worker):
-            self.assertEqual(self.owner.detect(self.image)[0].text, "Hello world")
+            self.assertEqual(self.owner.detect(self.image).lines[0].text, "Hello world")
 
     def test_startup_timeout_reaps_process(self):
         self.owner.startup_timeout_seconds = 0.1
@@ -272,7 +355,7 @@ class TextDetectionWorkerTest(unittest.TestCase):
         self.assertIsNone(self.owner.pid)
         with patch.object(worker, "_worker_main", successful_worker):
             lines = self.owner.detect(self.image, cancel_event=Event())
-        self.assertEqual(lines[0].text, "Hello world")
+        self.assertEqual(lines.lines[0].text, "Hello world")
 
 
 if __name__ == "__main__":

@@ -116,6 +116,25 @@ class CapturedDialogFrame:
             else None,
         )
 
+    @property
+    def dialogue_text_region(self) -> DialogRegion | None:
+        """Map the actual dialogue body into the canonical window image."""
+        if self.capture_region is None or self.canonical_image is None:
+            return None
+        if self.ocr_regions is None:
+            return self.capture_region
+        width, height = self.canonical_image.size
+        left, top, right, bottom = self.capture_region._pixel_box(width, height)
+        x, y, end_x, end_y = self.ocr_regions.dialogue._pixel_box(
+            right - left, bottom - top
+        )
+        return DialogRegion(
+            (left + x) / width,
+            (top + y) / height,
+            (end_x - x) / width,
+            (end_y - y) / height,
+        )
+
 
 class DialogLayoutSession:
     """Retain detected geometry until the ordered capture context changes."""
