@@ -362,7 +362,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish the requested Mac verification pass below. Indexed Mac
+Next action: fix the reproduced early-prefix ownership defect in RUN-16-01 before
+repeating the Mac verification pass below. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
@@ -389,16 +390,35 @@ deferred implementation; centered-caption checks are included.
       On Windows10, exercise packaged FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **RUN-16-01 - Verify PlotVoc original speech in the next native run.**
+- [ ] **RUN-16-01 - Fix early-prefix ownership before PlotVoc qualification.**
+      Native session6eabf3d43bf34a7686c1dcb0299badf0 reproduced generated53
+      after Marcus58 while the actual quote59 was still typewriting. The early
+      resolver treats OCR fallback Narrator as a visible name, excludes Vertin59,
+      selects old Narrator53 and mutates current_match before full OCR. Replaying
+      the recorded prefixes reproduces58 ->53; full OCR directly after58 correctly
+      selects59 even without measured duration. The full-text-only regression
+      therefore missed the failing path. Approved PlotVoc availability and native
+      duration are present; do not change the extractor rule or infer a hidden name.
+      Implementation plan for agreement:
+      - use the same visible-speaker semantics and candidate authority for early
+        and full matching, preserving original-audio competitors;
+      - keep speculative prefix queries from changing ownership when no safe
+        playable candidate is accepted; check audio readiness after identity;
+      - migrate replay's early resolver to the same ordering instead of filtering
+        candidates by generated-audio availability before uniqueness;
+      - replay actual typewriter observations with timed and untimed59, and retain
+        position when early audio is unavailable. Then repeat the native gate.
       In Hansel and Gretel, continue from Marcus100631:58 to the repeated quote59,
       `What really scared me...`. Confirm that the game's PlotVoc speech plays
       without our earlier Narrator recording53 or live synthesis overlapping it,
       and that automatic advance respects the original audio. The shared policy,
       native WEM duration, old-catalog preparation, archived-audio precedence and
-      controller routing now pass offline checks; do not repeat those as research.
+      full-text controller routing pass offline checks; add the missing incremental
+      reading path rather than repeating producer research.
       For cue groups with delayed starts, verify the scheduled end against actual
       playback before closing their native timing gate. Book reading remains out
-      of scope. Local evidence: plotvoc-main-story-20261117/results.json.
+      of scope. Local evidence: hansel-plotvoc-live-20261117/results.json and
+      quote-prefix evidence; earlier producer checks: plotvoc-main-story-20261117.
 
 - [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
       Remaining integration gate: use GUI Stop while first-time original-duration
