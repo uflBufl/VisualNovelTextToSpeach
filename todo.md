@@ -378,6 +378,34 @@ deferred implementation; centered-caption checks are included.
       together with indexed matching, tracker and controller regressions before
       the next game run. Reproduced on addbb8eb; no implementation yet.
 
+- [ ] **Reconcile indexed-discovery regression expectations with current context.**
+      The full Mac suite fails the duplicate-position and named-speaker tests in
+      tests.test_indexed_story_discovery. The former explicitly selects a current
+      chapter; the latter retains the context published by its first lookup.
+      Current matching intentionally uses that context. Separate fresh-context
+      ambiguity from current-position resolution in these fixtures and preserve
+      both behaviors before treating either assertion as a product defect.
+- [ ] **Diagnose prepared-audio restoration in the fresh-install journey.**
+      tests.test_fresh_install_gui_journey reproducibly fails its second process:
+      settings and voice bindings restore, but the production backend exposes no
+      generated entries and tries live synthesis for the prepared narrator line.
+      Trace discovery and current-voice eligibility against the saved fixture;
+      establish whether restoration or its fixture is stale before choosing a
+      repair. Gate: restart plays the expected prepared PCM without live synthesis.
+- [ ] **Restore the spoken-current-line boundary OCR regression gate.**
+      tests.test_prepared_current_ocr_recovery reproducibly leaves `cella.` raw
+      instead of recovering the fully observed `cellar.` after playback. Trace
+      retained completion evidence and controller matching, preserving the guards
+      against completing an unseen line or replaying accepted speech. Gate: the
+      whole module passes through the actual controller/reader fixture.
+- [ ] **Isolate OCR lifecycle in the full-suite punctuation test.**
+      The visual-ellipsis transition in tests.test_live_frame_ocr_evidence reports
+      `OCR service is shutting down` only in the full remainder; the module passes
+      alone. Retain the full-discovery order and find the owner that leaves the
+      service closed before sparse warmup. Repair fixture/startup ownership without
+      reopening a deliberately shut-down production service on an arbitrary OCR
+      call. Gate: full-order execution passes, not only an isolated retry.
+
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption
       return in Hansel. Source54 is a central timed caption, not lower dialogue;
