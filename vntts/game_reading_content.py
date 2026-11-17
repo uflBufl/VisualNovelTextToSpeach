@@ -119,14 +119,27 @@ class GameReadingContent:
             if not cancellation.is_set():
                 progress(message)
 
-        path = provider.prepare_reading_source_audio(
-            catalog.revision, chapter, cancellation, progress=report
-        )
-        if cancellation.is_set():
-            raise GameContentImportCancelled(
-                "Reading source-audio preparation cancelled"
+        try:
+            path = provider.prepare_reading_source_audio(
+                catalog.revision, chapter, cancellation, progress=report
             )
-        return ChapterVoicePreloader.load_optional(path)
+            if cancellation.is_set():
+                raise GameContentImportCancelled(
+                    "Reading source-audio preparation cancelled"
+                )
+            prepared = ChapterVoicePreloader.load_optional(path)
+            if cancellation.is_set():
+                raise GameContentImportCancelled(
+                    "Reading source-audio preparation cancelled"
+                )
+        except GameContentImportCancelled:
+            report("Original game speech timing cancelled")
+            raise
+        except Exception as error:
+            report(f"Original game speech timing failed: {error}")
+            raise
+        report("Original game speech timing ready")
+        return prepared
 
     def prepare_original(
         self,

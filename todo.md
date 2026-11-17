@@ -431,9 +431,8 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: align Reading messages with committed work below. Include the remaining
-search-latency, foreign-donor and background-preparation Mac gates in the next relevant
-run. Do not repeat ordinary
+Next action: finish the remaining search-latency, foreign-donor and background-
+preparation Mac gates in the next relevant run. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
@@ -447,6 +446,9 @@ acceptance is outside this pass. Book reading remains deferred.
       Preserve natural game transitions rather than holding a caption for admission.
       Retain route/control/media proof and close app/game afterward. Remove only
       qualified requirements; preserve unexercised gates and real failures.
+      Observe that unaccepted menu OCR cannot announce narrator fallback and
+      original-speech timing progress reaches its terminal state; GUI Stop must
+      suppress late notices while a subsequent one-time read remains usable.
 
 - [ ] **Qualify repaired pre-OCR source search on Mac.** During the next relevant
       native chapter switch, verify fresh dialogue/central-caption processing after
@@ -457,13 +459,6 @@ acceptance is outside this pass. Book reading remains deferred.
       matching; full native timing and historical R1 remain unqualified. The
       independently recovered native-3805 is not evidence for more recovery code.
       Evidence: `pre-ocr-latency-20261117/report.md` and `comparison.json`.
-- [ ] **Finish original-speech timing progress.** Replace stale
-      `Measuring selected game speech...` after duration preparation completes.
-      Publish timing-specific ready/failure/cancellation after provider and load
-      finish; retain Stop/catalog-removal cancellation suppression, cache/retry
-      semantics and the original exception. Validate success, error and late
-      completion; then commit this independently from fallback notices.
-
 - [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
       During the next actual content update, verify visible progress for rebuilding
       an already imported catalog on its existing background path. Initial index

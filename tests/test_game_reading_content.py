@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts_artifacts.story_index import write_story_index_document
 
@@ -112,6 +112,151 @@ class GameReadingContentTest(unittest.TestCase):
         )
         self.assertTrue(measured.has_full_source_audio)
         self.provider.prepare_reading_source_audio.assert_called_once()
+
+    def test_preparation_replaces_measuring_status_after_loading_verified_timing(self):
+        statuses = []
+        loading, release = Event(), Event()
+        self.addCleanup(release.set)
+        prepared = ChapterVoicePreloader.load_optional(self.timed["1"])
+
+        def prepare(revision, chapter, cancellation, *, progress):
+            progress("Measuring selected game speech...")
+            return self.timed[chapter]
+
+        def load(path):
+            loading.set()
+            self.assertTrue(release.wait(2))
+            return prepared
+
+        self.provider.prepare_reading_source_audio.side_effect = prepare
+        with patch.object(ChapterVoicePreloader, "load_optional", side_effect=load):
+            future = self.content.request_originals(
+                self.catalog, "1", Event(), statuses.append
+            )
+            self.assertTrue(loading.wait(2))
+            self.assertEqual(statuses, ["Measuring selected game speech..."])
+            release.set()
+            self.assertIs(future.result(timeout=2), prepared)
+        self.assertEqual(statuses[-1], "Original game speech timing ready")
+        self.assertIs(self.request(), future)
+        self.assertEqual(statuses.count("Original game speech timing ready"), 1)
+
+    def test_preparation_failure_replaces_measuring_status_and_retains_error(self):
+        for chapter, failure_stage in (("1", "provider"), ("2", "load")):
+            with self.subTest(failure_stage=failure_stage):
+                statuses = []
+                error = TimeoutError("decoder timeout")
+
+                def prepare(revision, chapter, cancellation, *, progress):
+                    progress("Measuring selected game speech...")
+                    if failure_stage == "provider":
+                        raise error
+                    return self.timed[chapter]
+
+                self.provider.prepare_reading_source_audio.side_effect = prepare
+                with patch.object(
+                    ChapterVoicePreloader, "load_optional", side_effect=error
+                ):
+                    future = self.content.request_originals(
+                        self.catalog, chapter, Event(), statuses.append
+                    )
+                    with self.assertRaises(TimeoutError) as raised:
+                        future.result(timeout=2)
+                self.assertIs(raised.exception, error)
+                self.assertEqual(
+                    statuses,
+                    [
+                        "Measuring selected game speech...",
+                        "Original game speech timing failed: decoder timeout",
+                    ],
+                )
+
+    def test_cancelled_preparation_cannot_replace_newer_status(self):
+        for cancel in ("parent", "stop", "catalog", "close"):
+            for fail in (False, True):
+                with self.subTest(cancel=cancel, fail=fail):
+                    content = GameReadingContent(self.factory)
+                    entered, release = Event(), Event()
+                    self.addCleanup(content.wait)
+                    self.addCleanup(content.close)
+                    self.addCleanup(release.set)
+                    statuses = []
+                    parent = Event()
+                    error = TimeoutError("decoder timeout")
+
+                    def prepare(revision, chapter, cancellation, *, progress):
+                        progress("Measuring selected game speech...")
+                        entered.set()
+                        self.assertTrue(release.wait(2))
+                        progress("late decoder progress")
+                        if fail:
+                            raise error
+                        return self.timed[chapter]
+
+                    self.provider.prepare_reading_source_audio.side_effect = prepare
+                    future = content.request_originals(
+                        self.catalog, "1", parent, statuses.append
+                    )
+                    self.assertTrue(entered.wait(2))
+                    if cancel == "parent":
+                        parent.set()
+                    elif cancel == "stop":
+                        content.cancel_pending()
+                    elif cancel == "catalog":
+                        content.retain_catalogs(())
+                    else:
+                        content.close()
+                    statuses.append("Reading and speech stopped")
+                    release.set()
+                    expected = TimeoutError if fail else GameContentImportCancelled
+                    with self.assertRaises(expected):
+                        future.result(timeout=2)
+                    self.assertEqual(
+                        statuses,
+                        [
+                            "Measuring selected game speech...",
+                            "Reading and speech stopped",
+                        ],
+                    )
+
+    def test_provider_cancellation_replaces_measuring_status_and_retains_error(self):
+        statuses = []
+        error = GameContentImportCancelled("provider cancelled")
+
+        def prepare(revision, chapter, cancellation, *, progress):
+            progress("Measuring selected game speech...")
+            raise error
+
+        self.provider.prepare_reading_source_audio.side_effect = prepare
+        future = self.content.request_originals(
+            self.catalog, "1", Event(), statuses.append
+        )
+        with self.assertRaises(GameContentImportCancelled) as raised:
+            future.result(timeout=2)
+        self.assertIs(raised.exception, error)
+        self.assertEqual(statuses[-1], "Original game speech timing cancelled")
+
+    def test_cancellation_while_loading_does_not_report_timing_ready(self):
+        statuses = []
+        parent = Event()
+        prepared = ChapterVoicePreloader.load_optional(self.timed["1"])
+
+        def prepare(revision, chapter, cancellation, *, progress):
+            progress("Measuring selected game speech...")
+            return self.timed[chapter]
+
+        def load(path):
+            parent.set()
+            return prepared
+
+        self.provider.prepare_reading_source_audio.side_effect = prepare
+        with patch.object(ChapterVoicePreloader, "load_optional", side_effect=load):
+            future = self.content.request_originals(
+                self.catalog, "1", parent, statuses.append
+            )
+            with self.assertRaises(GameContentImportCancelled):
+                future.result(timeout=2)
+        self.assertEqual(statuses, ["Measuring selected game speech..."])
 
     def test_completed_timing_survives_stop_and_provider_is_reused_for_next_chapter(
         self,
