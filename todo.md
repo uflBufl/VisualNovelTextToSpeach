@@ -480,6 +480,32 @@ preparation Mac gates in the next relevant run. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
+- [ ] **Repair cancellation reported as a synthesis failure.** Native GUI Stop
+      during cold original-duration preparation also stopped an active MOSS render,
+      but briefly announced `isolated worker stopped during render` after the
+      stopped status. In the shared speech worker, recheck cancellation after the
+      blocking frame receive and put first-chunk acquisition under the same
+      cancellation/cleanup handling as subsequent chunks. Preserve real EOF
+      failures without cancellation. Cover cancellation+EOF before first PCM,
+      cancellation after a chunk and a fresh retry; then repeat the bounded GUI
+      Stop check. Existing native evidence shows no late old-run keys or PCM and
+      successful retry, but the cancellation UX gate remains open. Evidence:
+      `combined-native-20261118/cold-stop-summary.json`.
+
+- [ ] **Investigate story-layout admission reading chapter-map labels.** The
+      native chapter switch read `Finished Page Hansel ai go 0 |` as live narrator
+      speech. A detected box inside the old lower dialogue crop counts as dialogue
+      presence even after the story layout disappears; stable unmatched OCR then
+      reaches the ordinary live fallback. Design a generic layout/content gate
+      before new speech admission, priming/notices and navigation. Preserve actual
+      source-free dialogue and accepted queued speech; do not require every line
+      to match a catalog or blacklist game-specific titles. Compare the retained
+      map frame with source-free dialogue and central captions before choosing
+      the repair; verify menu -> story return without a duplicate. This is the
+      ordinary-dialogue instance of the deferred layout-admission requirement,
+      not a reason to implement book reading. Evidence:
+      `combined-native-20261118/phaseA-summary.json` and `menu-offending-frame.png`.
+
 - [ ] **Current Mac verification pass.** Finish the foreign-only donor check
       in RUN-11-UI-02, then its background-preparation gate and the cold GUI
       cancellation gate below.
