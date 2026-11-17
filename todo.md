@@ -362,11 +362,18 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: combine the remaining automatic prepared-reading gates in
-RUN-11-UI-02 with the genuinely cold timing cancellation in RUN-16-02. Indexed
-Mac Read/restart now passes; do not repeat that segment just to measure matching.
-Supplemental voice coverage and ASR changes remain deferred; resource
-classification cannot suppress narration. Windows acceptance needs its own host.
+Next action: finish the requested Mac verification pass below. Indexed Mac
+Read/restart now passes; do not repeat that segment just to measure matching.
+Windows acceptance is outside this pass. Book reading remains a separate,
+deferred implementation; centered-caption checks are included.
+
+- [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
+      and unique-successor identification together with the centered-caption
+      return in Hansel. Source54 is a central timed caption, not lower dialogue;
+      use full-window observation when seeking it. Then exercise the remaining
+      chapter-switch and GUI cancellation gates below. Retain diagnostic
+      route/control/media proof, stop recordings and close the app/game afterward.
+      Remove qualified requirements; preserve unexercised gates and real failures.
 
 - [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
       During the next actual content update, verify visible progress for rebuilding
@@ -384,11 +391,13 @@ classification cannot suppress narration. Windows acceptance needs its own host.
       key timing and successful source correlation did not detect this duplicate.
       Root cause: extractor resolves story_audio_cues separately, but source-audio
       eligibility, duration and generation policy consider only the primary voice.
-      Reading and ASR changes are explicitly deferred. Before implementation,
-      agree proof of full text coverage: voice-named resources also contain breaths,
-      laughs and barking over narration, so audio_kind=voice_candidate is not proof.
-      Then project verified availability/media/duration into preparation, discovery
-      and Read while preserving ordinary sound effects and unvoiced53 eligibility.
+      The installed extractor only adds audio_kind=voice_candidate; the actual
+      imported and reclassified59 still have top-level absent/unknown audio and
+      remain TTS-eligible. Implement the proposed main-story rule that an installed
+      plotvoc cue counts as full original speech without ASR. Project its effective
+      availability/media/duration into preparation, discovery and Read, preserving
+      ordinary sound effects, unvoiced53 and side-story ASR policy. This routing
+      integration is still pending; rebuilding with classification alone cannot fix it.
       Check actual58 ->59 matching too: without bounded sequence context the equal
       quotes can remain ambiguous, and equivalent-speech reuse may select prepared53
       even after59 is marked original. Update derived catalogs/preparation without
@@ -400,14 +409,23 @@ classification cannot suppress narration. Windows acceptance needs its own host.
       retain main-story no-ASR policy and anecdote/character-story ASR policy.
 
 - [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
-      Ordinary Finished Page Stop/Read and reuse now pass on the native host.
-      Remaining gate: Stop while first-time original-duration analysis is active,
-      then Read again without late publication/playback/keys. Establish actual
-      cache-miss evidence rather than claiming the current persisted warm timing
-      exercises it. Keep this with the next relevant run after RUN-16-03; no full
-      chapter replay just for the lifecycle gate. Supplemental cues remain deferred
-      in RUN-16-01. Evidence: prefix-repair-native-20261116,
-      session2ffd301983694b9598da05a4388ff378.
+      Remaining integration gate: use GUI Stop while first-time original-duration
+      analysis is active, then Read again without late publication/playback/keys.
+      Use a source that actually requests timing, not an already timed archived
+      dialogue. Do not repeat the real-decoder provider cancellation/retry/reuse
+      checks or ordinary native Stop/Read; those now pass. Keep this with the next
+      relevant run, not a separate full chapter. Evidence:
+      mac-remaining-qualification-20261117/cold-duration.json and results.json.
+
+- [ ] **Clean duration-decoder temporary media after cancellation.** Real cold
+      cancellation left an r1999-source-duration-* directory containing WEM/WAV
+      after the worker received SIGTERM. The child owns TemporaryDirectory, so
+      forced termination bypasses its cleanup. Move temporary-media ownership to
+      the parent request using existing subprocess/temporary-directory owners;
+      remove it only after the worker and decoder are drained. Check the same
+      publisher consumers and retain the cancellation error. Do not delete
+      valid duration caches or unrelated temporary directories. Evidence:
+      mac-remaining-qualification-20261117/cold-duration.json.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
