@@ -78,9 +78,9 @@ Recheck archived findings against current main before implementation.
 - [ ] After an unavailable optional announcement, change to a working narrator
       or engine and verify retry. Suppressing repeated failures is not external
       Pocket cloning authorization.
-- [ ] Qualify guarded one-missing-edge-glyph recovery on an already fully observed
-      current line, while genuinely unreadable frames keep waiting. Keep this
-      separate from the new restored-layout readiness defect above.
+- [ ] Qualify bounded OCR recovery on an already fully observed current line,
+      while genuinely unreadable frames keep waiting. Keep this separate from
+      the restored-layout readiness defect above.
 - [ ] Verify explicit display capture on Windows. The supplied recording and
       support snapshots all identify selected-window capture.
 
@@ -104,8 +104,9 @@ Recheck archived findings against current main before implementation.
       for zero-confidence/nonempty-wrong OCR, speaker hints and replay audit.
       Remove them only when shared recognition qualifies those same cases; the
       sparse recognizer still confuses dots with bullets in some font controls.
-- [ ] Qualify unknown-chapter cross-chapter audio reuse with a fresh context;
-      the Hansel rerun reached54 after the chapter was already identified.
+- [ ] Qualify unknown-chapter cross-chapter audio reuse with a fresh context:
+      begin on an ambiguous duplicate and identify the actual chapter only from
+      a unique subsequent line.
 - [ ] Verify genuinely partial originals separately in anecdotes/character
       stories, which retain ASR. Continue the unfinished RUN-11-UI-02 gate.
 
@@ -435,42 +436,21 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: finish native qualification of the shared matcher and the remaining
-Mac verification gates. Indexed Mac
-Read/restart now passes; do not repeat that segment just to measure matching.
-Windows acceptance is outside this pass. Book reading remains a separate,
-deferred implementation; centered-caption checks are included.
-
-- [ ] **RUN-17-02 - Qualify original speech after OCR confusion in the native run.**
-      In the next combined Hansel pass, verify source100631:57 uses original
-      voice610017348 without overlapping live MOSS when OCR confuses `I'll` with
-      `[1l`. Exercise typed prefixes and previously-complete occurrence evidence
-      without premature completion or repeat speech. Keep unreadable-frame waiting.
-      Use the existing current Mac gates below for centered-caption return,
-      Stop/cancellation and source/prepared/live transitions. Evidence for locating
-      the defect: native-followup-20261117,
-      session f23c15bf98d240118c2f2e4b4f7b7426. Local replay and route results are in
-      `.codex/investigations/shared-ocr-matcher-20261117/`; they do not close native
-      acceptance. No additional glyph table or OCR fallback is planned.
+Next action: finish fresh-context prepared-audio discovery and the remaining Mac
+verification gates below. Do not repeat ordinary Read/restart or the full Hansel
+chapter solely to measure matching. Windows acceptance is outside this pass.
+Book reading remains a separate, deferred implementation.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
-      and unique-successor identification together with the centered-caption
-      return in Hansel. Source54 is a central timed caption, not lower dialogue;
-      source59 repeats a quote in the lower dialogue, so it does not qualify
-      central-caption return. Initialize reading before seeking the timed segment:
-      disable automatic advance on an ambiguous opening observation, wait until
-      ready, verify current_match is still unset, then Stop and seek. Do not start
-      a cold controller only when53 appears; that initialization outlasted53/54
-      in the recorded attempt. Preserve the game's automatic transitions, use
-      full-window observation and never hold the game to force admission.
-      The latest warm attempt also started too late:53 was already visible in
-      video before the manual key, and the first reader frame was56. Trigger Read
-      from the bounded observer when53 appears, without a model/tool round trip
-      after seeking52; do not treat this orchestration miss as a matcher failure.
-      Then exercise the remaining
-      chapter-switch and GUI cancellation gates below. Retain diagnostic
-      route/control/media proof, stop recordings and close the app/game afterward.
-      Remove qualified requirements; preserve unexercised gates and real failures.
+      and unique-successor identification in RUN-11-UI-02, then its chapter-switch
+      and background-preparation gates and the cold GUI cancellation gate below.
+      Begin the ambiguous observation before a chapter has been identified; a
+      same-chapter Read/restart cannot qualify fresh discovery. For timed central
+      observations, warm the engine before seeking and start ordinary Read from
+      a bounded observer without a tool/model round trip after the trigger.
+      Preserve natural game transitions rather than holding a caption for admission.
+      Retain route/control/media proof and close app/game afterward. Remove only
+      qualified requirements; preserve unexercised gates and real failures.
 
 - [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
       During the next actual content update, verify visible progress for rebuilding
@@ -515,9 +495,8 @@ deferred implementation; centered-caption checks are included.
       accessible ordinary-dialogue story; book anecdotes need their own reader.
       User opened 6TH-23 Hansel and Gretel. Its canonical duplicate candidates
       100631:54/101014:96 are registered for actual discovery; current-voice audio
-      for unique successor 100631:55 is prepared. Native ordinary Read reached
-      both lines, but the chapter was already identified; fresh-context reuse
-      remains unqualified. Begin the targeted check on the short repeated phrase.
+      for unique successor 100631:55 is prepared. Begin the targeted check on the
+      short repeated phrase with no prior chapter ownership.
       7TH-02 The Blue and the Grey (Bang!) remains a metadata-only alternative.
       Prepare the repeated phrase only from the other chapter
       and verify reuse without anchoring there, followed by unique identification
@@ -542,9 +521,9 @@ deferred implementation; centered-caption checks are included.
       `.codex/investigations/story-region-20261110/terminal-check-e4125.md`.
       Remaining live gates:
       - source-free TTS without catalog/resources, using an available narrator;
-      - multiple captions admitted while earlier accepted speech is still queued,
-        then return to unchanged lower dialogue without repetition. The current
-        chapter ends after the quotes, so use a suitable scene for the return;
+      - after queued captions, restore the same previously-read lower dialogue
+        without repeating it or retaining stale ownership; use a scene that
+        actually restores that unchanged text;
       - compare discovery enabled/disabled on the same content under fresh
         background generation; loaded prepared terminal playback alone does not
         qualify every adaptive-caption path.
