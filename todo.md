@@ -6,7 +6,7 @@ Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support
 bundle exported after restart, build `579f9a70`, 2026-11-17. The crash session
 is the nested bundle's `previous-session.json`; the separately supplied previous
 session and November8 pregeneration report are older evidence. This run predates
-the local trust-after-admission changes.
+the trust-after-admission changes.
 
 - [ ] Localize and repair the Python-process access violation at17:40:54 MSK:
       Windows reports `python314.dll`, `0xc0000005`, offset `0xb6616`, PID17800.
@@ -16,18 +16,18 @@ the local trust-after-admission changes.
       Do not attribute the fault to Rust, MOSS or CPython from the module alone.
       Gate: identified faulting boundary, focused regression and Windows playback
       through the failing scene with normal stop/teardown.
-- [ ] Repair completed-dialogue holds after chapter315601 lines77 and80. Audio
-      completes, but no automatic key is dispatched for roughly86s and27s;
-      capture/OCR continues with low-confidence invalidations, canonical-held
-      observations and missing completion evidence. Trace readiness/layout
-      recovery in `live.py` and `live_tracking.py`; exact bad pixels are absent,
-      so the archive does not prove a wrong crop or artwork identity. Gate:
-      completed current dialogue can recover navigation from fresh evidence,
-      without blind timeout keys, duplicate dispatch or late keys after Stop.
+- [ ] Qualify completed-dialogue navigation on Windows through chapter315601
+      lines77 and80 with intermittent uncertain OCR. Gate: fresh confirmation
+      of the current dialogue resumes the unsent transition after audio finishes;
+      uncertainty alone never dispatches a key, and changing dialogue/layout,
+      failed speech or Stop prevents an old request from firing. Check both
+      prepared Reading and direct screen reading, without repeated speech or
+      duplicate keys. Capture a new support export if a hold remains; the old
+      archive has no pixels proving a wrong crop or artwork identity.
 - [ ] Reproduce the unresolved98-character Reading admission between prepared
       lines72 and74. It takes live Pocket twice, fails because voice cloning is
       unavailable, and blocks navigation until Stop/restart. This is required
-      fallback speech, separate from speculative priming below. Establish why
+      fallback speech, separate from optional voice warm-up. Establish why
       prepared matching did not admit the line before changing route/error
       handling; no admitted line ID or raw text proves it was line73. Gate:
       available prepared speech is selected when justified by current text;
@@ -47,14 +47,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       worker without restarting the application. Automated protocol/lifecycle
       regressions and a pinned-SDK public-asset smoke do not qualify the actual
       gated download or Windows browser interaction.
-- [ ] Keep speculative voice priming from surfacing as repeated Reading failures
-      when the accepted route uses prepared audio. Fresh startup errors come from
-      `_voice_prime_finished` forwarding Pocket cloning errors to the general
-      error handler; a separate optional speaker announcement also fails. Carry
-      voice/route context into the outcome and handle optional preparation at its
-      actual boundary. Gate: prepared playback proceeds without repeated blocking
-      failure reports, while a genuinely required unavailable live voice reports
-      an actionable error. Do not grant gated-model access automatically.
 - [ ] Repair process-loopback clock handling across `audio_buffer.rs`, `caf.rs`
       and `reading_diagnostics_analysis.py`. Both captures accept one480-frame
       packet then fail `Discontinuous process audio source clock`; the rejected

@@ -1,7 +1,7 @@
 """Prepared speech does not require a working optional live narrator."""
 
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,9 +166,11 @@ class PreparedVoiceCapabilitiesTest(unittest.TestCase):
     def announcement_controller(self):
         backend = self.create_backend()
         self.errors = []
+        self.statuses = []
         controller = AppController(
             AppSettings(speaker_announcement_mode="all-speakers"),
             error_handler=self.errors.append,
+            status_handler=self.statuses.append,
         )
         controller.speech_backend = backend
         backend.live_backend.prepare_playback.return_value = PreparedPlayback(
@@ -177,6 +179,7 @@ class PreparedVoiceCapabilitiesTest(unittest.TestCase):
         return controller
 
     def test_configuration_failure_preserves_dialogue_and_does_not_mark_spoken(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         controller = self.announcement_controller()
         chunk = SpeechChunk(1, "Ada", "Hello.", ordinal=1, explicit_replay=True)
         dialogue = PreparedPlayback(object(), None, None, None, "generated")
@@ -209,9 +212,11 @@ class PreparedVoiceCapabilitiesTest(unittest.TestCase):
         self.assertEqual(play.call_count, 2)
         self.assertIs(play.call_args.args[2], dialogue)
         self.assertIsNone(controller.last_visible_speaker_key)
-        self.assertEqual(len(self.errors), 1)
-        self.assertIn("authenticate", str(self.errors[0]))
-        self.assertIn("dialogue will continue", str(self.errors[0]))
+        self.assertEqual(self.errors, [])
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("authenticate", logs.output[0])
+        self.assertIn("dialogue will continue", logs.output[0])
+        self.assertTrue(any("authenticate" in status for status in self.statuses))
         self.assertEqual(
             controller._prepare_speaker_announcement(chunk, dialogue), (None, None)
         )
@@ -233,17 +238,90 @@ class PreparedVoiceCapabilitiesTest(unittest.TestCase):
                 )
                 live.prepare_playback.side_effect = failure
                 chunk = SpeechChunk(1, "Ada", "Hello.", ordinal=1)
-                with patch.object(
-                    controller,
-                    "_materialize_live_route",
-                    side_effect=lambda route, _chunk: route,
+                with (
+                    patch.object(
+                        controller,
+                        "_materialize_live_route",
+                        side_effect=lambda route, _chunk: route,
+                    ),
+                    self.assertLogs("vntts.controller", level="WARNING") as logs,
                 ):
                     controller._prepare_live_chunk(chunk)
                     controller._prepare_live_chunk(chunk)
                 expected = 1 if isinstance(failure, TTSConfigurationError) else 2
                 self.assertEqual(live.prepare_playback.call_count, expected)
-                self.assertEqual(len(self.errors), expected)
+                self.assertEqual(self.errors, [])
+                self.assertEqual(len(logs.records), expected)
+                self.assertTrue(all(str(failure) in item for item in logs.output))
                 self.assertIsNone(controller.last_visible_speaker_key)
+
+    def test_failed_speculative_prime_keeps_prepared_speech_and_required_live_error(
+        self,
+    ):
+        controller = self.announcement_controller()
+        controller.settings = AppSettings(speaker_announcement_mode="off")
+        backend = controller.speech_backend
+        controller.voice_router = SimpleNamespace(
+            registry=backend.live_backend.registry
+        )
+        future = Future()
+        controller.speech_executor = Mock()
+        controller.speech_executor.submit.return_value = future
+        self.assertTrue(controller._prime_observed_voice("Ada", "Unmatched prefix"))
+        failure = TTSConfigurationError("Pocket cloning unavailable")
+        with self.assertLogs("vntts.controller", level="WARNING") as logs:
+            future.set_exception(failure)
+        self.assertEqual(controller.voice_prime_futures, set())
+        self.assertIn("Ada", logs.output[0])
+        self.assertIs(logs.records[0].exc_info[1], failure)
+        self.assertFalse(controller._prime_observed_voice("Ada", "Unmatched prefix"))
+        controller.speech_executor.submit.assert_called_once()
+
+        dialogue = PreparedPlayback(object(), None, None, None, "generated")
+        backend.prepare_route = Mock(return_value=dialogue)
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        chunk = SpeechChunk(1, "Ada", "Hello.", ordinal=1)
+        with (
+            patch.object(
+                controller,
+                "_materialize_live_route",
+                side_effect=lambda route, _chunk: route,
+            ),
+            patch.object(
+                controller,
+                "_dispatch_live_playback",
+                return_value=PlaybackOutcome(PlaybackStatus.COMPLETED, 0.0),
+            ) as play,
+        ):
+            self.assertIs(controller._prepare_live_chunk(chunk), dialogue)
+            self.assertTrue(controller._play_live_chunk(chunk, dialogue))
+        self.assertIs(play.call_args.args[2], dialogue)
+        self.assertEqual(self.errors, [])
+        controller.speech_backend = backend.live_backend
+        backend.live_backend.prepare_playback.side_effect = failure
+        with self.assertRaises(TTSConfigurationError) as caught:
+            controller._prepare_live_chunk(chunk)
+        self.assertIs(caught.exception, failure)
+
+    def test_cancelled_or_successful_prime_cleans_up_without_warning(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                controller = self.announcement_controller()
+                controller.voice_router = SimpleNamespace(
+                    registry=controller.speech_backend.live_backend.registry
+                )
+                future = Future()
+                controller.speech_executor = Mock()
+                controller.speech_executor.submit.return_value = future
+                self.assertTrue(controller._prime_observed_voice("Ada", "Unmatched"))
+                with self.assertNoLogs("vntts.controller", level="WARNING"):
+                    if cancel:
+                        future.cancel()
+                    else:
+                        future.set_result(True)
+                self.assertEqual(controller.voice_prime_futures, set())
+                self.assertEqual(self.errors, [])
 
     def test_live_narrator_configuration_or_runtime_change_allows_retry(self):
         for change in (

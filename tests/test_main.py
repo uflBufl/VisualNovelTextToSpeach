@@ -3427,19 +3427,22 @@ class MainTest(unittest.TestCase):
         scheduler = ManualTimerScheduler()
         with patch("vntts.live.Timer", side_effect=scheduler.create):
             reader._maybe_auto_advance()
-            self.assertIsNotNone(reader.auto_advance_timer)
+            timer = reader.auto_advance_timer
+            self.assertIsNotNone(timer)
             controller._ocr_uncertain(OCRResult("Narrator", "noise", 0, "test", 1), 60)
             self.assertIsNone(reader.suppressed_generation)
             self.assertTrue(reader.observation_uncertain)
-            self.assertIsNone(reader.auto_advance_timer)
+            self.assertIs(reader.auto_advance_timer, timer)
+            timer.fire()
+            self.assertEqual(reader._advance_requested_generation, chunk.generation)
+            controller._auto_advance_dialog.assert_not_called()
             self.assertEqual(
                 controller._live_ocr_purpose(), "current-canonical-recheck"
             )
             reader._run_ocr(stopped_worker)
             self.assertFalse(reader.observation_uncertain)
             self.assertEqual(reader.active_generation, chunk.generation)
-            self.assertIsNotNone(reader.auto_advance_timer)
-            reader.auto_advance_timer.fire()
+            self.assertIsNone(reader.auto_advance_timer)
             controller._auto_advance_dialog.assert_not_called()
             reader.latest_frame = object()
             reader.latest_frame_captured_at = reader._advance_requested_at
@@ -7478,9 +7481,10 @@ class MainTest(unittest.TestCase):
             controller.speech_backend.prime,
             "Kamuta",
         )
-        future.add_done_callback.assert_called_once_with(
-            controller._voice_prime_finished
-        )
+        future.add_done_callback.assert_called_once()
+        callback = future.add_done_callback.call_args.args[0]
+        self.assertEqual(callback.func, controller._voice_prime_finished)
+        self.assertEqual(callback.args, ("Kamuta",))
 
     def test_voice_prime_submission_failure_does_not_mark_voice_as_primed(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
@@ -7490,9 +7494,10 @@ class MainTest(unittest.TestCase):
         future = Mock()
         controller.speech_executor.submit.side_effect = (failure, future)
 
-        with self.assertRaises(RuntimeError) as caught:
-            controller._prime_observed_voice("Kamuta")
-        self.assertIs(caught.exception, failure)
+        with self.assertLogs("vntts.controller", level="WARNING") as logs:
+            self.assertFalse(controller._prime_observed_voice("Kamuta"))
+        self.assertIs(logs.records[0].exc_info[1], failure)
+        self.assertIn("Kamuta", logs.output[0])
         self.assertEqual(controller.primed_voice_keys, set())
         self.assertEqual(controller.voice_prime_futures, set())
         controller.speech_backend.prime.assert_not_called()
@@ -7502,9 +7507,10 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.primed_voice_keys, {"kamuta"})
         self.assertEqual(controller.voice_prime_futures, {future})
         self.assertEqual(controller.speech_executor.submit.call_count, 2)
-        future.add_done_callback.assert_called_once_with(
-            controller._voice_prime_finished
-        )
+        future.add_done_callback.assert_called_once()
+        callback = future.add_done_callback.call_args.args[0]
+        self.assertEqual(callback.func, controller._voice_prime_finished)
+        self.assertEqual(callback.args, ("Kamuta",))
 
     def test_controller_primes_one_likely_chapter_voice_per_observation(self):
         preloader = Mock()
@@ -8559,6 +8565,7 @@ class MainTest(unittest.TestCase):
                         )
 
     def test_failed_speaker_announcement_does_not_skip_dialogue(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         backend = RecordingAnnouncementBackend(
             outcomes=[
@@ -8602,8 +8609,9 @@ class MainTest(unittest.TestCase):
                 ("Rhiannon", "Next line."),
             ],
         )
-        self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], AudioPlaybackError)
+        self.assertEqual(errors, [])
+        self.assertIsInstance(logs.records[0].exc_info[1], AudioPlaybackError)
+        self.assertIn("announcement device failed", logs.output[0])
 
     def test_discarded_speaker_announcement_is_prepared_again(self):
         backend = RecordingAnnouncementBackend()
@@ -8629,6 +8637,7 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(controller.last_visible_speaker_key)
 
     def test_speaker_announcement_exception_does_not_skip_dialogue(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         statuses = []
         backend = RecordingAnnouncementBackend(
@@ -8655,10 +8664,12 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(backend.play_calls), 2)
-        self.assertEqual(str(errors[0]), "announcement output crashed")
+        self.assertEqual(errors, [])
+        self.assertIn("announcement output crashed", logs.output[0])
         self.assertIn("continuing dialogue", statuses[-2])
 
     def test_speaker_announcement_prepare_exception_keeps_dialogue_route(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         statuses = []
         backend = FailingAnnouncementPrepareBackend()
@@ -8678,7 +8689,8 @@ class MainTest(unittest.TestCase):
 
         self.assertIsInstance(prepared, PreparedPlayback)
         self.assertEqual(prepared.payload.text, "Line.")
-        self.assertEqual(str(errors[0]), "announcement preparation crashed")
+        self.assertEqual(errors, [])
+        self.assertIn("announcement preparation crashed", logs.output[0])
         self.assertIn("continuing dialogue", statuses[-1])
 
     def test_live_prepare_keeps_two_chunk_scoped_voice_resolution_events(self):

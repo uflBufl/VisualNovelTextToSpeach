@@ -4277,15 +4277,19 @@ class AppController:
             and registry.resolve(character) is None
         ):
             return False
-        with self.voice_prime_lock:
-            if self.shutdown_requested.is_set():
-                return False
-            if key in self.primed_voice_keys:
-                return False
-            future = self.speech_executor.submit(prime, character)
-            self.primed_voice_keys.add(key)
-            self.voice_prime_futures.add(future)
-        future.add_done_callback(self._voice_prime_finished)
+        try:
+            with self.voice_prime_lock:
+                if self.shutdown_requested.is_set():
+                    return False
+                if key in self.primed_voice_keys:
+                    return False
+                future = self.speech_executor.submit(prime, character)
+                self.primed_voice_keys.add(key)
+                self.voice_prime_futures.add(future)
+        except Exception as error:
+            self._report_voice_prime_error(character, error)
+            return False
+        future.add_done_callback(partial(self._voice_prime_finished, character))
         return True
 
     def _prime_likely_chapter_voice(self, character: str, text: str) -> bool:
@@ -4304,7 +4308,7 @@ class AppController:
                 return True
         return False
 
-    def _voice_prime_finished(self, future: _ExecutorFuture) -> None:
+    def _voice_prime_finished(self, character: str, future: _ExecutorFuture) -> None:
         with self.voice_prime_lock:
             self.voice_prime_futures.discard(future)
         if future.cancelled():
@@ -4312,7 +4316,16 @@ class AppController:
         try:
             future.result()
         except Exception as error:
-            self.error_handler(error)
+            self._report_voice_prime_error(character, error)
+
+    def _report_voice_prime_error(self, character: str, error: Exception) -> None:
+        logging.getLogger(__name__).warning(
+            "Optional live voice warm-up failed for %s; speech will prepare "
+            "the voice if needed: %s",
+            character,
+            error,
+            exc_info=error,
+        )
 
     def _enqueue_dialog(self, character: str, text: str) -> bool:
         if self.shutdown_requested.is_set():
@@ -4894,9 +4907,6 @@ class AppController:
             except Exception as error:
                 announcement, announced_speaker = None, None
                 self._report_speaker_announcement_error(error)
-                self.status_handler(
-                    "Speaker announcement could not be prepared; continuing dialogue"
-                )
             self.last_audio_source_description = self._describe_audio_source(prepared)
             trace = self._build_audio_route_trace(chunk, prepared)
             self.last_audio_route_trace = trace
@@ -4952,9 +4962,6 @@ class AppController:
                     )
                 except Exception as error:
                     self._report_speaker_announcement_error(error)
-                    self.status_handler(
-                        "Speaker announcement failed; continuing dialogue"
-                    )
             audio = audio.dialogue
             if not reader.wait_until_playable(chunk):
                 self._finish_sequence_playback(sequence_lease, None)
@@ -5344,7 +5351,12 @@ class AppController:
                 "Speaker announcements are unavailable; dialogue will continue. "
                 f"Fix the live narrator configuration and restart reading setup: {error}"
             )
-        self.error_handler(error)
+        logging.getLogger(__name__).warning(
+            "Optional speaker announcement failed: %s", error, exc_info=error
+        )
+        self.status_handler(
+            f"Speaker announcement unavailable; continuing dialogue: {error}"
+        )
 
     def _speaker_announcement_candidate(
         self, mode: str, visible_speaker: str, dialogue_route: object
