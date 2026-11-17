@@ -570,7 +570,12 @@ class ChapterVoicePreloader:
         )
         representatives: dict[tuple[str, bool, str], ChapterDialogue] = {}
         for row in scope:
-            if row.line_id and row.text_sha256 and not row.has_original_speech:
+            if (
+                row.line_id
+                and row.text_sha256
+                and not row.has_original_speech
+                and _normalize_exact_text(row.text).startswith(exact_text)
+            ):
                 representatives.setdefault(
                     (
                         _normalize(row.speaker),
@@ -579,8 +584,7 @@ class ChapterVoicePreloader:
                     ),
                     row,
                 )
-        # Duplicate positions share speech content, while continuations still
-        # compete through the ordinary completeness guards.
+        # Exact speech reuse retains punctuation when testing typed continuations.
         diagnostics = self.last_resolution_diagnostics
         try:
             match = self.resolve_observation_among(

@@ -2162,6 +2162,55 @@ class GeneratedAudioTest(unittest.TestCase):
                 reserved.load.assert_not_called()
                 live.prepare_playback.assert_called_once_with("Ada", "Hello.")
 
+    def test_complete_ambiguous_narration_reuses_foreign_audio_without_ownership(self):
+        text = "She closes her eyes."
+        donor = self.create_resolver(speaker="Narrator", text=text).dialogue[0]
+        resolver = ChapterVoicePreloader(
+            (
+                replace(donor, line_id="current", chapter="Hansel"),
+                donor,
+                replace(
+                    donor,
+                    line_id="and",
+                    text="She closes her eyes and breathes.",
+                    text_sha256=text_sha256("She closes her eyes and breathes."),
+                ),
+                replace(
+                    donor,
+                    line_id="comma",
+                    text="She closes her eyes, striving to remember.",
+                    text_sha256=text_sha256(
+                        "She closes her eyes, striving to remember."
+                    ),
+                ),
+            )
+        )
+        self.assertEqual(
+            resolver.resolve_observation_among("", text, update_context=False).method,
+            "expected-ambiguous",
+        )
+        with TemporaryDirectory() as directory:
+            library, audio = self.create_library(Path(directory), text=text)
+            live = self.create_live_backend()
+            backend = GeneratedAudioFallbackBackend(
+                live, library, resolver, audio_output=FakeAudioOutput()
+            )
+            self.assertTrue(backend.has_resolved_route_in_live_mode("Narrator", text))
+            reserved = backend.reserve_equivalent_audio(
+                "Narrator", resolver.equivalent_speech_candidates("Narrator", text)
+            )
+            route = backend.prepare_route(
+                "Narrator", text, resolve_unidentified=False, prepared_audio=reserved
+            )
+            self.assertIsInstance(route, GeneratedAudioRoute)
+            self.assertEqual(route.prepared.audio_path, audio.resolve())
+            self.assertIsNone(route.trace.line_id)
+            self.assertEqual(route.trace.audio_line_id, donor.line_id)
+            self.assertIsNone(resolver.current_match)
+            self.assertIs(backend.play_route(route).status, PlaybackStatus.COMPLETED)
+            self.assertIsNone(resolver.current_match)
+            live.prepare_playback.assert_not_called()
+
     def test_explicit_line_id_routes_repeated_text_without_resolution_ambiguity(self):
         repeated = "The same words appear twice."
         resolver = ChapterVoicePreloader(

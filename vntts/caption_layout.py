@@ -43,11 +43,7 @@ def select_caption(
         ]
         if not matches:
             return frame
-        if (
-            len(matches) != 1
-            or matches[0][1].line is None
-            or not matches[0][1].complete
-        ):
+        if len(matches) != 1 or not matches[0][1].complete:
             return replace(frame, layout_kind="pending", navigation_allowed=False)
         candidates = (matches[0][0],)
     if len(candidates) != 1:

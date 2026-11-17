@@ -1619,13 +1619,20 @@ class AppController:
             if cancellation.is_set() or self.shutdown_requested.is_set():
                 raise StoryMatchingCancelled
             corrected, _ = corrections.correct_text(text)
-            return preloader.resolve_observation_among(
+            matched = preloader.resolve_observation_among(
                 "",
                 corrected,
                 update_context=False,
                 recover_crop_noise=True,
                 fully_observed_line_id=fully_observed_line_id,
             )
+            if not matched.complete and preloader.equivalent_speech_candidates(
+                "Narrator", corrected
+            ):
+                return StoryObservationMatch(
+                    None, "expected-equivalent-speech", complete=True
+                )
+            return matched
 
         try:
             selected = select_caption(

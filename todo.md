@@ -431,33 +431,21 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: fix the confirmed fresh-context equivalent-audio admission blocker
-below, then finish the remaining Mac verification gates. Do not repeat ordinary
+Next action: qualify fresh-context equivalent-audio admission below, then finish
+the remaining Mac verification gates. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
-- [ ] **RUN-17-03 - Read complete ambiguous captions without chapter ownership.**
-      Current05603de5 real-catalog preflight leaves fresh100631:54 correctly
-      ambiguous, but rejects both compatible prepared recordings and requires
-      live speech. The equivalent-audio completeness check removes punctuation,
-      so `She closes her eyes.` competes with `She closes her eyes and breathes.`
-      and comma continuations from other stories. Native8438444d8bc04a00add8b7534507a84b
-      also captured54 on time but routed those frames as visual-only. Replay of
-      both retained frames with the real detector finds one high-confidence54
-      block; select_caption rejects its ambiguous canonical match as pending,
-      preventing caption OCR before equivalent audio can be considered.
-      Review a scoped implementation plan with the user before changing it:
-      share exact equivalent-speech completeness evidence between caption selection
-      and audio admission, without assigning a source occurrence. Retain the
-      existing punctuation-preserving exact-text key for equivalent continuations,
-      genuine typewriter waiting, confidence, permitted areas, dialogue-body priority,
-      single-block selection and no navigation from captions. Leave shared fuzzy
-      canonical matching unchanged. Check retained real pixels, duplicate/successor,
-      real continuations and all layout/live/one-shot/replay/backend consumers,
-      then repeat bounded native fresh-context54 -> unique55. The native test
-      qualified fresh unique55, not ambiguous54 playback. Existing local54 and foreign101014:96
-      audio have the same checksum; retain user recordings and use audio_line_id
-      to prove any cross-chapter reuse. Evidence:
+- [ ] **RUN-17-03 - Qualify complete ambiguous captions without chapter ownership.**
+      Repeat bounded native fresh-context100631:54 -> unique55 after the shared
+      caption/equivalent-speech fix. The complete central `She closes her eyes.`
+      must reach OCR and prepared playback without assigning a canonical line or
+      chapter;55 must identify Hansel and continue once. Retain the natural game
+      transitions, confidence/area/body-priority guards and disabled caption
+      navigation. Record actual route identities and PCM; retained-frame replay
+      does not qualify native playback. Existing local54 and foreign101014:96
+      audio have the same checksum: preserve both and use audio_line_id to prove
+      any cross-chapter reuse. Evidence:
       `.codex/investigations/ambiguous-native-20261117/`.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse

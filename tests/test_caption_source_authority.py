@@ -160,6 +160,118 @@ class CaptionSourceAuthorityTest(unittest.TestCase):
         self.assertEqual(selected.layout_kind, "caption")
         self.assertEqual(self.controller.chapter_voice_preloader.current_match, current)
 
+    def test_equivalent_narrator_caption_keeps_context_unbound_until_unique_successor(
+        self,
+    ):
+        caption = row("caption", "She closes her eyes.", speaker="Narrator")
+        successor = row(
+            "successor", "The room falls silent.", speaker="Narrator", sequence=1
+        )
+        preloader = ChapterVoicePreloader(
+            (
+                caption,
+                successor,
+                row("duplicate", caption.text, speaker="Narrator", chapter="elsewhere"),
+                row(
+                    "and",
+                    "She closes her eyes and breathes.",
+                    speaker="Narrator",
+                    chapter="and-chapter",
+                ),
+                row(
+                    "comma",
+                    "She closes her eyes, then breathes.",
+                    speaker="Narrator",
+                    chapter="comma-chapter",
+                ),
+            )
+        )
+        self.controller.chapter_voice_preloader = preloader
+        self.controller.automatic_prepared_reading = True
+        preloader.last_resolution_diagnostics = {"match_result": "unchanged"}
+
+        selected = self.select(self.line(caption.text))
+        self.assertEqual(selected.layout_kind, "caption")
+        self.assertFalse(selected.navigation_allowed)
+        self.assertIsNone(preloader.current_match)
+        self.assertEqual(
+            preloader.last_resolution_diagnostics, {"match_result": "unchanged"}
+        )
+        self.worker.detect.assert_called_once_with(
+            self.image,
+            allowed_region=self.story,
+            covered_region=self.region,
+            dialogue_region=self.frame.dialogue_text_region,
+            cancel_event=self.cancel,
+        )
+        with patch.object(self.controller, "_refresh_prepared_audio"):
+            self.assertEqual(
+                recognize_live_frame(
+                    selected, result_resolver=self.controller._resolve_story_ocr_result
+                ),
+                ("Narrator", caption.text),
+            )
+            self.assertIsNone(preloader.current_match)
+            following = self.select(self.line(successor.text))
+            self.assertEqual(following.layout_kind, "caption")
+            self.assertFalse(following.navigation_allowed)
+            self.assertIsNone(preloader.current_match)
+            self.assertEqual(
+                recognize_live_frame(
+                    following, result_resolver=self.controller._resolve_story_ocr_result
+                ),
+                ("Narrator", successor.text),
+            )
+        self.assertEqual(preloader.current_match.chapter, successor.chapter)
+        self.assertEqual(preloader.current_match.sequence, successor.sequence)
+
+    def test_equivalent_narrator_caption_preserves_layout_and_confidence_guards(self):
+        caption = row("caption", "She closes her eyes.", speaker="Narrator")
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader(
+            (
+                caption,
+                row("duplicate", caption.text, speaker="Narrator", chapter="elsewhere"),
+            )
+        )
+        for lines, expected in (
+            ((self.line(caption.text, confidence=20),), "pending"),
+            ((self.line(caption.text), self.line(caption.text, top=0.5)), "pending"),
+            (
+                (self.line(caption.text), self.line("Lower dialogue", top=0.8)),
+                "dialogue",
+            ),
+        ):
+            with self.subTest(lines=lines):
+                selected = self.select(*lines)
+                self.assertEqual(selected.layout_kind, expected)
+                self.assertIsNone(selected.recognized_result)
+                self.assertEqual(selected.navigation_allowed, expected == "dialogue")
+                self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+        with patch.object(self.controller, "_story_region", return_value=None):
+            self.worker.detect.reset_mock()
+            self.assertIs(self.controller._select_text_layout(self.frame), self.frame)
+            self.worker.detect.assert_not_called()
+
+    def test_equivalent_narrator_caption_waits_for_same_punctuation_continuation(self):
+        caption = row("caption", "The gate is open.", speaker="Narrator")
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader(
+            (
+                caption,
+                row("duplicate", caption.text, speaker="Narrator", chapter="elsewhere"),
+                row(
+                    "continuation",
+                    "The gate is open. Follow me.",
+                    speaker="Narrator",
+                    chapter="continuation-chapter",
+                ),
+            )
+        )
+        selected = self.select(self.line(caption.text))
+        self.assertEqual(selected.layout_kind, "pending")
+        self.assertIsNone(selected.recognized_result)
+        self.assertFalse(selected.navigation_allowed)
+        self.assertIsNone(self.controller.chapter_voice_preloader.current_match)
+
     def test_source_match_does_not_bypass_confidence_or_layout_ambiguity(self):
         for lines in (
             (self.line(self.caption.text, confidence=20),),

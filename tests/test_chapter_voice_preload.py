@@ -1700,6 +1700,35 @@ class SynthesisPreferenceTest(unittest.TestCase):
         )
         self.assertIsNone(preloader.current_match)
 
+    def test_complete_equivalent_speech_keeps_sentence_punctuation(self):
+        rows = (
+            self.row("first", "She closes her eyes.", speaker="Narrator"),
+            self.row("second", "She closes her eyes.", speaker="Narrator", chapter="2"),
+            self.row("and", "She closes her eyes and breathes.", speaker="Narrator"),
+            self.row(
+                "comma",
+                "She closes her eyes, striving to remember.",
+                speaker="Narrator",
+            ),
+        )
+        preloader = ChapterVoicePreloader(rows)
+        preloader.resolve_observation_among("", rows[0].text, update_context=False)
+        diagnostics = preloader.last_resolution_diagnostics.copy()
+        self.assertEqual(diagnostics["match_result"], "expected-ambiguous")
+        self.assertEqual(
+            preloader.equivalent_speech_candidates("Narrator", rows[0].text), rows[:2]
+        )
+        self.assertEqual(preloader.last_resolution_diagnostics, diagnostics)
+        self.assertIsNone(preloader.current_match)
+        for incomplete_or_changed in ("She closes her eyes", "She closes her eyes!"):
+            with self.subTest(text=incomplete_or_changed):
+                self.assertEqual(
+                    preloader.equivalent_speech_candidates(
+                        "Narrator", incomplete_or_changed
+                    ),
+                    (),
+                )
+
     def test_equivalent_known_identity_can_reuse_other_chapters_without_rebinding(self):
         rows = (
             self.row("first", "The gate is open."),
