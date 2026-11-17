@@ -43,6 +43,8 @@ from vntts.source_audio_semantics import (
 
 
 class FinishedProcess:
+    pid = 999_999_999
+
     def __init__(self, returncode=0, *, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = StringIO(stdout)
@@ -614,6 +616,8 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     "vntts.game_content_importer.shutil.which", return_value="/worker"
                 ),
                 patch.object(sys, "frozen", frozen, create=True),
+                patch("vntts.source_audio_process.RecorderJob"),
+                patch("vntts.source_audio_process.psutil.Process"),
             ):
                 root = Path(directory)
                 popen = Mock(return_value=FinishedProcess())
@@ -642,7 +646,13 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                         OMP_NUM_THREADS=expected_threads,
                         MKL_NUM_THREADS=expected_threads,
                     )
-                self.assertEqual(popen.call_args.kwargs["env"], expected_environment)
+                child_environment = popen.call_args.kwargs["env"].copy()
+                scratch = child_environment.pop("TMPDIR")
+                self.assertEqual(child_environment.pop("TEMP"), scratch)
+                self.assertEqual(child_environment.pop("TMP"), scratch)
+                self.assertTrue(Path(scratch).is_absolute())
+                self.assertFalse(Path(scratch).exists())
+                self.assertEqual(child_environment, expected_environment)
                 self.assertEqual(
                     dict(os.environ), {"EXISTING": "preserved", **override}
                 )
@@ -1446,9 +1456,13 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 popen_factory=popen,
             )
 
-            with patch(
-                "vntts.game_content_importer.ensure_game_decoder",
-                return_value=root / "tools" / "vgmstream-cli",
+            with (
+                patch(
+                    "vntts.game_content_importer.ensure_game_decoder",
+                    return_value=root / "tools" / "vgmstream-cli",
+                ),
+                patch("vntts.source_audio_process.RecorderJob"),
+                patch("vntts.source_audio_process.psutil.Process"),
             ):
                 result = importer.prepare_voice_candidates(
                     job, speech_backend="moss-tts"
@@ -1683,7 +1697,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
             self.source, payload, document, signature=signature
         )
 
-    def publish(self, arguments, cancellation):
+    def publish(self, arguments, cancellation, **_options):
         from r1999extractor.source_audio_duration import (
             SourceAudioTiming,
             annotate_story_index_source_audio_durations,
@@ -1824,7 +1838,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
         self.assertEqual(evidence_path.read_bytes(), original_evidence)
 
     def test_input_change_while_publisher_runs_is_not_accepted(self):
-        def change_after_publish(arguments, cancellation):
+        def change_after_publish(arguments, cancellation, **_options):
             self.publish(arguments, cancellation)
             self.bank.write_text('{"version": "updated"}')
             return "", ""
@@ -1834,7 +1848,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
             self.importer.prepare_reading_source_audio(self.revision, "1", None)
 
     def test_source_change_while_publisher_runs_invalidates_revision(self):
-        def change_after_publish(arguments, cancellation):
+        def change_after_publish(arguments, cancellation, **_options):
             self.publish(arguments, cancellation)
             self.source.write_bytes(self.source.read_bytes() + b"\n")
             return "", ""
@@ -1844,7 +1858,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
             self.importer.prepare_reading_source_audio(self.revision, "1", None)
 
     def test_publisher_cannot_expand_the_measured_chapter(self):
-        def publish_with_another_chapter(arguments, cancellation):
+        def publish_with_another_chapter(arguments, cancellation, **_options):
             self.publish(arguments, cancellation)
             output = Path(arguments[arguments.index("--output") + 1])
             document = load_story_index_document(output)
@@ -1885,7 +1899,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
     def test_cancelled_or_unverifiable_publisher_output_cannot_be_used(self):
         cancellation = Event()
 
-        def cancel_after_publish(arguments, event):
+        def cancel_after_publish(arguments, event, **_options):
             self.publish(arguments, event)
             event.set()
             return "", ""
@@ -1893,7 +1907,7 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
         self.worker.side_effect = cancel_after_publish
         with self.assertRaises(GameContentImportCancelled):
             self.importer.prepare_reading_source_audio(self.revision, "1", cancellation)
-        self.worker.side_effect = lambda arguments, event: (
+        self.worker.side_effect = lambda arguments, event, **_options: (
             shutil.copyfile(self.source, arguments[arguments.index("--output") + 1]),
             "",
         )

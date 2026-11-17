@@ -409,16 +409,6 @@ deferred implementation; centered-caption checks are included.
       relevant run, not a separate full chapter. Evidence:
       mac-remaining-qualification-20261117/cold-duration.json and results.json.
 
-- [ ] **Clean duration-decoder temporary media after cancellation.** Real cold
-      cancellation left an r1999-source-duration-* directory containing WEM/WAV
-      after the worker received SIGTERM. The child owns TemporaryDirectory, so
-      forced termination bypasses its cleanup. Move temporary-media ownership to
-      the parent request using existing subprocess/temporary-directory owners;
-      remove it only after the worker and decoder are drained. Check the same
-      publisher consumers and retain the cancellation error. Do not delete
-      valid duration caches or unrelated temporary directories. Evidence:
-      mac-remaining-qualification-20261117/cold-duration.json.
-
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh

@@ -69,6 +69,7 @@ from vntts.pregeneration_setup import (
     inspect_story_index,
     load_verified_story_index_document,
 )
+from vntts.source_audio_process import SourceAudioProcess
 from vntts.source_audio_progress import SourceAudioProgress, SourceAudioProgressReader
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
@@ -914,15 +915,14 @@ class Reverse1999GameImporter:
         *,
         environment: dict[str, str] | None = None,
     ) -> tuple[str, str]:
-        if scan_progress is None:
-            if environment is None:
-                return self._run(arguments, cancel_event)
-            return self._run(arguments, cancel_event, environment=environment)
         return self._run(
-            (*arguments, "--progress-stdout"),
+            (*arguments, "--progress-stdout")
+            if scan_progress is not None
+            else arguments,
             cancel_event,
             scan_progress=scan_progress,
             environment=environment,
+            source_audio=True,
         )
 
     def _resolve_asr_model(
@@ -1374,18 +1374,29 @@ class Reverse1999GameImporter:
         *,
         environment: dict[str, str] | None = None,
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
+        source_audio: bool = False,
     ) -> tuple[str, str]:
         self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
         started = time.monotonic()
         self._record("process-start", executable=arguments[0])
         try:
-            process = self.popen_factory(
-                tuple(arguments),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=environment,
-            )
+            if source_audio:
+                owner = SourceAudioProcess(
+                    arguments,
+                    popen_factory=self.popen_factory,
+                    environment=environment,
+                )
+                process = owner.process
+                stop_process = owner.close
+            else:
+                process = self.popen_factory(
+                    tuple(arguments),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                )
+                stop_process = partial(terminate_running_process, process)
         except OSError as error:
             self._record(
                 "process-start",
@@ -1397,7 +1408,7 @@ class Reverse1999GameImporter:
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
         stdout, stderr = self._communicate(
-            process, cancel_event, scan_progress, started
+            process, cancel_event, scan_progress, started, stop_process
         )
         self._record(
             "process-exit",
@@ -1431,6 +1442,7 @@ class Reverse1999GameImporter:
         cancel_event: Cancellation | None,
         scan_progress: Callable[[SourceAudioProgress], None] | None,
         started: float,
+        stop_process: Callable[[], None],
     ) -> tuple[str, str]:
         cancelled = False
         reader: SourceAudioProgressReader | None = None
@@ -1443,7 +1455,7 @@ class Reverse1999GameImporter:
                     description="Source-audio progress reader cleanup",
                 ),
                 cleanup_on_exit(
-                    lambda: terminate_running_process(process),
+                    stop_process,
                     description="Game importer process cleanup",
                 ),
             ):
