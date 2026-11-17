@@ -485,9 +485,14 @@ acceptance is outside this pass. Book reading remains deferred.
       but briefly announced `isolated worker stopped during render` after the
       stopped status. In the shared speech worker, recheck cancellation after the
       blocking frame receive and put first-chunk acquisition under the same
-      cancellation/cleanup handling as subsequent chunks. Preserve real EOF
-      failures without cancellation. Cover cancellation+EOF before first PCM,
-      cancellation after a chunk and a fresh retry; then repeat the bounded GUI
+      cancellation/cleanup handling as subsequent chunks. Handle both a received
+      EOF and an exception raised by the receive after the process exits;
+      deterministic transport reproduction confirms both currently escape even
+      after actual backend Stop. Preserve real failures without cancellation.
+      Cover cancellation before first PCM and after a chunk, no audio output for
+      an already cancelled request, and a fresh retry through play_prepared;
+      do not clear Stop inside shared render and revive an old request.
+      Then repeat the bounded GUI
       Stop check. Existing native evidence shows no late old-run keys or PCM and
       successful retry, but the cancellation UX gate remains open. Evidence:
       `combined-native-20261118/cold-stop-summary.json`.
