@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.pocket_model_fixtures import pocket_model_readiness
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint
@@ -47,6 +49,7 @@ class GameNarratorTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
         self.temporary = TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -855,7 +858,7 @@ class GameNarratorTest(unittest.TestCase):
         self.save(dialog)
         self.assertEqual(self.library.binding("Aderyn").source_id, "preset:marius")
         self.assertIsNone(self.library.binding("Narrator"))
-        self.assertFalse(dialog.result_settings.pocket_gated_model_accepted)
+        self.assertFalse(hasattr(dialog.result_settings, "pocket_gated_model_accepted"))
         self.importer.prepare_voice_roles.assert_not_called()
 
     @patch(
@@ -1113,12 +1116,10 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.voice_panel.isHidden())
         self.importer.prepare_voice_roles.assert_not_called()
 
-    def test_pocket_acceptance_is_owned_by_settings_without_editor_terms_widgets(self):
-        for accepted in (False, True):
-            with self.subTest(accepted=accepted):
-                settings = self.settings.updated(
-                    speech_backend="pocket-tts", pocket_gated_model_accepted=accepted
-                )
+    def test_pocket_readiness_has_no_editor_terms_widgets(self):
+        for ready in (False, True):
+            with self.subTest(ready=ready), pocket_model_readiness(ready):
+                settings = self.settings.updated(speech_backend="pocket-tts")
                 dialog = self.editor(settings=settings)
                 self.select(dialog, "catalog", source="character:rhiannon")
                 self.assertIs(dialog.settings_value, settings)
@@ -1136,7 +1137,8 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 self.assertEqual(self.backend.requests, [])
 
-    def test_pocket_save_uses_settings_acceptance_and_preserves_it(self):
+    def test_pocket_save_requires_local_capability_without_setting_flag(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
         before = self.library.bindings()
         missing = self.editor(
             settings=self.settings.updated(speech_backend="pocket-tts")
@@ -1144,37 +1146,36 @@ class GameNarratorTest(unittest.TestCase):
         self.select(missing, "catalog", source="character:rhiannon")
         group = missing.voice_panel.current_group()
         missing._capture_save(None)
-        with self.assertRaisesRegex(ValueError, "Accept Pocket's terms"):
+        with self.assertRaisesRegex(ValueError, "Set up the Pocket cloning model"):
             missing.remember_many(((group, "character:rhiannon"),))
         self.assertEqual(self.library.bindings(), before)
         self.assertIsNone(missing.result_settings)
-        self.assertFalse(missing.settings_value.pocket_gated_model_accepted)
+        self.assertFalse(hasattr(missing.settings_value, "pocket_gated_model_accepted"))
+        readiness.return_value = True
         accepted = self.editor(
-            settings=self.settings.updated(
-                speech_backend="pocket-tts", pocket_gated_model_accepted=True
-            )
+            settings=self.settings.updated(speech_backend="pocket-tts")
         )
         self.select(accepted, "catalog", source="character:rhiannon")
         self.listen(accepted, original=True)
         self.save(accepted)
-        self.assertTrue(accepted.result_settings.pocket_gated_model_accepted)
+        self.assertFalse(
+            hasattr(accepted.result_settings, "pocket_gated_model_accepted")
+        )
         self.assertIsNotNone(self.library.binding("Narrator"))
 
-    def test_switching_sources_keeps_model_visible_and_preserves_acceptance(
+    @pocket_model_readiness(True)
+    def test_switching_sources_keeps_model_visible_and_preserves_capability(
         self,
     ):
         self.bind_narrator()
-        dialog = self.editor(
-            settings=self.settings.updated(
-                speech_backend="pocket-tts", pocket_gated_model_accepted=True
-            )
-        )
+        settings = self.settings.updated(speech_backend="pocket-tts")
+        dialog = self.editor(settings=settings)
         dialog.show()
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
                 self.assertTrue(dialog.tts_model_label.isVisible())
-                self.assertTrue(dialog.settings_value.pocket_gated_model_accepted)
+                self.assertIs(dialog.settings_value, settings)
         self.assertEqual(self.backend.requests, [])
 
     def test_model_matches_actual_preview_plan_without_reloading_or_changing_current_voice(
@@ -1239,12 +1240,11 @@ class GameNarratorTest(unittest.TestCase):
         self.importer.prepare_voice_roles.assert_not_called()
         self.importer.narrator_characters.assert_not_called()
 
+    @pocket_model_readiness(True)
     def test_model_follows_new_source_context_and_pocket_cloning_configuration(self):
         plan, group, _manifest = ambiguous_fixture(self.root / "model-context")
         dialog = self.editor(
-            settings=self.settings.updated(
-                speech_backend="pocket-tts", pocket_gated_model_accepted=True
-            )
+            settings=self.settings.updated(speech_backend="pocket-tts")
         )
         dialog.set_voice_context(
             replace(plan, synthesis_model="story-model.gguf"), character=group.character
@@ -1398,18 +1398,17 @@ class GameNarratorTest(unittest.TestCase):
         self.player.play_bytes.assert_not_called()
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
 
-    def test_pocket_saved_narrator_requires_consent_for_audio_and_preserves_binding(
+    @pocket_model_readiness(False)
+    def test_pocket_saved_narrator_requires_capability_for_audio_and_preserves_binding(
         self,
     ):
         self.bind_narrator()
         before = self.library.binding("Narrator")
         dialog = self.editor(
-            settings=self.settings.updated(
-                speech_backend="pocket-tts", pocket_gated_model_accepted=False
-            )
+            settings=self.settings.updated(speech_backend="pocket-tts")
         )
         self.select(dialog, "narrator", role="Aderyn")
-        self.assertIn("terms", dialog.status.text())
+        self.assertIn("Pocket cloning model", dialog.status.text())
         self.assertFalse(dialog.voice_panel.a_play.isVisibleTo(dialog))
         self.assertEqual(self.library.binding("Narrator"), before)
         self.assertEqual(self.backend.requests, [])

@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
 from tests.native_capture_fixtures import native_frame
+from tests.pocket_model_fixtures import pocket_model_readiness
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
@@ -222,6 +223,7 @@ def stub_live_sequence_plan(*lines):
 
 class MainTest(unittest.TestCase):
     def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
         prepare = patch(
             "vntts.controller_components.prepare_sparse_ocr_model",
             return_value=Path("models/short-text.onnx"),
@@ -1913,7 +1915,6 @@ class MainTest(unittest.TestCase):
             registry,
             narrator_reference=None,
             volume=1.0,
-            allow_gated_model_access=False,
         )
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
@@ -1950,7 +1951,7 @@ class MainTest(unittest.TestCase):
         self.assertIs(received["registry"], registry)
         self.assertIs(received["startup_cancellation"], controller.shutdown_requested)
         self.assertIs(received["startup_progress"], controller.status_handler)
-        self.assertFalse(received["allow_gated_model_access"])
+        self.assertNotIn("allow_gated_model_access", received)
         controller.shutdown()
 
     def test_requested_shutdown_prevents_backend_startup(self):
@@ -2074,7 +2075,8 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(finished.is_set())
 
-    def test_controller_explicitly_allows_pocket_gated_model_access(self):
+    @pocket_model_readiness(True)
+    def test_controller_uses_local_capability_without_forwarding_access_flag(self):
         backend = Mock()
         backend.registry = Mock()
         backend.narrator_speaker = "Pocket TTS default"
@@ -2090,7 +2092,6 @@ class MainTest(unittest.TestCase):
             controller = AppController(
                 AppSettings(
                     speech_backend="pocket-tts",
-                    pocket_gated_model_accepted=True,
                 ),
                 pocket_backend_factory=pocket_factory,
                 model_asset_manager_factory=Mock(),
@@ -2098,9 +2099,10 @@ class MainTest(unittest.TestCase):
 
             self.assertTrue(controller.start())
 
-        self.assertTrue(pocket_factory.call_args.kwargs["allow_gated_model_access"])
+        self.assertNotIn("allow_gated_model_access", pocket_factory.call_args.kwargs)
         controller.shutdown()
 
+    @pocket_model_readiness(True)
     def test_controller_uses_pack_narrator_reference(self):
         backend = Mock()
         backend.registry = Mock()
@@ -2120,7 +2122,6 @@ class MainTest(unittest.TestCase):
             controller = AppController(
                 AppSettings(
                     speech_backend="pocket-tts",
-                    pocket_gated_model_accepted=True,
                 ),
                 pocket_backend_factory=pocket_factory,
                 model_asset_manager_factory=Mock(),
@@ -2133,6 +2134,7 @@ class MainTest(unittest.TestCase):
         )
         controller.shutdown()
 
+    @pocket_model_readiness(True)
     def test_pocket_startup_ignores_unknown_saved_presets(self):
         with TemporaryDirectory() as temporary_directory:
             library = VoiceLibrary(Path(temporary_directory) / "library")
@@ -2157,7 +2159,6 @@ class MainTest(unittest.TestCase):
                 controller = AppController(
                     AppSettings(
                         speech_backend="pocket-tts",
-                        pocket_gated_model_accepted=True,
                     ),
                     voice_library=library,
                     pocket_backend_factory=pocket_factory,

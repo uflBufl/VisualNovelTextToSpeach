@@ -343,12 +343,10 @@ class RetainedMossRuntimeTests(unittest.TestCase):
             None,
             model_name="model-a",
             terms_accepted=False,
-            allow_gated_model_access=False,
         )
 
         self.assertTrue(created[0].options["allow_download"])
         self.assertNotIn("terms_accepted", created[0].options)
-        self.assertNotIn("allow_gated_model_access", created[0].options)
         self.assertTrue(runtime.loaded)
         runtime.shutdown()
 

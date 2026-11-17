@@ -46,9 +46,8 @@ def source_signature(path: Path) -> SourceSignature:
 class ContentRevision:
     source_path: Path
     source_sha256: str
-    _signature: SourceSignature
     _metadata: bytes
-    _chapters: Mapping[str, tuple[tuple[int, int, str], ...]]
+    _chapters: Mapping[str, tuple[tuple[int, int], ...]]
     _catalog: DialogueCatalog | None = None
 
     @classmethod
@@ -73,14 +72,11 @@ class ContentRevision:
         chapters = defaultdict(list)
         offset = len(rows[0])
         for record, raw in zip(document.records, rows[1:], strict=True):
-            chapters[record.chapter].append(
-                (offset, len(raw), hashlib.sha256(raw).hexdigest())
-            )
+            chapters[record.chapter].append((offset, len(raw)))
             offset += len(raw)
         return cls(
             path,
             hashlib.sha256(payload).hexdigest(),
-            signature,
             rows[0],
             MappingProxyType({key: tuple(value) for key, value in chapters.items()}),
         )
@@ -88,41 +84,24 @@ class ContentRevision:
     @classmethod
     def from_catalog(cls, catalog: DialogueCatalog) -> ContentRevision:
         """Reuse admitted SQL locations without retaining a corpus-sized map."""
-        catalog.validate_current()
+        catalog.ensure_open()
         return cls(
             catalog.source_path,
             catalog.source_sha256,
-            catalog.signature,
             catalog.header,
             MappingProxyType({}),
             catalog,
         )
 
-    def validate_current(self) -> None:
-        if self._catalog is not None:
-            self._catalog.validate_current()
-        if source_signature(self.source_path) != self._signature:
-            raise StoryIndexError("Content revision source changed")
-
     def read_chapter(self, chapter: str) -> StoryIndexDocument:
-        """Read and verify only the chapter rows admitted in this revision."""
+        """Read admitted chapter locations; source replacement requires a new revision."""
         if self._catalog is not None:
-            self.validate_current()
             return self._catalog.records(self._catalog.line_ids(chapter))
         rows = []
         with open_regular_binary(self.source_path) as stream:
-            # Windows descriptor ctime can differ from path stat ctime.
-            if _signature(os.fstat(stream.fileno()))[:-1] != self._signature[:-1]:
-                raise StoryIndexError("Content revision source changed")
-            for offset, length, digest in self._chapters.get(chapter, ()):
+            for offset, length in self._chapters.get(chapter, ()):
                 stream.seek(offset)
-                raw = stream.read(length)
-                if hashlib.sha256(raw).hexdigest() != digest:
-                    raise StoryIndexError("Content revision chapter row changed")
-                rows.append(raw)
-            if _signature(os.fstat(stream.fileno()))[:-1] != self._signature[:-1]:
-                raise StoryIndexError("Content revision source changed")
-        self.validate_current()
+                rows.append(stream.read(length))
         metadata = json.loads(self._metadata)
         metadata.pop("selection_origin", None)
         metadata["line_count"] = len(rows)

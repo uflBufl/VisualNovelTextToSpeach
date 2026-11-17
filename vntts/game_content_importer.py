@@ -724,12 +724,7 @@ class Reverse1999GameImporter:
                 chapter_source, timed_story, (chapter,), cancel_event, progress=progress
             )
             self._raise_if_cancelled(cancel_event)
-            revision.validate_current()
-            if (
-                sha256_file(bank_index) != fingerprint["bank_sha256"]
-                or self._bank_index_is_stale(bank_index)
-                or not self._reading_source_audio_is_current(timed_story, selected)
-            ):
+            if not self._reading_source_audio_is_current(timed_story, selected):
                 raise GameContentImportError(
                     "Source-audio timing changed or produced unverifiable game audio."
                 )

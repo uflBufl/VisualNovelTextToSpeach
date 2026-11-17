@@ -68,6 +68,17 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         )
         return result, resolution.get("line")
 
+    def test_explicit_reload_readmits_sources_while_availability_refresh_reuses_them(
+        self,
+    ):
+        inventory = self.controller.prepared_audio_inventory
+        with patch.object(PreparedAudioSnapshot, "changed", return_value=True):
+            self.controller._prepared_audio_checked_at = 0
+            self.controller._refresh_prepared_audio()
+        self.assertIs(self.discovery.call_args.kwargs["previous"], inventory)
+        self.controller._refresh_prepared_audio(force=True)
+        self.assertIsNone(self.discovery.call_args.kwargs["previous"])
+
     def test_named_complete_line_keeps_prepared_route_despite_other_speaker_continuation(
         self,
     ):

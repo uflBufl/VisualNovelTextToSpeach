@@ -1,5 +1,4 @@
 import hashlib
-import os
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -93,23 +92,25 @@ class ContentRevisionTest(unittest.TestCase):
                 self.source, self.payload, self.document, signature=self.signature
             )
 
-    def test_rejects_stale_revision_even_when_mtime_is_restored(self):
-        before = self.source.stat()
-        self.source.write_bytes(
-            self.payload.replace(b"line:original", b"line:changed!")
-        )
-        os.utime(self.source, ns=(before.st_atime_ns, before.st_mtime_ns))
-        with self.assertRaisesRegex(StoryIndexError, "changed"):
-            self.revision.read_chapter("1")
-
-    def test_row_digest_still_protects_bounded_read(self):
-        self.source.write_bytes(
-            self.payload.replace(b"line:original", b"line:changed!")
-        )
+    def test_admitted_chapter_reads_do_not_poll_or_hash_source(self):
+        self.source.write_bytes(self.payload + b"\n")
         with (
-            patch("vntts.content_revision._signature", return_value=self.signature),
-            self.assertRaisesRegex(StoryIndexError, "chapter row changed"),
+            patch(
+                "vntts.content_revision.source_signature",
+                side_effect=AssertionError("source polled"),
+            ),
+            patch("vntts.content_revision.hashlib") as hashing,
         ):
+            hashing.sha256.side_effect = AssertionError("source rehashed")
+            chapter = self.revision.read_chapter("1")
+        self.assertEqual(
+            chapter.records,
+            tuple(row for row in self.document.records if row.chapter == "1"),
+        )
+
+    def test_missing_source_reports_actual_read_failure(self):
+        self.source.unlink()
+        with self.assertRaises(OSError):
             self.revision.read_chapter("1")
 
 

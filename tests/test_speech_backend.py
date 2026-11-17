@@ -1260,7 +1260,7 @@ class PocketTTSBackendTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             TTSConfigurationError,
-            "huggingface.co/kyutai/pocket-tts",
+            "Prepare voice cloning",
         ):
             backend.prepare("Narrator", "Test.")
 

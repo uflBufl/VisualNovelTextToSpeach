@@ -1,5 +1,76 @@
 # TODO
 
+## Active - Support 111 application crash and Reading holds
+
+Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support
+bundle exported after restart, build `579f9a70`, 2026-11-17. The crash session
+is the nested bundle's `previous-session.json`; the separately supplied previous
+session and November8 pregeneration report are older evidence. This run predates
+the local trust-after-admission changes.
+
+- [ ] Localize and repair the Python-process access violation at17:40:54 MSK:
+      Windows reports `python314.dll`, `0xc0000005`, offset `0xb6616`, PID17800.
+      Last activity is prepared line `reverse1999:315601:82`, with PCM already
+      flowing. Obtain a native stack/dump or bounded reproducer before choosing
+      the repair; the supplied EVTX/MTA has no stack and no `.dmp` is included.
+      Do not attribute the fault to Rust, MOSS or CPython from the module alone.
+      Gate: identified faulting boundary, focused regression and Windows playback
+      through the failing scene with normal stop/teardown.
+- [ ] Repair completed-dialogue holds after chapter315601 lines77 and80. Audio
+      completes, but no automatic key is dispatched for roughly86s and27s;
+      capture/OCR continues with low-confidence invalidations, canonical-held
+      observations and missing completion evidence. Trace readiness/layout
+      recovery in `live.py` and `live_tracking.py`; exact bad pixels are absent,
+      so the archive does not prove a wrong crop or artwork identity. Gate:
+      completed current dialogue can recover navigation from fresh evidence,
+      without blind timeout keys, duplicate dispatch or late keys after Stop.
+- [ ] Reproduce the unresolved98-character Reading admission between prepared
+      lines72 and74. It takes live Pocket twice, fails because voice cloning is
+      unavailable, and blocks navigation until Stop/restart. This is required
+      fallback speech, separate from speculative priming below. Establish why
+      prepared matching did not admit the line before changing route/error
+      handling; no admitted line ID or raw text proves it was line73. Gate:
+      available prepared speech is selected when justified by current text;
+      genuinely unavailable live speech remains actionable without skipping
+      unread dialogue or granting gated-model access automatically.
+
+## Active - Support 31 Reading and recorder defects
+
+Evidence: `vntts-support (31).zip` and diagnostic session
+`1b42f6a6721a4848a9ee845c37837fd5.zip`, build `579f9a70`, 2026-11-17.
+
+- [ ] Qualify one-time Pocket setup with a real Hugging Face account on Windows
+      and macOS: browser login and original Kyutai model consent, download progress,
+      cancellation/retry and existing standard-cache/login reuse. Verify the
+      prepared model works after restart/offline without further authorization;
+      preparing it while the public model is loaded must safely replace that
+      worker without restarting the application. Automated protocol/lifecycle
+      regressions and a pinned-SDK public-asset smoke do not qualify the actual
+      gated download or Windows browser interaction.
+- [ ] Keep speculative voice priming from surfacing as repeated Reading failures
+      when the accepted route uses prepared audio. Fresh startup errors come from
+      `_voice_prime_finished` forwarding Pocket cloning errors to the general
+      error handler; a separate optional speaker announcement also fails. Carry
+      voice/route context into the outcome and handle optional preparation at its
+      actual boundary. Gate: prepared playback proceeds without repeated blocking
+      failure reports, while a genuinely required unavailable live voice reports
+      an actionable error. Do not grant gated-model access automatically.
+- [ ] Repair process-loopback clock handling across `audio_buffer.rs`, `caf.rs`
+      and `reading_diagnostics_analysis.py`. Both captures accept one480-frame
+      packet then fail `Discontinuous process audio source clock`; the rejected
+      packet's positions/QPC are missing. Distinguish virtual device position
+      from file offset and acquisition continuity; retain actual QPC/flags and
+      rejected values rather than fabricating no-loss evidence. Gate: supported
+      virtual positions, real discontinuity/timestamp failures and analysis agree;
+      run Windows native clock/blob-lifetime tests, then qualify actual PCM and
+      stop/failure/teardown on Windows.
+- [ ] Flush published video journal events before the recorder readiness check.
+      `BufWriter` retains the initial events below its capacity until stop, so
+      Python reports `Recorder readiness unverified for window` and stops a valid
+      video capture after10s. Gate: the first complete event is visible during
+      capture, readiness succeeds before its deadline and normal stop retains
+      decodable video with monotonic timestamps. Run native Windows regressions.
+
 ## Active - Support 30 Windows Reading repairs
 
 Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
@@ -54,16 +125,6 @@ Recheck archived findings against current main before implementation.
       steps must not rehash admitted controls or re-read state at finalization.
       Verify cancellation, resume, priority changes and publication still retain
       completed audio. The synthetic comparison does not qualify native speed.
-- [ ] Qualify Windows diagnostic video after the shared geometry/capture DPI
-      initialization fix. Run the Windows native regression tests; verify the
-      selected-window MP4 decodes, frame timestamps are monotonic and normal
-      start/stop retains acquired video without elevation.
-- [ ] Qualify Windows selected-process audio after the activation ownership fix.
-      Run the Windows native blob/callback lifetime tests, then verify game and
-      playback-process PCM under success, activation failure, cancellation and
-      teardown. Both archived recorders exited `0xC0000374` before PCM; confirm
-      that no heap crash remains, retaining a native stack if it recurs. No
-      desktop/microphone fallback; header-only CAFs are not audible silence.
 
 ## Active - Remaining Windows Reading qualification
 

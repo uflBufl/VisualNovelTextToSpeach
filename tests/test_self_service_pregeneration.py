@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
+from tests.pocket_model_fixtures import pocket_model_readiness  # noqa: E402
 from tests.pregeneration_fixtures import (  # noqa: E402
     InProcessPocketGenerator,
     InterruptingPocketGenerator,
@@ -88,6 +89,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
         self.enterContext(isolated_application_error_log())
         self._voice_library_directory = TemporaryDirectory()
         self._voice_library = VoiceLibrary(
@@ -919,7 +921,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(dialog.model_choice.isHidden())
             self.assertFalse(dialog.engine_controls.isHidden())
             self.assertTrue(dialog.pocket_terms.isHidden())
-            self.assertTrue(dialog.pocket_voice_cloning.isHidden())
+            self.assertTrue(dialog.pocket_setup.isHidden())
             chooser.side_effect = None
             chooser.return_value = None
             dialog.game_narrator_button.click()
@@ -1226,6 +1228,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.assertFalse(dialog.generation_runner.active)
 
     def test_game_narrator_and_routes_are_confirmed_before_generation(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
@@ -1262,7 +1265,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             }
             self.assertNotIn("character:centurion", choices)
             self.assertIn("preset:alba", choices)
-            dialog.pocket_voice_cloning.setChecked(True)
+            readiness.return_value = True
+            dialog.pocket_setup.refresh()
             self.assertEqual(dialog.continue_button.text(), "Apply voice changes")
             choices = {
                 dialog.narrator_choice.itemData(index)
@@ -1317,6 +1321,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(narrator.source_character, "Centurion")
             dialog.reject()
 
+    @pocket_model_readiness(True)
     def test_moss_confirmation_ignores_pocket_permission_and_stops_preview(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1336,7 +1341,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 AppSettings(
                     speech_backend="moss-tts",
                     voice_manifest=str(manifest),
-                    pocket_gated_model_accepted=True,
                 ),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
@@ -1364,7 +1368,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.reject()
             player.stop.assert_called()
 
-    def test_broken_manifest_on_cloning_toggle_returns_to_retry(self):
+    def test_broken_manifest_after_model_setup_returns_to_retry(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
@@ -1385,7 +1390,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             Path(dialog._voice_plan.voice_manifest).write_text(
                 "broken", encoding="utf-8"
             )
-            dialog.pocket_voice_cloning.setChecked(True)
+            readiness.return_value = True
+            dialog.pocket_setup.refresh()
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.selection_panel.isVisibleTo(dialog))
             self.assertFalse(dialog.narrator_choice.signalsBlocked())
@@ -1784,6 +1790,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                             "Prepare this story again", plain_label_text(dialog.summary)
                         )
 
+    @pocket_model_readiness(True)
     def test_ambiguous_voice_does_not_require_review_before_generation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1798,7 +1805,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 )
             settings = AppSettings(
                 voice_manifest=str(manifest),
-                pocket_gated_model_accepted=True,
             )
             jobs = PregenerationJobStore(root / "jobs")
             decisions = VoiceDecisionStore(root / "voice-decisions.json")

@@ -51,6 +51,7 @@ DEFAULT_CATALOG = PROJECT_ROOT / "ui-catalog.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / ".codex" / "ui-catalog"
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from tests.pocket_model_fixtures import pocket_model_readiness  # noqa: E402
 from vntts.cleanup import cleanup_on_exit, temporary_directory  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionReference  # noqa: E402
 from vntts.ui_catalog import (  # noqa: E402
@@ -1301,10 +1302,11 @@ def _voice_audition_story(
         assert dialog._voice_plan is not None
         dialog._voice_plan = _anonymous_voice_plan(dialog._voice_plan)
     assert dialog._voice_plan is not None
+    resources.enter_context(pocket_model_readiness(True))
     audition_service = dialog.audition_service
     assert isinstance(audition_service, Mock)
     editor = GameNarratorDialog(
-        dialog.settings.updated(pocket_gated_model_accepted=True),
+        dialog.settings,
         importer=dialog.importer,
         preview_service=audition_service,
         thread_pool=dialog.voice_runner.thread_pool,

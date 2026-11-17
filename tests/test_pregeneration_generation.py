@@ -1674,7 +1674,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             self.assertIn("progress_callback", [f["function"] for f in frames])
             self.assertIn("_execute", [f["function"] for f in frames])
 
-    def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
+    def test_pocket_cloning_worker_uses_local_capability_without_access_flag(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, plan = generation_inputs(Path(temporary_directory))
             plan = replace(plan, pocket_voice_cloning=True)
@@ -1685,7 +1685,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 generation_input.directory.parent / "output",
             )
 
-        self.assertIn("--allow-gated-model-access", arguments)
+        self.assertNotIn("--allow-gated-model-access", arguments)
 
     def test_xtts_terms_acceptance_reaches_isolated_worker(self):
         with TemporaryDirectory() as temporary_directory:

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from tests.audio_output_fixtures import FakeAudioOutput  # noqa: E402
 from tests.bulk_generation_fixtures import audio_samples  # noqa: E402
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.pregeneration_fixtures import (  # noqa: E402
     InProcessPocketGenerator,
 )
@@ -251,6 +252,7 @@ def _choose_fresh_pack_narrator(dialog, pool, application, player):
         raise AssertionError("The full preparation details hid the generation engine")
 
 
+@pocket_model_readiness(True)
 def _first_process(root):
     application = QApplication.instance() or QApplication([])
     content = inspect_story_index(_write_content(root / "imported"))
@@ -258,7 +260,6 @@ def _first_process(root):
     settings = AppSettings(
         speech_backend="pocket-tts",
         tts_profile="default",
-        pocket_gated_model_accepted=True,
         voice_manifest=str(manifest),
         game_window_title="Reverse: 1999",
     )
@@ -379,6 +380,7 @@ def _assert_restored_voice_bindings(settings):
         raise AssertionError("Restart replaced the independent Rhiannon voice")
 
 
+@pocket_model_readiness(True)
 def _second_process(root):
     application = QApplication.instance() or QApplication([])
     preferences = load_app_settings()

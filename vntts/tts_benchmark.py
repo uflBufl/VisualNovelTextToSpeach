@@ -205,7 +205,6 @@ def create_backend(
     startup_cancellation: object | None = None,
     startup_progress: object | None = None,
     terms_accepted: bool = False,
-    allow_gated_model_access: bool = False,
     require_cuda: bool = False,
     persistent_audio_cache_max_entries: int | None = None,
 ) -> BenchmarkBackend: ...
@@ -236,7 +235,6 @@ def create_backend(
         "startup_cancellation",
         "startup_progress",
         "terms_accepted",
-        "allow_gated_model_access",
         "require_cuda",
         "persistent_audio_cache_max_entries",
         "allow_download",
@@ -283,7 +281,6 @@ def create_backend(
             create_pocket_worker_backend(
                 registry,
                 voice_state_cache_directory=cache_root / "voices",
-                allow_gated_model_access=options.get("allow_gated_model_access", False),
                 **common,
             ),
             name,

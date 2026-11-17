@@ -1705,9 +1705,8 @@ class PocketTTSVoiceRouterBackend:
             message = str(error)
             if "accept the terms" in message and "voice cloning" in message:
                 raise TTSConfigurationError(
-                    "Pocket TTS voice cloning is locked. Accept the model terms at "
-                    "https://huggingface.co/kyutai/pocket-tts, authenticate with "
-                    "`uvx hf auth login`, and restart the app."
+                    "Pocket TTS voice cloning is not prepared. Choose Prepare voice cloning... "
+                    "in Settings to connect Hugging Face and download the original model."
                 ) from error
             raise TTSConfigurationError(
                 f"Pocket TTS could not prepare voice {voice_key!r}: {message}"

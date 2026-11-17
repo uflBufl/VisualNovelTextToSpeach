@@ -1004,7 +1004,6 @@ class IsolatedSpeechBackend:
         startup_progress: StartupProgress = None,
         playback_latency: str | None = None,
         generation_profile: str | None = None,
-        allow_gated_model_access: bool = False,
         allow_download: bool = True,
         defer_startup: bool = False,
         **worker_options: object,
@@ -1042,7 +1041,6 @@ class IsolatedSpeechBackend:
         self.playback_latency = playback_latency or (
             "high" if backend == "chatterbox-nano" else "low"
         )
-        self.allow_gated_model_access = bool(allow_gated_model_access)
         self.allow_download = allow_download
         self.worker_options: WorkerOptions = worker_options
         validate_volume(volume)
@@ -1273,17 +1271,12 @@ class IsolatedSpeechBackend:
         ]
         environment = ModelAssetManager().huggingface_environment()
         environment["PYTHONNOUSERSITE"] = "1"
-        if self.name == "pocket-tts" and self.bundle_root is not None:
-            for name in (
-                "HF_HUB_CACHE",
-                "HUGGINGFACE_HUB_CACHE",
-                "TRANSFORMERS_CACHE",
-            ):
-                environment.pop(name, None)
-            if not self.allow_gated_model_access:
-                environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-                environment.pop("HF_TOKEN", None)
-                environment.pop("HUGGING_FACE_HUB_TOKEN", None)
+        if self.name == "pocket-tts":
+            from vntts.pocket_model import configure_pocket_playback_environment
+
+            configure_pocket_playback_environment(
+                environment, packaged=self.bundle_root is not None
+            )
         self._report_loading_assets(environment)
         if self._runtime_use is not None:
             self._runtime_use.begin_launch()
@@ -2149,9 +2142,8 @@ class RetainedWorkerRuntime:
         if instance is not None:
             instance.shutdown()
 
-    @staticmethod
     def _configuration_identity(
-        registry: CharacterVoiceRegistry, options: Mapping[str, object]
+        self, registry: CharacterVoiceRegistry, options: Mapping[str, object]
     ) -> str:
         stable_options = {
             key: _worker_option_identity(value)
@@ -2164,8 +2156,14 @@ class RetainedWorkerRuntime:
                 "defer_startup",
             }
         }
+        model_cache = None
+        if self.backend == "pocket-tts":
+            from vntts.pocket_model import pocket_model_cache
+
+            cache = pocket_model_cache()
+            model_cache = str(cache) if cache is not None else None
         return json.dumps(
-            [_serialize_registry(registry), stable_options],
+            [_serialize_registry(registry), stable_options, model_cache],
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -2197,7 +2195,6 @@ def create_moss_worker_backend(
     from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_requested
 
     if moss_cpp_requested(options.get("model_name")):
-        options.pop("allow_gated_model_access", None)
         return MossCppVoiceRouterBackend(registry, **options)
     return _isolated_backend_constructor("moss-tts", registry, **options)
 

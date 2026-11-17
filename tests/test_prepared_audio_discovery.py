@@ -67,33 +67,71 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 with patch.object(store, "iter_candidates", side_effect=candidates):
                     self.assertIs(next(preloader.store.iter_candidates(text)), line)
 
-    def test_optional_semantic_evidence_invalidates_source_and_catalog_reuse(self):
+    def test_admitted_pack_and_catalog_are_reused_without_file_checks(self):
         with TemporaryDirectory() as temporary:
             pack, _line_id, _text, _hash, _wav = write_synthetic_game_pack(
                 Path(temporary)
             )
             snapshot = discover_prepared_audio(game_pack=pack)
-            story_index = snapshot.sources[0].story_index
+            source = snapshot.sources[0]
+            story_index = source.story_index
             snapshot = discover_prepared_audio(game_pack=pack, story_index=story_index)
-            evidence = story_index.with_name("source-audio-semantic-evidence.json")
-            for payload in (b"{}", b"{ }", None):
-                with self.subTest(payload=payload):
-                    if payload is None:
-                        evidence.unlink()
-                    else:
-                        evidence.write_bytes(payload)
-                    self.assertTrue(snapshot.changed())
-                    with patch(
-                        "vntts.prepared_audio_discovery.open_reading_catalog",
-                        wraps=open_reading_catalog,
-                    ) as opened:
-                        refreshed = discover_prepared_audio(
-                            game_pack=pack, story_index=story_index, previous=snapshot
-                        )
-                    self.assertTrue(opened.called)
-                    self.assertIsNot(refreshed.sources[0], snapshot.sources[0])
-                    self.assertIsNot(refreshed.catalogs[0], snapshot.catalogs[0])
-                    snapshot = refreshed
+            for path in (
+                pack,
+                story_index,
+                source.library.manifest_path,
+                source.voice_manifest,
+            ):
+                path.write_bytes(path.read_bytes() + b"\n")
+            story_index.with_name("source-audio-semantic-evidence.json").write_text(
+                "{}"
+            )
+            with (
+                patch(
+                    "vntts.prepared_audio_discovery._signature",
+                    side_effect=AssertionError("admitted file polled"),
+                ),
+                patch(
+                    "vntts.prepared_audio_discovery._bound_component",
+                    side_effect=AssertionError("admitted component rehashed"),
+                ),
+                patch(
+                    "vntts.prepared_audio_discovery.open_reading_catalog",
+                    side_effect=AssertionError("admitted catalog reopened"),
+                ),
+                patch(
+                    "vntts.prepared_audio_discovery.RecordedReferenceSources.capture",
+                    side_effect=AssertionError("admitted voices reread"),
+                ),
+            ):
+                self.assertFalse(snapshot.changed())
+                refreshed = discover_prepared_audio(
+                    game_pack=pack, story_index=story_index, previous=snapshot
+                )
+            self.assertIs(refreshed.sources[0], snapshot.sources[0])
+            self.assertIs(refreshed.catalogs[0], snapshot.catalogs[0])
+
+    def test_explicit_rediscovery_admits_replaced_story_at_the_same_path(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                Path(temporary)
+            )
+            snapshot = discover_prepared_audio(game_pack=pack)
+            story = snapshot.sources[0].story_index
+            snapshot = discover_prepared_audio(game_pack=pack, story_index=story)
+            rows = [json.loads(row) for row in story.read_text().splitlines()]
+            rows[1]["speaker"] = "Bea"
+            story.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            document = json.loads(pack.read_text())
+            document["components"]["story_index"]["sha256"] = sha256_file(story)
+            pack.write_text(json.dumps(document))
+            refreshed = discover_prepared_audio(
+                game_pack=pack, story_index=story, previous=None
+            )
+            self.assertIsNot(refreshed.sources[0], snapshot.sources[0])
+            self.assertIsNot(refreshed.catalogs[0], snapshot.catalogs[0])
+            self.assertEqual(refreshed.preloader.line_for_id(line_id).speaker, "Bea")
+            self.assertEqual(snapshot.preloader.line_for_id(line_id).speaker, "Ada")
 
     def test_catalog_merge_preserves_qualified_partial_original_evidence(self):
         with TemporaryDirectory() as temporary:
@@ -641,15 +679,46 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                         (catalog,),
                     )
 
-    def test_known_metadata_change_invalidates_snapshot(self):
+    def test_new_import_is_discovered_without_watching_admitted_story_files(self):
         with TemporaryDirectory() as temporary:
-            pack, _line_id, _text, _text_hash, _wav = write_synthetic_game_pack(
+            root = Path(temporary)
+            (root / "synthetic").mkdir()
+            snapshot = discover_prepared_audio(catalog_root=root)
+            self.assertFalse(snapshot.changed())
+            _pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
+                root / "synthetic" / "synthetic"
+            )
+            story = root / "synthetic" / "synthetic" / "story-index.jsonl"
+            rows = [json.loads(row) for row in story.read_text().splitlines()]
+            rows[0]["game_id"] = "synthetic-game"
+            story.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            self.assertTrue(snapshot.changed())
+            refreshed = discover_prepared_audio(catalog_root=root, previous=snapshot)
+            self.assertIsNotNone(refreshed.preloader.line_for_id(line_id))
+            story_index = refreshed.catalogs[0].story_index
+            self.assertNotIn(story_index, dict(refreshed.watched_paths))
+
+    def test_pack_playback_does_not_poll_its_admitted_manifest(self):
+        with TemporaryDirectory() as temporary:
+            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
                 Path(temporary)
             )
             snapshot = discover_prepared_audio(game_pack=pack)
-            self.assertFalse(snapshot.changed())
-            pack.write_text(pack.read_text() + "\n")
-            self.assertTrue(snapshot.changed())
+            source = snapshot.sources[0]
+            library = snapshot.library_for(lambda _entry: True)
+            with patch(
+                "vntts.generated_audio._manifest_signature",
+                side_effect=AssertionError("admitted pack manifest polled"),
+            ):
+                self.assertTrue(library.has_entry(line_id, text_hash))
+                self.assertTrue(source.library.has_entry(line_id, text_hash))
+                self.assertIsNotNone(library.reserve(line_id, text_hash).load()[0])
+                self.assertIsNotNone(source.library.reserve(line_id, text_hash))
+                self.assertIsNotNone(library.find(line_id, text_hash))
+                self.assertIsNone(source.library.find_live_fallback(line_id, text_hash))
+                self.assertIsNone(
+                    source.library.find_audio_event_omission(line_id, text_hash)
+                )
 
     def test_portable_pack_discovery_never_audits_wavs(self):
         with TemporaryDirectory() as temporary:

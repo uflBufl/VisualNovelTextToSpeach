@@ -52,6 +52,7 @@ from vntts.person_link_suggestions import (
     PersonLinkSuggestion,
     suggest_person_links,
 )
+from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
@@ -1779,9 +1780,8 @@ def _effective_assignment_source(
         ):
             raise PregenerationVoiceError(
                 f"The saved game voice for {character!r} requires Pocket voice "
-                "cloning access, which is currently disabled. After accepting "
-                "the Pocket model terms, enable game voice cloning, choose a "
-                "built-in Pocket voice, or select another engine."
+                "cloning access. Set up the Pocket cloning model in Settings, "
+                "choose a built-in Pocket voice, or select another engine."
             )
         return source_id
     return None
@@ -1814,10 +1814,7 @@ def _saved_original_source(
 
 
 def _public_pocket_mode(settings: AppSettings) -> bool:
-    return bool(
-        settings.speech_backend == "pocket-tts"
-        and not settings.pocket_gated_model_accepted
-    )
+    return bool(settings.speech_backend == "pocket-tts" and not pocket_model_ready())
 
 
 def _text_values(value: object) -> tuple[str, ...]:
@@ -2510,9 +2507,7 @@ def _synthesis_controls(settings: AppSettings) -> SynthesisControls:
             else settings.tts_profile
         ),
         "pocket_voice_cloning": (
-            settings.pocket_gated_model_accepted
-            if settings.speech_backend == "pocket-tts"
-            else None
+            pocket_model_ready() if settings.speech_backend == "pocket-tts" else None
         ),
         "xtts_terms_accepted": (
             settings.xtts_terms_accepted

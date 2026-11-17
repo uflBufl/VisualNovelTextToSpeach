@@ -62,6 +62,8 @@ from vntts.game_narrator import load_original_reference, narrator_preview_plan
 from vntts.generation_database import state_path as generation_state_path
 from vntts.person_link_suggestions import PersonLinkSuggestion
 from vntts.playback_button import set_playback_button_state
+from vntts.pocket_model import pocket_model_ready
+from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
     _preview_service_factory,
@@ -607,15 +609,8 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_row.addWidget(self.game_narrator_button)
         self._refresh_narrator_status()
 
-        self.pocket_voice_cloning = QCheckBox(
-            "I accepted the Pocket terms; enable game voice cloning"
-        )
-        self.pocket_voice_cloning.setChecked(self.settings.pocket_gated_model_accepted)
-        self.pocket_voice_cloning.setAccessibleDescription(
-            "Enable reference-audio voice cloning after accepting the Pocket TTS "
-            "model terms and signing in to Hugging Face"
-        )
-        self.pocket_voice_cloning.toggled.connect(self._pocket_cloning_toggled)
+        self.pocket_setup = PocketSetupControl(self)
+        self.pocket_setup.readyChanged.connect(self._pocket_ready_changed)
         self.pocket_terms = QLabel(
             'Accept the <a href="https://huggingface.co/kyutai/pocket-tts">Pocket '
             "model terms</a> and sign in to Hugging Face to clone game voices. "
@@ -628,7 +623,7 @@ class OfflineAudioPreparationDialog(QDialog):
             and resolve_pregeneration_settings(self.settings).speech_backend
             == "pocket-tts"
         )
-        self.pocket_voice_cloning.setVisible(uses_pocket)
+        self.pocket_setup.setVisible(uses_pocket)
         self.pocket_terms.setVisible(uses_pocket)
 
         return narrator_row
@@ -1300,7 +1295,7 @@ class OfflineAudioPreparationDialog(QDialog):
         settings_layout.addWidget(self.source_status)
         settings_layout.addWidget(self.engine_controls)
         settings_layout.addLayout(narrator_row)
-        settings_layout.addWidget(self.pocket_voice_cloning)
+        settings_layout.addWidget(self.pocket_setup)
         settings_layout.addWidget(self.pocket_terms)
         settings_layout.addWidget(self.change_voices)
 
@@ -1569,7 +1564,6 @@ class OfflineAudioPreparationDialog(QDialog):
             tts_model=plan.synthesis_model,
             tts_language=plan.synthesis_language,
             tts_profile=plan.synthesis_profile,
-            pocket_gated_model_accepted=plan.pocket_voice_cloning,
         )
         preview = narrator_preview_plan(
             settings, plan.voice_manifest, source, COMPARISON_PREVIEW_TEXT
@@ -1908,6 +1902,7 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> None:
         if self.has_pending_work():
             return
+        self.pocket_setup.refresh()
         previous = resolve_pregeneration_settings(self.settings)
         selected = resolve_pregeneration_settings(settings)
         if not voice_changed and (
@@ -1930,13 +1925,11 @@ class OfflineAudioPreparationDialog(QDialog):
         with (
             QSignalBlocker(self.engine_choice),
             QSignalBlocker(self.model_choice),
-            QSignalBlocker(self.pocket_voice_cloning),
         ):
             self.engine_choice.setCurrentIndex(
                 self.engine_choice.findData(settings.offline_speech_backend)
             )
             self.model_choice.setText(settings.offline_tts_model or "")
-            self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self.model_choice.setVisible(
             settings.offline_speech_backend in {"coqui-xtts", "moss-tts"}
         )
@@ -1976,7 +1969,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.model_choice.clear()
         self.model_choice.setEnabled(backend in {"coqui-xtts", "moss-tts"})
         self.model_choice.setVisible(backend in {"coqui-xtts", "moss-tts"})
-        self.pocket_voice_cloning.setVisible(backend == "pocket-tts")
+        self.pocket_setup.setVisible(backend == "pocket-tts")
         self.pocket_terms.setVisible(backend == "pocket-tts")
         self._voice_plan = None
         self._refresh_narrator_status()
@@ -1999,13 +1992,18 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
 
-    def _pocket_cloning_toggled(self, enabled: bool) -> None:
+    def _pocket_ready_changed(self, _ready: bool) -> None:
+        if (
+            self.has_pending_work()
+            or resolve_pregeneration_settings(self.settings).speech_backend
+            != "pocket-tts"
+        ):
+            return
         selected_narrator = (
             self.narrator_choice.currentData()
             if self._awaiting_voice_confirmation
             else None
         )
-        self.settings = self.settings.updated(pocket_gated_model_accepted=bool(enabled))
         self._refresh_narrator_status()
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
             self._show_voice_confirmation(self._voice_plan)
@@ -2016,7 +2014,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.narrator_choice.setCurrentIndex(selected_index)
             elif selected_narrator is not None:
                 self.voice_confirmation_status.setText(
-                    "The previous narrator is unavailable with this cloning setting. "
+                    "The previous narrator is unavailable with this model. "
                     "Choose another narrator before generation."
                 )
         else:
@@ -2034,7 +2032,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 engine_model_label(
                     settings.speech_backend,
                     settings.tts_model,
-                    pocket_cloning=settings.pocket_gated_model_accepted,
+                    pocket_cloning=pocket_model_ready(),
                     compact=True,
                 )
             )
@@ -2073,7 +2071,7 @@ class OfflineAudioPreparationDialog(QDialog):
             engine_model_label(
                 settings.speech_backend,
                 settings.tts_model,
-                pocket_cloning=settings.pocket_gated_model_accepted,
+                pocket_cloning=pocket_model_ready(),
             )
         )
 
@@ -2115,7 +2113,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 for name in pocket_tts_preset_voices
             )
         if isinstance(plan.voice_manifest, (str, bytes)) and (
-            backend != "pocket-tts" or self.settings.pocket_gated_model_accepted
+            backend != "pocket-tts" or pocket_model_ready()
         ):
             registry = CharacterVoiceRegistry.from_file(plan.voice_manifest)
             choices.extend(registry.choices())
@@ -2153,7 +2151,7 @@ class OfflineAudioPreparationDialog(QDialog):
             local_voice_controls
             and self.settings.offline_speech_backend == "pocket-tts"
         )
-        self.pocket_voice_cloning.setVisible(show_terms)
+        self.pocket_setup.setVisible(show_terms)
         self.pocket_terms.setVisible(show_terms)
         self.content_scroll.verticalScrollBar().setValue(0)
         try:
@@ -2173,7 +2171,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.content_scroll.hide()
         self.continue_button.show()
         self.game_narrator_button.setEnabled(True)
-        self.pocket_voice_cloning.setEnabled(True)
+        self.pocket_setup.setEnabled(True)
         self.selection_panel.hide()
         self._set_progress_visible(False)
         self.prepare_again.hide()
@@ -2659,8 +2657,7 @@ class OfflineAudioPreparationDialog(QDialog):
         ) or (
             self._voice_plan is not None
             and self._voice_plan.synthesis_backend == "pocket-tts"
-            and self._voice_plan.pocket_voice_cloning
-            != self.settings.pocket_gated_model_accepted
+            and self._voice_plan.pocket_voice_cloning != pocket_model_ready()
         )
 
     def _play_narrator_reference(self) -> None:
@@ -2742,7 +2739,7 @@ class OfflineAudioPreparationDialog(QDialog):
         controls_changed = (
             self._voice_plan.synthesis_backend == "pocket-tts"
             and isinstance(planned_cloning, bool)
-            and (planned_cloning != self.settings.pocket_gated_model_accepted)
+            and (planned_cloning != pocket_model_ready())
         )
         narrator_changed = source_id is not None and source_id != current
         if controls_changed or narrator_changed:
@@ -2772,7 +2769,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self._provisional_binding_rollback = rollback
                 self._refresh_narrator_status()
             self._awaiting_voice_confirmation = False
-            self.pocket_voice_cloning.setEnabled(False)
+            self.pocket_setup.setEnabled(False)
             self.voice_confirmation.hide()
             self.planning_voices = True
             self.replanning_voice_decisions = False
@@ -2789,7 +2786,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._generation_configuration = self._narrator_configuration_values()
         self._awaiting_voice_confirmation = False
-        self.pocket_voice_cloning.setEnabled(False)
+        self.pocket_setup.setEnabled(False)
         self.voice_confirmation.hide()
         if self._generation_input is None:
             self._generate_after_input = True
@@ -2973,7 +2970,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.phaseChanged.emit("Finding installed stories")
         self.voice_confirmation.hide()
         self.game_narrator_button.setEnabled(not loading)
-        self.pocket_voice_cloning.setEnabled(not loading)
+        self.pocket_setup.setEnabled(not loading)
         self.discovery_panel.setVisible(loading)
         self.selection_panel.setVisible(not loading)
         self.content_scroll.setVisible(loading)
@@ -3293,7 +3290,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._clear_resume_error()
         self.prepare_again.hide()
         self.voice_confirmation.hide()
-        self.pocket_voice_cloning.hide()
+        self.pocket_setup.hide()
         self.pocket_terms.hide()
         self.selection_panel.hide()
         self.content_scroll.show()
@@ -5916,7 +5913,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.game_narrator_chooser is None
                 and self.settings.offline_speech_backend == "pocket-tts"
             )
-            self.pocket_voice_cloning.setVisible(show_terms)
+            self.pocket_setup.setVisible(show_terms)
             self.pocket_terms.setVisible(show_terms)
         self.engine_choice.setEnabled(enabled)
         self.model_choice.setEnabled(
@@ -5952,7 +5949,7 @@ class OfflineAudioPreparationDialog(QDialog):
             and self._generation_engine_available()
         )
         self.game_narrator_button.setEnabled(enabled)
-        self.pocket_voice_cloning.setEnabled(enabled)
+        self.pocket_setup.setEnabled(enabled)
         self.continue_button.setEnabled(
             enabled
             and bool(self.selected_story_ids())

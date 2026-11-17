@@ -7,6 +7,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from tests.pocket_model_fixtures import pocket_model_readiness
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np  # noqa: E402
@@ -46,6 +48,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -604,9 +607,7 @@ class StoryVoicePreviewTest(unittest.TestCase):
         self.assertEqual(self.dialog.voice_confirmation_status.text(), "")
 
     def test_dirty_plan_blocks_row_and_narrator_preview(self):
-        self.dialog.settings = self.dialog.settings.updated(
-            pocket_gated_model_accepted=not self.plan.pocket_voice_cloning
-        )
+        self.enterContext(pocket_model_readiness(not self.plan.pocket_voice_cloning))
         self.dialog._narrator_choice_changed()
 
         self.assertTrue(self.dialog._voice_plan_needs_update())

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vntts.document_identity import file_sha256
+from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
@@ -105,7 +106,7 @@ def narrator_preview_plan(
                 settings.speech_backend,
                 settings.tts_model,
                 settings.tts_profile,
-                settings.pocket_gated_model_accepted,
+                pocket_model_ready(),
             )
         ).encode()
     ).hexdigest()
@@ -139,7 +140,7 @@ def narrator_preview_plan(
         synthesis_model=settings.tts_model,
         synthesis_language=settings.tts_language,
         synthesis_profile=settings.tts_profile,
-        pocket_voice_cloning=settings.pocket_gated_model_accepted and not preset,
+        pocket_voice_cloning=pocket_model_ready() and not preset,
         xtts_terms_accepted=settings.xtts_terms_accepted,
         synthesis_controls_sha256=controls,
         groups=(group,),

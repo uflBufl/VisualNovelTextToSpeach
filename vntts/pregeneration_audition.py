@@ -60,6 +60,7 @@ from vntts.document_identity import (
 )
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary, read_regular_bytes
+from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
@@ -179,7 +180,6 @@ class _BackendFactory(Protocol):
         startup_cancellation: _Cancellation | None = None,
         startup_progress: Callable[[str], object] | None = None,
         terms_accepted: bool = False,
-        allow_gated_model_access: bool = False,
         allow_download: bool = True,
     ) -> _PreviewBackend: ...
 
@@ -292,7 +292,7 @@ class VoiceAuditionPreviewService:
             settings.tts_model,
             settings.tts_language,
             settings.tts_profile,
-            settings.pocket_gated_model_accepted,
+            pocket_model_ready(),
             settings.xtts_terms_accepted,
         )
         with self._lock:
@@ -652,7 +652,6 @@ class VoiceAuditionPreviewService:
                     model_name=config.model,
                     language=config.language,
                     startup_cancellation=cancellation,
-                    allow_gated_model_access=config.pocket_voice_cloning,
                     terms_accepted=config.xtts_terms_accepted,
                     **download_options,
                 )
@@ -665,7 +664,6 @@ class VoiceAuditionPreviewService:
                     language=config.language,
                     startup_cancellation=cancellation,
                     startup_progress=progress,
-                    allow_gated_model_access=config.pocket_voice_cloning,
                     terms_accepted=config.xtts_terms_accepted,
                     **download_options,
                 )

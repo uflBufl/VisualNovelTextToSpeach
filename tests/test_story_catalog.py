@@ -603,7 +603,7 @@ class StoryCatalogTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             tuple(owner.iter_seed_rows("invalid", -1))
 
-    def test_dialogue_owner_reads_canonical_selected_rows_and_rejects_stale_source(
+    def test_dialogue_owner_reads_admitted_rows_without_source_polling(
         self,
     ):
         owner = self.dialogue_catalog()
@@ -611,10 +611,14 @@ class StoryCatalogTest(unittest.TestCase):
         document = owner.records(selected)
         self.assertEqual(tuple(row.line_id for row in document.records), selected)
         self.path.write_bytes(self.path.read_bytes() + b"\n")
-        with self.assertRaisesRegex(StoryCatalogError, "source changed"):
-            owner.dialogues(selected)
-        with self.assertRaisesRegex(StoryCatalogError, "source changed"):
-            owner.records(selected)
+        with patch(
+            "vntts.content_revision.source_signature",
+            side_effect=AssertionError("source polled"),
+        ):
+            self.assertEqual(
+                tuple(row.line_id for row in owner.dialogues(selected)), selected
+            )
+            self.assertEqual(owner.records(selected).records, document.records)
 
     def test_dialogue_owner_pins_separate_read_connections_for_worker_threads(self):
         owner = self.dialogue_catalog()
@@ -626,12 +630,17 @@ class StoryCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(StoryCatalogError, "closed"):
             owner.line_ids()
 
-    def test_dialogue_owner_rejects_changed_evidence_without_query_hashing(self):
+    def test_dialogue_owner_uses_admitted_evidence_until_reloaded(self):
         owner = self.dialogue_catalog()
         evidence = self.path.with_name("source-audio-semantic-evidence.json")
+        expected = owner.exact_ids(None, False, "generate me.")
+        self.assertTrue(expected)
         evidence.write_bytes(evidence.read_bytes() + b"\n")
-        with self.assertRaisesRegex(StoryCatalogError, "evidence changed"):
-            owner.exact_ids(None, False, "generate me.")
+        with patch(
+            "vntts.story_catalog._file_signature",
+            side_effect=AssertionError("evidence polled"),
+        ):
+            self.assertEqual(owner.exact_ids(None, False, "generate me."), expected)
 
     def test_dialogue_query_cancellation_resets_sql_progress_handler(self):
         from vntts.chapter_voice_preload import StoryMatchingCancelled

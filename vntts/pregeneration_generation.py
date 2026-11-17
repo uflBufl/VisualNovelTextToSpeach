@@ -598,8 +598,6 @@ class OfflineGenerationWorker:
             arguments.extend(("--model", voice_plan.synthesis_model))
         if voice_plan.synthesis_language:
             arguments.extend(("--language", voice_plan.synthesis_language))
-        if voice_plan.pocket_voice_cloning:
-            arguments.append("--allow-gated-model-access")
         if (
             voice_plan.synthesis_backend == "coqui-xtts"
             and voice_plan.xtts_terms_accepted

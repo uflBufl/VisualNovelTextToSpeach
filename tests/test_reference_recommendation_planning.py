@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.pregeneration_fixtures import clean_wav_bytes
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import write_player_candidate_manifest
@@ -184,13 +185,13 @@ class ReferenceRecommendationPlanningTest(unittest.TestCase):
         self.assertEqual(selected.source_id, self.baseline.source_id)
         self.assertEqual(self.transcribe.call_count, 2)
 
+    @pocket_model_readiness(True)
     def test_changed_backend_or_profile_invalidates_cached_recommendation(self):
         self._cache_checks()
         changed_settings = (
             self.settings.updated(
                 speech_backend="pocket-tts",
                 offline_speech_backend="pocket-tts",
-                pocket_gated_model_accepted=True,
             ),
             self.settings.updated(tts_profile="natural", offline_tts_profile="natural"),
         )

@@ -22,6 +22,11 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_legacy_pocket_consent_is_ignored_without_becoming_a_setting(self):
+        settings = AppSettings.from_mapping({"pocket_gated_model_accepted": True})
+        self.assertEqual(settings, AppSettings.from_mapping({}))
+        self.assertNotIn("pocket_gated_model_accepted", asdict(settings))
+
     def test_manual_content_import_matches_preference_path_ownership(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -619,13 +624,13 @@ class SettingsTest(unittest.TestCase):
         config.assert_called_once_with(app_name, appauthor=False, roaming=True)
         data.assert_called_once_with(app_name, appauthor=False)
 
+    @patch("vntts.pregeneration_voices.pocket_model_ready", lambda: True)
     def test_settings_round_trip_as_json(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "settings.json"
             settings = AppSettings(
                 onboarding_completed=True,
                 xtts_terms_accepted=True,
-                pocket_gated_model_accepted=True,
                 read_hotkey="<ctrl>+r",
                 pause_hotkey="<ctrl>+p",
                 skip_hotkey="<ctrl>+s",

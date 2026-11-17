@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 from vntts_artifacts.file_integrity import sha256_file
 
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_content
 from tests.voice_manifest_fixtures import (
@@ -50,6 +51,9 @@ from vntts.voices import (
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
+
     def test_failed_and_cancelled_plan_trace_restores_its_operation_context(self):
         from vntts.support import performance_operation_id
 
@@ -236,6 +240,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(list(catalog_root.glob("voice-catalog-*")), [])
             self.assertEqual(list(catalog_root.glob(".voice-catalog-*")), [])
 
+    @pocket_model_readiness(True)
     def test_automatic_reference_choices_preserve_display_excerpts(self):
         for qualified in (False, True):
             with self.subTest(qualified=qualified), TemporaryDirectory() as directory:
@@ -254,7 +259,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
                 plan = VoicePlanStore(jobs, voice_library=library).create(
                     job,
-                    AppSettings(pocket_gated_model_accepted=True),
+                    AppSettings(),
                     manifest_path=manifest,
                     reference_qualifier=qualify if qualified else None,
                 )
@@ -276,6 +281,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 )
                 self.assertNotIn("reference_transcript", evidence)
 
+    @pocket_model_readiness(True)
     def test_planning_persists_one_automatic_voice_binding(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -292,7 +298,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             first = planner.create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             first_group = next(
@@ -304,7 +310,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             ) as record:
                 second = planner.create(
                     job,
-                    AppSettings(pocket_gated_model_accepted=True),
+                    AppSettings(),
                     manifest_path=manifest,
                 )
             routing = next(
@@ -323,6 +329,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Rhiannon"), binding)
             self.assertEqual(second_group.group_id, first_group.group_id)
 
+    @pocket_model_readiness(True)
     def test_planning_discards_obsolete_automatic_narrator_fallback(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -339,7 +346,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -355,6 +362,7 @@ class VoicePlanStoreTest(unittest.TestCase):
         job = jobs.create_or_resume(content, ("story",))
         return job, jobs
 
+    @pocket_model_readiness(True)
     def test_voice_plan_correlates_phase_timings_with_one_operation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -364,7 +372,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             ) as record:
                 VoicePlanStore(jobs).create(
                     job,
-                    AppSettings(pocket_gated_model_accepted=True),
+                    AppSettings(),
                     manifest_path=write_manifest(root / "voices"),
                 )
 
@@ -410,6 +418,7 @@ class VoicePlanStoreTest(unittest.TestCase):
         self.assertEqual(settings.speech_backend, "moss-tts")
         self.assertIsNone(settings.tts_model)
 
+    @pocket_model_readiness(True)
     def test_metadata_does_not_change_voice_groups_or_selection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -417,7 +426,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_conflicting_manifest(root / "voices")
             library = VoiceLibrary(root / "library")
             planner = VoicePlanStore(jobs, voice_library=library)
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             original = planner.create(job, settings, manifest_path=manifest)
             original_group = next(
                 group for group in original.groups if group.character == "Rhiannon"
@@ -476,6 +485,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 chosen.reference_sha256s,
             )
 
+    @pocket_model_readiness(True)
     def test_voice_plan_preserves_person_link_suggestions_without_linking(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -510,7 +520,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -529,11 +539,12 @@ class VoicePlanStoreTest(unittest.TestCase):
             library.link_person("Rhiannon", "Aderyn")
             linked = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             self.assertEqual(linked.person_link_suggestions, ())
 
+    @pocket_model_readiness(True)
     def test_source_audio_is_excluded_and_lines_are_grouped_by_character(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -542,7 +553,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -576,6 +587,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertNotIn("line:original", rhiannon.line_ids)
             self.assertTrue(jobs.catalog.has_plan(job.job_id))
 
+    @pocket_model_readiness(True)
     def test_explicit_person_link_groups_story_names_without_portrait_inference(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -601,7 +613,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -633,7 +645,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest.write_text(json.dumps(manifest_document), encoding="utf-8")
             no_canonical_reference = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             aderyn = next(
@@ -645,6 +657,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
             self.assertNotEqual(aderyn.source_id, voice_binding_source_id(archived))
 
+    @pocket_model_readiness(True)
     def test_linked_names_share_reference_inventory_and_inherit_selected_voice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -670,7 +683,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -701,7 +714,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest.write_text(json.dumps(document), encoding="utf-8")
             alias_only = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             aderyn = next(
@@ -710,6 +723,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(aderyn.route, "needs-audition")
             self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
 
+    @pocket_model_readiness(True)
     def test_link_during_grouping_refreshes_alias_candidate_inventory(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -735,7 +749,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             ):
                 plan = store.create(
                     job,
-                    AppSettings(pocket_gated_model_accepted=True),
+                    AppSettings(),
                     manifest_path=manifest,
                 )
             group = next(group for group in plan.groups if group.character == "Aderyn")
@@ -807,6 +821,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(narrator.source_id, "preset:alba")
             PregenerationInputStore(jobs).materialize(job, plan)
 
+    @pocket_model_readiness(True)
     def test_saved_alias_assignment_is_reused_automatically(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -821,7 +836,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -831,6 +846,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.source_character, "Centurion")
             self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
 
+    @pocket_model_readiness(True)
     def test_rematching_clears_selected_story_roles_but_keeps_narrator_and_others(
         self,
     ):
@@ -851,7 +867,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
                 ignore_decisions=True,
             )
@@ -871,6 +887,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
             self.assertEqual(library.binding("Unrelated Role").route, "narrator")
 
+    @pocket_model_readiness(True)
     def test_cancelled_rematching_restores_previous_bindings(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -888,7 +905,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             with self.assertRaises(PregenerationVoiceCancelled):
                 store.create(
                     job,
-                    AppSettings(pocket_gated_model_accepted=True),
+                    AppSettings(),
                     manifest_path=write_manifest(root / "voices"),
                     cancellation=cancellation,
                     ignore_decisions=True,
@@ -899,6 +916,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Concurrent").route, "live-fallback")
             self.assertEqual(store.saved_documents(), ())
 
+    @pocket_model_readiness(True)
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
         self,
     ):
@@ -906,7 +924,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(directory)
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices")
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             for source, expected_route, expected_voice in (
                 ("character:centurion", "voice", "Centurion"),
                 ("default", "narrator", "marius"),
@@ -951,6 +969,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     job, AppSettings(), manifest_path=manifest
                 )
 
+    @pocket_model_readiness(True)
     def test_close_variant_evidence_creates_one_informed_audition(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -958,7 +977,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_conflicting_manifest(root / "voices"),
             )
 
@@ -985,6 +1004,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 },
             )
 
+    @pocket_model_readiness(True)
     def test_equally_ranked_story_voices_choose_one_without_narrator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -997,7 +1017,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1018,6 +1038,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ("play_rhiannon_1",),
             )
 
+    @pocket_model_readiness(True)
     def test_player_variant_duration_refuses_unrepresentable_integer_and_recovers(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1046,7 +1067,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     )
                     plan = VoicePlanStore(jobs).create(
                         job,
-                        AppSettings(pocket_gated_model_accepted=True),
+                        AppSettings(),
                         manifest_path=manifest,
                     )
                     self.assertTrue(plan.groups)
@@ -1055,6 +1076,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(restored, original_variants)
             self.assertEqual(manifest.read_bytes(), original)
 
+    @pocket_model_readiness(True)
     def test_player_import_accepts_empty_optional_source_links(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1073,7 +1095,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1086,6 +1108,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.candidate_inventory[0].source_voice_ids, ())
             self.assertEqual(rhiannon.candidate_inventory[0].source_line_ids, ())
 
+    @pocket_model_readiness(True)
     def test_unlinked_bank_clip_requires_a_manual_voice_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1099,7 +1122,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             variant["source_excerpts"] = []
             variant["candidate_origin"] = "exact_bank_unrouted_media"
             manifest.write_text(json.dumps(document), encoding="utf-8")
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             source_id = "character:playercandidaterhiannon1"
 
             automatic = VoicePlanStore(jobs).create(
@@ -1155,6 +1178,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(group.resolution, "saved-voice-assignment")
             self.assertEqual(group.source_id, source_id)
 
+    @pocket_model_readiness(True)
     def test_story_routed_voice_wins_over_unlinked_bank_clip(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1173,7 +1197,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             group = next(
@@ -1184,6 +1208,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(len(group.candidate_inventory), 2)
             self.assertEqual(len(group.candidates), 1)
 
+    @pocket_model_readiness(True)
     def test_player_audition_keeps_only_three_best_equal_evidence_clips(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1196,7 +1221,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1213,6 +1238,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ],
             )
 
+    @pocket_model_readiness(True)
     def test_playable_main_voice_surfaces_without_auto_selecting_long_clips(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1244,7 +1270,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 variant["reference_sha256"] = sha256_file(reference)
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             group = next(
                 value
                 for value in VoicePlanStore(jobs)
@@ -1285,6 +1311,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 selected.reference_sha256s, (variants[5]["reference_sha256"],)
             )
 
+    @pocket_model_readiness(True)
     def test_saved_player_voice_keeps_other_references_available_for_inspection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1304,7 +1331,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1318,6 +1345,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(len(rhiannon.candidates), 1)
             self.assertEqual(len(rhiannon.candidate_inventory), 2)
 
+    @pocket_model_readiness(True)
     def test_saved_voice_uses_library_copy_if_original_source_disappears(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1340,7 +1368,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             selected = next(
@@ -1393,6 +1421,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     manifest_path=manifest,
                 )
 
+    @pocket_model_readiness(True)
     def test_player_import_skips_one_invalid_optional_candidate(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1409,7 +1438,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1424,6 +1453,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ["Player candidate Rhiannon 1"],
             )
 
+    @pocket_model_readiness(True)
     def test_player_import_preserves_original_spoken_text(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1454,7 +1484,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1470,6 +1500,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ("Chitchat", "Night"),
             )
 
+    @pocket_model_readiness(True)
     def test_player_import_skips_unbound_original_spoken_text(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1489,7 +1520,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1519,6 +1550,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     manifest_path=manifest,
                 )
 
+    @pocket_model_readiness(True)
     def test_player_import_candidate_ignores_changed_portrait(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1533,7 +1565,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 portrait_image_sha256=sha256_file(portrait),
             )
 
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             before = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
             portrait.write_bytes(b"changed")
             after = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
@@ -1548,6 +1580,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ],
             )
 
+    @pocket_model_readiness(True)
     def test_exact_queue_voice_binding_wins_without_prompt(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1555,7 +1588,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_conflicting_manifest(
                     root / "voices",
                     bind_selected_lines=True,
@@ -1573,6 +1606,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(plan.audition_count, 0)
 
+    @pocket_model_readiness(True)
     def test_saved_ambiguous_choice_is_reused_without_another_prompt(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1583,7 +1617,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 root / "decisions.json", voice_library=library
             )
             store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             first = store.create(job, settings, manifest_path=manifest)
             group = next(
                 value for value in first.groups if value.character == "Rhiannon"
@@ -1628,6 +1662,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(reconsidered.audition_count, 1)
             self.assertIsNone(library.binding("Rhiannon"))
 
+    @pocket_model_readiness(True)
     def test_changed_eligible_reference_requires_a_new_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1635,7 +1670,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_conflicting_manifest(root / "voices")
             decisions = VoiceDecisionStore(root / "decisions.json")
             store = VoicePlanStore(jobs, decisions=decisions)
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             first = store.create(job, settings, manifest_path=manifest)
             group = next(
                 value for value in first.groups if value.character == "Rhiannon"
@@ -1680,13 +1715,14 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.portrait_image, str(portrait.resolve()))
             self.assertEqual(rhiannon.portrait_image_sha256, sha256_file(portrait))
 
+    @pocket_model_readiness(True)
     def test_unrelated_reference_change_does_not_invalidate_other_group_controls(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices", unrelated=b"first")
             store = VoicePlanStore(jobs)
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             first = store.create(job, settings, manifest_path=manifest)
             first_group = next(
                 group for group in first.groups if group.character == "Rhiannon"
@@ -1704,6 +1740,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 second_group.decision_context_sha256,
             )
 
+    @pocket_model_readiness(True)
     def test_selected_reference_or_backend_change_invalidates_only_affected_control(
         self,
     ):
@@ -1712,7 +1749,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices", rhiannon=b"first")
             store = VoicePlanStore(jobs)
-            settings = AppSettings(pocket_gated_model_accepted=True)
+            settings = AppSettings()
             first = store.create(job, settings, manifest_path=manifest)
             first_groups = {group.character: group for group in first.groups}
 
@@ -1772,13 +1809,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                         decisions.choice_for(group_id, context)
             self.assertFalse(decisions.catalog.path.exists())
 
+    @pocket_model_readiness(True)
     def test_uncataloged_plan_is_refused_and_current_plan_uses_catalog(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             imported_jobs = PregenerationJobStore(root / "legacy-jobs")
@@ -1807,13 +1845,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                 (jobs.directory_for(job.job_id) / "voice-plan.json").exists()
             )
 
+    @pocket_model_readiness(True)
     def test_legacy_decisions_are_ignored_and_preserved_after_new_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             group = next(value for value in plan.groups if value.route == "voice")
@@ -1855,13 +1894,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                 independent.choice_for(group.group_id, group.decision_context_sha256)
             )
 
+    @pocket_model_readiness(True)
     def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             decisions = VoiceDecisionStore(root / "decisions.json")
@@ -1874,6 +1914,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 group.source_id,
             )
 
+    @pocket_model_readiness(True)
     def test_decision_store_accepts_only_bound_candidate_or_narrator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1881,7 +1922,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             selected = next(
@@ -1901,7 +1942,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             reused = VoicePlanStore(jobs, decisions=reloaded).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             reused_group = next(
@@ -1916,6 +1957,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 "default",
             )
 
+    @pocket_model_readiness(True)
     def test_decision_store_preserves_reference_excerpts_without_conditioning_text(
         self,
     ):
@@ -1925,7 +1967,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             library = VoiceLibrary(root / "library")
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             group = next(
@@ -1959,13 +2001,14 @@ class VoicePlanStoreTest(unittest.TestCase):
                         self.assertNotIn("reference_transcript", evidence)
                         self.assertEqual(candidate.reference_transcript, transcript)
 
+    @pocket_model_readiness(True)
     def test_decision_store_validates_batch_before_updating_voice_library(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             first, second = plan.groups[:2]
@@ -1986,6 +2029,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     decisions.choice_for(group.group_id, group.decision_context_sha256)
                 )
 
+    @pocket_model_readiness(True)
     def test_decision_write_failure_restores_the_complete_voice_library(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1993,7 +2037,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             library = VoiceLibrary(root / "library")
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             original = library.bindings()
@@ -2032,6 +2076,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     reloaded.choice_for(group.group_id, group.decision_context_sha256)
                 )
 
+    @pocket_model_readiness(True)
     def test_decision_write_failure_preserves_primary_when_rollback_is_fatal(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2039,7 +2084,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             library = VoiceLibrary(root / "library")
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             decisions = VoiceDecisionStore(
@@ -2101,13 +2146,14 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertIn("fatal rollback failure", notes)
             self.assertIn("rollback detail", notes)
 
+    @pocket_model_readiness(True)
     def test_simultaneous_decisions_preserve_both_voice_groups(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
             first, second = plan.groups[:2]

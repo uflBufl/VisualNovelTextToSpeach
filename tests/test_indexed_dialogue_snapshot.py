@@ -14,7 +14,6 @@ from vntts.selected_story_snapshot import (
     _source_receipts,
     create_selected_story_snapshot,
 )
-from vntts.story_catalog import StoryCatalogError
 
 
 class IndexedDialogueSnapshotTests(unittest.TestCase):
@@ -78,16 +77,21 @@ class IndexedDialogueSnapshotTests(unittest.TestCase):
         self.assertIsInstance(without_evidence.store, IndexedDialogueStore)
         self.assertFalse(without_evidence.line_for_id("test:0").has_full_source_audio)
 
-    def test_regular_indexed_source_rejects_a_changed_source_after_a_cached_lookup(
+    def test_regular_indexed_source_is_retained_until_explicit_reload(
         self,
     ):
         path = write_story_index(self.root / "source")
         preloader = ChapterVoicePreloader.load_optional(path)
         self.assertIsInstance(preloader.store, IndexedDialogueStore)
         self.assertTrue(preloader.line_for_id("reverse1999:1").has_full_source_audio)
+        before = preloader.line_for_id("reverse1999:2")
         write_story_index(path.parent, generated_text="The source has changed.")
-        with self.assertRaises(StoryCatalogError):
-            preloader.line_for_id("reverse1999:1")
+        self.assertEqual(preloader.line_for_id("reverse1999:2"), before)
+        self.assertTrue(preloader.line_for_id("reverse1999:1").has_full_source_audio)
+        refreshed = ChapterVoicePreloader.load_optional(path)
+        self.assertEqual(
+            refreshed.line_for_id("reverse1999:2").text, "The source has changed."
+        )
 
     def test_selected_snapshot_uses_its_own_index_and_never_admits_parent_rows(self):
         path = write_story_index(self.root / "source")

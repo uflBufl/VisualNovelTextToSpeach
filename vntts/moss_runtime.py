@@ -297,7 +297,6 @@ class RetainedMossRuntime:
         if name != "moss-tts" or not moss_cpp_requested(options.get("model_name")):
             return create_backend(name, registry, cache_root, **options)
         options.pop("terms_accepted", None)
-        options.pop("allow_gated_model_access", None)
         return self._native_backend_for(registry, options)
 
     def _configured_backend(

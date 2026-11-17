@@ -119,6 +119,7 @@ from vntts.playback import (
     outcome_for_prepared,
     prepare_silent_playback,
 )
+from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_setup import PregenerationJobStore
 from vntts.prepared_audio_discovery import (
     PreparedAudioSnapshot,
@@ -1337,7 +1338,7 @@ class AppController:
                 story_index=settings.story_index,
                 generated_audio_manifest=settings.generated_audio_manifest,
                 warn=self.status_handler,
-                previous=self.prepared_audio_inventory,
+                previous=None if force else self.prepared_audio_inventory,
                 game_window_title=settings.game_window_title,
             )
             snapshot = inventory.for_settings(settings)
@@ -5328,7 +5329,7 @@ class AppController:
             id(getattr(backend, "process", None)),
             getattr(backend, "narrator_reference", None),
             registry.resolve("Narrator") if registry is not None else None,
-            self.settings.pocket_gated_model_accepted,
+            pocket_model_ready(),
             self.settings.effective_speaker_announcement_mode,
         )
 
