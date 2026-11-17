@@ -62,13 +62,13 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
         )
         self.assertIsNone(line)
 
-    def test_boundary_recovery_preserves_speaker_protection_and_prefix_guards(self):
-        for speaker, observed in (
-            ("Bob", self.text[:-2] + "."),
-            ("", self.text[:-2] + "."),
-            ("Ada", "The supplies are stored beside the locked cell."),
-            ("Ada", "The supplies are stored beside the locked garden."),
-            ("Ada", "The supplies are stored beside the locked"),
+    def test_completed_owner_reuse_keeps_speaker_and_similarity_bounds(self):
+        for speaker, observed, accepted in (
+            ("Bob", self.text[:-2] + ".", False),
+            ("", self.text[:-2] + ".", False),
+            ("Ada", "The supplies are stored beside the locked cell.", True),
+            ("Ada", "The supplies are stored beside the locked garden.", False),
+            ("Ada", "The supplies are stored beside the locked", False),
         ):
             with self.subTest(speaker=speaker, observed=observed):
                 preloader, rows = self.preloader()
@@ -78,7 +78,9 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
                     (rows[0].line_id,),
                     fully_observed_line_id=rows[0].line_id,
                 )
-                self.assertIsNone(line)
+                self.assertIs(line, rows[0] if accepted else None)
+
+    def test_completed_owner_reuse_has_no_numeric_or_word_specific_veto(self):
         for text, observed in (
             ("There is no one.", "There is no on."),
             ("There are 12.", "There are 1."),
@@ -92,10 +94,13 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
                     )
                 )
                 preloader.select_line_id("line-1")
+                self.assertIsNone(
+                    preloader.resolve_complete_among("Ada", observed, ("line-1",))[0]
+                )
                 line, _ = preloader.resolve_complete_among(
                     "Ada", observed, ("line-1",), fully_observed_line_id="line-1"
                 )
-                self.assertIsNone(line)
+                self.assertIs(line, preloader.line_for_id("line-1"))
 
     def test_current_owner_cannot_win_against_competing_target(self):
         preloader, rows = self.preloader(("Ada", self.text.replace("cellar", "cellad")))

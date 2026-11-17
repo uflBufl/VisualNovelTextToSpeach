@@ -25,23 +25,17 @@ class LatinDiacriticFoldingTest(unittest.TestCase):
                 )
 
 
-class ProtectedLegacyResolverTest(unittest.TestCase):
-    def test_all_prefix_entry_points_reject_changed_protected_content(self):
-        for canonical, observed in (
+class SharedLegacyResolverTest(unittest.TestCase):
+    def test_all_prefix_entry_points_keep_normalized_candidate_competition(self):
+        for canonical, alternative, observed in (
             (
                 "The lantern needs -5 coins before we can leave home.",
+                "The lantern needs +5 coins before we can leave home.",
                 "The lantern needs 5 coins",
             ),
             (
-                "The lantern isn't ready for our long journey home.",
-                "The lantern isn t ready",
-            ),
-            (
-                "The lantern is not ready for our long journey home.",
-                "The lantern is now ready",
-            ),
-            (
                 "The lantern needs 123 coins before we can leave home.",
+                "The lantern needs 124 coins before we can leave home.",
                 "The lantern needs 12",
             ),
         ):
@@ -51,22 +45,24 @@ class ProtectedLegacyResolverTest(unittest.TestCase):
                 "is_unique_incomplete_prefix",
             ):
                 with self.subTest(method=method, observed=observed):
-                    resolver = ChapterVoicePreloader([dialogue(canonical)])
+                    resolver = ChapterVoicePreloader(
+                        [dialogue(canonical, "first"), dialogue(alternative, "second")]
+                    )
                     args = (
                         (observed,) if method.endswith("by_text") else ("Ada", observed)
                     )
                     self.assertFalse(getattr(resolver, method)(*args))
                     self.assertIsNone(resolver.current_match)
 
-    def test_all_prefix_entry_points_accept_safe_source_coverage(self):
+    def test_all_prefix_entry_points_use_shared_normalized_source_coverage(self):
         for canonical, observed in (
             (
                 "The lantern needs -5 coins before we can leave home.",
-                "The lantern needs -5 coins",
+                "The lantern needs 5 coins",
             ),
             (
                 "The lantern isn't ready for our long journey home.",
-                "The lantern isn’t ready",
+                "The lantern isn t ready",
             ),
             (
                 "The café lantern glows brightly beside our home.",
@@ -95,13 +91,13 @@ class ProtectedLegacyResolverTest(unittest.TestCase):
             resolver.is_unique_incomplete_prefix("Ada", "The lantern isn’t ready!")
         )
 
-    def test_exact_entry_points_keep_protection_and_existing_normalization_contract(
-        self,
-    ):
+    def test_exact_entry_points_use_punctuation_normalization_without_fuzzy_edits(self):
         for canonical, observed, accepted in (
-            ("The lantern needs -5 coins.", "The lantern needs 5 coins.", False),
-            ("The lantern needs -5 coins.", "The lantern needs +5 coins.", False),
-            ("The lantern isn't ready.", "The lantern isn t ready.", False),
+            ("The lantern needs -5 coins.", "The lantern needs 5 coins.", True),
+            ("The lantern needs -5 coins.", "The lantern needs +5 coins.", True),
+            ("The lantern needs 5 coins.", "The lantern needs 6 coins.", False),
+            ("The lantern is not ready.", "The lantern is now ready.", False),
+            ("The lantern isn't ready.", "The lantern isn t ready.", True),
             ("The lantern isn't ready.", "The lantern isn’t ready.", True),
             ("The lantern needs -5 coins.", "The lantern needs −5 coins.", True),
             ("The stack-finally holds.", "The stack finally holds!", True),
@@ -125,10 +121,10 @@ class ProtectedLegacyResolverTest(unittest.TestCase):
                     if not accepted:
                         self.assertIs(resolver.current_match, previous)
 
-    def test_tracker_early_resolver_cannot_expand_a_changed_numeric_sign(self):
+    def test_tracker_early_resolver_uses_shared_punctuation_normalization(self):
         row = dialogue("The lantern needs -5 coins before we can leave home.")
         for observed, accepted in (
-            ("The lantern needs 5 coins", False),
+            ("The lantern needs 5 coins", True),
             ("The lantern needs -5 coins", True),
         ):
             with self.subTest(observed=observed):
@@ -146,44 +142,41 @@ class ProtectedLegacyResolverTest(unittest.TestCase):
                 )
 
 
-class ProtectedCropTest(unittest.TestCase):
-    def test_crop_recovery_cannot_discard_protected_observed_content(self):
+class CropEvidenceTest(unittest.TestCase):
+    def test_crop_recovery_uses_noise_size_without_semantic_word_guards(self):
         row = dialogue("The quota is five.")
         resolver = ChapterVoicePreloader([row])
         for observed in (
-            "not The quota is five.",
-            "The quota is five. not",
-            "The quota is five. 6",
-            "The quota is five. with six dogs",
+            "A very long unrelated sentence before The quota is five.",
+            "The quota is five. with many more unrelated words after the dialogue",
         ):
             with self.subTest(observed=observed):
                 match = resolver.resolve_observation_among(
-                    "Ada",
-                    observed,
-                    [row.line_id],
-                    allow_prefix=True,
-                    recover_crop_noise=True,
+                    "Ada", observed, [row.line_id], recover_crop_noise=True
                 )
                 self.assertIsNone(match.line)
-        for observed in ("ae The quota is five.", "Ada The quota is five."):
+        for observed in (
+            "ae The quota is five.",
+            "Ada The quota is five.",
+            "not The quota is five.",
+            "6 The quota is five.",
+        ):
             with self.subTest(observed=observed):
                 match = resolver.resolve_observation_among(
-                    "Ada",
-                    observed,
-                    [row.line_id],
-                    recover_crop_noise=True,
+                    "Ada", observed, [row.line_id], recover_crop_noise=True
                 )
                 self.assertIs(match.line, row)
                 self.assertTrue(match.complete)
 
-    def test_number_in_decorative_position_needs_more_evidence_than_text(self):
-        row = dialogue("The old woman raises a finger to her lips.")
-        resolver = ChapterVoicePreloader([row])
+    def test_decorative_prefix_does_not_remove_a_growing_text_competitor(self):
+        first = dialogue("The old woman raises a finger to her lips.", "first")
+        second = dialogue("The old woman raises a finger to the sky.", "second")
+        resolver = ChapterVoicePreloader([first, second])
         for prefix in ("7 r RPA ", "not "):
             match = resolver.resolve_observation_among(
                 "Ada",
                 prefix + "The old woman raises a fin",
-                [row.line_id],
+                [first.line_id, second.line_id],
                 allow_prefix=True,
                 recover_crop_noise=True,
             )

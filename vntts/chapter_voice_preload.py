@@ -41,7 +41,9 @@ from vntts.story_text_matching import (
     MatchingText,
     TextEvidence,
     compare_text,
+    edit_budget,
     prepare_text,
+    retrieval_distance,
 )
 
 if TYPE_CHECKING:
@@ -981,10 +983,7 @@ class ChapterVoicePreloader:
             )
 
         def budget(row: ChapterDialogue) -> int:
-            return sum(
-                self.matching_shape(row).alphanumeric_length >= boundary
-                for boundary in (3, 60, 120)
-            )
+            return edit_budget(self.matching_shape(row))
 
         prepared = {str(text): observed}
         comparison_cache: dict[tuple[str, ChapterDialogue], TextEvidence] = {}
@@ -998,25 +997,32 @@ class ChapterVoicePreloader:
                 shape = prepared.get(span)
                 if shape is None:
                     shape = prepared[span] = prepare_text(span)
-                evidence = comparison_cache[key] = self._recover_current_edge_glyph(
-                    row,
-                    shape,
-                    compare_text(
-                        shape, self.matching_shape(row), limit=0 if exact_shape else 4
-                    ),
-                    speaker,
-                    current,
-                    fully_observed_line_id,
-                    span == str(text),
-                )
+                source = self.matching_shape(row)
+                comparison_limit = 0 if exact_shape else retrieval_distance(shape)
+                evidence = compare_text(shape, source, limit=comparison_limit)
+                if (
+                    not evidence.complete
+                    and span == str(text)
+                    and row.line_id == fully_observed_line_id
+                    and current is not None
+                    and (row.chapter, _story_position(row))
+                    == (current.chapter, _story_position(current))
+                    and speaker
+                    and speaker == _normalize(row.speaker)
+                    and evidence.distance <= min(budget(row), comparison_limit)
+                ):
+                    # Completion belongs to this already-seen occurrence, not an OCR glyph.
+                    evidence = TextEvidence(
+                        evidence.distance, True, None, source.alphanumeric_length
+                    )
+                comparison_cache[key] = evidence
             return evidence
 
         comparisons = [
             _CandidateEvidence(row, str(text), compare(str(text), row)) for row in valid
         ]
         raw = tuple(comparisons)
-        # Trimming is crop recovery only. Every remaining span goes through the
-        # same alignment and protected-content checks as an ordinary full crop.
+        # Trimming is crop recovery only; the remaining span still needs full coverage.
         if recover_crop_noise and not any(
             (item.evidence.complete and item.evidence.distance <= budget(item.line))
             or (
@@ -1046,8 +1052,7 @@ class ChapterVoicePreloader:
                     shape = prepared.get(crop)
                     if shape is None:
                         shape = prepared[crop] = prepare_text(crop)
-                    if shape.protected_content == observed.protected_content:
-                        crops.append((row, crop, speaker_in_crop, suffix_trimmed))
+                    crops.append((row, crop, speaker_in_crop, suffix_trimmed))
             crop_keys = {crop: _normalize_exact_text(crop) for crop in prepared}
             source_keys = {row: _normalize_exact_text(row.text) for row in valid}
             exact_crops = [
@@ -1230,7 +1235,12 @@ class ChapterVoicePreloader:
                         and length / canonical_length >= 0.6
                     )
                 )
-                if distance is not None and distance <= budget(item.line) and enough:
+                if (
+                    distance is not None
+                    and distance
+                    <= min(budget(item.line), edit_budget(prepared[item.observed]))
+                    and enough
+                ):
                     prefixes.append(item)
             if prefixes:
                 prefixes.sort(
@@ -1296,7 +1306,7 @@ class ChapterVoicePreloader:
         limit = (
             0
             if (False in exact_lanes if prefer_synthesis else bool(exact_lanes))
-            else 4
+            else retrieval_distance(observed)
         )
         rows = self.store.candidates(text, prefix=allow_prefix, distance=limit)
         if is_symbol_only_text(text):
@@ -1306,9 +1316,7 @@ class ChapterVoicePreloader:
         def viable(row: ChapterDialogue) -> bool:
             self._check_matching_cancelled()
             shape = self.matching_shape(row)
-            budget = sum(
-                shape.alphanumeric_length >= boundary for boundary in (3, 60, 120)
-            )
+            budget = edit_budget(shape)
             evidence = compare_text(observed, shape)
             return (evidence.complete and evidence.distance <= budget) or (
                 evidence.prefix_distance is not None
@@ -1320,7 +1328,9 @@ class ChapterVoicePreloader:
             (not prefer_synthesis and guarded) or len(guarded) == 2
         ):
             # A witness per synthesis lane suffices for an incomplete result.
-            for row in self.store.iter_candidates(text, distance=3):
+            for row in self.store.iter_candidates(
+                text, distance=retrieval_distance(observed)
+            ):
                 lane = row.has_original_speech
                 if lane not in guarded and viable(row):
                     guarded.add(lane)
@@ -1341,7 +1351,6 @@ class ChapterVoicePreloader:
     ) -> tuple[ChapterDialogue, ...]:
         # Query a finite superset; row-dependent crop guards remain in the validator.
         candidates: dict[ChapterDialogue, None] = {}
-        observed = prepare_text(text)
         tokens = tuple(re.finditer(r"\S+", str(text)))
         for start in range(min(8, len(tokens))):
             for dropped in range(min(4, len(tokens) - start)):
@@ -1363,10 +1372,8 @@ class ChapterVoicePreloader:
                 if not allow_prefix:
                     witnessed: set[bool] = set()
                     shape = prepare_text(span)
-                    if shape.protected_content != observed.protected_content:
-                        continue
                     for row in self.store.iter_candidates(
-                        span, distance=3, original=original
+                        span, distance=retrieval_distance(shape), original=original
                     ):
                         if predicate is not None and not predicate(row):
                             continue
@@ -1380,10 +1387,7 @@ class ChapterVoicePreloader:
                             continue
                         source = self.matching_shape(row)
                         evidence = compare_text(shape, source)
-                        budget = sum(
-                            source.alphanumeric_length >= boundary
-                            for boundary in (3, 60, 120)
-                        )
+                        budget = min(edit_budget(source), edit_budget(shape))
                         if (
                             evidence.prefix_distance is not None
                             and evidence.prefix_distance <= budget
@@ -1397,40 +1401,6 @@ class ChapterVoicePreloader:
                         ):
                             break
         return tuple(candidates)
-
-    def _recover_current_edge_glyph(
-        self,
-        row: ChapterDialogue,
-        observed: MatchingText,
-        evidence: TextEvidence,
-        speaker: str,
-        current: ChapterMatch | None,
-        fully_observed_line_id: str | None,
-        raw_observation: bool,
-    ) -> TextEvidence:
-        source = self.matching_shape(row)
-        if (
-            raw_observation
-            and row.line_id == fully_observed_line_id
-            and current is not None
-            and (row.chapter, _story_position(row))
-            == (current.chapter, _story_position(current))
-            and speaker
-            and speaker == _normalize(row.speaker)
-            and evidence.distance == 1
-            and not evidence.complete
-            and observed.protected_content == source.protected_content
-            and len(source.key) > 2
-            and (
-                observed.key == source.key[1:]
-                and source.key[1].isalnum()
-                or observed.key == source.key[:-1]
-                and source.key[-2].isalnum()
-            )
-        ):
-            # A missing edge glyph cannot truncate a fully seen current owner.
-            return TextEvidence(1, True, None, source.alphanumeric_length)
-        return evidence
 
     def resolve_unique_prefix(
         self,
@@ -1517,10 +1487,8 @@ class ChapterVoicePreloader:
             nearby = matches(self.chapter_rows(self.current_match.chapter))
             if nearby:
                 return nearby
-        # Projection retrieval preserves the original MatchingText boundaries.
-        rows = self.store.candidates(
-            observed.key.replace("\x00", " ").replace("\x01", " "), distance=0
-        )
+        # Exact prefix lookup uses the same normalized key as source evidence.
+        rows = self.store.candidates(observed.key, distance=0)
         return matches(rows)
 
     def _matches_prefix(self, row: ChapterDialogue, observed: MatchingText) -> bool:

@@ -57,6 +57,68 @@ def observed(text, speaker="a ae Ce", dialogue_confidence=94.9):
 
 
 class StoryOCRAuthorityTest(unittest.TestCase):
+    def test_hansel_letter_digit_confusion_keeps_original_speech(self):
+        canonical = "Even if I die, I'll still turn Kakania completely against Isolde."
+        damaged = "Even if I die, [1l still turn Kakania completely against Isolde."
+        previous = replace(
+            story_line("Previous dialogue.", line_id="previous"), sequence=56
+        )
+        target = replace(
+            story_line(canonical, "Marcus", "reverse1999:100631:57"),
+            sequence=57,
+            source_audio_status="available",
+            source_audio_id="610017348",
+            source_audio_duration_seconds=4.0,
+            source_audio_completeness="full",
+            source_audio_authoritative=True,
+        )
+        for known_chapter in (False, True):
+            with self.subTest(known_chapter=known_chapter):
+                controller = self.controller((previous, target))
+                if known_chapter:
+                    controller.chapter_voice_preloader.select_line_id(previous.line_id)
+                live = Mock()
+                live.name = "live-test"
+                live.capabilities = SpeechBackendCapabilities(True, False, True)
+                backend = GeneratedAudioFallbackBackend(
+                    live,
+                    None,
+                    controller.chapter_voice_preloader,
+                    audio_source_policy="prefer-game-audio",
+                    audio_output=Mock(),
+                )
+                backend.set_live_mode_active(True)
+                controller.speech_backend = backend
+                raw = OCRResult(
+                    "Marcus",
+                    damaged,
+                    86.18,
+                    "fixture",
+                    1,
+                    speaker_confidence=96,
+                    dialogue_confidence=86.18,
+                )
+                with patch(
+                    "vntts.dialog_capture.recognize_dialog_image_result",
+                    return_value=raw,
+                ):
+                    actual = controller._recognize_live_frame(
+                        CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
+                    )
+                self.assertIsInstance(actual, RecognizedDialog)
+                self.assertEqual(actual.line_id, target.line_id)
+                self.assertEqual(actual.text, canonical)
+                route = backend.prepare_route(
+                    actual.character,
+                    actual.text,
+                    line_id=actual.line_id,
+                    resolve_unidentified=False,
+                )
+                self.assertIsInstance(route, SourceAudioRoute)
+                self.assertEqual(route.trace.line_id, target.line_id)
+                self.assertEqual(route.prepared.source_audio_id, "610017348")
+                live.prepare_playback.assert_not_called()
+
     def test_expected_short_original_keeps_game_audio_after_ocr_admission(self):
         for text, continuation, speaker in (
             ("Repeat.", "Repeat. This is the 24 hour countdown.", "Communicator"),
@@ -950,35 +1012,46 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIs(initial, line)
 
-    def test_changed_numbers_signs_or_negation_never_acquire_story_authority(self):
-        for canonical, text in (
-            ("The lantern needs 12 coins.", "The lantern needs 13 coins."),
-            ("The lantern needs -12 coins.", "The lantern needs 12 coins."),
-            ("The lantern needs -12 coins.", "The lantern needs +12 coins."),
-            ("The lantern needs 1.2 coins.", "The lantern needs 12 coins."),
-            ("The lantern needs 12% fuel.", "The lantern needs 12 fuel."),
-            ("The lantern needs one coin.", "The lantern needs two coin."),
-            ("The lantern is not ready.", "The lantern is now ready."),
-            ("The lantern cannot glow.", "The lantern can glow."),
-            ("The lantern isn't ready.", "The lantern is ready."),
+    def test_numeric_and_negative_ocr_use_the_shared_similarity_budget(self):
+        for canonical, text, accepted in (
+            ("The lantern needs 12 coins.", "The lantern needs 13 coins.", True),
+            ("The lantern needs -12 coins.", "The lantern needs 12 coins.", True),
+            ("The lantern needs -12 coins.", "The lantern needs +12 coins.", True),
+            ("The lantern needs 1.2 coins.", "The lantern needs 12 coins.", True),
+            ("The lantern needs 12% fuel.", "The lantern needs 12 fuel.", True),
+            ("The lantern needs one coin.", "The lantern needs two coin.", False),
+            ("The lantern is not ready.", "The lantern is now ready.", True),
+            ("The lantern cannot glow.", "The lantern can glow.", False),
+            ("The lantern isn't ready.", "The lantern is ready.", False),
         ):
             with self.subTest(canonical=canonical, text=text):
                 line = story_line(canonical, "Cornerstone")
                 controller = self.controller((line,))
                 raw = observed(text, line.speaker)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                resolved = controller._resolve_story_ocr_result(raw)
+                if accepted:
+                    self.assertEqual(
+                        (resolved.character, resolved.text), (line.speaker, canonical)
+                    )
+                else:
+                    self.assertIs(resolved, raw)
                 initial, _ = self.resolve_initial(controller, raw.character, raw.text)
-                self.assertIsNone(initial)
+                self.assertIs(initial, line if accepted else None)
                 bounded, _ = controller.chapter_voice_preloader.resolve_bounded_among(
                     raw.character, raw.text, (line.line_id,)
                 )
-                self.assertIsNone(bounded)
-                self.assertIsNone(controller.chapter_voice_preloader.current_match)
+                self.assertIs(bounded, line if accepted else None)
+                if accepted:
+                    self.assertIsNotNone(
+                        controller.chapter_voice_preloader.current_match
+                    )
+                else:
+                    self.assertIsNone(controller.chapter_voice_preloader.current_match)
 
     def test_startup_cannot_select_an_exact_line_outside_the_sequence_plan(self):
         allowed = story_line("The lantern needs 12 coins.", "Cornerstone")
         forbidden = story_line(
-            "The lantern needs 13 coins.", "Cornerstone", "forbidden", "chapter-2"
+            "The garden is quiet this morning.", "Cornerstone", "forbidden", "chapter-2"
         )
         controller = self.controller((allowed, forbidden))
         controller.settings = controller.settings.updated(

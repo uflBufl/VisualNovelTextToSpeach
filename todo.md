@@ -435,37 +435,23 @@ reruns and native acceptance to one combined run after the defect fixes. A pendi
 native gate does not block moving to the next code item and must not be marked
 complete. Do not change recognition or playback policy on an unverified hypothesis.
 
-Next action: agree the shared matcher replacement boundary in RUN-17-02, implement
-it with affected consumers and retrieval checks, then finish the remaining Mac
-verification gates. Indexed Mac
+Next action: finish native qualification of the shared matcher and the remaining
+Mac verification gates. Indexed Mac
 Read/restart now passes; do not repeat that segment just to measure matching.
 Windows acceptance is outside this pass. Book reading remains a separate,
 deferred implementation; centered-caption checks are included.
 
-- [ ] **RUN-17-02 - Recover known original speech after letter/number OCR confusion.**
-      Native Hansel100631:57 has full original voice610017348 but was routed to
-      live MOSS after OCR read `I'll` as `[1l`. The actual complete text was
-      `Even if I die, [1l still turn Kakania completely against Isolde.`.
-      Matching protects the internal1 as numeric content and also exceeds the
-      current edit budget;56 and58 correctly used game audio. Use the offline
-      comparison in `.codex/investigations/ocr-script-matcher-comparison-20261117/`
-      to agree the replacement before product edits: one RapidFuzz-based similarity
-      scorer, separate full/prefix coverage, and existing occurrence authority.
-      Remove the protected OCR-content hard veto and custom DP only within the
-      agreed common policy; preserve the requested short-text typo tolerance.
-      Replace edge-glyph recovery through general evidence and previously-complete
-      occurrence policy, not a new I/l/1 table. Keep crop recovery until actual
-      cases qualify its replacement. The standalone baseline does not implement
-      prefix ownership or source-audio dispatch; those consumers must migrate and
-      be checked together. Use the same normalization and bounds for index
-      retrieval, update derived catalogue keys/cache version as needed, and prove
-      accepted candidates are retrieved in chapter and global scopes. Check
-      incomplete/complete observations, duplicate occurrences, speaker scope,
-      original/prepared/live routing and Stop/cancellation. Explicitly reconcile
-      old semantic-veto tests rather than silently weakening their assertions.
-      Replay recorded57 through the controller and qualify game-audio selection
-      without changing unreadable-frame waiting. Native evidence:
-      native-followup-20261117, session f23c15bf98d240118c2f2e4b4f7b7426.
+- [ ] **RUN-17-02 - Qualify original speech after OCR confusion in the native run.**
+      In the next combined Hansel pass, verify source100631:57 uses original
+      voice610017348 without overlapping live MOSS when OCR confuses `I'll` with
+      `[1l`. Exercise typed prefixes and previously-complete occurrence evidence
+      without premature completion or repeat speech. Keep unreadable-frame waiting.
+      Use the existing current Mac gates below for centered-caption return,
+      Stop/cancellation and source/prepared/live transitions. Evidence for locating
+      the defect: native-followup-20261117,
+      session f23c15bf98d240118c2f2e4b4f7b7426. Local replay and route results are in
+      `.codex/investigations/shared-ocr-matcher-20261117/`; they do not close native
+      acceptance. No additional glyph table or OCR fallback is planned.
 
 - [ ] **Current Mac verification pass.** Finish fresh-context duplicate reuse
       and unique-successor identification together with the centered-caption

@@ -49,18 +49,34 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
                 self.assertIs(selected, row)
                 self.assertEqual(result, method)
 
-    def test_normalized_keys_cannot_hide_changed_protected_content(self):
+    def test_normalized_discovery_treats_numeric_punctuation_as_word_separators(self):
         for canonical, observed in (
             ("The lantern needs -12 coins.", "The lantern needs 12 coins."),
             ("The lantern needs 1.2 coins.", "The lantern needs 1,2 coins."),
-            ("The lantern is not ready.", "The lantern is now ready."),
         ):
             with self.subTest(canonical=canonical, observed=observed):
-                preloader = ChapterVoicePreloader((dialogue(canonical),))
-                self.assertIsNone(
-                    preloader.resolve_indexed_complete("Ada", observed)[0]
+                row = dialogue(canonical)
+                preloader = ChapterVoicePreloader((row,))
+                self.assertIs(
+                    preloader.resolve_indexed_complete("Ada", observed)[0], row
                 )
-                self.assertIsNone(preloader.current_match)
+                self.assertEqual(preloader.current_match.chapter, row.chapter)
+        preloader = ChapterVoicePreloader((dialogue("The lantern is not ready."),))
+        self.assertIsNone(
+            preloader.resolve_indexed_complete("Ada", "The lantern is now ready.")[0]
+        )
+        self.assertIsNone(preloader.current_match)
+
+    def test_normalized_numeric_discovery_keeps_equal_key_competitors_ambiguous(self):
+        first = dialogue("The lantern needs -12 coins.", "first")
+        second = dialogue("The lantern needs +12 coins.", "second")
+        preloader = ChapterVoicePreloader((first, second))
+        selected, method = preloader.resolve_indexed_complete(
+            "Ada", "The lantern needs 12 coins."
+        )
+        self.assertIsNone(selected)
+        self.assertEqual(method, "expected-ambiguous")
+        self.assertIsNone(preloader.current_match)
 
     def test_symbol_only_discovery_requires_the_exact_punctuation(self):
         row = dialogue("...")

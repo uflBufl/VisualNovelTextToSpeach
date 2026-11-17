@@ -9,12 +9,16 @@ from unittest.mock import patch
 from vntts_artifacts.story_index import write_story_index_document
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
-from vntts.dialogue_search import IndexedDialogueStore
+from vntts.dialogue_search import (
+    IndexedDialogueStore,
+    MemoryDialogueStore,
+    text_projection,
+)
 from vntts.pregeneration_setup import (
     _cached_story_index_document,
     open_reading_catalog,
 )
-from vntts.story_text_matching import compare_text, prepare_text
+from vntts.story_text_matching import compare_text, edit_budget, prepare_text
 
 
 def record(line_id, text, *, speaker="Ada", chapter="chapter", original=False):
@@ -175,7 +179,7 @@ class IndexedDialogueSearchTests(unittest.TestCase):
                         recover_crop_noise=True,
                     )
 
-    def test_numeric_and_negation_changes_never_gain_canonical_authority(self):
+    def test_numeric_and_negation_edits_use_the_common_metric(self):
         preloader = self.preloader(
             (
                 record("number", "The lantern needs -12 coins."),
@@ -183,10 +187,10 @@ class IndexedDialogueSearchTests(unittest.TestCase):
                 record("negation", "The lantern is not ready."),
             )
         )
-        for text in (
-            "The lantern needs 12 coins.",
-            "The lantern needs 1,2 coins.",
-            "The lantern is now ready.",
+        for line_id, text in (
+            ("number", "The lantern needs 12 coins."),
+            ("decimal", "The lantern needs 1,2 coins."),
+            ("negation", "The lantern is now ready."),
         ):
             for observed in (text, f"Ada {text}"):
                 with self.subTest(observed=observed):
@@ -197,8 +201,119 @@ class IndexedDialogueSearchTests(unittest.TestCase):
                         allow_prefix=True,
                         recover_crop_noise=True,
                     )
-                    self.assertIsNone(match.line)
-                    self.assertFalse(match.complete)
+                    self.assertEqual(match.line.line_id, line_id)
+                    self.assertTrue(match.complete)
+
+    def test_real_marcus_ocr_recovers_the_same_indexed_line(self):
+        preloader = self.preloader(
+            (
+                record(
+                    "reverse1999:100631:57",
+                    '"Even if I die, I\'ll still turn Kakania completely against Isolde."',
+                    speaker="Marcus",
+                ),
+                record("other", "A different answer awaits us.", speaker="Marcus"),
+            )
+        )
+        match = self.assert_same_resolution(
+            preloader,
+            "Marcus",
+            "Even if I die, [1l still turn Kakania completely against Isolde.",
+            allow_prefix=True,
+        )
+        self.assertEqual(match.line.line_id, "reverse1999:100631:57")
+        self.assertTrue(match.complete)
+
+    def test_long_full_and_prefix_edits_keep_default_candidate_recall(self):
+        text = (
+            "The librarian catalogued every forgotten volume beside the western "
+            "window while distant thunder echoed through the deserted courtyard. "
+            "An ancient map described the winding passage beneath the tower and "
+            "the hidden chamber beyond its heavy iron gate."
+        )
+        preloader = self.preloader(
+            (
+                record("synth", text),
+                record("original", text, speaker="Bea", chapter="other", original=True),
+                record("unrelated", "A different answer awaits us."),
+            )
+        )
+        rows = tuple(preloader.store.iter_rows())
+        memory = MemoryDialogueStore(rows)
+        for prefix in (False, True):
+            base = text[:210] if prefix else text
+            for operation in ("insert", "delete", "replace"):
+                observed = base
+                for position in reversed(range(15, 150, 20)):
+                    observed = (
+                        observed[:position]
+                        + ("x" if operation != "delete" else "")
+                        + observed[position + (operation != "insert") :]
+                    )
+                shape = prepare_text(observed)
+                evidence = compare_text(shape, prepare_text(text))
+                if prefix:
+                    self.assertIsNotNone(evidence.prefix_distance)
+                    self.assertGreater(evidence.prefix_distance, 4)
+                    self.assertLessEqual(evidence.prefix_distance, edit_budget(shape))
+                else:
+                    self.assertTrue(evidence.complete)
+                    self.assertGreater(evidence.distance, 4)
+                    self.assertLessEqual(
+                        evidence.distance, edit_budget(prepare_text(text))
+                    )
+                self.assertEqual(
+                    preloader.store.candidates(observed, prefix=prefix, distance=4), ()
+                )
+                self.assertEqual(
+                    preloader.store.candidates(observed, prefix=prefix, distance=8),
+                    preloader.store.candidates(observed, prefix=prefix),
+                )
+                for chapter in (None, "chapter", "other"):
+                    for original in (None, False, True):
+                        options = dict(
+                            prefix=prefix, chapter=chapter, original=original
+                        )
+                        with self.subTest(operation=operation, **options):
+                            expected = memory.candidates(observed, **options)
+                            actual = preloader.store.candidates(observed, **options)
+                            self.assertEqual(actual, expected)
+                            witnesses = {
+                                row.line_id
+                                for row in rows
+                                if row.text == text
+                                and (chapter is None or row.chapter == chapter)
+                                and (
+                                    original is None
+                                    or row.has_original_speech == original
+                                )
+                            }
+                            self.assertEqual({row.line_id for row in actual}, witnesses)
+                match = self.assert_same_resolution(
+                    preloader, "Ada", observed, allow_prefix=prefix
+                )
+                self.assertEqual(match.line.line_id, "synth")
+                self.assertEqual(match.complete, not prefix)
+
+    def test_projection_preserves_shared_word_boundaries(self):
+        self.assertEqual(
+            text_projection("Read the café-notice."), "read the cafe notice"
+        )
+
+    def test_full_coverage_outside_budget_keeps_the_valid_prefix(self):
+        source = "z" + "a" * 36 + "bcd"
+        observed = "z" + "a" * 35 + "d"
+        preloader = self.preloader((record("line", source),))
+        evidence = compare_text(prepare_text(observed), prepare_text(source))
+        self.assertTrue(evidence.complete)
+        self.assertGreater(evidence.distance, edit_budget(prepare_text(source)))
+        self.assertEqual(evidence.prefix_distance, 1)
+        match = self.assert_same_resolution(
+            preloader, "Ada", observed, allow_prefix=True
+        )
+        self.assertEqual(match.line.line_id, "line")
+        self.assertTrue(match.prefix)
+        self.assertFalse(match.complete)
 
     def test_original_and_synthesis_lanes_preserve_named_ownership(self):
         text = "The bridge will hold until morning."
@@ -298,7 +413,7 @@ class IndexedDialogueSearchTests(unittest.TestCase):
                         if (evidence.complete and evidence.distance <= distance) or (
                             prefix
                             and evidence.prefix_distance is not None
-                            and evidence.prefix_distance <= min(distance, 3)
+                            and evidence.prefix_distance <= distance
                         ):
                             expected.add(row.line_id)
                     with self.subTest(

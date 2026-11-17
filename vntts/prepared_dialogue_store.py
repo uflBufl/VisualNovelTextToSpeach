@@ -157,7 +157,7 @@ class PreparedDialogueStore(DialogueStore):
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> tuple[ChapterDialogue, ...]:
@@ -176,7 +176,7 @@ class PreparedDialogueStore(DialogueStore):
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> Iterator[ChapterDialogue]:

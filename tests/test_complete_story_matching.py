@@ -138,7 +138,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         for observed in ("Cat.", "Ats."):
             self.assert_rejects("Cats.", observed)
 
-    def test_short_word_typos_keep_ambiguity_and_protected_content_guards(self):
+    def test_short_word_typos_keep_candidate_ambiguity_for_all_words(self):
         first = dialogue("Cat.", "first")
         second = dialogue("Hat.", "second")
         preloader = ChapterVoicePreloader([first, second])
@@ -148,18 +148,20 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         self.assertIsNone(selected)
         self.assertEqual(result, "expected-ambiguous")
         for canonical, observed in (("Not.", "Now."), ("100", "101")):
-            self.assert_rejects(canonical, observed)
+            self.assert_resolves(canonical, observed)
 
-    def test_edit_budgets_use_canonical_alphanumeric_length(self):
+    def test_edit_budgets_use_normalized_key_length(self):
         for length, budget in (
             (2, 0),
             (3, 1),
             (19, 1),
             (20, 1),
-            (59, 1),
-            (60, 2),
-            (119, 2),
-            (120, 3),
+            (39, 1),
+            (40, 2),
+            (59, 2),
+            (60, 3),
+            (119, 5),
+            (120, 6),
         ):
             canonical = "a" * (length - 1) + "z"
             with self.subTest(length=length, edits=budget):
@@ -169,8 +171,13 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                     canonical, "b" * (budget + 1) + canonical[budget + 1 :]
                 )
 
+    def test_normalized_spaces_count_toward_the_five_percent_budget(self):
+        canonical = "a " * 19 + "az"
+        self.assert_resolves(canonical, "b b " + canonical[4:])
+        self.assert_rejects(canonical, "b b b " + canonical[6:])
+
     def test_first_internal_and_final_substitutions_share_the_same_budget(self):
-        for length, budget in ((3, 1), (59, 1), (60, 2), (119, 2), (120, 3)):
+        for length, budget in ((3, 1), (59, 2), (60, 3), (119, 5), (120, 6)):
             canonical = "z" + "a" * (length - 2) + "q"
             for edits in (budget, budget + 1):
                 for start in (0, (length - edits) // 2, length - edits):
@@ -198,9 +205,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             with self.subTest(canonical=canonical, observed=observed):
                 self.assert_rejects(canonical, observed)
 
-    def test_punctuation_and_spacing_do_not_create_or_destroy_actual_word_boundaries(
-        self,
-    ):
+    def test_word_spacing_changes_spend_ordinary_edits(self):
         for canonical, observed in (
             ("The stack-finally holds.", "The stack - finally holds."),
             ("The stack-finally holds.", "The stack,   finally holds."),
@@ -211,14 +216,14 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                 self.assert_resolves(canonical, observed)
         for observed in ("Thelantern glows.", "The lan tern glows."):
             with self.subTest(observed=observed):
-                self.assert_rejects("The lantern glows.", observed)
+                self.assert_resolves("The lantern glows.", observed)
 
-    def test_soft_punctuation_does_not_remove_a_nearby_fuzzy_competitor(self):
+    def test_punctuation_edits_do_not_remove_a_nearby_fuzzy_competitor(self):
         first = dialogue("The lantern glows.", "first")
         second = dialogue("The lantern glown.", "second")
         preloader = ChapterVoicePreloader([first, second])
         selected, result = preloader.resolve_complete_among(
-            "Ada", "The lan:tern glowx.", [first.line_id, second.line_id]
+            "Ada", "The lan:tern glows.", [first.line_id, second.line_id]
         )
         self.assertIsNone(selected)
         self.assertEqual(result, "expected-ambiguous")
@@ -456,6 +461,61 @@ class CompleteStoryMatchingTest(unittest.TestCase):
                     self.assertFalse(match.prefix)
                 self.assertIs(resolver.current_match, position)
 
+    def test_prior_complete_owner_keeps_bounded_tail_loss_for_a_named_occurrence(self):
+        for source_speaker, observed_speaker, accepted in (
+            ("Ada", "Ada", True),
+            ("Ada", "", False),
+            ("Ada", "Unknown", False),
+            ("", "", False),
+        ):
+            with self.subTest(
+                source_speaker=source_speaker, observed_speaker=observed_speaker
+            ):
+                current = dialogue(
+                    "The lantern illuminated the forgotten passage beside our home.",
+                    "current",
+                    speaker=source_speaker,
+                    sequence=108,
+                )
+                resolver = ChapterVoicePreloader((current,))
+                resolver.select_line_id(current.line_id)
+                position = resolver.current_match
+                observed = current.text[:-3] + "."
+                match = resolver.resolve_observation_among(
+                    observed_speaker, observed, (current.line_id,), update_context=False
+                )
+                self.assertIsNone(match.line)
+                match = resolver.resolve_observation_among(
+                    observed_speaker,
+                    observed,
+                    (current.line_id,),
+                    fully_observed_line_id=current.line_id,
+                    update_context=False,
+                )
+                self.assertIs(match.line, current if accepted else None)
+                self.assertEqual(match.complete, accepted)
+                self.assertIs(resolver.current_match, position)
+
+    def test_prior_completion_cannot_turn_distance_overflow_into_owner_evidence(self):
+        current = dialogue(
+            "The lantern illuminated the forgotten passage beside our home. " * 4,
+            "current",
+            sequence=108,
+        )
+        resolver = ChapterVoicePreloader((current,))
+        resolver.select_line_id(current.line_id)
+        position = resolver.current_match
+        match = resolver.resolve_observation_among(
+            "Ada",
+            "Zzz.",
+            (current.line_id,),
+            fully_observed_line_id=current.line_id,
+            update_context=False,
+        )
+        self.assertIsNone(match.line)
+        self.assertFalse(match.complete)
+        self.assertIs(resolver.current_match, position)
+
     def test_completion_evidence_must_identify_the_current_line(self):
         current = dialogue("I know this is what you want.", "current", sequence=108)
         successor = dialogue("I ...", "next", sequence=109)
@@ -658,18 +718,18 @@ class CompleteStoryMatchingTest(unittest.TestCase):
         self.assertIsNone(selected)
         self.assertEqual(result, "expected-ambiguous")
 
-    def test_folded_matching_preserves_protected_content_and_word_boundaries(self):
+    def test_folded_matching_uses_ordinary_edits_and_keeps_source_end_coverage(self):
         for canonical, observed in (
             ("Café costs -5.", "Cafe costs 5."),
             ("Café not now.", "Cafe now now."),
             ("Not now.", "Nót now."),
-            ("Café déjà vu.", "Cafedejavu."),
-            ("Café déjà vu.", "Cafe deja v."),
             ("The q\u0307uota is 5.", "The quota is 6."),
             ("The q\u0307uota is not met.", "The quota is now met."),
         ):
             with self.subTest(canonical=canonical, observed=observed):
-                self.assert_rejects(canonical, observed)
+                self.assert_resolves(canonical, observed)
+        self.assert_rejects("Café déjà vu.", "Cafedejavu.")
+        self.assert_rejects("Café déjà vu.", "Cafe deja v.")
 
     def test_folded_matching_keeps_allowed_scope_identity_and_context(self):
         row = dialogue("Café.")
@@ -700,7 +760,18 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             with self.subTest(observed=observed):
                 self.assert_resolves(canonical, observed)
 
-    def test_numeric_expressions_cannot_change_even_when_normalization_hides_sign(self):
+    def assert_exact_competitor_wins(self, canonical, observed):
+        self.assert_resolves(canonical, observed)
+        original = dialogue(canonical, "original")
+        competitor = dialogue(observed, "competitor")
+        resolver = ChapterVoicePreloader((original, competitor))
+        selected, method = resolver.resolve_complete_among(
+            "Ada", observed, (original.line_id, competitor.line_id)
+        )
+        self.assertIs(selected, competitor)
+        self.assertEqual(method, "expected-exact")
+
+    def test_numeric_edits_are_tolerated_but_an_exact_competitor_wins(self):
         for expected, observed in (
             ("10", "11"),
             ("four", "five"),
@@ -710,12 +781,12 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             ("1.5", "15"),
         ):
             with self.subTest(expected=expected, observed=observed):
-                self.assert_rejects(
-                    f"The remaining distance is {expected} miles before we reach home.",
-                    f"The remaining distance is {observed} miles before we reach home.",
+                self.assert_exact_competitor_wins(
+                    f"The remaining distance is {expected} miles before we reach home today.",
+                    f"The remaining distance is {observed} miles before we reach home today.",
                 )
 
-    def test_negation_and_contractions_cannot_change(self):
+    def test_negation_edits_are_tolerated_but_an_exact_competitor_wins(self):
         for expected, observed in (
             ("not", "now"),
             ("never", "lever"),
@@ -724,7 +795,7 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             ("isn't", "isnt"),
         ):
             with self.subTest(expected=expected, observed=observed):
-                self.assert_rejects(
+                self.assert_exact_competitor_wins(
                     f"The message says {expected} and we must remember it until morning.",
                     f"The message says {observed} and we must remember it until morning.",
                 )
@@ -733,21 +804,33 @@ class CompleteStoryMatchingTest(unittest.TestCase):
             "I can’t leave the lantern behind while we are still walking home.",
         )
 
-    def test_negation_cannot_move_to_a_different_clause(self):
-        self.assert_rejects(
+    def test_reordered_negation_uses_distance_and_candidate_competition(self):
+        self.assert_exact_competitor_wins(
             "The first lamp is not on and the second lamp is now on "
             "at the end of this forgotten passage.",
             "The first lamp is now on and the second lamp is not on "
             "at the end of this forgotten passage.",
         )
 
-    def test_numeric_expression_cannot_move_to_a_different_word_position(self):
-        self.assert_rejects(
+    def test_reordered_numeric_text_uses_distance_and_candidate_competition(self):
+        self.assert_exact_competitor_wins(
             "The marker reads A 1 before the long description "
             "of the route across the forgotten passage.",
             "The marker reads 1 A before the long description "
             "of the route across the forgotten passage.",
         )
+
+    def test_marcus_57_primary_ocr_completes_without_an_alternate_pass(self):
+        self.assert_resolves(
+            "Even if I die, I'll still turn Kakania completely against Isolde.",
+            "Even if I die, [1l still turn Kakania completely against Isolde.",
+            speaker="Marcus",
+        )
+
+    def test_long_lines_accept_five_percent_edits_without_a_fixed_cap(self):
+        canonical = "a" * 119 + "z"
+        self.assert_resolves(canonical, "b" * 6 + canonical[6:])
+        self.assert_rejects(canonical, "b" * 7 + canonical[7:])
 
     def test_partial_prefix_and_suffix_are_rejected(self):
         canonical = "The lantern illuminated the forgotten passage beside our home."
@@ -810,10 +893,10 @@ class CompleteStoryMatchingTest(unittest.TestCase):
 
     def test_out_of_budget_neighbor_still_competes(self):
         best = dialogue("a" * 57 + " end")
-        neighbor = dialogue("cc" + "a" * 54 + " end", "neighbor")
+        neighbor = dialogue("cccc" + "a" * 53 + " end", "neighbor")
         preloader = ChapterVoicePreloader([best, neighbor])
         selected, _result = preloader.resolve_complete_among(
-            "Ada", "bb" + "a" * 55 + " end", [best.line_id, neighbor.line_id]
+            "Ada", "bbb" + "a" * 54 + " end", [best.line_id, neighbor.line_id]
         )
         self.assertIsNone(selected)
 

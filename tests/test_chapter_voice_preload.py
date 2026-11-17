@@ -241,7 +241,7 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                     )
                     self.assertIs(preloader.current_match, previous)
 
-    def test_symbol_only_text_does_not_become_a_word_prefix(self):
+    def test_symbols_and_short_text_keep_distinct_matching_rules(self):
         row = ChapterDialogue("word", "1", 1, "Ada", "_word", "a" * 64)
         preloader = ChapterVoicePreloader((row,))
         for observed in ("", "!", "_", "_" * 25):
@@ -261,17 +261,18 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                         "Ada", observed, minimum_characters=0
                     )
                 )
-        for canonical, observed in (
-            ("No.", "Go."),
-            ("I", "J"),
-            ("100", "101"),
-            ("Not.", "Now."),
+        for canonical, observed, accepted in (
+            ("No.", "Go.", False),
+            ("I", "J", False),
+            ("100", "101", True),
+            ("Not.", "Now.", True),
         ):
             with self.subTest(canonical=canonical, observed=observed):
                 row = ChapterDialogue("word", "1", 1, "Ada", canonical, "a" * 64)
                 preloader = ChapterVoicePreloader((row,))
-                self.assertIsNone(
-                    preloader.resolve_complete_among("Ada", observed, [row.line_id])[0]
+                self.assertIs(
+                    preloader.resolve_complete_among("Ada", observed, [row.line_id])[0],
+                    row if accepted else None,
                 )
 
     def test_story_order_preserves_nonmonotonic_ids_in_preflight_and_recommendation(

@@ -10,7 +10,7 @@ from rapidfuzz.distance import Levenshtein
 
 from vntts.audio_cache import BoundedCache
 from vntts.dialog import is_symbol_only_text
-from vntts.story_text_matching import prepare_text
+from vntts.story_text_matching import prepare_text, retrieval_distance
 
 if TYPE_CHECKING:
     from vntts.chapter_voice_preload import ChapterDialogue
@@ -18,8 +18,7 @@ if TYPE_CHECKING:
 
 
 def text_projection(text: object) -> str:
-    # Removing zero-cost boundaries gives a lower bound, never acceptance proof.
-    return prepare_text(text).key.replace("\x00", "").replace("\x01", "")
+    return prepare_text(text).key
 
 
 def projection_may_match(
@@ -29,11 +28,11 @@ def projection_may_match(
         return True
     if not prefix:
         return False
-    limit = min(distance, 3)
     return any(
-        Levenshtein.distance(observed, source[:end], score_cutoff=limit) <= limit
+        Levenshtein.distance(observed, source[:end], score_cutoff=distance) <= distance
         for end in range(
-            max(0, len(observed) - limit), min(len(source), len(observed) + limit) + 1
+            max(0, len(observed) - distance),
+            min(len(source), len(observed) + distance) + 1,
         )
     )
 
@@ -84,7 +83,7 @@ class DialogueStore:
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> tuple[ChapterDialogue, ...]:
@@ -95,7 +94,7 @@ class DialogueStore:
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> Iterator[ChapterDialogue]:
@@ -202,7 +201,7 @@ class MemoryDialogueStore(DialogueStore):
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> tuple[ChapterDialogue, ...]:
@@ -213,7 +212,10 @@ class MemoryDialogueStore(DialogueStore):
                 if (chapter is None or row.chapter == chapter)
                 and (original is None or row.has_original_speech == original)
             )
-        observed = text_projection(text)
+        shape = prepare_text(text)
+        observed = shape.key
+        if distance is None:
+            distance = retrieval_distance(shape)
         if not observed:
             return ()
         return tuple(
@@ -327,7 +329,7 @@ class IndexedDialogueStore(DialogueStore):
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> tuple[ChapterDialogue, ...]:
@@ -346,7 +348,7 @@ class IndexedDialogueStore(DialogueStore):
         text: object,
         *,
         chapter: str | None = None,
-        distance: int = 4,
+        distance: int | None = None,
         prefix: bool = True,
         original: bool | None = None,
     ) -> Iterator[ChapterDialogue]:
@@ -358,7 +360,10 @@ class IndexedDialogueStore(DialogueStore):
                 and (original is None or row.has_original_speech == original)
             )
             return
-        observed = text_projection(text)
+        shape = prepare_text(text)
+        observed = shape.key
+        if distance is None:
+            distance = retrieval_distance(shape)
         if not observed:
             return
         from itertools import batched

@@ -942,7 +942,7 @@ class StoryCatalogTest(unittest.TestCase):
             self.assertEqual(
                 (first, *rest),
                 tuple(
-                    (f"bulk:{index}", "sharedopeningforeveryvoice")
+                    (f"bulk:{index}", "shared opening for every voice")
                     for index in range(600)
                 ),
             )
@@ -1043,6 +1043,51 @@ class StoryCatalogTest(unittest.TestCase):
             cache_version=story_catalog_schema_version,
         ) as owner:
             self.assertTrue(owner.line_exists("reverse1999:3"))
+
+    def test_previous_matcher_keys_rebuild_from_source_before_dialogue_queries(self):
+        storage, document = self.indexed_catalog()
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            connection.execute("PRAGMA user_version=3")
+            connection.execute(
+                "UPDATE dialogue SET normalized_key='obsolete', projection='obsolete', "
+                "projection_length=8"
+            )
+            connection.commit()
+        previous = self.catalog.read_bytes()
+        with patch.object(
+            StoryCatalog, "_selections", side_effect=AssertionError("old keys read")
+        ):
+            self.assertIsNone(
+                storage.load(
+                    document["source_story_index_sha256"],
+                    document["source_audio_semantic_evidence_sha256"],
+                    document["schema_version"],
+                )
+            )
+        with self.assertRaisesRegex(StoryCatalogError, "derived rebuild"):
+            storage.open_dialogue(
+                self.path,
+                document["source_story_index_sha256"],
+                document["source_audio_semantic_evidence_sha256"],
+                cache_version=story_catalog_schema_version,
+            )
+        self.assertEqual(self.catalog.read_bytes(), previous)
+        storage.save(document, story=load_story_index_document(self.path))
+        with storage.open_dialogue(
+            self.path,
+            document["source_story_index_sha256"],
+            document["source_audio_semantic_evidence_sha256"],
+            cache_version=story_catalog_schema_version,
+        ) as owner:
+            self.assertEqual(
+                dict(owner.iter_seed_rows("", max_distance=0, prefix=True)),
+                self.dialogue_projections(owner),
+            )
+        with closing(sqlite3.connect(self.catalog)) as connection:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                story_catalog._VERSION,
+            )
 
     def indexed_catalog(self):
         document = self.document()

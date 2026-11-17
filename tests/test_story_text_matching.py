@@ -14,27 +14,24 @@ class StoryTextMatchingTest(unittest.TestCase):
     def compare(self, canonical, observed, limit=4):
         return compare_text(prepare_text(observed), prepare_text(canonical), limit)
 
-    def test_soft_punctuation_can_split_words_without_removing_actual_boundaries(self):
-        for canonical, observed in (
-            ("Remember Nowa Miedź?", "Remember Nowa Mied:z?"),
-            ("Remember Nowa Miedź?", "Remember Nowa Mied: z?"),
-            ("Remember Nowa Miedź?", "Remember Nowa Miedz?"),
-            ("A well-known traveler came home.", "A wellknown traveler came home."),
-            ("A well-known traveler came home.", "A well known traveler came home."),
-            ("The quota is 5.", "The qu:ota is 5."),
-            ("The quota is 5.", "The quo: ta is 5."),
+    def test_punctuation_is_a_collapsed_word_separator(self):
+        for text in (
+            "  Café,--déjà\tvu! ",
+            "Ｃａｆé déjà vu",
+            "Cafe de\u0301ja\u0300 vu",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(prepare_text(text), MatchingText("cafe deja vu", 10))
+        for canonical, observed, distance in (
+            ("A well-known traveler came home.", "A well known traveler came home.", 0),
+            ("A well-known traveler came home.", "A wellknown traveler came home.", 1),
+            ("The quota is 5.", "The qu:ota is 5.", 1),
+            ("Now here.", "Nowhere.", 1),
         ):
             with self.subTest(canonical=canonical, observed=observed):
                 evidence = self.compare(canonical, observed)
                 self.assertTrue(evidence.complete)
-                self.assertEqual(evidence.distance, 0)
-        for canonical, observed in (
-            ("Café déjà vu.", "Cafedejavu."),
-            ("Now here.", "Nowhere."),
-            ("A real boundary.", "Areal boundary."),
-        ):
-            with self.subTest(canonical=canonical, observed=observed):
-                self.assertFalse(self.compare(canonical, observed).complete)
+                self.assertEqual(evidence.distance, distance)
 
     def test_edit_evidence_does_not_depend_on_word_position(self):
         canonical = "The lantern illuminated the forgotten passage beside our home."
@@ -76,58 +73,44 @@ class StoryTextMatchingTest(unittest.TestCase):
         self.assertEqual(self.compare("Caterpillar.", "Cat.").prefix_distance, 0)
         self.assertFalse(self.compare("Caterpillar.", "Cat.").prefix_ends_at_boundary)
 
-    def test_protected_spans_cannot_be_changed_or_partly_matched(self):
-        for canonical, observed in (
-            ("The quota is -5.", "The quota is 5."),
-            ("The quota is +5.", "The quota is 5."),
-            ("The quota is 5.", "The quota is 6."),
-            ("The quota is 1.5.", "The quota is 1,5."),
-            ("The quota is 5/10.", "The quota is 5 10."),
-            ("The quota is 1e5.", "The quota is 1f5."),
-            ("The quota is five.", "The quota is hive."),
-            ("The quota is not met.", "The quota is now met."),
-            ("We cannot leave home.", "We can leave home."),
-            ("We can't leave home.", "We cant leave home."),
-            ("Not now.", "Nót now."),
-            ("The quota is 12345.", "The quota is 123"),
-            ("The quota is not met.", "The quota is no"),
-        ):
-            with self.subTest(canonical=canonical, observed=observed):
-                evidence = self.compare(canonical, observed)
-                self.assertFalse(evidence.complete)
-                self.assertIsNone(evidence.prefix_distance)
-
-    def test_protected_spans_allow_typography_and_keep_global_competitor_distance(self):
-        for canonical, observed in (
-            ("The quota is -5.", "The quota is −5."),
-            ("We can't leave home.", "We can’t leave home."),
-            ("The quota is not met.", "The qu:ota is not met."),
+    def test_numbers_negation_and_contractions_use_ordinary_edits(self):
+        for canonical, observed, distance in (
+            ("The quota is -5.", "The quota is 5.", 0),
+            ("The quota is +5.", "The quota is 5.", 0),
+            ("The quota is 5.", "The quota is 6.", 1),
+            ("The quota is 1.5.", "The quota is 1,5.", 0),
+            ("The quota is 5/10.", "The quota is 5 10.", 0),
+            ("The quota is 1e5.", "The quota is 1f5.", 1),
+            ("The quota is five.", "The quota is hive.", 1),
+            ("The quota is not met.", "The quota is now met.", 1),
+            ("We cannot leave home.", "We can leave home.", 3),
+            ("We can't leave home.", "We cant leave home.", 1),
+            ("Not now.", "Nót now.", 0),
         ):
             with self.subTest(canonical=canonical, observed=observed):
                 evidence = self.compare(canonical, observed)
                 self.assertTrue(evidence.complete)
-                self.assertEqual(evidence.distance, 0)
-        changed = self.compare("The quota is -5.", "The quota is 5.")
-        self.assertEqual(changed.distance, 1)
-        self.assertFalse(changed.complete)
-        raw = prepare_text("Not the qu:ota of −5. We can’t leave.")
-        self.assertEqual(raw.protected_content, ("not", "-5", "can't"))
-        self.assertNotEqual(
-            raw.protected_content,
-            prepare_text("The quota of -5. We can't leave.").protected_content,
-        )
+                self.assertEqual(evidence.distance, distance)
+        evidence = self.compare("The quota is 12345.", "The quota is 123")
+        self.assertFalse(evidence.complete)
+        self.assertEqual(evidence.prefix_distance, 0)
+
+    def test_prefixes_reject_missing_source_beginning_and_trailing_ocr_insertion(self):
         for canonical, observed in (
-            (
-                "The marker reads A 1 before the long description of the route.",
-                "The marker reads 1 A before the long description of the route.",
-            ),
-            (
-                "The first lamp is not on and the second lamp is now on.",
-                "The first lamp is now on and the second lamp is not on.",
-            ),
+            ("The lantern shines brightly.", "he lantern"),
+            ("The lantern shines brightly.", "The lanternx"),
         ):
             with self.subTest(canonical=canonical, observed=observed):
-                self.assertFalse(self.compare(canonical, observed).complete)
+                self.assertIsNone(self.compare(canonical, observed).prefix_distance)
+
+    def test_prefix_budget_depends_on_visible_text_not_the_unseen_remainder(self):
+        canonical = "The lantern shines " + "along the forgotten passage " * 20
+        self.assertEqual(
+            self.compare(canonical, "The lantcrn shines", limit=20).prefix_distance, 1
+        )
+        self.assertIsNone(
+            self.compare(canonical, "The lantcrn shincs", limit=20).prefix_distance
+        )
 
     def test_unicode_uses_latin_folding_and_preserves_other_scripts(self):
         for text in ("Café déjà vu. Miedź!", "The q\u0307uota is 5."):
@@ -145,30 +128,12 @@ class StoryTextMatchingTest(unittest.TestCase):
         self.assertEqual(prepare_text("Café déjà").alphanumeric_length, 8)
 
     def test_combining_marks_keep_their_surrounding_script_context(self):
-        expected = MatchingText(
-            "\u0307\x00q\x00б\u0307\u0308\x01\u0307",
-            2,
-            (),
-            (None,) * 9,
-            (0, 1, 1, 2, 2, 3, 4, 5, 5, 6),
+        expected = MatchingText("\u0307 q б\u0307\u0308 \u0307", 2)
+        self.assertEqual(
+            prepare_text("\u0307 q\u0307\u0308 Б\u0307\u0308 .\u0307"), expected
         )
-        for _ in range(2):
-            self.assertEqual(
-                prepare_text("\u0307 q\u0307\u0308 Б\u0307\u0308 .\u0307"), expected
-            )
         self.assertEqual(prepare_text("q\u0307").key, "q")
         self.assertEqual(prepare_text("\u0307").key, "\u0307")
-
-    def test_protected_punctuation_depends_on_position_within_each_text(self):
-        expected = MatchingText(
-            "x\x01-5%\x01x",
-            3,
-            ("-5%",),
-            (None, None, ("-5%", 0), ("-5%", 1), ("-5%", 2), None, None),
-            (0, 1, 1, 2, 3, 4, 4, 5),
-        )
-        for _ in range(2):
-            self.assertEqual(prepare_text("x%- -5% %-x"), expected)
 
     def test_empty_inputs_never_authorize_complete_or_prefix_matches(self):
         for canonical, observed in (("", ""), ("word", ""), ("", "word")):
@@ -179,7 +144,7 @@ class StoryTextMatchingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.compare("word", "word", limit=-1)
 
-    def test_banded_distance_matches_unbounded_optional_boundary_oracle(self):
+    def test_distance_matches_standard_levenshtein_oracle_with_cutoffs(self):
         words = [
             "".join(letters)
             for length in range(4)
@@ -187,21 +152,15 @@ class StoryTextMatchingTest(unittest.TestCase):
         ]
         for left, right in itertools.product(words, repeat=2):
             actual, source = prepare_text(left).key, prepare_text(right).key
-            previous = [0]
-            for unit in source:
-                previous.append(previous[-1] + (unit != "\x01"))
-            for unit in actual:
-                current = [previous[0] + (unit != "\x01")]
+            previous = list(range(len(source) + 1))
+            for i, unit in enumerate(actual, 1):
+                current = [i]
                 for j, other in enumerate(source, 1):
                     current.append(
                         min(
-                            current[-1] + (other != "\x01"),
-                            previous[j] + (unit != "\x01"),
-                            previous[j - 1]
-                            + (
-                                unit != other
-                                and not (unit in "\x00\x01" and other in "\x00\x01")
-                            ),
+                            current[-1] + 1,
+                            previous[j] + 1,
+                            previous[j - 1] + (unit != other),
                         )
                     )
                 previous = current

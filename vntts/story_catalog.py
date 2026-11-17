@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from vntts.chapter_voice_preload import ChapterDialogue
 
 _APPLICATION_ID = 0x564E5343
-_VERSION = 3
+_VERSION = 4
 _GRAM_BUCKET = 8
 _SCALARS = (
     "selection_id",
@@ -244,9 +244,9 @@ class StoryCatalog:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if connection.execute("PRAGMA application_id").fetchone()[
                     0
-                ] != _APPLICATION_ID or version not in (1, 2, _VERSION):
+                ] != _APPLICATION_ID or version not in (1, 2, 3, _VERSION):
                     raise StoryCatalogError("Unsupported story catalog schema")
-                if version == _VERSION:
+                if version in (3, _VERSION):
                     objects = {
                         tuple(row)
                         for row in connection.execute(
