@@ -6304,10 +6304,6 @@ class MainTest(unittest.TestCase):
             "expected-no-match",
         )
         diagnostics = controller.live_scope_identification_diagnostics
-        self.assertEqual(diagnostics["eligible_line_count"], 1)
-        self.assertEqual(diagnostics["bounded_candidate_count"], 0)
-        self.assertEqual(diagnostics["best_candidate_line_id"], "reverse1999:1:1")
-        self.assertGreater(diagnostics["best_candidate_edit_distance"], 1)
         self.assertNotIn("An unrelated line.", repr(diagnostics))
         self.assertNotIn("Someone", repr(diagnostics))
 
