@@ -67,6 +67,7 @@ from vntts.onboarding import (
     is_diagnostic_results,
 )
 from vntts.playback_button import set_playback_button_state
+from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
@@ -297,14 +298,7 @@ class ConfigurationPage(QWizardPage):
             '<a href="https://coqui.ai/cpml">Read the Coqui Public Model License</a>'
         )
         self.license_label.setOpenExternalLinks(True)
-        self.pocket_gated_model = QCheckBox(
-            "I accepted the Pocket terms; enable voice cloning"
-        )
-        self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
-        self.pocket_gated_model.setAccessibleDescription(
-            "Unchecked uses the public preset-only Pocket model. Checked permits "
-            "the isolated worker to use explicitly configured Hugging Face credentials."
-        )
+        self.pocket_setup = PocketSetupControl(self)
         self.pocket_terms_label = QLabel(
             "Public presets need no account. Voice cloning requires access to the "
             '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket model terms</a>.'
@@ -401,7 +395,7 @@ class ConfigurationPage(QWizardPage):
         advanced_form.addRow("Narrator speaker", self.narrator_speaker)
         advanced_form.addRow("", self.terms)
         advanced_form.addRow("", self.license_label)
-        advanced_form.addRow("", self.pocket_gated_model)
+        advanced_form.addRow("", self.pocket_setup)
         advanced_form.addRow("", self.pocket_terms_label)
         advanced_form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
@@ -577,7 +571,6 @@ class ConfigurationPage(QWizardPage):
         self.speaker_announcement_mode = candidate.speaker_announcement_mode
         self.announce_speaker_changes = candidate.announce_speaker_changes
         self.voice_manifest.setText(candidate.voice_manifest or "")
-        self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
         with QSignalBlocker(self.narrator_reference):
             self.narrator_reference.setText(candidate.tts_speaker_wav or "")
         self.update_validation_summary()
@@ -662,8 +655,8 @@ class ConfigurationPage(QWizardPage):
         self.terms.setEnabled(uses_xtts)
         self.terms.setVisible(uses_xtts)
         self.license_label.setVisible(uses_xtts)
-        self.pocket_gated_model.setEnabled(uses_pocket)
-        self.pocket_gated_model.setVisible(uses_pocket)
+        self.pocket_setup.setEnabled(uses_pocket)
+        self.pocket_setup.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
 
     def update_backend_controls(self) -> None:
@@ -716,7 +709,7 @@ class ConfigurationPage(QWizardPage):
         self.game_pack.textChanged.connect(self.update_validation_summary)
         self.speech_backend.currentIndexChanged.connect(self.update_validation_summary)
         self.terms.toggled.connect(self.update_validation_summary)
-        self.pocket_gated_model.toggled.connect(self.update_validation_summary)
+        self.pocket_setup.readyChanged.connect(self.update_validation_summary)
 
     def validation_errors(self) -> tuple[ValidationError, ...]:
         errors: list[ValidationError] = []
@@ -836,7 +829,6 @@ class ConfigurationPage(QWizardPage):
                     tts_model=self.tts_model.text().strip() or None,
                     narrator_speaker=self.narrator_speaker.text().strip() or None,
                     tts_speaker_wav=self.narrator_reference.text().strip() or None,
-                    pocket_gated_model_accepted=self.pocket_gated_model.isChecked(),
                 ),
             ),
         )
@@ -911,7 +903,6 @@ class ConfigurationPage(QWizardPage):
                 "voice_manifest": optional_text(self.voice_manifest),
                 "narrator_speaker": optional_text(self.narrator_speaker),
                 "xtts_terms_accepted": self.terms.isChecked(),
-                "pocket_gated_model_accepted": (self.pocket_gated_model.isChecked()),
             }
         )
 

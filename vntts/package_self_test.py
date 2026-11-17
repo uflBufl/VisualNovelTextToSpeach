@@ -248,7 +248,6 @@ def probe_bundled_pocket_render(
                 narrator_reference="alba",
                 voice_state_cache_directory=root / "voices",
                 persistent_audio_cache_directory=root / "audio",
-                allow_gated_model_access=False,
             )
             with cleanup_on_exit(
                 backend.shutdown, description="Package render backend cleanup"

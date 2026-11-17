@@ -10,6 +10,7 @@ from vntts_artifacts.voice_generation_queue import (
     text_sha256,
 )
 
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.voice_manifest_fixtures import write_conflicting_manifest
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
@@ -26,6 +27,9 @@ from vntts.voices import VoiceManifestError
 
 
 class CanonicalVoicePlanTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(pocket_model_readiness(True))
+
     def fixture(self, root):
         story = root / "story-index.jsonl"
         records = [
@@ -98,7 +102,7 @@ class CanonicalVoicePlanTest(unittest.TestCase):
         decisions = VoiceDecisionStore(root / "decisions.json", voice_library=library)
         jobs = PregenerationJobStore(root / "jobs")
         store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
-        settings = AppSettings(pocket_gated_model_accepted=True)
+        settings = AppSettings()
         return (
             inspect_story_index(story),
             jobs,

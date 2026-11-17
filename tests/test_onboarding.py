@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
+from tests.pocket_model_fixtures import pocket_model_readiness  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
@@ -507,6 +508,9 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
 
 
 class OnboardingWizardTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
+
     def test_manual_managed_content_paths_are_rejected_without_blocking_existing_paths(
         self,
     ):
@@ -797,6 +801,7 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.close()
         wizard.deleteLater()
 
+    @pocket_model_readiness(True)
     def test_setup_narrator_picker_updates_draft_without_file_or_save(self):
         original = AppSettings(speech_backend="moss-tts")
         wizard = OnboardingWizard(original)
@@ -808,7 +813,6 @@ class OnboardingWizardTest(unittest.TestCase):
             speech_backend="pocket-tts",
             tts_model=None,
             tts_profile="default",
-            pocket_gated_model_accepted=True,
         )
         with (
             patch("vntts.onboarding_ui.GameNarratorDialog") as picker,
@@ -826,7 +830,6 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(page._base_settings().speech_backend, "pocket-tts")
         self.assertIsNone(page._base_settings().tts_model)
         self.assertEqual(page._base_settings().tts_profile, "default")
-        self.assertTrue(page._base_settings().pocket_gated_model_accepted)
         self.assertIn("Pocket", page.speech_summary.text())
         self.assertFalse(
             any(
@@ -1310,15 +1313,15 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.validatePage())
         wizard.deleteLater()
 
-    def test_configuration_defaults_pocket_to_public_presets_and_persists_opt_in(self):
+    def test_configuration_defaults_pocket_to_public_presets_and_refreshes_setup(self):
         wizard = OnboardingWizard(AppSettings(speech_backend="pocket-tts"))
         page = wizard.configuration_page
         wizard.show_page(1)
         wizard.show()
         page.advanced_toggle.click()
 
-        self.assertTrue(page.pocket_gated_model.isVisibleTo(wizard))
-        self.assertFalse(page.pocket_gated_model.isChecked())
+        self.assertTrue(page.pocket_setup.isVisibleTo(wizard))
+        self.assertFalse(page.pocket_setup.is_ready)
         self.assertFalse(page.terms.isVisibleTo(wizard))
         self.assertEqual(page.manage_assets_button.text(), "Import character voices...")
         self.assertEqual(
@@ -1334,9 +1337,10 @@ class OnboardingWizardTest(unittest.TestCase):
         )
         page.speech_backend.setCurrentIndex(page.speech_backend.findData("pocket-tts"))
 
-        page.pocket_gated_model.setChecked(True)
-
-        self.assertTrue(page.settings().pocket_gated_model_accepted)
+        with pocket_model_readiness(True):
+            page.pocket_setup.refresh()
+        self.assertTrue(page.pocket_setup.is_ready)
+        self.assertFalse(hasattr(page.settings(), "pocket_gated_model_accepted"))
         wizard.deleteLater()
 
     def test_configuration_scrolls_at_scaled_fonts(self):

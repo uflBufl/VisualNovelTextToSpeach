@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 from vntts_artifacts.hashing import text_sha256
 
 from tests.native_capture_fixtures import native_frame
+from tests.pocket_model_fixtures import pocket_model_readiness
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
@@ -222,6 +223,10 @@ def stub_live_sequence_plan(*lines):
 
 class MainTest(unittest.TestCase):
     def setUp(self):
+        self.fatal_capture = self.enterContext(
+            patch("vntts.main.configure_fatal_crash_log")
+        )
+        self.enterContext(pocket_model_readiness(False))
         prepare = patch(
             "vntts.controller_components.prepare_sparse_ocr_model",
             return_value=Path("models/short-text.onnx"),
@@ -1913,7 +1918,6 @@ class MainTest(unittest.TestCase):
             registry,
             narrator_reference=None,
             volume=1.0,
-            allow_gated_model_access=False,
         )
         self.assertIs(controller.speech_backend, backend)
         controller.shutdown()
@@ -1950,7 +1954,7 @@ class MainTest(unittest.TestCase):
         self.assertIs(received["registry"], registry)
         self.assertIs(received["startup_cancellation"], controller.shutdown_requested)
         self.assertIs(received["startup_progress"], controller.status_handler)
-        self.assertFalse(received["allow_gated_model_access"])
+        self.assertNotIn("allow_gated_model_access", received)
         controller.shutdown()
 
     def test_requested_shutdown_prevents_backend_startup(self):
@@ -2074,7 +2078,8 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(finished.is_set())
 
-    def test_controller_explicitly_allows_pocket_gated_model_access(self):
+    @pocket_model_readiness(True)
+    def test_controller_uses_local_capability_without_forwarding_access_flag(self):
         backend = Mock()
         backend.registry = Mock()
         backend.narrator_speaker = "Pocket TTS default"
@@ -2090,7 +2095,6 @@ class MainTest(unittest.TestCase):
             controller = AppController(
                 AppSettings(
                     speech_backend="pocket-tts",
-                    pocket_gated_model_accepted=True,
                 ),
                 pocket_backend_factory=pocket_factory,
                 model_asset_manager_factory=Mock(),
@@ -2098,9 +2102,10 @@ class MainTest(unittest.TestCase):
 
             self.assertTrue(controller.start())
 
-        self.assertTrue(pocket_factory.call_args.kwargs["allow_gated_model_access"])
+        self.assertNotIn("allow_gated_model_access", pocket_factory.call_args.kwargs)
         controller.shutdown()
 
+    @pocket_model_readiness(True)
     def test_controller_uses_pack_narrator_reference(self):
         backend = Mock()
         backend.registry = Mock()
@@ -2120,7 +2125,6 @@ class MainTest(unittest.TestCase):
             controller = AppController(
                 AppSettings(
                     speech_backend="pocket-tts",
-                    pocket_gated_model_accepted=True,
                 ),
                 pocket_backend_factory=pocket_factory,
                 model_asset_manager_factory=Mock(),
@@ -2133,6 +2137,7 @@ class MainTest(unittest.TestCase):
         )
         controller.shutdown()
 
+    @pocket_model_readiness(True)
     def test_pocket_startup_ignores_unknown_saved_presets(self):
         with TemporaryDirectory() as temporary_directory:
             library = VoiceLibrary(Path(temporary_directory) / "library")
@@ -2157,7 +2162,6 @@ class MainTest(unittest.TestCase):
                 controller = AppController(
                     AppSettings(
                         speech_backend="pocket-tts",
-                        pocket_gated_model_accepted=True,
                     ),
                     voice_library=library,
                     pocket_backend_factory=pocket_factory,
@@ -2297,6 +2301,7 @@ class MainTest(unittest.TestCase):
             result = main()
 
         self.assertEqual(result, 0)
+        self.fatal_capture.assert_called_once()
         args = listen_for_hotkeys.call_args.args
         self.assertEqual(args[:2], ("<ctrl>+h", "<ctrl>+l"))
         self.assertEqual(len(args), 4)
@@ -3426,19 +3431,22 @@ class MainTest(unittest.TestCase):
         scheduler = ManualTimerScheduler()
         with patch("vntts.live.Timer", side_effect=scheduler.create):
             reader._maybe_auto_advance()
-            self.assertIsNotNone(reader.auto_advance_timer)
+            timer = reader.auto_advance_timer
+            self.assertIsNotNone(timer)
             controller._ocr_uncertain(OCRResult("Narrator", "noise", 0, "test", 1), 60)
             self.assertIsNone(reader.suppressed_generation)
             self.assertTrue(reader.observation_uncertain)
-            self.assertIsNone(reader.auto_advance_timer)
+            self.assertIs(reader.auto_advance_timer, timer)
+            timer.fire()
+            self.assertEqual(reader._advance_requested_generation, chunk.generation)
+            controller._auto_advance_dialog.assert_not_called()
             self.assertEqual(
                 controller._live_ocr_purpose(), "current-canonical-recheck"
             )
             reader._run_ocr(stopped_worker)
             self.assertFalse(reader.observation_uncertain)
             self.assertEqual(reader.active_generation, chunk.generation)
-            self.assertIsNotNone(reader.auto_advance_timer)
-            reader.auto_advance_timer.fire()
+            self.assertIsNone(reader.auto_advance_timer)
             controller._auto_advance_dialog.assert_not_called()
             reader.latest_frame = object()
             reader.latest_frame_captured_at = reader._advance_requested_at
@@ -7556,9 +7564,10 @@ class MainTest(unittest.TestCase):
             controller.speech_backend.prime,
             "Kamuta",
         )
-        future.add_done_callback.assert_called_once_with(
-            controller._voice_prime_finished
-        )
+        future.add_done_callback.assert_called_once()
+        callback = future.add_done_callback.call_args.args[0]
+        self.assertEqual(callback.func, controller._voice_prime_finished)
+        self.assertEqual(callback.args, ("Kamuta",))
 
     def test_voice_prime_submission_failure_does_not_mark_voice_as_primed(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
@@ -7568,9 +7577,10 @@ class MainTest(unittest.TestCase):
         future = Mock()
         controller.speech_executor.submit.side_effect = (failure, future)
 
-        with self.assertRaises(RuntimeError) as caught:
-            controller._prime_observed_voice("Kamuta")
-        self.assertIs(caught.exception, failure)
+        with self.assertLogs("vntts.controller", level="WARNING") as logs:
+            self.assertFalse(controller._prime_observed_voice("Kamuta"))
+        self.assertIs(logs.records[0].exc_info[1], failure)
+        self.assertIn("Kamuta", logs.output[0])
         self.assertEqual(controller.primed_voice_keys, set())
         self.assertEqual(controller.voice_prime_futures, set())
         controller.speech_backend.prime.assert_not_called()
@@ -7580,9 +7590,10 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.primed_voice_keys, {"kamuta"})
         self.assertEqual(controller.voice_prime_futures, {future})
         self.assertEqual(controller.speech_executor.submit.call_count, 2)
-        future.add_done_callback.assert_called_once_with(
-            controller._voice_prime_finished
-        )
+        future.add_done_callback.assert_called_once()
+        callback = future.add_done_callback.call_args.args[0]
+        self.assertEqual(callback.func, controller._voice_prime_finished)
+        self.assertEqual(callback.args, ("Kamuta",))
 
     def test_controller_primes_one_likely_chapter_voice_per_observation(self):
         preloader = Mock()
@@ -8637,6 +8648,7 @@ class MainTest(unittest.TestCase):
                         )
 
     def test_failed_speaker_announcement_does_not_skip_dialogue(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         backend = RecordingAnnouncementBackend(
             outcomes=[
@@ -8680,8 +8692,9 @@ class MainTest(unittest.TestCase):
                 ("Rhiannon", "Next line."),
             ],
         )
-        self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], AudioPlaybackError)
+        self.assertEqual(errors, [])
+        self.assertIsInstance(logs.records[0].exc_info[1], AudioPlaybackError)
+        self.assertIn("announcement device failed", logs.output[0])
 
     def test_discarded_speaker_announcement_is_prepared_again(self):
         backend = RecordingAnnouncementBackend()
@@ -8707,6 +8720,7 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(controller.last_visible_speaker_key)
 
     def test_speaker_announcement_exception_does_not_skip_dialogue(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         statuses = []
         backend = RecordingAnnouncementBackend(
@@ -8733,10 +8747,12 @@ class MainTest(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(len(backend.play_calls), 2)
-        self.assertEqual(str(errors[0]), "announcement output crashed")
+        self.assertEqual(errors, [])
+        self.assertIn("announcement output crashed", logs.output[0])
         self.assertIn("continuing dialogue", statuses[-2])
 
     def test_speaker_announcement_prepare_exception_keeps_dialogue_route(self):
+        logs = self.enterContext(self.assertLogs("vntts.controller", level="WARNING"))
         errors = []
         statuses = []
         backend = FailingAnnouncementPrepareBackend()
@@ -8756,7 +8772,8 @@ class MainTest(unittest.TestCase):
 
         self.assertIsInstance(prepared, PreparedPlayback)
         self.assertEqual(prepared.payload.text, "Line.")
-        self.assertEqual(str(errors[0]), "announcement preparation crashed")
+        self.assertEqual(errors, [])
+        self.assertIn("announcement preparation crashed", logs.output[0])
         self.assertIn("continuing dialogue", statuses[-1])
 
     def test_live_prepare_keeps_two_chunk_scoped_voice_resolution_events(self):

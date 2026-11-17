@@ -36,9 +36,10 @@ Any remaining live fallbacks are shown before activation.
 Preparation is optional: **Start reading** can use live TTS immediately after
 setup. **Narrator voice** changes the live fallback voice; it does not revoice saved
 recordings. To revoice a story, prepare it again with the desired voice choices.
-Pocket built-in voices need no account. Pocket game-voice cloning requires accepting
-the linked upstream model terms and signing in to Hugging Face; the checkbox does
-not accept those terms for you. Other engines have their own model requirements.
+Pocket built-in voices need no account. Pocket game-voice cloning is prepared once with **Prepare voice cloning...**
+in Settings, setup or Stories. Sign in and accept the original model terms in
+your browser; the application downloads the original Kyutai model and remembers
+its local readiness. Other engines have their own model requirements.
 
 Use **Stop reading** to immediately end reading and all current or queued speech.
 **Read current dialogue** speaks the visible line once when reading is stopped.
@@ -544,9 +545,11 @@ Existing `backends/*/.venv` environments and
 explicit `VNTTS_*_RUNTIME` overrides remain untouched. A portable package missing
 its bundled runtime must be replaced with the complete archive, not repaired with uv.
 
-Character voice cloning also requires accepting the model terms at
-<https://huggingface.co/kyutai/pocket-tts> and authenticating once with
-`uvx hf auth login`.
+Use **Prepare voice cloning...** to connect Hugging Face in your browser and
+accept the original Pocket model terms. Continue in the setup dialog to download
+the original weights. Setup shows progress and supports cancellation and retry;
+existing cached files are reused. Once prepared, the model loads locally without
+a network login. No terminal authentication command is needed.
 
 MOSS-TTS v1.5 is the high-quality streaming option for Apple Silicon Macs.
 Choose MOSS-TTS in Settings and select a narrator reference recording. Source

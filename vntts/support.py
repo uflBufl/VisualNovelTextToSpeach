@@ -33,6 +33,7 @@ from vntts_artifacts.atomic_io import atomic_output_path
 from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256, sha256_file
+from vntts.fatal_crashes import fatal_crash_report
 from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
 from vntts.ocr import (
@@ -2897,6 +2898,7 @@ class SupportBundleBuilder:
             },
             "performance.json": (self.performance_log or performance_log).report(),
             "generation-stalls.json": generation_stall_log.report(),
+            "fatal-crashes.json": fatal_crash_report(),
             "native-speech.json": {
                 **native_speech_log.report(),
                 "timing_note": (

@@ -114,7 +114,7 @@ class ReadingCatalogTests(unittest.TestCase):
             tuple(explicit.preloader.dialogue), tuple(scoped.preloader.dialogue)
         )
 
-    def test_changed_catalog_is_reloaded_but_unchanged_catalog_is_reused(self):
+    def test_admitted_catalog_is_reused_until_explicit_reload(self):
         with patch(
             "vntts.prepared_audio_discovery.open_reading_catalog",
             side_effect=AssertionError("reloaded unchanged catalog"),
@@ -125,9 +125,14 @@ class ReadingCatalogTests(unittest.TestCase):
         self.assertIs(unchanged.catalogs[0], self.snapshot.catalogs[0])
         self.write_catalog("An updated primary original.")
         self.assertTrue(self.snapshot.changed())
-        updated = discover_prepared_audio(
+        reused = discover_prepared_audio(
             catalog_root=self.catalog_root, previous=self.snapshot
         )
+        self.assertIs(reused.catalogs[0], self.snapshot.catalogs[0])
+        self.assertEqual(
+            reused.preloader.line_for_id("reverse1999:100630:7").text, self.original
+        )
+        updated = discover_prepared_audio(catalog_root=self.catalog_root, previous=None)
         self.assertEqual(
             updated.preloader.line_for_id("reverse1999:100630:7").text,
             "An updated primary original.",

@@ -66,6 +66,7 @@ from vntts.ocr_worker import (
 from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
 from vntts.playback import TypedPlaybackBackend as _TypedPlaybackBackend
 from vntts.playback_observer import playback_started_context
+from vntts.pocket_model import pocket_model_ready
 from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.runtime_config import (
     get_auto_advance_delay_seconds,
@@ -353,7 +354,7 @@ class RuntimeLifecycleComponent:
             ):
                 self._filter_pocket_voices(
                     registry,
-                    allow_gated=controller.settings.pocket_gated_model_accepted,
+                    voice_cloning_ready=pocket_model_ready(),
                 )
             backend_factory = {
                 "chatterbox-nano": controller.chatterbox_backend_factory,
@@ -373,11 +374,8 @@ class RuntimeLifecycleComponent:
                 "volume": controller.settings.output_volume_percent / 100,
             }
             if controller.settings.speech_backend == "pocket-tts":
-                backend_options["allow_gated_model_access"] = (
-                    controller.settings.pocket_gated_model_accepted
-                )
                 if (
-                    not controller.settings.pocket_gated_model_accepted
+                    not pocket_model_ready()
                     and narrator_reference is not None
                     and str(narrator_reference) not in pocket_tts_preset_voices
                 ):
@@ -429,11 +427,11 @@ class RuntimeLifecycleComponent:
 
     @staticmethod
     def _filter_pocket_voices(
-        registry: CharacterVoiceRegistry, *, allow_gated: bool
+        registry: CharacterVoiceRegistry, *, voice_cloning_ready: bool
     ) -> None:
         def unavailable(voice: CharacterVoice) -> bool:
             if voice.references:
-                return not allow_gated
+                return not voice_cloning_ready
             return voice.speaker not in pocket_tts_preset_voices
 
         for name, voice in registry.voices.items():

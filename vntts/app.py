@@ -106,6 +106,7 @@ from vntts.diagnostics import (
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
+from vntts.fatal_crashes import configure_fatal_crash_log
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import apply_game_pack
 from vntts.generated_audio import AudioRouteTrace
@@ -136,6 +137,7 @@ from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
 from vntts.playback_observer import observe_playback_start
 from vntts.player_session import PlayerSessionOwner
+from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.pregeneration_activation import (
     OfflinePackActivationResult,
     OfflinePackActivator,
@@ -688,12 +690,7 @@ class SettingsDialog(QDialog):
         self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
-        self.pocket_gated_model = QCheckBox("I accepted Pocket's terms")
-        self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
-        self.pocket_gated_model.setAccessibleDescription(
-            "Unchecked uses the public preset-only Pocket model. Checked permits "
-            "the isolated worker to use explicitly configured Hugging Face credentials."
-        )
+        self.pocket_setup = PocketSetupControl(self)
         self.pocket_terms_label = QLabel(
             "Public presets need no account. Voice cloning requires access to the "
             '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket model terms</a>.'
@@ -923,7 +920,7 @@ class SettingsDialog(QDialog):
         speech_form.addRow("Narrator speaker", self.narrator_speaker)
         speech_form.addRow("Voice profile", self.tts_profile)
         speech_form.addRow("XTTS license", self.xtts_terms)
-        speech_form.addRow("", self.pocket_gated_model)
+        speech_form.addRow("", self.pocket_setup)
         speech_form.addRow("", self.pocket_terms_label)
         return speech_form
 
@@ -1226,6 +1223,7 @@ class SettingsDialog(QDialog):
             self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _connect_validation_updates(self) -> None:
+        self.pocket_setup.readyChanged.connect(self.update_validation_summary)
         self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in self.hotkey_recorders:
             recorder.keySequenceChanged.connect(self.update_validation_summary)
@@ -1567,7 +1565,6 @@ class SettingsDialog(QDialog):
             )
         self.voice_manifest.setText(candidate.voice_manifest or "")
         if not offline_qwen:
-            self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
             with QSignalBlocker(self.narrator_reference):
                 self.narrator_reference.setText(candidate.tts_speaker_wav or "")
             if not candidate.tts_speaker_wav:
@@ -1639,8 +1636,8 @@ class SettingsDialog(QDialog):
         self.xtts_terms.setEnabled(uses_xtts)
         self.xtts_terms.setVisible(uses_xtts)
         self.speech_form.setRowVisible(self.xtts_terms, uses_xtts)
-        self.pocket_gated_model.setEnabled(uses_pocket)
-        self.pocket_gated_model.setVisible(uses_pocket)
+        self.pocket_setup.setEnabled(uses_pocket)
+        self.pocket_setup.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
 
     def _offline_backend_changed(self) -> None:
@@ -1820,7 +1817,6 @@ class SettingsDialog(QDialog):
                 "launch_at_login": self.launch_at_login.isChecked(),
                 "keep_running_on_close": self.keep_running_on_close.isChecked(),
                 "xtts_terms_accepted": self.xtts_terms.isChecked(),
-                "pocket_gated_model_accepted": (self.pocket_gated_model.isChecked()),
             }
         )
 
@@ -2135,6 +2131,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> None:
         self._lifecycle_generation = 0
         self._controller_ready = False
+        self._pocket_model_reload_pending = False
         self._controller_busy = False
         self._start_live_after_initial_start = False
         self._initial_start_settings: AppSettings | None = None
@@ -3972,6 +3969,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             ),
         )
+        wizard.configuration_page.pocket_setup.readyChanged.connect(
+            self._pocket_model_setup_finished
+        )
         self.onboarding_wizard = wizard
         self._onboarding_preview_settings = None
         self._onboarding_reading_settings = reading_settings
@@ -4325,10 +4325,61 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             story_area_confirmed = self.controller._story_region() is not None
         except CaptureRegionNeedsCalibration:
             story_area_confirmed = False
-        return SettingsDialog(
+        dialog = SettingsDialog(
             self.settings,
             voice_library=self.controller.voice_library,
             story_area_confirmed=story_area_confirmed,
+        )
+        dialog.pocket_setup.readyChanged.connect(self._remember_pocket_model_setup)
+        # Apply or discard the open settings draft before reloading the saved runtime.
+        dialog.finished.connect(
+            lambda _result: QTimer.singleShot(
+                0, self, self._reload_prepared_pocket_model
+            )
+        )
+        return dialog
+
+    def _remember_pocket_model_setup(self, ready: bool) -> None:
+        if ready and not self._shutting_down:
+            loaded = getattr(self.controller, "settings", None)
+            if (
+                isinstance(loaded, AppSettings)
+                and loaded.speech_backend == "pocket-tts"
+            ):
+                self._pocket_model_reload_pending = True
+
+    def _pocket_model_setup_finished(self, ready: bool) -> None:
+        self._remember_pocket_model_setup(ready)
+        QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
+
+    def _reload_prepared_pocket_model(self) -> None:
+        if (
+            not self._pocket_model_reload_pending
+            or self._shutting_down
+            or self._controller_busy
+            or self.live_stop_runner.active
+        ):
+            return
+        loaded = getattr(self.controller, "settings", None)
+        if (
+            not isinstance(loaded, AppSettings)
+            or loaded.speech_backend != "pocket-tts"
+            or self.controller.is_ready is not True
+        ):
+            self._pocket_model_reload_pending = False
+            return
+        if self._needs_modal_stop():
+            self._stop_live_then(
+                self._reload_prepared_pocket_model,
+                "Stopping reading before loading Pocket voice cloning...",
+            )
+            return
+        self._pocket_model_reload_pending = False
+        self._start_configuration_apply(
+            self.settings,
+            progress_status="Loading the prepared Pocket voice cloning model...",
+            success_status="Pocket voice cloning is ready for reading.",
+            restart=True,
         )
 
     def _create_asset_manager_dialog(self) -> AssetManagerDialog:
@@ -4413,6 +4464,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.failures_panel.before_playback = partial(
             self._prepare_failure_playback, dialog
         )
+        dialog.pocket_setup.readyChanged.connect(self._pocket_model_setup_finished)
         dialog.offlinePreferencesChanged.connect(self._save_offline_preferences)
         dialog.finished.connect(self._pregeneration_finished)
         dialog.readingRequested.connect(self._read_prepared_story)
@@ -4884,6 +4936,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         else:
             self.set_status("Reading and speech stopped")
+            if self._pocket_model_reload_pending:
+                QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
 
     def _run_live_stop_continuation(
         self, generation: int | None, continuation: Callable[[], object]
@@ -4895,6 +4949,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_stop_continuation = None
         if self._lifecycle_is_current(generation):
             continuation()
+            if self._pocket_model_reload_pending:
+                QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
         elif on_failure is not None:
             on_failure()
 
@@ -5153,11 +5209,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.settings.tts_speaker_wav
                 if offline
                 else dialog.result_settings.tts_speaker_wav
-            ),
-            pocket_gated_model_accepted=(
-                self.settings.pocket_gated_model_accepted
-                if offline and self.settings.offline_speech_backend != "pocket-tts"
-                else dialog.result_settings.pocket_gated_model_accepted
             ),
             last_main_section=self.settings.last_main_section,
         )
@@ -6215,6 +6266,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _finish_controller_lifecycle(self) -> None:
         self._controller_busy = False
+        if self._pocket_model_reload_pending:
+            QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
         self._bind_preparation_callbacks()
         self._apply_controller_action_state()
         self._update_auto_advance_action()
@@ -6520,6 +6573,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     ):
         configure_application_error_log(get_local_data_directory() / "errors.log")
+        configure_fatal_crash_log(get_local_data_directory() / "fatal-crashes.log")
     try:
         configure_bundled_dependencies()
     except Exception:

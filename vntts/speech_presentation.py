@@ -4,6 +4,7 @@ import re
 import sys
 from pathlib import Path
 
+from vntts.pocket_model import pocket_model_ready
 from vntts.release_backends import SPEECH_BACKEND_LABELS
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
@@ -117,7 +118,7 @@ def speech_configuration_rows(
     engine, model = _engine_model_identity(
         settings.speech_backend,
         settings.tts_model,
-        pocket_cloning=settings.pocket_gated_model_accepted,
+        pocket_cloning=pocket_model_ready(),
     )
     return (
         (
@@ -246,7 +247,7 @@ def speech_configuration_label(
         + engine_model_label(
             settings.speech_backend,
             settings.tts_model,
-            pocket_cloning=settings.pocket_gated_model_accepted,
+            pocket_cloning=pocket_model_ready(),
             compact=compact,
         )
         + (

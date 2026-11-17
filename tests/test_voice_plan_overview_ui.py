@@ -5,6 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call, patch
 
+from tests.pocket_model_fixtures import pocket_model_readiness
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
@@ -33,6 +35,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.pocket_readiness = self.enterContext(pocket_model_readiness(True))
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -47,7 +50,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         self.library = VoiceLibrary(self.root / "library")
         self.library.select("Narrator", route="voice", source_id="preset:alba")
         self.dialog = OfflineAudioPreparationDialog(
-            AppSettings(pocket_gated_model_accepted=True),
+            AppSettings(),
             discovery=lambda: ContentDiscovery(()),
             job_store=PregenerationJobStore(self.root / "jobs"),
             voice_library=self.library,
@@ -181,7 +184,8 @@ class VoicePlanOverviewTest(unittest.TestCase):
                         self.dialog.narrator_choice.findData("preset:marius")
                     )
                 else:
-                    self.dialog.pocket_voice_cloning.setChecked(False)
+                    self.pocket_readiness.return_value = False
+                    self.dialog._pocket_ready_changed(False)
                 self.assertEqual(
                     self.dialog.continue_button.text(), "Apply voice changes"
                 )
@@ -225,7 +229,8 @@ class VoicePlanOverviewTest(unittest.TestCase):
                         self.dialog.narrator_choice.findData("preset:alba")
                     )
                 else:
-                    self.dialog.pocket_voice_cloning.setChecked(True)
+                    self.pocket_readiness.return_value = True
+                    self.dialog._pocket_ready_changed(True)
                 self.assertEqual(
                     self.dialog.continue_button.text(), "Generate with these voices"
                 )

@@ -421,10 +421,8 @@ def discover_prepared_audio(
         else {}
     )
 
-    def unchanged(path: Path | None) -> bool:
-        return path is None or (
-            path in prior_stamps and _signature(path) == prior_stamps[path]
-        )
+    def manifest_unchanged(path: Path) -> bool:
+        return path in prior_stamps and _signature(path) == prior_stamps[path]
 
     def add_source(
         story: Path,
@@ -442,8 +440,8 @@ def discover_prepared_audio(
         manifest = manifest.absolute()
         if manifest.suffix == ".sqlite3":
             require_registered_output(manifest.parent)
-        evidence = story.with_name("source-audio-semantic-evidence.json")
-        watched.update((story, manifest, evidence))
+        if pack_manifest is None:
+            watched.add(manifest)
         if manifest in sources:
             return
         old = prior_sources.get(manifest.resolve())
@@ -455,25 +453,20 @@ def discover_prepared_audio(
             and (story_hash is None or old.story_sha256 == story_hash)
             and old.voice_manifest == voice_manifest
             and old.voice_manifest_sha256 == voice_manifest_sha256
-            and all(
-                unchanged(value)
-                for value in (story, manifest, voice_manifest, evidence)
-            )
+            and (pack_manifest is not None or manifest_unchanged(manifest))
             and (
                 queue_hash is None
                 or old.library.index.metadata.get("source_queue_sha256") == queue_hash
             )
         ):
             sources[manifest] = old
-            if voice_manifest is not None:
-                watched.add(voice_manifest)
             return
         canonical_game: str | None
         if (
             old is not None
             and old.story_index == story
-            and unchanged(story)
-            and unchanged(evidence)
+            and (story_hash is None or old.story_sha256 == story_hash)
+            and (not content_hash or old.content_sha256 == content_hash)
         ):
             actual_hash = old.story_sha256
             preloader = old.preloader
@@ -493,19 +486,19 @@ def discover_prepared_audio(
             raise ValueError("Prepared story game identity changed")
         library = (
             old.library
-            if old is not None and unchanged(manifest)
-            else GeneratedAudioLibrary.load_optional(manifest, warn=warn)
+            if old is not None and manifest_unchanged(manifest)
+            else GeneratedAudioLibrary.load_optional(
+                manifest, warn=warn, follow_updates=pack_manifest is None
+            )
         )
         if library is None:
             return
         reference_sources = None
         if voice_manifest is not None:
-            watched.add(voice_manifest)
             if (
                 old is not None
                 and old.voice_manifest == voice_manifest
                 and old.voice_manifest_sha256 == voice_manifest_sha256
-                and unchanged(voice_manifest)
             ):
                 reference_sources = old.reference_sources
             elif voice_manifest_sha256 is not None:
@@ -545,33 +538,13 @@ def discover_prepared_audio(
         content_hash: str = "",
         catalog_story_index: Path | None = None,
     ) -> None:
-        watched.add(path)
         old = prior_packs.get(path)
         if (
             old is not None
-            and all(
-                unchanged(value)
-                for value in (
-                    path,
-                    old.story_index,
-                    old.story_index.with_name("source-audio-semantic-evidence.json"),
-                    old.library.manifest_path,
-                    old.voice_manifest,
-                )
-            )
             and (not game or game == old.game_id)
             and (not content_hash or content_hash == old.content_sha256)
         ):
             sources[old.library.manifest_path] = old
-            watched.update(
-                (
-                    old.story_index,
-                    old.story_index.with_name("source-audio-semantic-evidence.json"),
-                    old.library.manifest_path,
-                )
-            )
-            if old.voice_manifest is not None:
-                watched.add(old.voice_manifest)
             return
         document = _document(path)
         if document.get("schema") != "vntts.game-pack" or document.get(
@@ -723,6 +696,7 @@ def discover_prepared_audio(
     paths: set[Path] = set()
     if root is not None:
         watched.add(root)
+        watched.update(path for path in root.glob("*") if path.is_dir())
         watched.update(path for path in root.glob("*/*") if path.is_dir())
         paths.update(
             path / path.name / "story-index.jsonl"
@@ -744,15 +718,10 @@ def discover_prepared_audio(
     catalogs = []
     for path in sorted(paths):
         path = path.absolute()
-        bank = path.with_name("english-bank-index.json")
-        evidence = path.with_name("source-audio-semantic-evidence.json")
-        watched.update((path, bank, evidence))
 
         def add_catalog() -> None:
             old = prior_catalogs.get(path)
-            if old is not None and all(
-                unchanged(value) for value in (path, bank, evidence)
-            ):
+            if old is not None:
                 catalogs.append(old)
                 return
             known = next(

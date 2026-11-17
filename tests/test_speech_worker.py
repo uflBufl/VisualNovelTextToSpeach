@@ -167,15 +167,32 @@ class BackendFactoryTests(unittest.TestCase):
         runtime.shutdown()
         second.shutdown.assert_called_once_with()
 
+    def test_retained_pocket_worker_reloads_after_local_model_setup(self):
+        registry = CharacterVoiceRegistry()
+        public = MagicMock(narrator_reference="alba")
+        public.process.poll.return_value = None
+        original = MagicMock(narrator_reference="alba")
+        original.process.poll.return_value = None
+        factory = MagicMock(side_effect=(public, original))
+        runtime = RetainedWorkerRuntime("pocket-tts", backend_factory=factory)
+        self.addCleanup(runtime.shutdown)
+        with patch(
+            "vntts.pocket_model.pocket_model_cache",
+            side_effect=[None, Path("/prepared-original")],
+        ):
+            runtime(registry).shutdown()
+            runtime(registry).shutdown()
+        self.assertEqual(factory.call_count, 2)
+        public.shutdown.assert_called_once_with()
+
     @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
     @patch("vntts.moss_cpp_backend.MossCppVoiceRouterBackend")
-    def test_native_moss_drops_pocket_only_permission(self, native, _requested):
+    def test_native_moss_passes_model_options(self, native, _requested):
         registry = CharacterVoiceRegistry()
 
         create_moss_worker_backend(
             registry,
             model_name="model.gguf",
-            allow_gated_model_access=True,
         )
 
         native.assert_called_once_with(registry, model_name="model.gguf")
@@ -1706,7 +1723,7 @@ print("worker-import-ready")
             self.assertNotIn("HF_HUB_CACHE", captured["options"]["env"])
             backend.shutdown()
 
-    def test_frozen_pocket_worker_uses_credentials_only_after_explicit_opt_in(self):
+    def test_frozen_pocket_worker_uses_original_model_offline_without_credentials(self):
         registry = CharacterVoiceRegistry()
         with TemporaryDirectory() as directory:
             bundle_root = Path(directory).resolve()
@@ -1735,6 +1752,10 @@ print("worker-import-ready")
                     return_value=(runtime_root, interpreter, runtime_site),
                 ),
                 patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                patch(
+                    "vntts.pocket_model.pocket_model_cache",
+                    return_value=bundle_root / "prepared-model",
+                ),
                 patch.dict(
                     os.environ,
                     {
@@ -1747,13 +1768,16 @@ print("worker-import-ready")
                     "pocket-tts",
                     registry,
                     process_factory=process_factory,
-                    allow_gated_model_access=True,
                 )
 
-            self.assertEqual(captured["options"]["env"]["HF_TOKEN"], "explicit-token")
-            self.assertNotIn("HF_HUB_CACHE", captured["options"]["env"])
-            self.assertNotIn(
-                "HF_HUB_DISABLE_IMPLICIT_TOKEN", captured["options"]["env"]
+            self.assertNotIn("HF_TOKEN", captured["options"]["env"])
+            self.assertEqual(
+                captured["options"]["env"]["HF_HUB_CACHE"],
+                str(bundle_root / "prepared-model"),
+            )
+            self.assertEqual(captured["options"]["env"]["HF_HUB_OFFLINE"], "1")
+            self.assertEqual(
+                captured["options"]["env"]["HF_HUB_DISABLE_IMPLICIT_TOKEN"], "1"
             )
             backend.shutdown()
 

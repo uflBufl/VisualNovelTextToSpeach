@@ -1,5 +1,59 @@
 # TODO
 
+## Active - Support 111 application crash and Reading holds
+
+Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support
+bundle exported after restart, build `579f9a70`, 2026-11-17. The crash session
+is the nested bundle's `previous-session.json`; the separately supplied previous
+session and November8 pregeneration report are older evidence. This run predates
+the trust-after-admission changes.
+
+- [ ] Localize and repair the Python-process access violation at17:40:54 MSK:
+      Windows reports `python314.dll`, `0xc0000005`, offset `0xb6616`, PID17800.
+      Last activity is prepared line `reverse1999:315601:82`, with PCM already
+      flowing. Obtain a native stack/dump or bounded reproducer before choosing
+      the repair; the supplied EVTX/MTA has no stack and no `.dmp` is included.
+      Do not attribute the fault to Rust, MOSS or CPython from the module alone.
+      Gate: identified faulting boundary, focused regression and Windows playback
+      through the failing scene with normal stop/teardown.
+      On Windows, qualify automatic fatal-stack recording on the actual access
+      violation: restart normally and export support, then correlate retained
+      Python locations with the failed Reading scene. Check normal teardown too.
+      `fatal-crashes.json` is bounded stack evidence without per-run attribution;
+      it does not replace a native Windows dump or establish the crash cause.
+- [ ] Qualify completed-dialogue navigation on Windows through chapter315601
+      lines77 and80 with intermittent uncertain OCR. Gate: fresh confirmation
+      of the current dialogue resumes the unsent transition after audio finishes;
+      uncertainty alone never dispatches a key, and changing dialogue/layout,
+      failed speech or Stop prevents an old request from firing. Check both
+      prepared Reading and direct screen reading, without repeated speech or
+      duplicate keys. Capture a new support export if a hold remains; the old
+      archive has no pixels proving a wrong crop or artwork identity.
+
+## Active - Support 31 Reading and recorder defects
+
+Evidence: `vntts-support (31).zip` and diagnostic session
+`1b42f6a6721a4848a9ee845c37837fd5.zip`, build `579f9a70`, 2026-11-17.
+
+- [ ] Qualify one-time Pocket setup with a real Hugging Face account on Windows
+      and macOS: browser login and original Kyutai model consent, download progress,
+      cancellation/retry and existing standard-cache/login reuse. Verify the
+      prepared model works after restart/offline without further authorization;
+      preparing it while the public model is loaded must safely replace that
+      worker without restarting the application. Automated protocol/lifecycle
+      regressions and a pinned-SDK public-asset smoke do not qualify the actual
+      gated download or Windows browser interaction.
+- [ ] Qualify process-loopback recording on Windows: run native clock and
+      activation-blob lifetime tests, then record nonzero game and Rust-output PCM
+      beyond startup. Constant-zero virtual positions must preserve actual QPC,
+      raw flags and CAF offsets. Check Stop, acquisition/writer failure and
+      teardown; a rejected clock must retain previous/current packet values.
+- [ ] Qualify video readiness on Windows: the first complete written-frame event
+      must be readable while capture remains active and satisfy readiness before
+      its deadline. Check static/changing scenes, normal stop, journal failure
+      and finalization; retain decodable video and monotonic timestamps. Run
+      native Windows recording regressions.
+
 ## Active - Support 30 Windows Reading repairs
 
 Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
@@ -54,16 +108,6 @@ Recheck archived findings against current main before implementation.
       steps must not rehash admitted controls or re-read state at finalization.
       Verify cancellation, resume, priority changes and publication still retain
       completed audio. The synthetic comparison does not qualify native speed.
-- [ ] Qualify Windows diagnostic video after the shared geometry/capture DPI
-      initialization fix. Run the Windows native regression tests; verify the
-      selected-window MP4 decodes, frame timestamps are monotonic and normal
-      start/stop retains acquired video without elevation.
-- [ ] Qualify Windows selected-process audio after the activation ownership fix.
-      Run the Windows native blob/callback lifetime tests, then verify game and
-      playback-process PCM under success, activation failure, cancellation and
-      teardown. Both archived recorders exited `0xC0000374` before PCM; confirm
-      that no heap crash remains, retaining a native stack if it recurs. No
-      desktop/microphone fallback; header-only CAFs are not audible silence.
 
 ## Active - Remaining Windows Reading qualification
 

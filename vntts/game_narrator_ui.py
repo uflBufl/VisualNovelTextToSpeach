@@ -49,6 +49,7 @@ from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import bind_voice_library_selection, narrator_preview_plan
+from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_audition import (
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionPreviewService,
@@ -1119,7 +1120,7 @@ class GameNarratorDialog(QDialog):
             synthesis_model=settings.tts_model,
             synthesis_language=settings.tts_language,
             synthesis_profile=settings.tts_profile,
-            pocket_voice_cloning=settings.pocket_gated_model_accepted,
+            pocket_voice_cloning=pocket_model_ready(),
             xtts_terms_accepted=settings.xtts_terms_accepted,
             synthesis_controls_sha256="",
             groups=(group,),
@@ -1523,12 +1524,9 @@ class GameNarratorDialog(QDialog):
                 tts_speaker_wav=None if is_narrator(role) else settings.tts_speaker_wav
             )
             return
-        if (
-            settings.speech_backend == "pocket-tts"
-            and not settings.pocket_gated_model_accepted
-        ):
+        if settings.speech_backend == "pocket-tts" and not pocket_model_ready():
             raise ValueError(
-                "Accept Pocket's terms in Settings before saving a game voice"
+                "Set up the Pocket cloning model in Settings before saving a game voice"
             )
         if not self._selection_engine_available:
             raise ValueError(
@@ -1703,7 +1701,7 @@ class GameNarratorDialog(QDialog):
             backend, model, cloning = (
                 self.settings_value.speech_backend,
                 self.settings_value.tts_model,
-                self.settings_value.pocket_gated_model_accepted,
+                pocket_model_ready(),
             )
         self.tts_model_label.setText(
             "<b>TTS model:</b> "

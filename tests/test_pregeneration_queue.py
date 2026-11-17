@@ -21,6 +21,7 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 import vntts.audio_store as audio_store_module
 from tests.bulk_generation_fixtures import SyntheticRenderer, audio_samples
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import BulkGenerationError, run_bulk_generation
@@ -264,6 +265,9 @@ def add_semantic_evidence(story_path):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
+
     def test_semantic_verdict_matches_the_transcript_and_preserves_authority(self):
         with TemporaryDirectory() as directory:
             story = add_semantic_evidence(write_content(Path(directory) / "content"))
@@ -515,6 +519,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     ):
                         load_source_audio_semantic_evidence(evidence_path)
 
+    @pocket_model_readiness(True)
     def fixture(
         self,
         root,
@@ -533,7 +538,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
         manifest = write_manifest(root / "voices")
         settings = AppSettings(
             speech_backend=backend,
-            pocket_gated_model_accepted=backend == "pocket-tts",
         )
         library = VoiceLibrary(root / "library")
         if narrator:
@@ -548,6 +552,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
         )
         return job, jobs, voice_plan, manifest
 
+    @pocket_model_readiness(True)
     def test_selection_changes_reuse_semantic_lines_before_generation(self):
         for before_selection, after_selection in (
             (("selected",), ("selected", "later")),
@@ -586,7 +591,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ).create(
                     next_job,
                     AppSettings(
-                        speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                        speech_backend="pocket-tts",
                     ),
                     manifest_path=manifest,
                 )
@@ -649,6 +654,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 baseline[item.queue_id],
             )
 
+    @pocket_model_readiness(True)
     def test_reopening_input_reports_unreadable_previous_semantic_evidence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -662,7 +668,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ).create(
                 next_job,
                 AppSettings(
-                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                    speech_backend="pocket-tts",
                 ),
                 manifest_path=manifest,
             )
@@ -672,6 +678,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(PregenerationQueueError, "semantic evidence"):
                 store.materialize(next_job, next_plan)
 
+    @pocket_model_readiness(True)
     def test_changed_semantic_model_authority_does_not_reuse_its_line(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -711,7 +718,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ).create(
                 next_job,
                 AppSettings(
-                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                    speech_backend="pocket-tts",
                 ),
                 manifest_path=manifest,
             )
@@ -1082,6 +1089,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         len(list(original.output_directory.rglob("*.wav"))), 4
                     )
 
+    @pocket_model_readiness(True)
     def test_indexed_inventory_reuses_unchanged_selected_lines_across_content_revisions(
         self,
     ):
@@ -1113,7 +1121,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ).create(
                     updated_job,
                     AppSettings(
-                        speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                        speech_backend="pocket-tts",
                     ),
                     manifest_path=manifest,
                 )
@@ -1248,6 +1256,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     {request.voice for request in renderer.requests}, {"Rhiannon"}
                 )
 
+    @pocket_model_readiness(True)
     def test_voice_revision_counts_partial_audio_across_chapters_and_restart(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1274,7 +1283,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             )
             plans = VoicePlanStore(jobs, voice_library=VoiceLibrary(root / "library"))
             settings = AppSettings(
-                speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                speech_backend="pocket-tts",
             )
             store = PregenerationInputStore(jobs)
             for chapter in range(2):
@@ -1460,6 +1469,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         sidecar.unlink()
             self.assertEqual(target.read_bytes(), b"keep this file")
 
+    @pocket_model_readiness(True)
     def test_sql_readiness_keeps_unselected_path_validation_on_restart(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1471,7 +1481,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ).create(
                 job,
                 AppSettings(
-                    speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                    speech_backend="pocket-tts",
                 ),
                 manifest_path=manifest,
             )
@@ -1502,6 +1512,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             ):
                 StoryAudioInspector(content, jobs).inspect("selected")
 
+    @pocket_model_readiness(True)
     def test_story_coverage_uses_saved_metadata_without_reopening_wavs(self):
         for shared_state in (False, True):
             with (
@@ -1523,7 +1534,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ).create(
                     other_job,
                     AppSettings(
-                        speech_backend="pocket-tts", pocket_gated_model_accepted=True
+                        speech_backend="pocket-tts",
                     ),
                     manifest_path=manifest,
                 )
@@ -1860,6 +1871,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 )
             )
 
+    @pocket_model_readiness(True)
     def test_classifies_mixed_and_pure_audio_events(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1899,7 +1911,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             )
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
 
@@ -1996,6 +2008,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             (queue_by_line["pure-event"],),
         )
 
+    @pocket_model_readiness(True)
     def test_materializes_one_voice_despite_portrait_and_bank_variants(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2019,7 +2032,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             )
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(pocket_gated_model_accepted=True),
+                AppSettings(),
                 manifest_path=manifest,
             )
             variants = [group for group in plan.groups if group.character == "Rhiannon"]
@@ -2037,6 +2050,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
         self.assertEqual(routes["not-selected"].speaker, "Rhiannon")
         self.assertEqual(routes["not-selected"].voice_character, "Rhiannon")
 
+    @pocket_model_readiness(True)
     def test_projects_semantic_evidence_to_selected_lines(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2048,7 +2062,6 @@ class PregenerationInputStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             settings = AppSettings(
                 speech_backend="pocket-tts",
-                pocket_gated_model_accepted=True,
             )
             library = VoiceLibrary(root / "library")
             remember_voice_binding(

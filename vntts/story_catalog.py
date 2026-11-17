@@ -756,7 +756,7 @@ def _file_signature(path: Path) -> tuple[int, ...] | None:
 
 
 class DialogueCatalog:
-    """Indexed dialogue with one pinned read transaction per executing thread."""
+    """Admit source files once; keep one SQL read transaction per thread until close."""
 
     def __init__(
         self,
@@ -775,10 +775,10 @@ class DialogueCatalog:
         self.evidence_sha256 = evidence_sha256
         self.cache_version = cache_version
         self.signature = source_signature(self.source_path)
-        self._evidence_path = self.source_path.with_name(
+        evidence_path = self.source_path.with_name(
             "source-audio-semantic-evidence.json"
         )
-        self._evidence_signature = _file_signature(self._evidence_path)
+        evidence_signature = _file_signature(evidence_path)
         self._connections: dict[
             int, tuple[AbstractContextManager[sqlite3.Connection], sqlite3.Connection]
         ] = {}
@@ -825,13 +825,17 @@ class DialogueCatalog:
             with open_regular_binary(self.source_path) as stream:
                 if stream.read(len(self.header)) != self.header:
                     raise StoryCatalogError("Story catalog source header changed")
-            self.validate_current()
+            if (
+                source_signature(self.source_path) != self.signature
+                or _file_signature(evidence_path) != evidence_signature
+            ):
+                raise StoryCatalogError("Story catalog source changed during admission")
         except BaseException:
             self.close()
             raise
 
     def _connection(self) -> sqlite3.Connection:
-        self.validate_current()
+        self.ensure_open()
         identity = threading.get_ident()
         with self._lock:
             pair = self._connections.get(identity)
@@ -857,15 +861,9 @@ class DialogueCatalog:
                 return connection
             return pair[1]
 
-    def validate_current(self) -> None:
-        from vntts.content_revision import source_signature
-
+    def ensure_open(self) -> None:
         if self._closed:
             raise StoryCatalogError("Story catalog dialogue owner is closed")
-        if _file_signature(self._evidence_path) != self._evidence_signature:
-            raise StoryCatalogError("Story catalog source evidence changed")
-        if source_signature(self.source_path) != self.signature:
-            raise StoryCatalogError("Story catalog source changed")
 
     def close(self) -> None:
         with self._lock:
@@ -883,7 +881,7 @@ class DialogueCatalog:
                 pass
 
     def __enter__(self) -> DialogueCatalog:
-        self.validate_current()
+        self.ensure_open()
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -934,7 +932,7 @@ class DialogueCatalog:
             )
         ) as cursor:
             while True:
-                self.validate_current()
+                self.ensure_open()
                 batch = cursor.fetchmany(256)
                 if not batch:
                     return
@@ -1073,7 +1071,7 @@ class DialogueCatalog:
             )
         ) as cursor:
             while True:
-                self.validate_current()
+                self.ensure_open()
                 batch = cursor.fetchmany(256)
                 if not batch:
                     return
@@ -1154,8 +1152,7 @@ class DialogueCatalog:
         return " AND ".join(conditions), parameters
 
     def records(self, line_ids: Sequence[str]) -> StoryIndexDocument:
-        """Hydrate only requested canonical rows and verify each stored byte hint."""
-        from vntts.content_revision import _signature
+        """Read requested original rows using the locations admitted with this owner."""
         from vntts.story_index_snapshot import load_story_index_snapshot
 
         connection = self._connection()
@@ -1164,22 +1161,10 @@ class DialogueCatalog:
             raise StoryCatalogError("Story catalog selected line identities changed")
         rows = []
         with open_regular_binary(self.source_path) as stream:
-            if _signature(os.fstat(stream.fileno()))[:-1] != self.signature[:-1]:
-                raise StoryCatalogError("Story catalog source changed")
-            for line_id, offset, length, digest in locations:
+            for _line_id, offset, length, _digest in locations:
                 stream.seek(offset)
                 raw = stream.read(length)
-                if hashlib.sha256(raw).hexdigest() != digest:
-                    raise StoryCatalogError("Story catalog source row changed")
-                actual = decode_json(raw)
-                if not is_json_object(actual) or actual.get("line_id") != line_id:
-                    raise StoryCatalogError(
-                        "Story catalog source line identity changed"
-                    )
                 rows.append(raw)
-            if _signature(os.fstat(stream.fileno()))[:-1] != self.signature[:-1]:
-                raise StoryCatalogError("Story catalog source changed")
-        self.validate_current()
         metadata = dict(self.metadata)
         metadata.pop("selection_origin", None)
         metadata["line_count"] = len(rows)

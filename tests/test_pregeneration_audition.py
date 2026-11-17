@@ -678,7 +678,9 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             finally:
                 service.close()
 
-    def test_pocket_permission_reaches_preview_and_invalidates_loaded_worker(self):
+    def test_pocket_capability_snapshot_invalidates_loaded_worker_without_access_flag(
+        self,
+    ):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -689,7 +691,8 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
 
             def factory(_name, _registry, _root, **options):
                 backend = FakeBackend("pocket-tts")
-                created.append((backend, options["allow_gated_model_access"]))
+                self.assertNotIn("allow_gated_model_access", options)
+                created.append(backend)
                 return backend
 
             service = VoiceAuditionPreviewService(
@@ -702,10 +705,8 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 service.generate(
                     enabled, group, source, text=group.alternate_sample_text
                 )
-                self.assertEqual(
-                    [permission for _, permission in created], [False, True]
-                )
-                self.assertEqual(created[0][0].shutdown_count, 1)
+                self.assertEqual(len(created), 2)
+                self.assertEqual(created[0].shutdown_count, 1)
             finally:
                 service.close()
 

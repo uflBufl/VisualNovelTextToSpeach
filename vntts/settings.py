@@ -140,7 +140,6 @@ def valid_numeric_setting(
 class AppSettingsChanges(TypedDict, total=False):
     onboarding_completed: bool
     xtts_terms_accepted: bool
-    pocket_gated_model_accepted: bool
     read_hotkey: str
     live_hotkey: str
     pause_hotkey: str
@@ -217,7 +216,6 @@ restart_required_setting_names = (
     "tts_speaker_wav",
     "voice_manifest",
     "narrator_speaker",
-    "pocket_gated_model_accepted",
 )
 
 
@@ -234,7 +232,6 @@ class AppSettings:
     schema_version: int = settings_schema_version
     onboarding_completed: bool = False
     xtts_terms_accepted: bool = False
-    pocket_gated_model_accepted: bool = False
     read_hotkey: str = field(default_factory=lambda: default_hotkey("h"))
     live_hotkey: str = field(default_factory=lambda: default_hotkey("l"))
     pause_hotkey: str = field(default_factory=lambda: default_hotkey("p"))
@@ -390,7 +387,6 @@ class AppSettings:
         boolean_fields = (
             "onboarding_completed",
             "xtts_terms_accepted",
-            "pocket_gated_model_accepted",
             "retain_uncertain_frames",
             "warm_up_voices",
             "launch_at_login",

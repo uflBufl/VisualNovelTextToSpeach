@@ -89,6 +89,46 @@ class IndexedDialogueSearchTests(unittest.TestCase):
         self.assertEqual(indexed.current_match, exhaustive.current_match)
         return actual
 
+    def test_warm_match_uses_admitted_catalog_without_source_polling(self):
+        preloader = self.preloader(
+            [
+                record(f"line:{i}", f"This is a distinct complete sentence number {i}.")
+                for i in range(28)
+            ]
+        )
+        rows = preloader.chapter_rows("chapter")
+        preloader.select_line_id(rows[0].line_id)
+        ids = [row.line_id for row in rows]
+        snapshot = preloader.matching_snapshot()
+        expected = snapshot.resolve_complete_among(
+            rows[0].speaker, rows[0].text, ids, update_context=False
+        )
+        self.assertIsNotNone(expected)
+        with (
+            patch(
+                "vntts.content_revision.source_signature",
+                side_effect=AssertionError("source polled"),
+            ),
+            patch(
+                "vntts.story_catalog._file_signature",
+                side_effect=AssertionError("evidence polled"),
+            ),
+            patch.object(
+                preloader.store.catalog,
+                "dialogues",
+                side_effect=AssertionError("cached rows rehydrated"),
+            ),
+        ):
+            actual = snapshot.resolve_complete_among(
+                rows[0].speaker, rows[0].text, ids, update_context=False
+            )
+        self.assertEqual(actual, expected)
+        preloader.store.catalog.close()
+        from vntts.story_catalog import StoryCatalogError
+
+        with self.assertRaisesRegex(StoryCatalogError, "closed"):
+            preloader.line_for_id(rows[0].line_id)
+
     def test_mixed_lane_raw_prefix_does_not_hide_original_crop_recovery(self):
         preloader = self.preloader(
             (

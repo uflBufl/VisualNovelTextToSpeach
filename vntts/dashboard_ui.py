@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from vntts.action_icons import set_action_icon
 from vntts.auto_advance_policy import auto_advance_control_state
+from vntts.pocket_model import pocket_model_ready
 from vntts.settings import AppSettings, is_live_sequence_audio_mode, main_sections
 from vntts.speech_presentation import (
     compact_runtime_label,
@@ -993,7 +994,7 @@ class ControlDashboard(QMainWindow):
             engine_model_label(
                 settings.speech_backend,
                 settings.tts_model,
-                pocket_cloning=settings.pocket_gated_model_accepted,
+                pocket_cloning=pocket_model_ready(),
             )
             + (
                 f"\nConfigured model: {settings.tts_model}"

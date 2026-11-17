@@ -1083,7 +1083,7 @@ class LiveDialogReader:
             self.frame_route_epoch += 1
             self.last_observation = None
             self.last_accepted_observation = None
-            self._cancel_auto_advance_locked()
+            # Retain navigation intent; dispatch still needs fresh accepted OCR.
 
     def shutdown(self) -> None:
         """Seal this reader permanently before attempting fallible cancellation."""
@@ -2907,7 +2907,6 @@ class LiveDialogReader:
                 or self.current_chunk is not None
                 or self.speech_futures
                 or self.deferred_chunks
-                or self.observation_uncertain
                 or self.suppressed_generation == generation
                 or self.paused
                 or self.stop_event.is_set()

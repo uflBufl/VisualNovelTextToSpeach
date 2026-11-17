@@ -1837,25 +1837,41 @@ class ReadingSourceAudioMeasurementTest(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), original)
         self.assertEqual(evidence_path.read_bytes(), original_evidence)
 
-    def test_input_change_while_publisher_runs_is_not_accepted(self):
+    def test_admitted_bank_is_not_revalidated_after_publishing(self):
         def change_after_publish(arguments, cancellation, **_options):
             self.publish(arguments, cancellation)
             self.bank.write_text('{"version": "updated"}')
             return "", ""
 
         self.worker.side_effect = change_after_publish
-        with self.assertRaisesRegex(GameContentImportError, "changed"):
-            self.importer.prepare_reading_source_audio(self.revision, "1", None)
+        with (
+            patch(
+                "vntts.game_content_importer.sha256_file", wraps=sha256_file
+            ) as hashed,
+            patch.object(
+                self.importer,
+                "_bank_index_is_stale",
+                wraps=self.importer._bank_index_is_stale,
+            ) as checked,
+        ):
+            measured = self.importer.prepare_reading_source_audio(
+                self.revision, "1", None
+            )
+        self.assertTrue(measured.is_file())
+        self.assertEqual(
+            sum(call.args == (self.bank,) for call in hashed.call_args_list), 1
+        )
+        checked.assert_called_once_with(self.bank)
 
-    def test_source_change_while_publisher_runs_invalidates_revision(self):
+    def test_source_is_not_revalidated_after_publishing_admitted_chapter(self):
         def change_after_publish(arguments, cancellation, **_options):
             self.publish(arguments, cancellation)
             self.source.write_bytes(self.source.read_bytes() + b"\n")
             return "", ""
 
         self.worker.side_effect = change_after_publish
-        with self.assertRaisesRegex(GameContentImportError, "revision source changed"):
-            self.importer.prepare_reading_source_audio(self.revision, "1", None)
+        measured = self.importer.prepare_reading_source_audio(self.revision, "1", None)
+        self.assertTrue(measured.is_file())
 
     def test_publisher_cannot_expand_the_measured_chapter(self):
         def publish_with_another_chapter(arguments, cancellation, **_options):

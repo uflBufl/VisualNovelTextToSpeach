@@ -324,6 +324,60 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
                     _capture_clock(capture)
 
+    def test_windows_virtual_positions_preserve_qpc_correlation_and_clock_failures(
+        self,
+    ):
+        capture, digest = self.fixture(windows=True)
+        journal = capture / "audio.jsonl"
+        packets = [
+            dict(json.loads(line), sample_time=0)
+            for line in journal.read_text().splitlines()
+        ]
+        packets[0]["flags"] = 1
+        self.journal(journal, packets)
+        clock = _capture_clock(capture)
+        self.assertAlmostEqual(clock.spans[0].offset, 10)
+        self.assertAlmostEqual(clock.spans[0].residual_ms, 0)
+        report = analyze_session(self.root)
+        self.assertEqual(report["qualification"], "digital-source-correlated")
+        self.assertEqual(report["clips"][0]["source_sha256"], digest)
+
+        for shift, accepted in ((500_000, True), (500_001, False)):
+            with self.subTest(boundary_qpc_shift=shift):
+                shifted = [dict(packet) for packet in packets]
+                for packet in shifted[1:]:
+                    packet["qpc_100ns"] += shift
+                    packet["monotonic_s"] = packet["qpc_100ns"] / 10_000_000
+                self.journal(journal, shifted)
+                if accepted:
+                    boundary_clock = _capture_clock(capture)
+                    self.assertAlmostEqual(boundary_clock.spans[0].residual_ms, 50)
+                else:
+                    with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
+                        _capture_clock(capture)
+        for flags in (1, 4, True):
+            with self.subTest(flags=flags):
+                damaged = [dict(packet) for packet in packets]
+                damaged[1]["flags"] = flags
+                self.journal(journal, damaged)
+                with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
+                    _capture_clock(capture)
+        for delta in (0, -100_000, 1_000_000):
+            with self.subTest(qpc_delta=delta):
+                damaged = [dict(packet) for packet in packets]
+                qpc = packets[0]["qpc_100ns"] + delta
+                damaged[1].update(qpc_100ns=qpc, monotonic_s=qpc / 10_000_000)
+                self.journal(journal, damaged)
+                with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
+                    _capture_clock(capture)
+        for position in (-1, True, 2**64, 3):
+            with self.subTest(device_position=position):
+                damaged = [dict(packet) for packet in packets]
+                damaged[1]["sample_time"] = position
+                self.journal(journal, damaged)
+                with self.assertRaises(ValueError):
+                    _capture_clock(capture)
+
     def test_generated_source_matches_exact_admitted_digest_and_true_owner(self):
         _capture, digest = self.fixture()
         # A later replacement for the same line must never replace the admitted WAV.

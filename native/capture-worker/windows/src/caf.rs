@@ -86,6 +86,7 @@ pub fn write_packet<W: Write + Seek>(
             &mut *journal,
             &json!({
                 "kind":"audio", "frame_count":packet.frames, "file_frame_start":file_frame_start,
+                // Preserve raw virtual positions; file_frame_start alone indexes CAF PCM.
                 "sample_time":packet.device_position,
                 "monotonic_s":audio_buffer::qpc_seconds(packet.qpc_100ns),
                 "qpc_100ns":packet.qpc_100ns, "flags":packet.flags
@@ -122,6 +123,56 @@ pub fn selfcheck() -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn virtual_positions_remain_raw_while_pcm_offsets_advance() {
+        let (mut producer, mut consumer) = audio_buffer::ring(4);
+        let mut caf = Caf::new(Cursor::new(Vec::new()), 48000).unwrap();
+        let mut journal = Vec::new();
+        let (mut frames, mut peak, mut callbacks, mut flags) = (0, 0., 0, None);
+        let mut clock = audio_buffer::SourceClock::default();
+        for index in 0..2 {
+            let packet = audio_buffer::Packet {
+                frames: 2,
+                device_position: 0,
+                qpc_100ns: 10_000_000 + index * 417,
+                flags: if index == 0 { 0 } else { 2 },
+            };
+            clock.validate(packet, 48000).unwrap();
+            producer
+                .push(packet, if index == 0 { Some(&[0.25; 4]) } else { None })
+                .unwrap();
+            write_packet(
+                &mut consumer,
+                &mut caf,
+                &mut journal,
+                &mut frames,
+                &mut peak,
+                &mut callbacks,
+                &mut flags,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        caf.finalize().unwrap();
+        let events = serde_json::Deserializer::from_slice(&journal)
+            .into_iter::<serde_json::Value>()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event["sample_time"], 0);
+            assert_eq!(event["file_frame_start"], index * 2);
+            assert_eq!(event["qpc_100ns"], 10_000_000 + index * 417);
+            assert_eq!(event["flags"], if index == 0 { 0 } else { 2 });
+        }
+        assert_eq!((frames, peak, callbacks), (4, 0.25, 2));
+        assert_eq!(
+            &caf.output.get_ref()[68..84],
+            &[0.25_f32.to_le_bytes(); 4].concat()
+        );
+        assert_eq!(&caf.output.get_ref()[84..100], &[0_u8; 16]);
+    }
     #[test]
     fn interrupted_and_finalized_caf_match_recovery_contract() {
         let mut writer = Caf::new(Cursor::new(Vec::new()), 48000).unwrap();

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
+from tests.pocket_model_fixtures import pocket_model_readiness  # noqa: E402
 from tests.pregeneration_fixtures import ambiguous_fixture, fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import write_synthetic_game_pack  # noqa: E402
@@ -129,6 +130,10 @@ class TrayApplicationTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.fatal_capture = self.enterContext(
+            patch("vntts.app.configure_fatal_crash_log")
+        )
+        self.enterContext(pocket_model_readiness(False))
         self.audio_runtime_check = self.enterContext(
             patch("vntts.app.check_audio_runtime")
         )
@@ -1542,6 +1547,19 @@ class TrayApplicationTest(unittest.TestCase):
         full_controls.assert_called_once_with()
         tray_application.shutdown()
 
+    def test_desktop_fatal_capture_is_installed_before_native_qt_startup(self):
+        def fail_native_startup():
+            self.fatal_capture.assert_called_once()
+            raise RuntimeError("native startup probe")
+
+        with (
+            patch("vntts.app.configure_bundled_dependencies"),
+            patch("vntts.app.QApplication.instance", side_effect=fail_native_startup),
+            self.assertLogs("vntts.unhandled", level="CRITICAL"),
+            self.assertRaisesRegex(RuntimeError, "native startup probe"),
+        ):
+            main([])
+
     def test_external_worker_exit_codes_are_validated_before_qt_startup(self):
         workers = (
             ("bootstrap", ["--game-content-import-worker", "reverse1999"]),
@@ -1576,6 +1594,7 @@ class TrayApplicationTest(unittest.TestCase):
                         self.assertEqual(main(arguments), code)
                 worker.assert_called_with([])
                 qt_application.assert_not_called()
+                self.fatal_capture.assert_not_called()
 
     def test_packaged_content_import_worker_runs_without_creating_qt(self):
         package = ModuleType("r1999extractor")
@@ -1989,12 +2008,12 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.pregeneration_dialog = None
         tray_application.shutdown()
 
-    def test_preparation_voice_save_preserves_live_reference_and_consent(self):
+    @pocket_model_readiness(True)
+    def test_preparation_voice_save_preserves_live_reference(self):
         settings = AppSettings(
             speech_backend="pocket-tts",
             offline_speech_backend="moss-tts",
             tts_speaker_wav="live.wav",
-            pocket_gated_model_accepted=True,
         )
         tray_application = TrayApplication(
             self.application,
@@ -2005,7 +2024,6 @@ class TrayApplicationTest(unittest.TestCase):
             result_settings=settings.updated(
                 speech_backend="moss-tts",
                 tts_speaker_wav=None,
-                pocket_gated_model_accepted=False,
             )
         )
 
@@ -2014,7 +2032,6 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(saved.speech_backend, "pocket-tts")
         self.assertEqual(saved.tts_speaker_wav, "live.wav")
-        self.assertTrue(saved.pocket_gated_model_accepted)
         tray_application.shutdown()
 
     def test_saved_narrator_label_is_visible_before_reading_engine_starts(self):
@@ -5900,6 +5917,144 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.settings().speech_backend, "chatterbox-nano")
         delete_dialog(dialog)
 
+    def loaded_pocket_controller(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
+        settings = AppSettings(
+            speech_backend="pocket-tts",
+            auto_advance_enabled=False,
+            tts_profile="default",
+            offline_tts_profile="default",
+        )
+        public_backend, cloning_backend = object(), object()
+        controller = Mock(
+            settings=settings,
+            is_ready=True,
+            is_live_running=False,
+            is_one_shot_read_running=False,
+            tts=public_backend,
+        )
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        controller.unresolved_live_speakers.return_value = ()
+        operations = []
+
+        def shutdown():
+            operations.append("shutdown")
+            controller.tts = None
+            controller.is_ready = False
+
+        def start():
+            operations.append("start")
+            controller.tts = cloning_backend if readiness() else public_backend
+            controller.is_ready = True
+            return True
+
+        controller.shutdown.side_effect = shutdown
+        controller.start.side_effect = start
+        controller.apply_settings.side_effect = lambda selected, **_kwargs: (
+            setattr(controller, "settings", selected) or True
+        )
+        return SimpleNamespace(
+            readiness=readiness,
+            settings=settings,
+            controller=controller,
+            public_backend=public_backend,
+            cloning_backend=cloning_backend,
+            operations=operations,
+        )
+
+    def test_prepared_pocket_model_reloads_loaded_reading_after_settings_close(self):
+        for accepted in (False, True):
+            with self.subTest(accepted=accepted):
+                state = self.loaded_pocket_controller()
+                readiness, settings, controller = (
+                    state.readiness,
+                    state.settings,
+                    state.controller,
+                )
+                tray = TrayApplication(
+                    self.application,
+                    settings,
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(True)
+                pool = ManualThreadPool()
+                tray.configuration_runner.thread_pool = pool
+                dialog = tray._create_settings_dialog()
+                self.addCleanup(delete_dialog, dialog)
+
+                def prepare_and_close():
+                    readiness.return_value = True
+                    dialog.pocket_setup.refresh()
+                    self.application.processEvents()
+                    self.assertIs(controller.tts, state.public_backend)
+                    self.assertFalse(pool.tasks)
+                    if accepted:
+                        dialog.accept()
+                        return QDialog.DialogCode.Accepted
+                    dialog.reject()
+                    return QDialog.DialogCode.Rejected
+
+                with (
+                    patch.object(tray, "_create_settings_dialog", return_value=dialog),
+                    patch.object(dialog, "exec", side_effect=prepare_and_close),
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        return_value=Path("settings.json"),
+                    ),
+                    patch.object(tray, "_sync_active_profile", return_value=True),
+                ):
+                    tray.open_settings()
+                    self.application.processEvents()
+                    if accepted:
+                        self.assertTrue(tray._controller_busy)
+                        pool.run_next()
+                    self.wait_until(lambda: bool(pool.tasks))
+                    self.assertTrue(tray._controller_busy)
+                    pool.run_next()
+                    self.wait_until(lambda: not tray._controller_busy)
+                    self.application.processEvents()
+                self.assertIs(controller.tts, state.cloning_backend)
+                self.assertEqual(controller.settings, settings)
+                self.assertEqual(state.operations, ["shutdown", "start"])
+                self.assertFalse(pool.tasks)
+                self.assertFalse(tray._pocket_model_reload_pending)
+                tray.shutdown()
+
+    def test_prepared_pocket_model_stops_reading_before_reloading(self):
+        state = self.loaded_pocket_controller()
+        readiness, settings, controller = (
+            state.readiness,
+            state.settings,
+            state.controller,
+        )
+        controller.is_live_running = True
+        controller.emergency_stop.side_effect = lambda: setattr(
+            controller, "is_live_running", False
+        )
+        tray = TrayApplication(
+            self.application, settings, controller_factory=Mock(return_value=controller)
+        )
+        tray.set_ready(True)
+        stop_pool, reload_pool = ManualThreadPool(), ManualThreadPool()
+        tray.live_stop_runner.thread_pool = stop_pool
+        tray.configuration_runner.thread_pool = reload_pool
+        readiness.return_value = True
+        tray._pocket_model_setup_finished(True)
+        self.wait_until(lambda: bool(stop_pool.tasks))
+        self.assertFalse(reload_pool.tasks)
+        controller.shutdown.assert_not_called()
+        stop_pool.run_next()
+        self.wait_until(lambda: bool(reload_pool.tasks))
+        controller.emergency_stop.assert_called_once_with()
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
+        reload_pool.run_next()
+        self.wait_until(lambda: not tray._controller_busy)
+        controller.shutdown.assert_called_once_with()
+        controller.start.assert_called_once_with()
+        controller.toggle_live.assert_not_called()
+        tray.shutdown()
+
     def test_settings_offer_default_streaming_backend(self):
         dialog = SettingsDialog(AppSettings(speech_backend="pocket-tts"))
         dialog.section_navigation.setCurrentIndex(2)
@@ -5907,10 +6062,11 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(dialog.speech_backend.currentData(), "pocket-tts")
         self.assertIn("recommended", dialog.speech_backend.currentText().casefold())
         self.assertFalse(dialog.speech_rate.isEnabled())
-        self.assertTrue(dialog.pocket_gated_model.isVisibleTo(dialog))
-        self.assertFalse(dialog.pocket_gated_model.isChecked())
-        dialog.pocket_gated_model.setChecked(True)
-        self.assertTrue(dialog.settings().pocket_gated_model_accepted)
+        self.assertTrue(dialog.pocket_setup.isVisibleTo(dialog))
+        self.assertFalse(dialog.pocket_setup.is_ready)
+        with pocket_model_readiness(True):
+            dialog.pocket_setup.refresh()
+        self.assertTrue(dialog.pocket_setup.is_ready)
         delete_dialog(dialog)
 
     def test_settings_select_explicit_audio_source_policy(self):

@@ -433,8 +433,10 @@ class GeneratedAudioLibrary:
         *,
         warn: Callable[[str], object] | None = None,
         cache_size: int = 32,
+        follow_updates: bool = True,
     ) -> None:
         self.warn = warn or (lambda _message: None)
+        self.follow_updates = follow_updates
         self.cache: BoundedCache[
             tuple[str, str, str], tuple[NDArray[np.float32], int]
         ] = BoundedCache(cache_size)
@@ -469,6 +471,8 @@ class GeneratedAudioLibrary:
         self.audio_event_omissions = audio_event_omissions
 
     def _reload_if_changed(self) -> None:
+        if not self.follow_updates:
+            return
         signature = _manifest_signature(self.manifest_path)
         if signature in {
             None,
@@ -507,13 +511,16 @@ class GeneratedAudioLibrary:
         *,
         warn: Callable[[str], object] | None = None,
         cache_size: int = 32,
+        follow_updates: bool = True,
     ) -> GeneratedAudioLibrary | None:
         if not path:
             return None
         try:
             signature = _manifest_signature(Path(path).expanduser())
             index = load_generated_audio_source(path)
-            library = cls(index, warn=warn, cache_size=cache_size)
+            library = cls(
+                index, warn=warn, cache_size=cache_size, follow_updates=follow_updates
+            )
             library.manifest_signature = signature
             return library
         except (GeneratedAudioManifestError, ValueError) as error:

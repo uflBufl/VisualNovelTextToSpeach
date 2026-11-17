@@ -23,6 +23,7 @@ from vntts_artifacts import write_story_index_document  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from tests.error_logging_fixtures import isolated_application_error_log  # noqa: E402
+from tests.pocket_model_fixtures import pocket_model_readiness  # noqa: E402
 from tests.pregeneration_fixtures import fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from tests.story_fixtures import (  # noqa: E402
@@ -1305,6 +1306,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.enterContext(pocket_model_readiness(False))
         self._voice_library_directory = TemporaryDirectory()
         self._voice_library = VoiceLibrary(
             Path(self._voice_library_directory.name) / "library"
@@ -3868,14 +3870,16 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._awaiting_voice_confirmation = True
             dialog.voice_confirmation.show()
             dialog.selection_panel.hide()
-            dialog.apply_narrator_settings(settings.updated(
-                last_main_section="voices",
-                onboarding_completed=True,
-                capture_mode="window",
-                game_window_title="Game",
-                speech_rate_percent=125,
-                audio_source_policy="live-tts-only",
-            ))
+            dialog.apply_narrator_settings(
+                settings.updated(
+                    last_main_section="voices",
+                    onboarding_completed=True,
+                    capture_mode="window",
+                    game_window_title="Game",
+                    speech_rate_percent=125,
+                    audio_source_policy="live-tts-only",
+                )
+            )
             self.assertIs(dialog.voice_plan(), plan)
             self.assertIs(dialog.generation_input(), prepared_input)
             self.assertIs(dialog._generation_configuration, configuration)
@@ -3883,6 +3887,23 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.voice_confirmation.isHidden())
             self.assertTrue(dialog.selection_panel.isHidden())
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+
+    def test_model_setup_preserves_voice_plan_while_generation_is_running(self):
+        with TemporaryDirectory() as directory:
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(directory),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+            plan = empty_voice_plan()
+            dialog._voice_plan = plan
+            dialog.generating = True
+            with pocket_model_readiness(True):
+                dialog.pocket_setup.refresh()
+            self.assertIs(dialog.voice_plan(), plan)
+            dialog.generating = False
 
     def test_voice_generation_changes_invalidate_completed_preparation(self):
         changes = (
@@ -3892,12 +3913,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             {"narrator_speaker": "another-speaker"},
             {"tts_speaker_wav": "another-reference.wav"},
             {"xtts_terms_accepted": True},
-            {"pocket_gated_model_accepted": True},
         )
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_story_index(root / "content"))
-            settings = AppSettings(offline_speech_backend="coqui-xtts", offline_tts_profile="stable")
+            settings = AppSettings(
+                offline_speech_backend="coqui-xtts", offline_tts_profile="stable"
+            )
             for change in changes:
                 with self.subTest(change=change):
                     dialog = OfflineAudioPreparationDialog(
@@ -4422,7 +4444,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
-    def test_progress_reading_requires_generation_database_and_selected_ready_line(self):
+    def test_progress_reading_requires_generation_database_and_selected_ready_line(
+        self,
+    ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -5616,7 +5640,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 voice_manifest=str(manifest),
                 speech_backend="pocket-tts",
                 offline_speech_backend="qwen-tts",
-                pocket_gated_model_accepted=False,
             )
             plans = VoicePlanStore(jobs, voice_library=library)
             plan = plans.create(
@@ -5652,9 +5675,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.continue_button.click()
             prepare_input.assert_called_once_with(plan)
             self.assertEqual(dialog.settings.speech_backend, "pocket-tts")
-            self.assertFalse(dialog.settings.pocket_gated_model_accepted)
 
     def test_narrator_draft_stays_visible_and_rolls_back_when_replan_fails(self):
+        readiness = self.enterContext(pocket_model_readiness(True))
         from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
 
@@ -5668,7 +5691,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             library.select("Narrator", route="voice", source_id="preset:alba")
             settings = AppSettings(
                 voice_manifest=str(manifest),
-                pocket_gated_model_accepted=True,
             )
             plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
@@ -5694,9 +5716,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertGreaterEqual(marius, 0)
             dialog.narrator_choice.setCurrentIndex(marius)
             self.assertIn("Marius", dialog.confirmed_narrator.text())
-            dialog.pocket_voice_cloning.setChecked(False)
+            readiness.return_value = False
+            dialog.pocket_setup.refresh()
             self.assertEqual(dialog.narrator_choice.currentData(), "preset:marius")
-            dialog.pocket_voice_cloning.setChecked(True)
+            readiness.return_value = True
+            dialog.pocket_setup.refresh()
             dialog.continue_button.click()
             self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
 
@@ -5706,6 +5730,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("replan failed", dialog.resume_status.text())
             dialog.deleteLater()
 
+    @pocket_model_readiness(True)
     def test_voice_choice_replans_against_reimported_story_content(self):
         from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
@@ -5719,9 +5744,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             library = VoiceLibrary(root / "library")
             library.select("Narrator", route="voice", source_id="preset:alba")
-            settings = AppSettings(
-                voice_manifest=str(manifest), pocket_gated_model_accepted=True
-            )
+            settings = AppSettings(voice_manifest=str(manifest))
             plans = VoicePlanStore(jobs, voice_library=library)
             plan = plans.create(job, settings, manifest_path=manifest)
             importer = Mock()
@@ -5763,6 +5786,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.selection_panel.isVisible())
             dialog.deleteLater()
 
+    @pocket_model_readiness(True)
     def test_changed_story_selection_requires_explicit_review(self):
         from tests.voice_manifest_fixtures import write_manifest
         from vntts.pregeneration_voices import VoicePlanStore
@@ -5776,9 +5800,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             library = VoiceLibrary(root / "library")
             library.select("Narrator", route="voice", source_id="preset:alba")
-            settings = AppSettings(
-                voice_manifest=str(manifest), pocket_gated_model_accepted=True
-            )
+            settings = AppSettings(voice_manifest=str(manifest))
             plans = VoicePlanStore(jobs, voice_library=library)
             plan = plans.create(job, settings, manifest_path=manifest)
             missing_story = False

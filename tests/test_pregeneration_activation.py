@@ -14,6 +14,7 @@ from vntts_artifacts.story_index import (
 
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.bulk_generation_fixtures import audio_samples
+from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.pregeneration_fixtures import fixture
 from tests.story_fixtures import write_verified_source_story
 from vntts.chapter_voice_preload import ChapterVoicePreloader
@@ -188,6 +189,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
             cancellation=None,
         )
 
+    @pocket_model_readiness(True)
     def test_activation_and_apply_failure_preserve_live_voice_preferences(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -196,7 +198,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 game_pack="previous-pack.json",
                 tts_speaker_wav="live-narrator.wav",
                 speech_backend="moss-tts",
-                pocket_gated_model_accepted=True,
             )
             for apply_failed in (False, True):
                 with self.subTest(apply_failed=apply_failed):
@@ -216,7 +217,9 @@ class OfflinePackActivatorTest(unittest.TestCase):
                         )
                     else:
                         result = activator.activate(previous, pack, controller)
-                        self.assertTrue(result.settings.pocket_gated_model_accepted)
+                        self.assertFalse(
+                            hasattr(result.settings, "pocket_gated_model_accepted")
+                        )
                         self.assertEqual(result.settings.speech_backend, "moss-tts")
                         self.assertEqual(
                             result.settings.tts_speaker_wav, "live-narrator.wav"

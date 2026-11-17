@@ -265,7 +265,7 @@ class IndexedDialogueStore(DialogueStore):
             if (row := self._rows.get(line_id)) is not None
         }
         missing = tuple(line_id for line_id in line_ids if line_id not in rows)
-        for row in self.catalog.dialogues(missing):
+        for row in self.catalog.dialogues(missing) if missing else ():
             assert row.line_id is not None
             rows[row.line_id] = row
             self._rows.put(row.line_id, row)
@@ -284,16 +284,16 @@ class IndexedDialogueStore(DialogueStore):
             yield from self._hydrate(ids)
 
     def line_for_id(self, line_id: str) -> ChapterDialogue | None:
-        self.catalog.validate_current()
+        self.catalog.ensure_open()
         rows = self._hydrate((line_id,))
         return rows[0] if rows else None
 
     def chapter_ids(self) -> tuple[str, ...]:
-        self.catalog.validate_current()
+        self.catalog.ensure_open()
         return self._chapter_ids
 
     def chapter_rows(self, chapter: str) -> tuple[ChapterDialogue, ...]:
-        self.catalog.validate_current()
+        self.catalog.ensure_open()
         rows = self._chapters.get(chapter)
         if rows is None:
             from vntts.chapter_voice_preload import _story_position
@@ -307,7 +307,7 @@ class IndexedDialogueStore(DialogueStore):
         return rows
 
     def speakers(self) -> Mapping[str, str]:
-        self.catalog.validate_current()
+        self.catalog.ensure_open()
         return self._speakers
 
     def exact_rows(
