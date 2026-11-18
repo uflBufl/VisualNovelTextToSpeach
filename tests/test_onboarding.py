@@ -32,9 +32,10 @@ from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.diagnostics_ui import DiagnosticsDialog  # noqa: E402
 from vntts.game_pack import GamePackError, apply_game_pack  # noqa: E402
 from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
-from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.ocr import DialogRegion, save_story_region  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
+from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
@@ -310,6 +311,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 audio_probe=lambda: "Speakers",
                 model_path_resolver=lambda _model: model_path,
                 permission_status_provider=granted_permissions,
+                profile_store_loader=lambda: GameProfileStore(root / "profiles.json"),
             )
             settings = AppSettings(
                 capture_mode="window",
@@ -319,7 +321,21 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 voice_manifest=str(manifest),
             )
 
-            with patch("vntts.onboarding.sys.platform", "win32"):
+            region_file = root / "regions.json"
+            save_story_region(
+                DialogRegion(0.0, 0.0, 1.0, 1.0),
+                region_file,
+                capture_mode=settings.capture_mode,
+                game_window_title=settings.game_window_title,
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    VNTTS_DIALOG_REGION_FILE=str(region_file),
+                    VNTTS_DIALOG_REGION="",
+                ),
+                patch("vntts.onboarding.sys.platform", "win32"),
+            ):
                 results = diagnostics.run(settings)
 
         self.assertTrue(all(result.passed for result in results))
