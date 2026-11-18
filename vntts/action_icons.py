@@ -62,7 +62,11 @@ class _IconPaletteFilter(QObject):
 
 
 def set_action_icon(button: QAbstractButton | QAction, name: str) -> None:
-    if button.property("vnttsActionIcon") is None:
+    current = button.property("vnttsActionIcon")
+    if current == name:
+        return
+    icon = action_icon(name, None if isinstance(button, QAction) else button.palette())
+    if current is None:
         observer = _IconPaletteFilter(button)
         if isinstance(button, QAction):
             application = QApplication.instance()
@@ -73,6 +77,4 @@ def set_action_icon(button: QAbstractButton | QAction, name: str) -> None:
     button.setProperty("vnttsActionIcon", name)
     if isinstance(button, QAction):
         button.setIconVisibleInMenu(True)
-        button.setIcon(action_icon(name))
-    else:
-        button.setIcon(action_icon(name, button.palette()))
+    button.setIcon(icon)

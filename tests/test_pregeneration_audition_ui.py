@@ -558,7 +558,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                         button.icon().pixmap(24).toImage(),
                         expected.pixmap(24).toImage(),
                     )
-            with patch("vntts.playback_button.set_action_icon") as render:
+            with patch("vntts.action_icons.action_icon") as render:
                 panel._set_playing_source(source)
                 render.assert_not_called()
 

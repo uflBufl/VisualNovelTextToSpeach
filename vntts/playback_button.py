@@ -20,8 +20,7 @@ def set_playback_button_state(
         "playing": ("square", "Stop"),
     }[state]
     button.setProperty("playbackState", state)
-    if button.property("vnttsActionIcon") != icon:
-        set_action_icon(button, icon)
+    set_action_icon(button, icon)
     description = f"{action} {label}"
     button.setAccessibleName(description)
     shortcut = button.property("playbackShortcut")

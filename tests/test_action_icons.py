@@ -40,6 +40,16 @@ class ActionIconsTest(unittest.TestCase):
                     )
                 )
 
+    def test_reapplying_same_icon_preserves_qt_icon(self):
+        for control in (QPushButton(), QAction()):
+            with self.subTest(control=type(control).__name__):
+                set_action_icon(control, "play")
+                original = control.icon().cacheKey()
+                set_action_icon(control, "play")
+                self.assertEqual(control.icon().cacheKey(), original)
+                set_action_icon(control, "pause")
+                self.assertNotEqual(control.icon().cacheKey(), original)
+
     def test_existing_icon_follows_light_dark_and_disabled_palette(self):
         original = self.application.palette()
         button = QPushButton("Play")
