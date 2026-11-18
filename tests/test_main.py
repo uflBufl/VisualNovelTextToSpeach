@@ -7087,6 +7087,9 @@ class MainTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], ScreenCaptureError)
         self.assertEqual(str(errors[0]), "Selected game window is not visible")
+        self.assertIs(
+            errors[0].__cause__, controller.capture_target.get_geometry.side_effect
+        )
 
     def test_live_underflow_temporarily_disables_then_restores_prefetch(self):
         statuses = []

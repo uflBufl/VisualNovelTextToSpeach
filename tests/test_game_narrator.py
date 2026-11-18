@@ -1163,6 +1163,61 @@ class GameNarratorTest(unittest.TestCase):
         )
         self.assertIsNotNone(self.library.binding("Narrator"))
 
+    def test_pocket_setup_preserves_game_voice_edits_without_saving(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
+        plan, group, _manifest = ambiguous_fixture(self.root / "pocket-setup")
+        plan = replace(plan, synthesis_backend="pocket-tts", pocket_voice_cloning=False)
+        dialog = self.editor(
+            settings=self.settings.updated(speech_backend="pocket-tts")
+        )
+        dialog.set_voice_context(plan, character=group.character)
+        self.drain()
+        dialog.show()
+        self.application.processEvents()
+        panel = dialog.voice_panel
+        panel.reference_table.setCurrentIndex(
+            panel.reference_proxy.mapFromSource(panel.reference_model.index(1, 0))
+        )
+        panel.preview_text.setPlainText("Keep my comparison phrase.")
+        self.drain()
+        selected_source = panel.current_selection[2]
+        donor = dialog.characters.currentText()
+        bindings = self.library.bindings()
+        self.assertTrue(dialog.pocket_setup.isVisibleTo(dialog))
+        self.assertFalse(dialog.source_controls.isVisibleTo(dialog))
+
+        readiness.return_value = True
+        dialog.pocket_setup.refresh()
+        self.drain()
+
+        self.assertEqual(dialog.selected_role, group.character)
+        self.assertEqual(dialog.source.currentData(), "game")
+        self.assertEqual(dialog.characters.currentText(), donor)
+        self.assertEqual(panel.current_selection[2], selected_source)
+        self.assertTrue(panel.current_selection[0].pocket_voice_cloning)
+        self.assertEqual(panel.preview_text.toPlainText(), "Keep my comparison phrase.")
+        self.assertFalse(dialog.pocket_setup.isVisibleTo(dialog))
+        self.assertIsNone(dialog.result_settings)
+        self.assertEqual(self.library.bindings(), bindings)
+        self.assertFalse(panel.a_use.isEnabled())
+        self.assertEqual(self.backend.requests, [])
+
+    def test_pocket_setup_allows_selected_imported_voice_after_preparation(self):
+        readiness = self.enterContext(pocket_model_readiness(False))
+        dialog = self.editor(
+            settings=self.settings.updated(speech_backend="pocket-tts")
+        )
+        self.select(dialog, "catalog", source="character:rhiannon")
+        readiness.return_value = True
+        dialog.pocket_setup.refresh()
+        self.drain()
+        self.assertEqual(dialog.catalog_choice.currentData(), "character:rhiannon")
+        self.assertTrue(dialog.voice_panel.current_selection[0].pocket_voice_cloning)
+        self.assertIsNone(dialog.result_settings)
+        self.listen(dialog, original=True)
+        self.save(dialog)
+        self.assertIsNotNone(self.library.binding("Narrator"))
+
     @pocket_model_readiness(True)
     def test_switching_sources_keeps_model_visible_and_preserves_capability(
         self,

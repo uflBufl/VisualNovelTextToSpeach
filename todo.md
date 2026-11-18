@@ -1,5 +1,32 @@
 # TODO
 
+## Active - Windows startup recovery and latest Reading evidence
+
+Evidence: November18 `vntts-support.zip` and recording exports
+`10deae4c809c4a178139b2e0dac9acc3.zip` and
+`7591ea58a7bb415e8822666b2f2be626.zip`, clean build `02571ac0`.
+
+- [ ] On Windows, qualify Reading recovery from a closed or ambiguous game
+      window. Confirm the window error appears before model loading, the button
+      and notification open window selection, and saving resumes the selected
+      story. Check a window that disappears during startup and cancellation.
+- [ ] On Windows, enter Pocket setup from a game voice with cloning assets
+      unavailable. Let a sign-in code expire, retry in the same dialog and
+      complete authorization. Confirm the editor retains the selected voice and
+      that saving or leaving the editor handles reading resume correctly.
+- [ ] If the Stop/Start hold recurs, retain a recording beginning before it and
+      the current occurrence's completion/navigation events. The second export
+      shows Elma's line315601:55 at Stop/Start, but the preceding playback and
+      navigation evidence was evicted. Establish the blocked transition before
+      changing reading ownership; do not infer the cause from a static frame.
+- [ ] Repair diagnostic time mapping for Windows process-output capture after
+      Reading recovery work: raw QPC advances contain short gaps at stream
+      boundaries while CAF offsets concatenate PCM. Global offset mapping leaves
+      about425/741ms residual in these recordings and qualifies no source routes.
+      Preserve measured QPC and raw flags, represent actual captured intervals
+      and report uncovered time instead of stretching samples or claiming an
+      audible dropout. Qualify piecewise source correlation with the recordings.
+
 ## Active - Support 111 application crash and Reading holds
 
 Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support
@@ -21,38 +48,35 @@ the trust-after-admission changes.
       Python locations with the failed Reading scene. Check normal teardown too.
       `fatal-crashes.json` is bounded stack evidence without per-run attribution;
       it does not replace a native Windows dump or establish the crash cause.
-- [ ] Qualify completed-dialogue navigation on Windows through chapter315601
-      lines77 and80 with intermittent uncertain OCR. Gate: fresh confirmation
+- [ ] Qualify completed-dialogue navigation on Windows when uncertain OCR blocks
+      an unsent transition. Gate: fresh confirmation
       of the current dialogue resumes the unsent transition after audio finishes;
       uncertainty alone never dispatches a key, and changing dialogue/layout,
       failed speech or Stop prevents an old request from firing. Check both
       prepared Reading and direct screen reading, without repeated speech or
-      duplicate keys. Capture a new support export if a hold remains; the old
-      archive has no pixels proving a wrong crop or artwork identity.
+      duplicate keys. Capture a new recording if a hold remains; the latest
+      passage through lines77/80 has uncertainty only after the key was sent.
 
 ## Active - Support 31 Reading and recorder defects
 
 Evidence: `vntts-support (31).zip` and diagnostic session
 `1b42f6a6721a4848a9ee845c37837fd5.zip`, build `579f9a70`, 2026-11-17.
 
-- [ ] Qualify one-time Pocket setup with a real Hugging Face account on Windows
-      and macOS: browser login and original Kyutai model consent, download progress,
-      cancellation/retry and existing standard-cache/login reuse. Verify the
+- [ ] Qualify remaining one-time Pocket setup paths: the macOS account/browser
+      flow, cancellation/retry, visible download progress and existing standard
+      cache/login reuse on both systems. Verify the
       prepared model works after restart/offline without further authorization;
       preparing it while the public model is loaded must safely replace that
-      worker without restarting the application. Automated protocol/lifecycle
-      regressions and a pinned-SDK public-asset smoke do not qualify the actual
-      gated download or Windows browser interaction.
-- [ ] Qualify process-loopback recording on Windows: run native clock and
-      activation-blob lifetime tests, then record nonzero game and Rust-output PCM
-      beyond startup. Constant-zero virtual positions must preserve actual QPC,
-      raw flags and CAF offsets. Check Stop, acquisition/writer failure and
-      teardown; a rejected clock must retain previous/current packet values.
-- [ ] Qualify video readiness on Windows: the first complete written-frame event
-      must be readable while capture remains active and satisfy readiness before
-      its deadline. Check static/changing scenes, normal stop, journal failure
-      and finalization; retain decodable video and monotonic timestamps. Run
-      native Windows recording regressions.
+      worker without restarting the application. A successful Windows setup and
+      subsequent Reading do not qualify every browser step or offline reuse.
+- [ ] Complete Windows process-loopback adverse-path qualification: run native
+      clock and activation-blob lifetime tests, then check acquisition/writer
+      failure and teardown; a rejected clock must retain previous/current packet
+      values. Keep diagnostic source-correlation qualification separate above.
+- [ ] Complete Windows video adverse-path qualification: check journal failure
+      and failed finalization, retaining the original error and bounded teardown.
+      Run native Windows recording regressions; ordinary readiness and normal
+      stop no longer need to be repeated as unverified prerequisites.
 
 ## Active - Support 30 Windows Reading repairs
 

@@ -42,9 +42,6 @@ class _PocketSetupDialog(QDialog):
         self.setWindowTitle("Prepare Pocket voice cloning")
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.cancel_event = Event()
-        self.continue_event = Event()
-        self.destroyed.connect(self.cancel_event.set)
         self._owner = parent.window()
         self._owner.installEventFilter(self)
         self._url = ""
@@ -64,11 +61,15 @@ class _PocketSetupDialog(QDialog):
         self.continue_button = QPushButton("Continue after accepting terms")
         self.continue_button.clicked.connect(self._continue)
         self.continue_button.hide()
+        self.retry_button = QPushButton("Retry")
+        self.retry_button.clicked.connect(self._retry)
+        self.retry_button.hide()
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.close)
         buttons = QHBoxLayout()
         buttons.addWidget(self.browser_button)
         buttons.addWidget(self.continue_button)
+        buttons.addWidget(self.retry_button)
         buttons.addStretch()
         buttons.addWidget(self.cancel_button)
         layout = QVBoxLayout(self)
@@ -78,6 +79,20 @@ class _PocketSetupDialog(QDialog):
         layout.addLayout(buttons)
         self.runner = LatestTaskRunner(self)
         self.runner.finished.connect(self._finished)
+        self._start()
+
+    def _start(self) -> None:
+        self.cancel_event = Event()
+        self.continue_event = Event()
+        self.destroyed.connect(self.cancel_event.set)
+        self._url = ""
+        self.status.setText("Preparing the original Pocket model...")
+        self.code.clear()
+        self.progress.show()
+        self.browser_button.hide()
+        self.continue_button.hide()
+        self.retry_button.hide()
+        self.cancel_button.setText("Cancel")
         signals = _SetupSignals()
         signals.progress.connect(self._progress)
         signals.authorize.connect(self._authorize)
@@ -90,12 +105,26 @@ class _PocketSetupDialog(QDialog):
             authorize=lambda url, code: _emit(signals, "authorize", url, code),
         )
 
+    def _retry(self) -> None:
+        if self.cancel_event.is_set() or self.runner.active:
+            return
+        self.cancel_event.set()
+        self._start()
+
     def _progress(self, message: str) -> None:
-        if not self.cancel_event.is_set():
+        if (
+            self.sender() is self._signals
+            and self.runner.active
+            and not self.cancel_event.is_set()
+        ):
             self.status.setText(message)
 
     def _authorize(self, url: str, code: str) -> None:
-        if self.cancel_event.is_set():
+        if (
+            self.sender() is not self._signals
+            or not self.runner.active
+            or self.cancel_event.is_set()
+        ):
             return
         self._url = url
         self.code.setText(f"Sign-in code: {code}" if code else "")
@@ -129,13 +158,15 @@ class _PocketSetupDialog(QDialog):
         self.cancel_button.setText("Close")
         if error is not None:
             self.status.setText(f"Unable to prepare Pocket voice cloning: {error}")
+            self.retry_button.show()
         elif pocket_model_ready():
             self.status.setText("Pocket voice cloning is ready on this computer.")
             self.ready.emit()
         else:
             self.status.setText(
-                "Pocket setup did not finish. Close this dialog and retry."
+                "Pocket setup did not finish. Retry to prepare voice cloning."
             )
+            self.retry_button.show()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._owner and event.type() in (

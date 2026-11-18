@@ -50,6 +50,7 @@ from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import bind_voice_library_selection, narrator_preview_plan
 from vntts.pocket_model import pocket_model_ready
+from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.pregeneration_audition import (
     COMPARISON_PREVIEW_TEXT,
     VoiceAuditionPreviewService,
@@ -195,6 +196,9 @@ class GameNarratorDialog(QDialog):
         content.setSpacing(8)
         content.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
         self._build_voice_sources(content)
+        self.pocket_setup = PocketSetupControl(self)
+        self.pocket_setup.readyChanged.connect(self._pocket_setup_changed)
+        content.addWidget(self.pocket_setup)
         self.voice_panel = VoiceAuditionPanel(
             self,
             preview_service=preview_service
@@ -443,6 +447,46 @@ class GameNarratorDialog(QDialog):
         self._update()
         if self._closing:
             QTimer.singleShot(0, self, self._finish_close)
+
+    def _pocket_setup_changed(self, ready: bool) -> None:
+        if self._closing or self.settings_value.speech_backend != "pocket-tts":
+            return
+        if (
+            self._voice_context is not None
+            and self._voice_context.synthesis_backend == "pocket-tts"
+        ):
+            self._voice_context = replace(
+                self._voice_context, pocket_voice_cloning=ready
+            )
+        selection = self.voice_panel.current_selection
+        if (
+            not self.voice_panel.isHidden()
+            and selection is not None
+            and self.source.currentData() not in {"automatic", "narrator"}
+        ):
+            plan, group, source = selection
+            if not source.startswith("preset:"):
+                selected = (
+                    group.narrator_candidate.source_id
+                    if source == "default" and group.narrator_candidate is not None
+                    else source
+                )
+                group = replace(group, source_id=selected)
+                self.voice_panel.start(
+                    replace(
+                        plan,
+                        pocket_voice_cloning=ready,
+                        groups=tuple(
+                            group if value.group_id == group.group_id else value
+                            for value in plan.groups
+                        ),
+                    ),
+                    group_id=group.group_id,
+                )
+        else:
+            self._source_changed()
+        self._load_current_voice()
+        self._update()
 
     def _build_game_reference_controls(self) -> None:
         self._remember_known_installation()
@@ -1526,7 +1570,7 @@ class GameNarratorDialog(QDialog):
             return
         if settings.speech_backend == "pocket-tts" and not pocket_model_ready():
             raise ValueError(
-                "Set up the Pocket cloning model in Settings before saving a game voice"
+                "Set up the Pocket cloning model with Prepare voice cloning before saving a game voice"
             )
         if not self._selection_engine_available:
             raise ValueError(
@@ -1711,6 +1755,12 @@ class GameNarratorDialog(QDialog):
             engine_model_label(backend, model, pocket_cloning=cloning)
         )
         idle = not self.active and not self._closing
+        self.pocket_setup.setVisible(
+            self.settings_value.speech_backend == "pocket-tts"
+            and not self.pocket_setup.is_ready
+            and self.source.currentData() not in {"preset", "automatic"}
+        )
+        self.pocket_setup.setEnabled(idle)
         self.progress.setVisible(self.runner.active)
         for control in (
             self.role,

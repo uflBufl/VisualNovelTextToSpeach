@@ -161,9 +161,9 @@ def main() -> None:
         elif isinstance(error, DeviceCodeError):
             reason = getattr(error, "error_code", None)
             if reason == "access_denied":
-                message = "Hugging Face sign-in was declined. Close this dialog and retry when ready."
+                message = "Hugging Face sign-in was declined. Click Retry when ready."
             elif reason == "expired_token":
-                message = "The Hugging Face sign-in code expired. Close this dialog and retry to get a new code."
+                message = "The Hugging Face sign-in code expired. Click Retry to get a new code."
             else:
                 message = "Unable to complete Hugging Face sign-in. Check your connection and retry browser authorization."
         elif isinstance(error, OSError):

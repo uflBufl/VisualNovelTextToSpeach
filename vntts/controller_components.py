@@ -1292,8 +1292,10 @@ class LiveSessionComponent:
             try:
                 controller.capture_target.get_geometry()
             except Exception as error:
-                controller.error_handler(ScreenCaptureError(str(error)))
+                failure = ScreenCaptureError(str(error))
+                failure.__cause__ = error
                 controller.status_handler("Live reading could not start")
+                controller.error_handler(failure)
                 return False
         # Unknown-speaker prompts are deduplicated within one live session,
         # not for the entire application lifetime.

@@ -1318,9 +1318,9 @@ class OnboardingWizardTest(unittest.TestCase):
         page = wizard.configuration_page
         wizard.show_page(1)
         wizard.show()
-        page.advanced_toggle.click()
-
+        self.assertFalse(page.advanced_content.isVisibleTo(wizard))
         self.assertTrue(page.pocket_setup.isVisibleTo(wizard))
+        self.assertTrue(page.pocket_terms_label.isVisibleTo(wizard))
         self.assertFalse(page.pocket_setup.is_ready)
         self.assertFalse(page.terms.isVisibleTo(wizard))
         self.assertEqual(page.manage_assets_button.text(), "Import character voices...")
@@ -1328,6 +1328,7 @@ class OnboardingWizardTest(unittest.TestCase):
             page.manage_assets_button.property("vnttsActionIcon"), "folder-open"
         )
         page.speech_backend.setCurrentIndex(page.speech_backend.findData("coqui-xtts"))
+        self.assertFalse(page.pocket_setup.isVisibleTo(wizard))
         self.assertEqual(
             page.manage_assets_button.text(),
             "Download model or import voices...",
@@ -1341,6 +1342,25 @@ class OnboardingWizardTest(unittest.TestCase):
             page.pocket_setup.refresh()
         self.assertTrue(page.pocket_setup.is_ready)
         self.assertFalse(hasattr(page.settings(), "pocket_gated_model_accepted"))
+        wizard.deleteLater()
+
+    def test_cancelled_narrator_picker_propagates_prepared_pocket_model(self):
+        wizard = OnboardingWizard(AppSettings(speech_backend="pocket-tts"))
+        page = wizard.configuration_page
+        before = page._base_settings()
+        ready = Mock()
+        page.pocket_setup.readyChanged.connect(ready)
+        with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.choose_narrator()
+            callback = (
+                picker.return_value.pocket_setup.readyChanged.connect.call_args.args[0]
+            )
+            with pocket_model_readiness(True):
+                callback(True)
+        self.assertTrue(page.pocket_setup.is_ready)
+        ready.assert_called_once_with(True)
+        self.assertEqual(page._base_settings(), before)
         wizard.deleteLater()
 
     def test_configuration_scrolls_at_scaled_fonts(self):

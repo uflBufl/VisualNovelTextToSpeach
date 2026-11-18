@@ -179,6 +179,8 @@ class DurableSettingsMixin:
         onboarding_cancel_event: Event
         _onboarding_preview_settings: AppSettings | None
         _onboarding_reading_settings: AppSettings | None
+        _onboarding_start_live: bool
+        _reading_window_setup_settings: AppSettings | None
         _shutting_down: bool
         _settings_path: Path
         _settings_revision: bytes | None
@@ -199,7 +201,12 @@ class DurableSettingsMixin:
 
         def _bind_preparation_callbacks(self) -> None: ...
 
-        def prepare_reading(self, *, reading_settings: AppSettings) -> None: ...
+        def prepare_reading(
+            self,
+            *,
+            reading_settings: AppSettings | None = None,
+            start_live: bool = False,
+        ) -> None: ...
 
         def set_status(self, message: str | None) -> None: ...
 
@@ -419,6 +426,8 @@ class DurableSettingsMixin:
         self.signals.onboarding_test_finished.disconnect(wizard.test_page.set_result)
         self.signals.onboarding_test_progress.disconnect(wizard.test_page.set_progress)
         self.onboarding_wizard = None
+        start_live = self._onboarding_start_live
+        self._onboarding_start_live = False
 
         if result != QDialog.DialogCode.Accepted:
             self._onboarding_reading_settings = None
@@ -454,6 +463,7 @@ class DurableSettingsMixin:
             self._restore_onboarding_runtime()
             return
         self._onboarding_preview_settings = None
+        self._reading_window_setup_settings = None
         self.settings = candidate
         reading_settings = None
         if self._onboarding_reading_settings is not None:
@@ -475,8 +485,10 @@ class DurableSettingsMixin:
             f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
-        if reading_settings is not None:
-            self.prepare_reading(reading_settings=reading_settings)
+        if reading_settings is not None or start_live:
+            self.prepare_reading(
+                reading_settings=reading_settings, start_live=start_live
+            )
 
     def _restore_onboarding_runtime(self) -> None:
         preview_settings = self._onboarding_preview_settings

@@ -94,7 +94,9 @@ class PocketSetupControlTest(unittest.TestCase):
         self.browser.return_value = False
         self.control.button.click()
         dialog = self.control._dialog
-        dialog._authorize("https://huggingface.co/oauth/device", "ABCD-EFGH")
+        dialog._signals.authorize.emit(
+            "https://huggingface.co/oauth/device", "ABCD-EFGH"
+        )
         self.assertIn("Unable to open", dialog.status.text())
         self.assertIn("https://huggingface.co/oauth/device", dialog.status.text())
         self.assertIn("ABCD-EFGH", dialog.code.text())
@@ -130,10 +132,23 @@ class PocketSetupControlTest(unittest.TestCase):
             self.application.processEvents()
             self.browser.assert_not_called()
 
-    def test_failure_is_visible_and_setup_can_be_retried(self):
+    def test_failure_can_be_retried_in_same_dialog_with_fresh_events(self):
+        attempts = []
+        changes = []
+        self.control.readyChanged.connect(changes.append)
+
+        def prepare(**arguments):
+            attempts.append(arguments)
+            if len(attempts) == 1:
+                arguments["continue_event"].set()
+                raise ValueError("Account does not have model access")
+            self.assertFalse(arguments["cancel_event"].is_set())
+            self.assertFalse(arguments["continue_event"].is_set())
+            self.readiness.return_value = True
+
         with patch(
             "vntts.pocket_setup_ui.prepare_pocket_model",
-            side_effect=ValueError("Account does not have model access"),
+            side_effect=prepare,
         ):
             self.control.button.click()
             dialog = self.control._dialog
@@ -141,11 +156,116 @@ class PocketSetupControlTest(unittest.TestCase):
             self.application.processEvents()
             self.assertIn("does not have model access", dialog.status.text())
             self.assertFalse(self.control.is_ready)
-            dialog.close()
-            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.assertFalse(dialog.retry_button.isHidden())
+            self.assertEqual(dialog.cancel_button.text(), "Close")
             self.control.button.click()
-            self.assertIsNot(self.control._dialog, dialog)
-            self.control._dialog.close()
+            self.assertIs(self.control._dialog, dialog)
+            dialog.retry_button.click()
+            self.assertTrue(attempts[0]["cancel_event"].is_set())
+            self.assertIsNot(dialog.cancel_event, attempts[0]["cancel_event"])
+            self.assertIsNot(dialog.continue_event, attempts[0]["continue_event"])
+            self.assertTrue(dialog.retry_button.isHidden())
+            self.assertFalse(dialog.progress.isHidden())
+            self.assertEqual(dialog.cancel_button.text(), "Cancel")
+            self.pool.run_next()
+            self.application.processEvents()
+            self.assertTrue(self.control.is_ready)
+            self.assertFalse(self.control.button.isEnabled())
+            self.assertTrue(dialog.retry_button.isHidden())
+            self.assertEqual(changes, [True])
+            dialog.close()
+
+    def test_retry_ignores_queued_progress_and_auth_from_failed_attempt(self):
+        attempts = []
+
+        def prepare(**arguments):
+            attempts.append(arguments)
+            raise ValueError("The sign-in code expired")
+
+        with patch("vntts.pocket_setup_ui.prepare_pocket_model", side_effect=prepare):
+            self.control.button.click()
+            dialog = self.control._dialog
+            self.pool.run_next()
+            self.application.processEvents()
+            callbacks = attempts[0]
+            failure_message = dialog.status.text()
+            callbacks["progress"]("late progress after failure")
+            callbacks["authorize"]("https://huggingface.co/device", "OLD-CODE")
+            self.assertEqual(dialog.status.text(), failure_message)
+            self.browser.assert_not_called()
+
+            def publish_stale_updates():
+                callbacks["progress"]("stale progress")
+                callbacks["authorize"]("https://huggingface.co/device", "OLD-CODE")
+
+            thread = Thread(target=publish_stale_updates)
+            thread.start()
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+            dialog.retry_button.click()
+            self.application.processEvents()
+            self.assertEqual(
+                dialog.status.text(), "Preparing the original Pocket model..."
+            )
+            self.assertEqual(dialog.code.text(), "")
+            self.assertTrue(dialog.browser_button.isHidden())
+            self.browser.assert_not_called()
+            dialog.close()
+            self.pool.run_next()
+
+    def test_incomplete_setup_offers_retry_without_reopening(self):
+        with patch("vntts.pocket_setup_ui.prepare_pocket_model"):
+            self.control.button.click()
+            dialog = self.control._dialog
+            self.pool.run_next()
+            self.application.processEvents()
+            self.assertIn("did not finish", dialog.status.text())
+            self.assertFalse(dialog.retry_button.isHidden())
+            dialog.retry_button.click()
+            self.assertTrue(dialog.runner.active)
+            dialog.close()
+            self.pool.run_next()
+
+    def test_closing_or_hiding_owner_cancels_retry_and_ignores_late_updates(self):
+        for action in ("close", "hide_owner", "reject"):
+            with self.subTest(action=action):
+                attempts = []
+                changes = []
+
+                def prepare(**arguments):
+                    attempts.append(arguments)
+                    if len(attempts) == 1:
+                        raise ValueError("The sign-in code expired")
+                    arguments["progress"]("late progress")
+                    arguments["authorize"]("https://huggingface.co/device", "LATE-CODE")
+                    self.readiness.return_value = True
+
+                self.control.show()
+                self.control.readyChanged.connect(changes.append)
+                with patch(
+                    "vntts.pocket_setup_ui.prepare_pocket_model", side_effect=prepare
+                ):
+                    self.control.button.click()
+                    dialog = self.control._dialog
+                    self.pool.run_next()
+                    self.application.processEvents()
+                    dialog.retry_button.click()
+                    cancel_event = dialog.cancel_event
+                    if action == "hide_owner":
+                        self.control.hide()
+                    elif action == "reject":
+                        dialog.reject()
+                    else:
+                        dialog.close()
+                    self.assertTrue(cancel_event.is_set())
+                    self.assertFalse(dialog.runner.active)
+                    self.pool.run_next()
+                    self.application.processEvents()
+                    self.browser.assert_not_called()
+                    self.assertEqual(changes, [])
+                self.control.readyChanged.disconnect(changes.append)
+                self.readiness.return_value = False
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def _delete_control(self):
         if isValid(self.control):

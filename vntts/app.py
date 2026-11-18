@@ -225,6 +225,8 @@ from vntts.voices import (
 from vntts.window_capture import (
     WindowCaptureError,
     WindowGeometry,
+    WindowMinimizedError,
+    WindowNotFoundError,
     enable_windows_dpi_awareness,
     list_windows,
 )
@@ -286,7 +288,7 @@ class AppSignals(QObject):
     ready_changed = Signal(bool)
     live_changed = Signal(bool)
     speech_paused_changed = Signal(bool)
-    error_reported = Signal(str)
+    error_reported = Signal(object)
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
     onboarding_playback_started = Signal(int)
@@ -1547,6 +1549,7 @@ class SettingsDialog(QDialog):
             use_offline_engine=offline_qwen,
             voice_binding_rollback=self._voice_binding_rollback,
         )
+        dialog.pocket_setup.readyChanged.connect(self.pocket_setup.refresh)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
@@ -1914,6 +1917,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._initialize_runners(pregeneration_activator)
         self._initialize_session_state(profile_store, correction_store)
         self._onboarding_reading_settings: AppSettings | None = None
+        self._onboarding_start_live = False
+        self._reading_window_setup_settings: AppSettings | None = None
         self._build_actions()
         self._build_main_menu()
         self._build_setup_and_support_menus()
@@ -2361,7 +2366,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.ready_changed.connect(self.set_ready)
         self.signals.live_changed.connect(self.set_live)
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
-        self.signals.error_reported.connect(self.show_error)
+        self.signals.error_reported.connect(self._show_controller_error)
         self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
         self.signals.sequence_status_changed.connect(self.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
@@ -2397,6 +2402,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.pause_requested.connect(self.toggle_speech_pause)
         self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(self.prepare_reading)
+        self.dashboard.window_setup_requested.connect(self._open_reading_window_setup)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
         self.dashboard.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
@@ -2918,10 +2924,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if require_preparation
                 else "Finish Reading setup before starting to read."
             )
-            if require_preparation:
+            if require_preparation or reading_settings is not None:
                 self.run_onboarding(reading_settings=runtime_settings)
             else:
                 self.run_onboarding()
+            return
+        if start_live and not self._reading_window_available(
+            runtime_settings or self._runtime_settings()
+        ):
             return
         if (
             runtime_settings is not None
@@ -2951,6 +2961,36 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._initialize_controller,
             generation,
             runtime_settings or self._runtime_settings(),
+        )
+
+    def _reading_window_available(self, settings: AppSettings) -> bool:
+        self._reading_window_setup_settings = None
+        if settings.capture_mode != "window":
+            return True
+        try:
+            loaded = self.controller.settings
+            target = (
+                self.controller.capture_target
+                if loaded.capture_mode == "window"
+                and loaded.game_window_title == settings.game_window_title
+                else self.controller.capture_target_factory(settings.game_window_title)
+            )
+            if target is not None:
+                target.get_geometry()
+        except (WindowNotFoundError, WindowMinimizedError) as error:
+            self._reading_window_setup_settings = settings
+            self.report_controller_error(error)
+            return False
+        except WindowCaptureError as error:
+            self.report_controller_error(error)
+            return False
+        return True
+
+    def _open_reading_window_setup(self) -> None:
+        settings = self._reading_window_setup_settings
+        self.run_onboarding(
+            reading_settings=settings,
+            start_live=settings is not None,
         )
 
     def _story_area_needs_setup(self) -> bool:
@@ -3523,6 +3563,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def emergency_stop(self) -> None:
         self._cancel_live_stop_continuation()
         self._start_live_after_initial_start = False
+        self._onboarding_start_live = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
         if self.unknown_speaker_prompt is not None:
@@ -3538,6 +3579,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _request_stop_reading(self) -> None:
         self._cancel_live_stop_continuation()
         self._start_live_after_initial_start = False
+        self._onboarding_start_live = False
         self.resume_live_after_unknown_mapping = False
         self._configuration_after_apply = None
         if self.unknown_speaker_prompt is not None:
@@ -3929,7 +3971,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif remediation == "settings":
             self.open_settings()
 
-    def run_onboarding(self, *, reading_settings: AppSettings | None = None) -> None:
+    def run_onboarding(
+        self,
+        *,
+        reading_settings: AppSettings | None = None,
+        start_live: bool = False,
+    ) -> None:
         if self._controller_busy or self._shutting_down or self.live_stop_runner.active:
             self.set_status(
                 "Reading controls are updating. Try setup again when ready."
@@ -3975,6 +4022,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_wizard = wizard
         self._onboarding_preview_settings = None
         self._onboarding_reading_settings = reading_settings
+        self._onboarding_start_live = start_live
         wizard.voices_requested.connect(lambda: self._open_onboarding_voices(wizard))
         wizard.settings_requested.connect(
             lambda: self._open_onboarding_settings(wizard)
@@ -4352,14 +4400,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._remember_pocket_model_setup(ready)
         QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
 
-    def _reload_prepared_pocket_model(self) -> None:
+    def _reload_prepared_pocket_model(
+        self, *, after_apply: Callable[[], object] | None = None
+    ) -> bool:
         if (
             not self._pocket_model_reload_pending
             or self._shutting_down
             or self._controller_busy
             or self.live_stop_runner.active
+            or self.narrator_dialog is not None
         ):
-            return
+            return False
         loaded = getattr(self.controller, "settings", None)
         if (
             not isinstance(loaded, AppSettings)
@@ -4367,20 +4418,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             or self.controller.is_ready is not True
         ):
             self._pocket_model_reload_pending = False
-            return
+            return False
         if self._needs_modal_stop():
-            self._stop_live_then(
-                self._reload_prepared_pocket_model,
+            return self._stop_live_then(
+                partial(self._reload_prepared_pocket_model, after_apply=after_apply)
+                if after_apply is not None
+                else self._reload_prepared_pocket_model,
                 "Stopping reading before loading Pocket voice cloning...",
             )
-            return
         self._pocket_model_reload_pending = False
         self._start_configuration_apply(
             self.settings,
             progress_status="Loading the prepared Pocket voice cloning model...",
             success_status="Pocket voice cloning is ready for reading.",
             restart=True,
+            after_apply=after_apply,
         )
+        return True
 
     def _create_asset_manager_dialog(self) -> AssetManagerDialog:
         return AssetManagerDialog(self.settings)
@@ -5084,6 +5138,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             preview_service=self.voice_auditions.session(),
             use_offline_engine=for_preparation,
         )
+        dialog.pocket_setup.readyChanged.connect(self._pocket_model_setup_finished)
         if for_preparation and self.pregeneration_dialog is not None:
             plan = self.pregeneration_dialog.voice_plan()
             content = self.pregeneration_dialog.current_content()
@@ -5297,6 +5352,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self._apply_narrator_to_preparation(candidate, preparation)
                 completion_deferred = bool(mapping_speaker or resume_live)
                 self.unknown_speaker_mapping_in_progress = None
+                if self._controller_ready:
+                    self._pocket_model_reload_pending = False
                 self._reload_game_narrator(
                     profile_synced,
                     saved_assignment,
@@ -5308,7 +5365,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
         finally:
             if not completion_deferred:
-                finish_mapping()
+                if not self._reload_prepared_pocket_model(after_apply=finish_mapping):
+                    finish_mapping()
             self._finish_narrator_navigation(return_to_stories, preparation)
 
     def _finish_narrator_navigation(
@@ -5960,6 +6018,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.open_support_center()
         elif recovery == "audio-setup":
             self._open_audio_setup()
+        elif recovery == "reading-setup":
+            self._open_reading_window_setup()
 
     def _controller_configuration_actions(self) -> tuple[QAction, ...]:
         return (
@@ -6005,6 +6065,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ) or loaded.live_sequence_mode != runtime_settings.live_sequence_mode:
                 enabled = False
                 initialization_needed = True
+        if self._reading_window_setup_settings is not None:
+            enabled = False
         snapshot = None
         reader = getattr(self.controller, "live_reader", None)
         snapshot_loader = getattr(self.controller, "runtime_control_snapshot", None)
@@ -6025,6 +6087,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             unavailable_reason = (
                 "Save or cancel your narrator selection in Voices before reading."
             )
+        error_recovery = (
+            "Select game window"
+            if self._reading_window_setup_settings is not None
+            else "Select Check readiness"
+        )
         sequence_status = self.controller.get_live_sequence_status()
         indexed_current = isinstance(
             getattr(sequence_status, "indexed_current_event_id", None), str
@@ -6065,7 +6132,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if self._shutting_down
                 else unavailable_reason
                 or (
-                    f"{self.last_controller_error} Select Check readiness to recover."
+                    f"{self.last_controller_error} {error_recovery} to recover."
                     if self.last_controller_error
                     else "Select Read to prepare and start reading."
                     if not self._controller_ready and self.settings.onboarding_completed
@@ -6259,6 +6326,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.readiness_dialog.suspend_checks()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
         self.last_controller_error = None
+        self._reading_window_setup_settings = None
         self._controller_busy = True
         self._apply_controller_action_state()
         self._update_auto_advance_action()
@@ -6340,7 +6408,33 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         logging.getLogger(__name__).error("Controller operation failed", exc_info=error)
         message = format_runtime_error(error)
         self.last_controller_error = message
-        self.signals.error_reported.emit(message)
+        self.signals.error_reported.emit(error)
+
+    def _show_controller_error(self, error: BaseException) -> None:
+        message = format_runtime_error(error)
+        window_errors = (WindowNotFoundError, WindowMinimizedError)
+        if isinstance(error, window_errors) or isinstance(
+            error.__cause__, window_errors
+        ):
+            if self._reading_window_setup_settings is None:
+                loaded = self.controller.settings
+                self._reading_window_setup_settings = (
+                    loaded
+                    if isinstance(loaded, AppSettings)
+                    else self._runtime_settings()
+                )
+            summary = "The game window is unavailable. Select game window to continue reading."
+            self.show_error(
+                message,
+                summary=summary,
+                recovery="reading-setup",
+            )
+            if self.pregeneration_dialog is not None:
+                self.pregeneration_dialog.set_reading_status(summary)
+        else:
+            self._reading_window_setup_settings = None
+            self.show_error(message)
+        self._apply_controller_action_state()
 
     def _dispose_tray(self) -> None:
         self.tray.hide()

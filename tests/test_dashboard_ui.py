@@ -703,7 +703,8 @@ class ControlDashboardTest(unittest.TestCase):
     def test_missing_window_offers_window_settings(self):
         dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
         requested = []
-        dashboard.settings_requested.connect(lambda: requested.append("window"))
+        dashboard.window_setup_requested.connect(lambda: requested.append("window"))
+        dashboard.settings_requested.connect(lambda: requested.append("settings"))
         dashboard.reading_setup_requested.connect(lambda: requested.append("engine"))
         dashboard.set_ready(False, reason="Selected game window is unavailable")
         self.assertEqual(dashboard.prepare_reading_button.text(), "Select game window")

@@ -355,6 +355,8 @@ class ConfigurationPage(QWizardPage):
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
         recommended_form.addRow("Voices", self.choose_narrator_button)
+        recommended_form.addRow(self.pocket_setup)
+        recommended_form.addRow(self.pocket_terms_label)
         return recommended_form
 
     def _build_advanced_form(
@@ -395,8 +397,6 @@ class ConfigurationPage(QWizardPage):
         advanced_form.addRow("Narrator speaker", self.narrator_speaker)
         advanced_form.addRow("", self.terms)
         advanced_form.addRow("", self.license_label)
-        advanced_form.addRow("", self.pocket_setup)
-        advanced_form.addRow("", self.pocket_terms_label)
         advanced_form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
             advanced_form.addRow("Permissions", self.macos_permissions_button)
@@ -557,6 +557,9 @@ class ConfigurationPage(QWizardPage):
             self,
             voice_library=self.voice_library,
             use_offline_engine=False,
+        )
+        dialog.pocket_setup.readyChanged.connect(
+            lambda _ready: self.pocket_setup.refresh()
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

@@ -225,6 +225,7 @@ def _set_live_button_presentation(button: QPushButton, running: bool) -> None:
 class ControlDashboard(QMainWindow):
     main_section_changed = Signal(str)
     reading_setup_requested = Signal()
+    window_setup_requested = Signal()
     read_requested = Signal()
     live_requested = Signal()
     pause_requested = Signal()
@@ -444,7 +445,7 @@ class ControlDashboard(QMainWindow):
         set_action_icon(self.prepare_reading_button, "settings")
         self.prepare_reading_button.clicked.connect(
             lambda: (
-                self.settings_requested.emit()
+                self.window_setup_requested.emit()
                 if self._window_problem
                 else self.readiness_requested.emit()
                 if self._needs_readiness_check
