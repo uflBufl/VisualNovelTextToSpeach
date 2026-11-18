@@ -54,16 +54,6 @@ class DialogueHistoryTest(unittest.TestCase):
         self.assertEqual(history.snapshot(), [first, second])
         self.assertNotEqual(first.id, second.id)
 
-    def test_search_matches_speaker_and_dialog_case_insensitively(self):
-        history = DialogueHistory()
-        marcus = history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
-        lucy = history.add("Lucy", "Good morning.")
-
-        self.assertEqual(history.search("SUITCASE"), [marcus])
-        self.assertEqual(history.search("lucy"), [lucy])
-        self.assertEqual(history.search("missing"), [])
-
 
 class DialogueHistoryDialogTest(unittest.TestCase):
     @classmethod
@@ -161,7 +151,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         replay = Mock()
         dialog = self.create_dialog(history, replay)
 
-        dialog.search.setText("suitcase")
+        dialog.search.setText("SUITCASE")
         dialog.replay_selected()
         self.wait_for(lambda: not dialog.replay_runner.active)
 
@@ -621,7 +611,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                     (str(json_path), "JSON files (*.json)"),
                 ],
             ):
-                dialog.search.setText("Lucy")
+                dialog.search.setText("lucy")
+                self.assertEqual(dialog.current_entry(), lucy)
                 self.assertEqual(dialog.entries.count(), 1)
                 dialog.export_button.click()
                 dialog.search.setText("missing")
@@ -658,8 +649,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 ],
             )
 
-    def test_refresh_preserves_older_selection_and_scroll_position(self):
-        history = DialogueHistory()
+    def test_refresh_keeps_scroll_until_the_selected_line_expires(self):
+        history = DialogueHistory(maximum_entries=40)
         for index in range(40):
             history.add(f"Speaker {index}", f"Dialogue line {index}")
             history.finish_current()
@@ -680,7 +671,15 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.current_entry().id, selected_id)
         self.assertEqual(scroll_bar.value(), previous_scroll)
         self.assertIn("Speaker 8", dialog.details.toPlainText())
-        dialog.close()
+
+        dialog.entries.setCurrentRow(0)
+        newest = history.add("Narrator", "Another line.")
+        dialog.refresh()
+        self.application.processEvents()
+
+        self.assertEqual(dialog.current_entry(), newest)
+        selected_rect = dialog.entries.visualItemRect(dialog.entries.currentItem())
+        self.assertTrue(dialog.entries.viewport().rect().intersects(selected_rect))
 
 
 if __name__ == "__main__":

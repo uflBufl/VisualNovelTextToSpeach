@@ -204,7 +204,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.show_entry(selected_index)
         if not self.visible_entries:
             return
-        if selected_id is not None:
+        if self.visible_entries[selected_index].id == selected_id:
             scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
         else:
             scroll_bar.setValue(scroll_bar.maximum())
