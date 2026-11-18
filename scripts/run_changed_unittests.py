@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
+from itertools import pairwise
 from pathlib import Path
 
 from scripts.run_ci_unittests import main as run_unittests
@@ -66,14 +67,150 @@ def _import_names(node: ast.AST, package: str) -> Iterable[str]:
     return ()
 
 
-def _imports(path: Path, module: str, known: set[str]) -> set[str]:
-    tree = ast.parse(read_regular_text(path, encoding="utf-8"), filename=str(path))
+_LOADERS = {
+    "__import__",
+    "import_module",
+    "run_module",
+    "run_path",
+    "find_spec",
+    "spec_from_file_location",
+}
+
+
+def _loader_calls(nodes: list[ast.AST]) -> list[ast.Call]:
+    names = _LOADERS | {
+        alias.asname
+        for node in nodes
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in _LOADERS and alias.asname
+    }
+    return [
+        node
+        for node in nodes
+        if isinstance(node, ast.Call)
+        and (
+            node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else getattr(node.func, "id", "")
+        )
+        in names
+    ]
+
+
+def _command_arguments(
+    nodes: list[ast.AST], known: set[str]
+) -> tuple[dict[ast.AST, str], bool]:
+    flags = {
+        node for node in nodes if isinstance(node, ast.Constant) and node.value == "-m"
+    }
+    targets: dict[ast.AST, str] = {}
+    if flags:
+        for node in nodes:
+            if not isinstance(node, (ast.List, ast.Tuple)):
+                continue
+            for option, argument in pairwise(node.elts):
+                if option in flags and isinstance(argument, ast.Constant):
+                    flags.discard(option)
+                    if isinstance(argument.value, str) and argument.value in known:
+                        targets[argument] = argument.value
+    return targets, bool(flags)
+
+
+def _command_edges(
+    tree: ast.Module, module: str, arguments: dict[ast.AST, str]
+) -> Iterable[tuple[str, str]]:
+    # A child process can affect the APIs that launch it without changing
+    # unrelated APIs provided by the same module (such as macOS permissions).
+    definitions = {
+        statement.name
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    for statement in tree.body:
+        name = getattr(statement, "name", None)
+        owner = f"{module}:{name}" if name in definitions else module
+        yield owner, f"{module}:*"
+        for node in ast.walk(statement):
+            if node in arguments:
+                yield arguments[node], owner
+            if isinstance(node, ast.Name) and node.id in definitions:
+                yield f"{module}:{node.id}", owner
+
+
+def _import_edges(
+    node: ast.Import | ast.ImportFrom, package: str, module: str, known: set[str]
+) -> Iterable[tuple[str, str]]:
+    names = list(_import_names(node, package))
     found: set[str] = set()
+    for name in names:
+        _add_known_module(found, known, name)
+    for source in found:
+        yield source, module
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            yield f"{alias.name}:*", module
+    else:
+        origin, *members = names
+        for alias, member in zip(node.names, members, strict=True):
+            if member in known:
+                yield f"{member}:*", module
+            elif alias.name == "*":
+                yield f"{origin}:*", module
+            else:
+                yield f"{origin}:{alias.name}", module
+                yield f"{origin}:__getattr__", module
+
+
+def _literal_edges(
+    name: str, known: set[str], owner: str, runtime: bool
+) -> Iterable[tuple[str, str]]:
+    found: set[str] = set()
+    _add_known_module(found, known, name)
+    for source in found:
+        # Data such as schema keys and pickle identities do not execute code.
+        yield source if runtime else f"file:{source}", owner
+    if runtime and found:
+        source = max(found, key=len)
+        member = name.removeprefix(source).lstrip(".").partition(".")[0] or "*"
+        yield f"{source}:{member}", owner
+
+
+def _lookup_owner(tree: ast.Module, module: str, calls: list[ast.Call]) -> str:
+    # A lazy export is loaded by an attribute reader, not by every import of
+    # an unrelated child of the package.
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "__getattr__":
+            if calls and set(calls).issubset(ast.walk(node)):
+                return f"{module}:__getattr__"
+    return module
+
+
+def _imports(path: Path, module: str, known: set[str]) -> Iterable[tuple[str, str]]:
+    tree = ast.parse(read_regular_text(path, encoding="utf-8"), filename=str(path))
     package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-    for node in ast.walk(tree):
-        for name in _import_names(node, package):
-            _add_known_module(found, known, name)
-    return found
+    nodes = list(ast.walk(tree))
+    calls = _loader_calls(nodes)
+    commands, indirect_command = _command_arguments(nodes, known)
+    runtime = bool(calls) or indirect_command or module.startswith("tests.")
+    if module.startswith("tests."):
+        commands.clear()  # Collect the entire test module when it runs a child.
+    owner = _lookup_owner(tree, module, calls)
+    yield owner, f"{module}:*"
+    if commands:
+        yield from _command_edges(tree, module, commands)
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield from _import_edges(node, package, module, known)
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node not in commands
+        ):
+            if node.value.startswith(".github/workflows/"):
+                yield node.value, module
+            for name in _import_names(node, package):
+                yield from _literal_edges(name, known, owner, runtime)
 
 
 def _changed_modules(changed: set[str]) -> tuple[set[str] | None, str | None]:
@@ -82,7 +219,9 @@ def _changed_modules(changed: set[str]) -> tuple[set[str] | None, str | None]:
         return None, f"shared configuration changed: {', '.join(full)}"
     result = set()
     for path in changed:
-        if path == "ui-catalog.json":
+        if path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
+            result.add(path)
+        elif path == "ui-catalog.json":
             result.add("scripts.render_ui_catalog")
         elif path.endswith(".py"):
             module = _module_name(path)
@@ -107,16 +246,16 @@ def _reverse_dependencies(
 ) -> defaultdict[str, set[str]]:
     reverse: defaultdict[str, set[str]] = defaultdict(set)
     for module, path in modules.items():
-        for imported in _imports(path, module, known):
-            reverse[imported].add(module)
+        for imported, dependent in _imports(path, module, known):
+            reverse[imported].add(dependent)
     return reverse
 
 
 def _reachable_modules(
     reverse: defaultdict[str, set[str]], starts: Iterable[str]
 ) -> set[str]:
-    reached = set(starts)
-    queue = deque(starts)
+    reached = {key for name in starts for key in (name, f"file:{name}")}
+    queue = deque(reached)
     while queue:
         for dependent in reverse[queue.popleft()] - reached:
             reached.add(dependent)
@@ -179,7 +318,8 @@ def main(arguments: list[str] | None = None) -> int:
         print("No affected unittest modules")
         return 0
     print(f"Selected {len(modules)} unittest modules:", *modules, sep="\n", flush=True)
-    return 0 if options.list else run_unittests(["--selected", *modules])
+    selection = "--local-selected" if options.local else "--selected"
+    return 0 if options.list else run_unittests([selection, *modules])
 
 
 if __name__ == "__main__":

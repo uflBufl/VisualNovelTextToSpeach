@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory
@@ -71,12 +71,12 @@ type _TestIds = tuple[str, ...]
 
 
 def partition_ui_test_ids(
-    test_ids: Iterable[str],
+    test_ids: Iterable[str], *, require_all: bool = True
 ) -> tuple[_TestIds, _TestIds, _TestIds, _TestIds]:
     """Assign every exact test once, isolating the crash-prone Qt app module."""
     values = list(test_ids)
     if len(values) != len(set(values)):
-        raise ValueError("Full test discovery contains duplicate test IDs")
+        raise ValueError("Unittest discovery contains duplicate test IDs")
     app = tuple(value for value in values if value.startswith("tests.test_app."))
     assets = tuple(
         value for value in values if value.startswith("tests.test_asset_ui.")
@@ -88,13 +88,7 @@ def partition_ui_test_ids(
     )
     isolated = set((*app, *assets, *ocr))
     remainder = tuple(value for value in values if value not in isolated)
-    if (
-        not app
-        or not assets
-        or not ocr
-        or not remainder
-        or isolated.intersection(remainder)
-    ):
+    if require_all and not all((app, assets, ocr, remainder)):
         raise ValueError("UI unittest shards are incomplete or overlap")
     if sorted((*app, *assets, *ocr, *remainder)) != sorted(values):
         raise ValueError("UI unittest shards do not cover exact discovery")
@@ -125,7 +119,14 @@ def _run_exact_test_file(path: str | Path) -> int:
     ):
         print("Exact test inventory is malformed", file=sys.stderr)
         return 2
-    suite = unittest.defaultTestLoader.loadTestsFromNames(test_ids)
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromNames(test_ids)
+    if loader.errors:
+        print(*loader.errors, sep="\n", file=sys.stderr)
+        return 2
+    if [test.id() for test in _flatten_suite(suite)] != test_ids:
+        print("Exact test inventory must name individual test cases", file=sys.stderr)
+        return 2
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if result.testsRun != len(test_ids):
         print(
@@ -208,8 +209,36 @@ def _run_sharded_full_discovery(
                 file=sys.stderr,
             )
             return 2
+    return _run_discovered_shards(system, test_ids, selected_modules)
+
+
+def _run_local_module_shards(system: str, modules: Sequence[str]) -> int:
+    loader = unittest.TestLoader()
+    test_ids = []
+    for module in sorted(modules):
+        suite = loader.loadTestsFromName(module)
+        if loader.errors:
+            print(*loader.errors, sep="\n", file=sys.stderr)
+            return 2
+        ids = [test.id() for test in _flatten_suite(suite)]
+        if not ids or any(not value.startswith(f"{module}.") for value in ids):
+            print(f"Missing or foreign unittest cases in {module}", file=sys.stderr)
+            return 2
+        test_ids.extend(ids)
+    return _run_discovered_shards(system, test_ids, require_all=False)
+
+
+def _run_discovered_shards(
+    system: str,
+    test_ids: Sequence[str],
+    selected_modules: Sequence[str] | None = None,
+    *,
+    require_all: bool = True,
+) -> int:
     try:
-        app_ids, asset_ids, ocr_ids, remainder_ids = partition_ui_test_ids(test_ids)
+        app_ids, asset_ids, ocr_ids, remainder_ids = partition_ui_test_ids(
+            test_ids, require_all=require_all
+        )
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -273,14 +302,18 @@ def main(arguments: list[str] | None = None) -> int:
         if len(arguments) != 2:
             return 2
         return _run_exact_test_file(arguments[1])
-    if arguments[:1] == ["--selected"]:
+    sharded_selection: dict[str, Callable[[str, Sequence[str]], int]] = {
+        "--selected": _run_sharded_full_discovery,
+        "--local-selected": _run_local_module_shards,
+    }
+    if arguments and arguments[0] in sharded_selection:
         modules = arguments[1:]
         if not modules or any(not value.startswith("tests.test_") for value in modules):
             return 2
         modules = list(dict.fromkeys(modules))
         system = platform.system()
         if system in SHARD_TIMEOUTS:
-            return _run_sharded_full_discovery(system, modules)
+            return sharded_selection[arguments[0]](system, modules)
         arguments = modules
     system = platform.system()
     if system in SHARD_TIMEOUTS and arguments == ["discover", "-s", "tests"]:

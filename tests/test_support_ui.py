@@ -47,17 +47,23 @@ class SupportCenterDialogTest(unittest.TestCase):
         self.addCleanup(native_patch.stop)
         self.addCleanup(game_import_patch.stop)
 
-    def test_application_errors_are_visible_in_existing_runtime_log(self):
+    def test_runtime_log_includes_application_errors_native_timings_and_game_imports(
+        self,
+    ):
+        dialog = SupportCenterDialog(FakeEventLog())
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
         self.error_log.entries.append(
             {"level": "error", "message": "Preparation catalog could not be opened"}
         )
-        dialog = SupportCenterDialog(FakeEventLog())
+        self.native_log.add("moss-native", "MOSS native: gen_s=1.25")
+        self.game_import_log.record("folder-result", missing=["game configuration"])
         dialog.refresh()
-        self.assertIn(
-            "Preparation catalog could not be opened", dialog.events.toPlainText()
-        )
-        dialog.close()
-        dialog.deleteLater()
+        text = dialog.events.toPlainText()
+        self.assertIn("Preparation catalog could not be opened", text)
+        self.assertIn("MOSS native: gen_s=1.25", text)
+        self.assertIn("Game import: folder-result", text)
+        self.assertIn("missing=['game configuration']", text)
 
     def test_previous_session_and_event_timestamps_are_not_current_status(self):
         entry = event(0)
@@ -78,14 +84,6 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
-    def test_native_timings_are_visible_in_existing_runtime_log(self):
-        self.native_log.add("moss-native", "MOSS native: gen_s=1.25")
-        dialog = SupportCenterDialog(FakeEventLog())
-        dialog.refresh()
-        self.assertIn("MOSS native: gen_s=1.25", dialog.events.toPlainText())
-        dialog.close()
-        dialog.deleteLater()
-
     def test_report_privacy_is_visible_beside_export_without_empty_report_tab(self):
         dialog = SupportCenterDialog(FakeEventLog())
 
@@ -100,18 +98,6 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.events.setFocus()
         QTest.keyClick(dialog.events, Qt.Key.Key_Return)
         self.assertEqual(requested, [])
-        dialog.close()
-        dialog.deleteLater()
-
-    def test_game_import_event_and_details_are_visible_in_runtime_log(self):
-        imports = GameImportLog()
-        imports.record("folder-result", missing=["game configuration"])
-        with patch("vntts.support.game_import_log", imports):
-            dialog = SupportCenterDialog(FakeEventLog())
-            dialog.refresh()
-
-        self.assertIn("Game import: folder-result", dialog.events.toPlainText())
-        self.assertIn("missing=['game configuration']", dialog.events.toPlainText())
         dialog.close()
         dialog.deleteLater()
 

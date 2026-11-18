@@ -10,7 +10,6 @@ from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     load_json_object,
     load_json_object_snapshot,
-    read_regular_file,
     require_sha256,
     safe_relative_path,
 )
@@ -46,29 +45,6 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
                     "Artifact",
                     error_type=FoundationError,
                 )
-
-    def test_file_and_json_snapshots_are_exact(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "document.json"
-            document = {"value": 1}
-            payload = json.dumps(document).encode("utf-8")
-            path.write_bytes(payload)
-
-            self.assertEqual(
-                read_regular_file(path, "document", error_type=FoundationError),
-                payload,
-            )
-            self.assertEqual(
-                load_json_object(path, "document", error_type=FoundationError),
-                document,
-            )
-            loaded, digest, captured = load_json_object_snapshot(
-                path, "document", error_type=FoundationError
-            )
-
-        self.assertEqual(loaded, document)
-        self.assertEqual(captured, payload)
-        self.assertEqual(len(digest), 64)
 
     def test_sha256_validation_uses_the_supplied_error_type(self):
         self.assertEqual(

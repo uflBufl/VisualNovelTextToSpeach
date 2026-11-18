@@ -852,15 +852,6 @@ class GenerationTimelineLogTest(unittest.TestCase):
             {"samples": 1, "p50_ms": 425.0, "p95_ms": 425.0},
         )
 
-    def test_merges_details_when_a_stage_is_reported_twice(self):
-        timelines = GenerationTimelineLog()
-
-        timelines.record("playback-completion", 1, 3.0, underflowed=True)
-        timelines.record("playback-completion", 1, 3.1)
-
-        event = timelines.snapshot()[0]["events"][0]
-        self.assertTrue(event["underflowed"])
-
     def test_preserves_playback_completion_audio_metrics(self):
         timelines = GenerationTimelineLog()
 

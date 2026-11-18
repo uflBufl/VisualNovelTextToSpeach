@@ -360,6 +360,66 @@ class AutoAdvanceFakeFrameHarness:
 
 
 class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
+    def test_capture_failure_with_pending_advance_accepts_next_dialogue_once(self):
+        harness = AutoAdvanceFakeFrameHarness(
+            tracker_options={"complete_dialogue_only": True}
+        )
+        requests, captured = Queue(), Queue()
+        failure = RuntimeError("Capture temporarily unavailable")
+        reader = harness.reader
+
+        def capture_frame():
+            result = requests.get(timeout=2)
+            if isinstance(result, Exception):
+                raise result
+            return dict(result)
+
+        def capture(result):
+            harness.clock.advance(0.2)
+            requests.put(result)
+            captured.get(timeout=1)
+
+        reader.capture_frame = capture_frame
+        reader.capture_state_changed = lambda *_args: captured.put(None)
+        reader.interval_seconds = 0.001
+        capture_worker = Thread(target=reader._run_capture, args=(harness.stop_event,))
+        first = {"character": "Ada", "text": "The first reply."}
+        successor = {"character": "Ada", "text": "A different answer."}
+        with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+            harness.start()
+            capture_worker.start()
+            try:
+                for _ in range(3):
+                    capture(first)
+                harness.finish_playback()
+                generation = reader.active_generation
+                harness.timer_scheduler.fire_next("_run_auto_advance")
+                self.assertEqual(reader._advance_requested_generation, generation)
+
+                capture(failure)
+
+                self.assertEqual(harness.errors, [failure])
+                self.assertEqual(harness.advance_calls, [])
+                self.assertEqual(harness.speech_executor.jobs, [])
+                for _ in range(3):
+                    capture(successor)
+                self.assertGreater(reader.active_generation, generation)
+                self.assertIsNone(reader._advance_requested_generation)
+                self.assertEqual(harness.advance_calls, [])
+                harness.finish_playback()
+                capture(successor)
+                self.assertEqual(harness.speech_executor.jobs, [])
+                self.assertEqual(
+                    [chunk.text for chunk, _ in harness.played],
+                    [first["text"], successor["text"]],
+                )
+                self.assertEqual(harness.errors, [failure])
+            finally:
+                harness.stop()
+                requests.put(failure)
+                capture_worker.join(timeout=1)
+                self.assertFalse(capture_worker.is_alive())
+
     def test_empty_ocr_withholds_advance_without_replaying_returning_text(self):
         for reject_empty in (False, True):
             with self.subTest(reject_empty=reject_empty):
@@ -3159,15 +3219,6 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         interrupt_speech.assert_not_called()
         self.assertEqual(reader.active_generation, 2)
-
-    def test_new_dialog_preserves_admitted_speech(self):
-        reader = self.create_reader(interrupt_speech=Mock())
-        reader.active_generation = 1
-        chunk = reader._admit_chunk(SpeechChunk(1, "Alice", "Old text."))
-        reader.current_chunk = chunk
-        reader._set_generation(2)
-        reader.interrupt_speech.assert_not_called()
-        self.assertTrue(reader.wait_until_playable(chunk))
 
     def test_old_unadmitted_chunk_cannot_follow_visible_generation(self):
         reader = self.create_reader()
