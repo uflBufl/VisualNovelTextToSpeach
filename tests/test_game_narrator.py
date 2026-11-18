@@ -93,9 +93,7 @@ class GameNarratorTest(unittest.TestCase):
             self.pool.run_next()
         self.fail("Voice editor did not become idle")
 
-    def editor(
-        self, *, settings=None, rollback=None, binder=bind_voice_library_selection
-    ):
+    def editor(self, *, settings=None, rollback=None):
         self.backend.name = (settings or self.settings).speech_backend
         dialog = GameNarratorDialog(
             settings or self.settings,
@@ -106,7 +104,6 @@ class GameNarratorTest(unittest.TestCase):
             voice_library=self.library,
             voice_binding_rollback=rollback,
             use_offline_engine=False,
-            binder=binder,
         )
         self.addCleanup(self.close_editor, dialog)
         self.application.processEvents()
@@ -880,20 +877,40 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(saved_voice.reference_transcript)
         self.assertIsNone(self.library.binding("Narrator"))
 
-    def test_imported_donor_saves_target_and_keeps_narrator(self):
-        self.library.select("Narrator", route="voice", source_id="preset:alba")
+    def test_retry_saves_the_auditioned_character_voice_and_keeps_the_narrator(self):
+        self.bind_narrator()
+        narrator = self.library.binding("Narrator")
+        previous = self.library.select("Aderyn", route="narrator")
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        dialog.show()
+        dialog.select_role("Aderyn")
+        self.drain()
+        self.select(dialog, "catalog", role="Aderyn", source="character:centurion")
         self.listen(dialog, original=True)
-        self.save(dialog)
-        binding = self.library.binding("Aderyn")
-        self.assertEqual(len(binding.source_sha256s), 1)
-        self.assertEqual(self.library.binding("Narrator").source_id, "preset:alba")
+        with patch(
+            "vntts.voice_library.atomic_write_json", side_effect=OSError("disk full")
+        ):
+            dialog.voice_panel.a_use.click()
+            self.drain()
+        self.assertIn("disk full", dialog.voice_panel.status.toPlainText())
+        self.assertTrue(dialog.voice_panel.retry_save_button.isVisible())
+        self.assertEqual(self.library.binding("Aderyn"), previous)
+
+        dialog.voice_panel.retry_save_button.click()
+        self.drain()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        reference = self.manifest.parent / "references" / "centurion.wav"
         self.assertEqual(
-            initialize_voice_registry(self.settings, voice_library=self.library)
+            self.library.binding("Aderyn").source_sha256s, (sha256_file(reference),)
+        )
+        self.assertEqual(self.library.binding("Narrator"), narrator)
+        self.assertEqual(
+            initialize_voice_registry(
+                dialog.result_settings, voice_library=self.library
+            )
             .resolve("Aderyn")
             .source_character,
-            "Rhiannon",
+            "Centurion",
         )
         self.assertEqual(self.backend.requests, [])
 
@@ -986,20 +1003,6 @@ class GameNarratorTest(unittest.TestCase):
         self.drain()
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
         self.assertEqual(self.library.binding("Aderyn"), before)
-
-    def test_library_write_failure_keeps_choice_available_for_retry(self):
-        binder = Mock(side_effect=[ValueError("disk full"), self.settings])
-        dialog = self.editor(binder=binder)
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog.voice_panel.a_use.click()
-        self.drain()
-        self.assertIn("disk full", dialog.voice_panel.status.toPlainText())
-        self.assertFalse(dialog._closed)
-        dialog.voice_panel.retry_save_button.click()
-        self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(binder.call_args.kwargs["target_character"], "Aderyn")
 
     def test_cancel_discards_pending_original_and_emits_aggregate_busy(self):
         dialog = self.editor()
