@@ -108,7 +108,12 @@ def _setup_environment() -> dict[str, str]:
 
 
 def _consume_setup_events(
-    process, events, cancel_event, continue_event, progress, authorize
+    process: subprocess.Popen[str],
+    events: queue.Queue[str | None],
+    cancel_event: threading.Event,
+    continue_event: threading.Event,
+    progress: Callable[[str], None],
+    authorize: Callable[[str, str], None],
 ) -> bool:
     from vntts.services.tts_engine import TTSConfigurationError
 
@@ -142,7 +147,9 @@ def _consume_setup_events(
     return completed
 
 
-def _setup_event_reader(process):
+def _setup_event_reader(
+    process: subprocess.Popen[str],
+) -> tuple[queue.Queue[str | None], threading.Thread]:
     events: queue.Queue[str | None] = queue.Queue()
 
     def read_events() -> None:
@@ -241,8 +248,10 @@ def prepare_pocket_model(
             )
     finally:
         terminate_running_process(process)
-        process.stdin.close()
-        process.stdout.close()
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
         reader.join(timeout=1)
         if runtime_use is not None:
             runtime_use.close()

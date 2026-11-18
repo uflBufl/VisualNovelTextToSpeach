@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from time import monotonic
+from typing import Any
 from uuid import uuid4
 
 from huggingface_hub.utils.tqdm import tqdm
@@ -19,13 +20,13 @@ def _event(kind: str, **fields: object) -> None:
 
 
 class _DownloadProgress(tqdm):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._description = kwargs.get("desc") or "Downloading original Pocket files"
         self._received = kwargs.get("initial", 0)
         self._reported_at = 0.0
         super().__init__(*args, **kwargs)
 
-    def update(self, amount=1):
+    def update(self, amount: int | float = 1) -> bool | None:
         self._received += amount
         now = monotonic()
         if self.total and (
@@ -37,7 +38,8 @@ class _DownloadProgress(tqdm):
                 "progress",
                 message=f"{self._description}: {percent}%",
             )
-        return super().update(amount)
+        updated: bool | None = super().update(amount)
+        return updated
 
 
 def _asset_path(cache: Path, asset: list[str]) -> Path:
@@ -82,7 +84,9 @@ def _download_originals(config: dict) -> None:
         _download_asset(repo, revision, filename, target, config["model_url"])
 
 
-def _download_asset(repo, revision, filename, target, model_url) -> None:
+def _download_asset(
+    repo: str, revision: str, filename: str, target: Path, model_url: str
+) -> None:
     from huggingface_hub import get_token, hf_hub_download
     from huggingface_hub.errors import DeviceCodeError, HfHubHTTPError
 

@@ -1,11 +1,12 @@
 """Keep Pocket capability tests independent of locally downloaded models."""
 
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from unittest.mock import Mock, patch
 
 
 @contextmanager
-def pocket_model_readiness(ready: bool):
+def pocket_model_readiness(ready: bool) -> Iterator[Mock]:
     capability = Mock(return_value=ready)
     with ExitStack() as stack:
         for module in (
