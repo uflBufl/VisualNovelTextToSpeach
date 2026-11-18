@@ -871,6 +871,7 @@ class VoicePlanStore:
                     evidence={"resolution": resolution},
                     source_excerpts=candidate.source_excerpts,
                     algorithm="voice-plan-v3-qualified",
+                    expected_reference_sha256s=candidate.reference_sha256s,
                     only_if_unbound=True,
                     rollback=rollback,
                 )
@@ -1321,6 +1322,7 @@ class VoicePlanStore:
                     evidence={"resolution": resolution},
                     source_excerpts=eligible_candidates[0].source_excerpts,
                     algorithm="voice-plan-v2-advisory",
+                    expected_reference_sha256s=eligible_candidates[0].reference_sha256s,
                     only_if_unbound=True,
                     rollback=rollback,
                 )
@@ -1335,6 +1337,7 @@ class VoicePlanStore:
                         method="automatic",
                         evidence={"resolution": resolution},
                         algorithm="voice-plan-v1",
+                        expected_reference_sha256s=narrator_candidate.reference_sha256s,
                         only_if_unbound=True,
                         rollback=rollback,
                     )

@@ -37,6 +37,7 @@ from vntts.game_narrator import (
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
 from vntts.preview_content_advisor import PreviewContentAdvisor
+from vntts.reference_quality import analyze_reference_bytes
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
@@ -1029,29 +1030,37 @@ class GameNarratorTest(unittest.TestCase):
         )
         self.assertIsNone(self.library.binding("Narrator"))
 
-    def test_changed_reference_cannot_be_saved_after_listening(self):
+    def test_missing_catalog_and_changed_recording_preserve_the_saved_voice(self):
+        self.bind_narrator()
+        previous = self.library.binding("Narrator")
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        self.select(dialog, "catalog", source="character:centurion")
         self.listen(dialog, original=True)
-        (self.manifest.parent / "references" / "rhiannon.wav").write_bytes(
-            clean_wav_bytes(amplitude=0.31)
+        moved = self.manifest.rename(self.manifest.with_suffix(".bak"))
+        dialog.voice_panel.a_use.click()
+        self.drain()
+        self.assertIn(
+            "Unable to read voice manifest", dialog.voice_panel.status.toPlainText()
         )
-        dialog.voice_panel.a_use.click()
-        self.drain()
+        self.assertEqual(self.library.binding("Narrator"), previous)
+
+        moved.rename(self.manifest)
+
+        def replace_after_quality_check(payload, *, path):
+            report = analyze_reference_bytes(payload, path=path)
+            path.write_bytes(clean_wav_bytes(amplitude=0.31))
+            return report
+
+        with patch(
+            "vntts.game_narrator.analyze_reference_bytes", replace_after_quality_check
+        ):
+            dialog.voice_panel.retry_save_button.click()
+            self.drain()
+        self.assertEqual(self.library.binding("Narrator"), previous)
         self.assertIn("reference changed", dialog.voice_panel.status.toPlainText())
-        self.assertIsNone(self.library.binding("Aderyn"))
-
-    def test_missing_manifest_cannot_be_saved_after_listening(self):
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog._candidate_manifest = None
-
-        dialog.voice_panel.a_use.click()
+        dialog.voice_panel.retry_save_button.click()
         self.drain()
-
-        self.assertIn("checked voice manifest", dialog.voice_panel.status.toPlainText())
-        self.assertIsNone(self.library.binding("Aderyn"))
+        self.assertEqual(self.library.binding("Narrator"), previous)
         self.assertIsNone(dialog.result_settings)
 
     def test_inherited_variant_without_optional_metadata_keeps_defaults(self):

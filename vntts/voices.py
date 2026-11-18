@@ -5,7 +5,7 @@ import re
 import stat
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
@@ -319,21 +319,27 @@ def discover_voice_source(
     evidence: object | None = None,
     algorithm: str | None = None,
     rollback: VoiceBindingRollback | None = None,
+    expected_reference_sha256s: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
+    discoveries = voice_source_discoveries(
+        registry,
+        role,
+        source_id,
+        variant_key=variant_key,
+        method=method,
+        evidence=evidence,
+        algorithm=algorithm,
+    )
+    if expected_reference_sha256s is not None:
+        discoveries = tuple(
+            replace(discovery, expected_sha256=checksum)
+            for discovery, checksum in zip(
+                discoveries, expected_reference_sha256s, strict=True
+            )
+        )
     return tuple(
         alternative.sha256
-        for alternative in library.discover_many(
-            voice_source_discoveries(
-                registry,
-                role,
-                source_id,
-                variant_key=variant_key,
-                method=method,
-                evidence=evidence,
-                algorithm=algorithm,
-            ),
-            rollback=rollback,
-        )
+        for alternative in library.discover_many(discoveries, rollback=rollback)
     )
 
 
@@ -383,8 +389,16 @@ def remember_voice_binding(
     algorithm: str | None = None,
     only_if_unbound: bool = False,
     rollback: VoiceBindingRollback | None = None,
+    expected_reference_sha256s: tuple[str, ...] | None = None,
 ) -> VoiceBinding:
     """Persist one role decision, copying game references into the library."""
+    voice = registry.resolve_source(source_id)
+    if expected_reference_sha256s is not None and len(
+        expected_reference_sha256s
+    ) != len(voice.references if voice else ()):
+        raise VoiceManifestError(
+            "Selected voice reference changed. Reopen the voice editor."
+        )
     if source_id == default_voice_choice_id:
         return library.select(
             role,
@@ -396,7 +410,6 @@ def remember_voice_binding(
             only_if_unbound=only_if_unbound,
             rollback=rollback,
         )
-    voice = registry.resolve_source(source_id)
     if voice is None:
         raise VoiceManifestError(f"Voice choice is unavailable: {source_id!r}")
     if not voice.references:
@@ -421,6 +434,7 @@ def remember_voice_binding(
         evidence=evidence,
         algorithm=algorithm,
         rollback=rollback,
+        expected_reference_sha256s=expected_reference_sha256s,
     )
     source_evidence = {
         "source_id": source_id,
