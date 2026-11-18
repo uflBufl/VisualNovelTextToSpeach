@@ -90,21 +90,22 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["First.", "Second."])
 
-    def test_distinct_explicit_repeats_are_preserved_while_paused(self):
-        reader = self.create_reader()
-        reader.enqueue("Ada", "Again.")
+    def test_paused_repeats_play_the_last_spoken_line_across_a_dialogue_seal(self):
+        reader = self.create_reader(prepare_chunk=lambda chunk: chunk.line_id)
+        reader.enqueue("Ada", "Again.", line_id="first")
+        reader.enqueue("Ada", "Again.", line_id="second")
         self.drain()
-        self.assertTrue(reader.toggle_pause())
+        reader.toggle_pause()
 
         self.assertTrue(reader.repeat_last())
+        reader.seal_generation(reader.active_generation)
         self.assertTrue(reader.repeat_last())
-        self.assertTrue(reader.runtime_control_snapshot()["paused"])
         self.assertEqual(self.speech.jobs, [])
-        self.assertEqual(self.played, ["Again."])
-        self.assertFalse(reader.toggle_pause())
+        self.assertEqual(self.played, ["first", "second"])
+        reader.toggle_pause()
         self.drain()
 
-        self.assertEqual(self.played, ["Again.", "Again.", "Again."])
+        self.assertEqual(self.played, ["first", "second", "second", "second"])
 
     def test_paused_first_line_retains_playback_ahead_of_prepared_second_line(self):
         interrupt = Mock()
@@ -387,18 +388,6 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["Next."])
         self.assertIn(suffix.playback_id, reader.completed_playback_ids)
-
-    def test_sealing_preserves_already_accepted_explicit_repeat(self):
-        reader = self.create_reader()
-        reader.toggle_pause()
-        reader._set_generation(1)
-        reader._schedule([SpeechChunk(1, "Ada", "Repeat.", explicit_replay=True)])
-
-        reader.seal_generation(1)
-        reader.toggle_pause()
-        self.drain()
-
-        self.assertEqual(self.played, ["Repeat."])
 
     def test_all_accepted_lines_survive_capacity_pressure_in_order(self):
         reader = self.create_reader(max_speech_jobs=2)

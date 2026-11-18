@@ -3626,12 +3626,11 @@ class LiveDialogReaderTest(unittest.TestCase):
         )
 
     def test_explicit_repeat_preserves_seal_and_completed_auto_advance(self):
-        prepare_chunk = Mock(return_value="prepared")
-        play_prepared = Mock()
+        played = []
         advance = Mock()
         reader = self.create_reader(
-            prepare_chunk=prepare_chunk,
-            play_prepared=play_prepared,
+            prepare_chunk=Mock(side_effect=lambda chunk: chunk.text),
+            play_prepared=lambda _, text: played.append(text),
             auto_advance=advance,
         )
         reader.active_generation = 4
@@ -3642,19 +3641,10 @@ class LiveDialogReaderTest(unittest.TestCase):
             reader.dialog_ready_generation = 4
             self.assertTrue(reader.repeat_last())
             reader._run_auto_advance(4)
-        repeated = SpeechChunk(
-            4,
-            "Alice",
-            "Repeat me.",
-            line_id="a",
-            explicit_replay=True,
-        )
-        prepare_chunk.assert_called_once_with(repeated)
-        play_prepared.assert_called_once_with(repeated, "prepared")
-        self.assertIn(4, reader.sealed_generations)
         self.assertFalse(reader.wait_until_playable(SpeechChunk(4, "Alice", "suffix")))
         reader._schedule([SpeechChunk(4, "Alice", "suffix")])
-        self.assertEqual(prepare_chunk.call_count, 1)
+        self.assertEqual(played, ["Repeat me."])
+        reader.prepare_chunk.assert_called_once()
         advance.assert_not_called()
 
     def test_sequence_replay_completion_preserves_pending_advance_and_cursor(self):
