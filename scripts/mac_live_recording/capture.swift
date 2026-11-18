@@ -220,21 +220,39 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
     } catch { errors.append(String(describing: error)) }
     if let reason = safety.reason { errors.append("Native safety stop: \(reason)") }
     metadata["stop_reason"] = safety.reason ?? (stopRequested ? "requested_stop" : "duration")
-    metadata["capture_stopped_monotonic_s"] = monotonicSeconds()
-    let recordingSeconds = monotonicSeconds() - recordingBegin
+    let recordingEnd = queue.sync {
+        let end = monotonicSeconds()
+        game.videoStopTime = end
+        return end
+    }
+    metadata["capture_stopped_monotonic_s"] = recordingEnd
+    let recordingSeconds = recordingEnd - recordingBegin
     boundStop()
     if started { do { try await gameStream.stopCapture() } catch { errors.append("game Stop: \(error)") } }
     if ttsStarted, let ttsStream { do { try await ttsStream.stopCapture() } catch { errors.append("VNTTS Stop: \(error)") } }
-    let videoSpan = queue.sync {
-        game.firstVideoPTS.flatMap { first in game.lastVideoPTS.map { ($0 - first).seconds } } ?? 0
-    }
-    let videoCoverageComplete = recordingSeconds <= 5 || videoSpan >= recordingSeconds - 5
     for recorder in [game, tts].compactMap({ $0 }) {
         do { try await recorder.finish() } catch { errors.append("\(recorder.label) finish: \(error)") }
     }
+    let first = game.firstVideoPTS?.seconds
+    let last = game.lastVideoPTS?.seconds
+    let videoSpan = (last ?? 0) - (first ?? 0)
+    let gaps = game.videoGaps
+    let coverageVerified = recordingSeconds <= 5 || (
+        videoSpan + game.interruptedEdgeSeconds >= recordingSeconds - 5
+    )
+    let coverage: String, coverageStatus: String
+    if !coverageVerified {
+        coverage = "static_or_incomplete"; coverageStatus = "incomplete"
+    } else if !gaps.isEmpty {
+        coverage = "source_interrupted"; coverageStatus = "partial"
+    } else {
+        coverage = "covered"; coverageStatus = "succeeded"
+    }
+    metadata["acquisition_gaps"] = gaps
+    metadata["acquisition_gaps_omitted"] = game.videoGapCount - gaps.count
     metadata["native_status"] = errors.isEmpty ? "succeeded" : "failed"
-    metadata["status"] = errors.isEmpty ? (videoCoverageComplete ? "succeeded" : "incomplete") : "failed"
-    metadata["video_change_coverage"] = videoCoverageComplete ? "covered" : "static_or_incomplete"
+    metadata["status"] = errors.isEmpty ? coverageStatus : "failed"
+    metadata["video_change_coverage"] = coverage
     metadata["video_span_seconds"] = videoSpan
     metadata["errors"] = errors
     metadata["stop_requested"] = stopRequested
@@ -242,8 +260,8 @@ func targetMetadata(_ window: SCWindow) -> [String: Any] {
     metadata["elapsed_seconds"] = monotonicSeconds() - begin
     try save()
     if !errors.isEmpty { throw CaptureError(errors.joined(separator: "; ")) }
-    guard videoCoverageComplete else {
+    guard coverageVerified else {
         throw CaptureError("Video change coverage unverified: \(videoSpan)s across \(recordingSeconds)s capture; static or incomplete, not a proven encoder failure")
     }
-    print("capture complete: \(root.path)")
+    print("capture \(coverageStatus): \(root.path)")
 }

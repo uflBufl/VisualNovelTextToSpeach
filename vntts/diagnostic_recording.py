@@ -730,11 +730,15 @@ class NativeDiagnosticRecording:
         except FileNotFoundError:
             metadata = {}
         self._observe_capture_gaps(output, metadata)
-        expected = "succeeded" if output.name == "window" else "captured_unqualified"
+        expected = (
+            {"succeeded", "partial"}
+            if output.name == "window"
+            else {"captured_unqualified"}
+        )
         if (
             metadata.get("status") in {"failed", "incomplete"}
             or metadata.get("errors")
-            or (process.poll() is not None and metadata.get("status") != expected)
+            or (process.poll() is not None and metadata.get("status") not in expected)
         ):
             raise RuntimeError(
                 f"Recorder failed for {output.name}; inspect its session.json"
@@ -752,9 +756,26 @@ class NativeDiagnosticRecording:
         if not isinstance(gaps, list) or len(gaps) > 16:
             raise ValueError("Invalid native acquisition gaps")
         for gap in gaps:
+            if output.name == "window":
+                if (
+                    not isinstance(gap, dict)
+                    or gap.get("kind") != "gap"
+                    or gap.get("reason")
+                    not in {"video_source_suspended", "video_source_blank"}
+                    or gap.get("end_reason")
+                    not in {"frame_resumed", "recording_stopped"}
+                    or any(
+                        type(gap.get(name)) not in (int, float)
+                        or not math.isfinite(gap[name])
+                        for name in ("started_monotonic_s", "ended_monotonic_s")
+                    )
+                    or gap["started_monotonic_s"] < 0
+                    or gap["ended_monotonic_s"] < gap["started_monotonic_s"]
+                ):
+                    raise ValueError("Invalid native video acquisition gap")
+                continue
             if (
-                output.name == "window"
-                or not isinstance(gap, dict)
+                not isinstance(gap, dict)
                 or gap.get("kind") != "gap"
                 or gap.get("reason") != "source_sample_gap"
                 or type(gap.get("file_frame_start")) is not int
@@ -773,6 +794,24 @@ class NativeDiagnosticRecording:
                 or gap["ended_monotonic_s"] <= gap["started_monotonic_s"]
             ):
                 raise ValueError("Invalid native acquisition gap")
+        if output.name == "window" and (
+            (
+                metadata.get("status") == "partial"
+                and (
+                    metadata.get("native_status") != "succeeded"
+                    or metadata.get("video_change_coverage") != "source_interrupted"
+                    or not gaps
+                )
+            )
+            or (
+                metadata.get("status") == "succeeded"
+                and (
+                    gaps
+                    or metadata.get("video_change_coverage") == "source_interrupted"
+                )
+            )
+        ):
+            raise ValueError("Invalid native video interruption evidence")
         if gaps:
             self._native_gaps[output.name] = gaps
             self.status = "degraded"
@@ -829,10 +868,14 @@ class NativeDiagnosticRecording:
     ) -> None:
         metadata = _session(output)
         self._observe_capture_gaps(output, metadata)
-        expected = "succeeded" if output.name == "window" else "captured_unqualified"
+        expected = (
+            {"succeeded", "partial"}
+            if output.name == "window"
+            else {"captured_unqualified"}
+        )
         if (
             process.returncode != 0
-            or metadata.get("status") != expected
+            or metadata.get("status") not in expected
             or metadata.get("errors")
         ):
             raise RuntimeError(f"Recorder evidence incomplete for {output.name}")

@@ -507,6 +507,120 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertIsNone(report["error_type"])
         self.assertEqual(report["acquisition_gaps"], [{**gap, "capture": "game-audio"}])
 
+    def video_partial(self, **changes):
+        return {
+            "status": "partial",
+            "native_status": "succeeded",
+            "video_change_coverage": "source_interrupted",
+            "acquisition_gaps": [
+                {
+                    "kind": "gap",
+                    "reason": "video_source_suspended",
+                    "started_monotonic_s": 100.1,
+                    "ended_monotonic_s": 100.1,
+                    "end_reason": "frame_resumed",
+                }
+            ],
+            "errors": [],
+            **changes,
+        }
+
+    def test_video_source_interruption_keeps_other_captures_and_report_partial(self):
+        recording = self.recording()
+        recording.deadline = 101.0
+        clock = [100.0]
+        metadata = self.video_partial()
+
+        def workers():
+            if recording.ready_monotonic is None:
+                (self.root / "window" / "session.json").write_text(json.dumps(metadata))
+            else:
+                self.assertEqual(recording.report()["qualification"], "partial")
+                self.assertFalse(recording._failures)
+                clock[0] = 101.0
+                recording.cancelled.set()
+            return ()
+
+        recording.workers = workers
+        with (
+            patch("vntts.diagnostic_recording.monotonic", side_effect=lambda: clock[0]),
+            patch.object(recording, "_request_capture_stop") as stop_failed,
+        ):
+            self.run_fake(recording)
+        stop_failed.assert_not_called()
+        report = recording.report()
+        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["qualification"], "partial")
+        self.assertIsNone(report["error_type"])
+        self.assertEqual(
+            report["acquisition_gaps"],
+            [{**metadata["acquisition_gaps"][0], "capture": "window"}],
+        )
+        self.assertIsNone(report["captures"][1]["acquisition_failure"])
+
+    def test_video_partial_requires_valid_native_interruption_evidence(self):
+        valid = self.video_partial()
+        gap = valid["acquisition_gaps"][0]
+        cases = [
+            (changes, "window", 0)
+            for changes in (
+                {"native_status": "failed"},
+                {"native_status": None},
+                {"video_change_coverage": "complete"},
+                {"acquisition_gaps": []},
+                {"acquisition_gaps": [gap] * 17},
+                {"acquisition_gaps": {"gap": gap}},
+                {"acquisition_gaps": [{**gap, "reason": "source_sample_gap"}]},
+                {"acquisition_gaps": [{**gap, "end_reason": "unknown"}]},
+                {"acquisition_gaps": [{**gap, "started_monotonic_s": True}]},
+                {"acquisition_gaps": [{**gap, "started_monotonic_s": -1}]},
+                {"acquisition_gaps": [{**gap, "ended_monotonic_s": float("nan")}]},
+                {"acquisition_gaps": [{**gap, "ended_monotonic_s": float("inf")}]},
+                {"acquisition_gaps": [{**gap, "ended_monotonic_s": 100.0}]},
+                {"status": "succeeded"},
+                {"status": "incomplete", "video_change_coverage": "incomplete"},
+                {"errors": ["Writer failed"]},
+            )
+        ] + [({}, "window", 1), ({}, "game-audio", 0)]
+        for changes, name, returncode in cases:
+            with (
+                self.subTest(changes=changes, name=name),
+                tempfile.TemporaryDirectory() as folder,
+            ):
+                self.root = Path(folder)
+                recording = self.recording()
+                output = self.root / name
+                self.fake_launch(recording, [])([], output)
+                process = recording.processes[0][0]
+                process.returncode = returncode
+                process.poll.return_value = returncode
+                (output / "session.json").write_text(json.dumps({**valid, **changes}))
+                self.assertFalse(recording._check_capture_readiness())
+                self.assertEqual(recording.report()["qualification"], "failed")
+                with self.assertRaises((ValueError, RuntimeError)):
+                    recording._verify_final_capture(process, output, 101)
+                if changes.get("status") == "incomplete":
+                    self.assertEqual(recording._native_gaps["window"], [gap])
+                    self.assertEqual(recording.error_type, "RuntimeError")
+
+    def test_video_gap_first_observed_on_native_close_remains_partial(self):
+        recording = self.recording()
+        output = self.root / "window"
+        self.fake_launch(recording, [])([], output)
+        self.assertTrue(recording._check_capture_readiness())
+        self.assertFalse(recording.report()["acquisition_gaps"])
+        metadata = self.video_partial(acquisition_gaps_omitted=1)
+        gap = metadata["acquisition_gaps"][0]
+        gap.update(reason="video_source_blank", end_reason="recording_stopped")
+        (output / "session.json").write_text(json.dumps(metadata))
+        recording._verify_final_capture(recording.processes[0][0], output, 101)
+        report = recording.report()
+        self.assertEqual(report["qualification"], "partial")
+        self.assertEqual(report["acquisition_gaps"], [{**gap, "capture": "window"}])
+        self.assertEqual(
+            report["captures"][0]["session"]["acquisition_gaps_omitted"], 1
+        )
+
     def test_malformed_or_unbounded_native_gap_metadata_remains_fatal(self):
         gap = {
             "kind": "gap",

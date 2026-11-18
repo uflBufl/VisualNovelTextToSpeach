@@ -668,13 +668,6 @@ Other remaining defects and native checks:
 
 ## Remaining native diagnostic and tooling checks
 
-- [ ] **T4 - Validate native video capture provenance on macOS.** Record a
-      selected test window with a visible frame marker. Verify the recording's
-      Quartz window ID and owner PID, then compare frame timestamps with marker
-      changes while moving, resizing, minimizing and reopening the window.
-      Confirm any capture gaps and changes of target are explicit. Older desktop
-      recordings may include overlapping windows. When comparing with MCP, use
-      the owner PID and distinguish its Qt WId from the Quartz window ID.
 - [ ] Reconnect the existing desktop PySide6 MCP session and verify
       `list_apps` succeeds. The affected connection reports a missing
       `fastmcp.server.providers.prefab_payload` module.

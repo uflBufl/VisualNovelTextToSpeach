@@ -86,6 +86,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     var videoDrops = 0
     var firstVideoPTS: CMTime?
     var lastVideoPTS: CMTime?
+    var videoStopTime: Double?
+    var openVideoGap: (reason: String, start: Double)?
+    var videoGaps: [[String: Any]] = []
+    var videoGapCount = 0
+    var interruptedEdgeSeconds = 0.0
     let requiresAudio: Bool
 
     init(label: String, root: URL, queue: DispatchQueue, width: Int = 0, height: Int = 0, requiresAudio: Bool = true) throws {
@@ -117,6 +122,36 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         var data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
         data.append(10)
         try log.write(contentsOf: data)
+    }
+    func observeVideoStatus(_ status: Int, at pts: Double, written: Bool) throws {
+        guard videoStopTime.map({ pts <= $0 }) ?? true else { return }
+        if written {
+            try closeVideoGap(at: pts, endReason: "frame_resumed")
+        } else if openVideoGap == nil {
+            if status == SCFrameStatus.suspended.rawValue {
+                openVideoGap = ("video_source_suspended", pts)
+            } else if status == SCFrameStatus.blank.rawValue {
+                openVideoGap = ("video_source_blank", pts)
+            }
+        }
+    }
+    func closeVideoGap(at end: Double, endReason: String) throws {
+        guard let gap = openVideoGap else { return }
+        guard gap.start.isFinite, gap.start >= 0, end.isFinite, end >= gap.start else {
+            throw CaptureError("Invalid video interruption timestamps")
+        }
+        let record: [String: Any] = ["kind": "gap", "reason": gap.reason,
+            "started_monotonic_s": gap.start, "ended_monotonic_s": end, "end_reason": endReason]
+        try event(record)
+        // Only leading/trailing interruptions add time outside the first-to-last written frame span.
+        if firstVideoPTS == nil || endReason == "recording_stopped" {
+            interruptedEdgeSeconds += end - gap.start
+        }
+        // Keep the first intervals and the latest; the journal retains every interval.
+        if videoGaps.count == 16 { videoGaps.removeLast() }
+        videoGaps.append(record)
+        videoGapCount += 1
+        openVideoGap = nil
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         queue.async { self.failure = self.failure ?? String(describing: error) }
@@ -175,6 +210,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
                 guard status == SCFrameStatus.complete.rawValue, let writer, let input = videoInput else {
                     values["written"] = false
+                    try observeVideoStatus(status, at: pts.seconds, written: false)
                     try event(values)
                     return
                 }
@@ -188,6 +224,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
                     guard input.append(buffer) else { throw writer.error ?? CaptureError("Cannot append video") }
                     values["written"] = true
                     videoFrames += 1
+                    try observeVideoStatus(status, at: pts.seconds, written: true)
                     firstVideoPTS = firstVideoPTS ?? pts
                     lastVideoPTS = pts
                 } else {
@@ -209,6 +246,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             if writer.status != .completed { failure = failure ?? String(describing: writer.error ?? CaptureError("Video did not finish")) }
         }
         try queue.sync {
+            if let end = videoStopTime { try closeVideoGap(at: end, endReason: "recording_stopped") }
             if requiresAudio && audioFrames == 0 { failure = failure ?? "No application audio buffers" }
             if writer != nil && videoFrames == 0 { failure = failure ?? "No window video frames" }
             try event(["kind": failure == nil ? "finished" : "failed", "audio_frames": audioFrames,

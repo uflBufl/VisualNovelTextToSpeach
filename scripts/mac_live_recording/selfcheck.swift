@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import CoreVideo
 import CoreGraphics
+import ScreenCaptureKit
 import Darwin
 
 func targetGuardSelfcheck() throws {
@@ -140,5 +141,33 @@ func writerSelfcheck(root: URL, crash: Bool = false) async throws {
         decoded += 1
     }
     guard reader.status == .completed, decoded == 180, colors.count == 3 else { throw CaptureError("Synthetic decode failed: frames=\(decoded), colors=\(colors)") }
+    let source = try Recorder(label: "source-status", root: root, queue: queue, requiresAudio: false)
+    try source.observeVideoStatus(SCFrameStatus.idle.rawValue, at: 1, written: false)
+    for i in 0..<17 {
+        let pts = Double(i * 3 + 2)
+        try source.observeVideoStatus(SCFrameStatus.suspended.rawValue, at: pts, written: false)
+        try source.observeVideoStatus(SCFrameStatus.suspended.rawValue, at: pts + 1, written: false)
+        try source.observeVideoStatus(SCFrameStatus.complete.rawValue, at: pts + 2, written: true)
+        source.firstVideoPTS = source.firstVideoPTS ?? CMTime(seconds: pts + 2, preferredTimescale: 600)
+    }
+    try source.observeVideoStatus(SCFrameStatus.blank.rawValue, at: 53, written: false)
+    source.videoStopTime = 54
+    try source.observeVideoStatus(SCFrameStatus.complete.rawValue, at: 55, written: true)
+    try await source.finish()
+    let log = try String(contentsOf: root.appendingPathComponent("source-status.jsonl"), encoding: .utf8)
+    let records = try log.split(separator: "\n").map {
+        try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+    }.compactMap { $0 }.filter { $0["kind"] as? String == "gap" }
+    guard records.count == 18, source.videoGapCount == 18, source.videoGaps.count == 16,
+          source.interruptedEdgeSeconds == 3,
+          records.first?["started_monotonic_s"] as? Double == 2,
+          records.first?["ended_monotonic_s"] as? Double == 4,
+          records.first?["reason"] as? String == "video_source_suspended",
+          records.first?["end_reason"] as? String == "frame_resumed",
+          source.videoGaps.last?["reason"] as? String == "video_source_blank",
+          source.videoGaps.last?["end_reason"] as? String == "recording_stopped",
+          source.videoGaps.last?["ended_monotonic_s"] as? Double == 54 else {
+        throw CaptureError("Video source interruption evidence lost or misclassified")
+    }
     print("writer selfcheck passed: 180 real decoded frames, 3 changing scenes, original PTS; no screen capture/playback")
 }
