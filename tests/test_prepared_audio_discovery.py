@@ -597,86 +597,104 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 new_progress.reference_sources, old_progress.reference_sources
             )
 
-    def test_capture_title_binds_unique_game_and_no_title_fails_closed(self):
+    def test_window_title_matches_a_complete_game_name(self):
         with TemporaryDirectory() as temporary:
-            pack, line_id, _text, _text_hash, _wav = write_synthetic_game_pack(
+            pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(
                 Path(temporary)
             )
             snapshot = discover_prepared_audio(game_pack=pack)
-            self.assertFalse(snapshot.for_settings(AppSettings()).sources)
-            self.assertFalse(
-                snapshot.for_settings(
-                    AppSettings(game_window_title="Other Game")
-                ).sources
-            )
+            for title in ("", "Other Game", "Synthetic Games"):
+                with self.subTest(title=title):
+                    self.assertFalse(
+                        snapshot.for_settings(
+                            AppSettings(game_window_title=title)
+                        ).sources
+                    )
             selected = snapshot.for_settings(
                 AppSettings(game_window_title="Synthetic Game - Player")
             )
             self.assertIsNotNone(selected.preloader.line_for_id(line_id))
-            second_game = replace(
-                snapshot.sources[0], game_id="unrelated", game_name="Synthetic Game"
-            )
-            ambiguous = PreparedAudioSnapshot((*snapshot.sources, second_game))
-            self.assertFalse(
-                ambiguous.for_settings(
-                    AppSettings(game_window_title="Synthetic Game")
-                ).sources
-            )
-
-    def test_explicit_pack_binding_does_not_use_another_games_text(self):
-        with TemporaryDirectory() as temporary:
-            pack, _line_id, _text, _text_hash, _wav = write_synthetic_game_pack(
-                Path(temporary)
-            )
-            snapshot = discover_prepared_audio(game_pack=pack)
-            self.assertEqual(
-                snapshot.for_settings(AppSettings(game_pack=str(pack))).sources,
-                snapshot.sources,
-            )
             self.assertFalse(
                 snapshot.for_settings(
                     AppSettings(
-                        game_pack=str(pack.with_name("another-pack.json")),
+                        game_pack=str(pack.with_name("missing.json")),
                         game_window_title="Synthetic Game",
                     )
                 ).sources
             )
 
+    def test_identical_lines_use_the_recording_from_the_selected_game(
+        self,
+    ):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first, line_id, _text, text_hash, first_wav = write_synthetic_game_pack(
+                root / "first"
+            )
+            second, _, _, _, second_wav = write_synthetic_game_pack(root / "second")
+            document = json.loads(second.read_bytes())
+            document["game"]["id"] = "second-game"
+            second.write_text(json.dumps(document))
+            (first_source,) = discover_prepared_audio(game_pack=first).sources
+            (second_source,) = discover_prepared_audio(game_pack=second).sources
+            snapshot = PreparedAudioSnapshot((first_source, second_source))
+
+            self.assertIsNone(snapshot.preloader.line_for_id(line_id))
+            self.assertIsNone(
+                snapshot.library_for(lambda _: True).find(line_id, text_hash)
+            )
+            by_title = AppSettings(game_window_title="Synthetic Game")
+            self.assertFalse(snapshot.for_settings(by_title).sources)
+            for settings, expected_wav in (
+                (
+                    by_title.updated(
+                        game_pack=str(first), story_index=str(second_source.story_index)
+                    ),
+                    first_wav,
+                ),
+                (
+                    by_title.updated(story_index=str(second_source.story_index)),
+                    second_wav,
+                ),
+            ):
+                with self.subTest(expected=expected_wav):
+                    selected = snapshot.for_settings(settings)
+                    self.assertIsNotNone(selected.preloader.line_for_id(line_id))
+                    audio = selected.library_for(lambda _: True).find(
+                        line_id, text_hash
+                    )
+                    self.assertEqual(audio.audio_path, expected_wav)
+            scoped = snapshot.library_for(
+                lambda _: True,
+                game_id=second_source.game_id,
+                content_sha256=second_source.content_sha256,
+            )
+            self.assertEqual(scoped.find(line_id, text_hash).audio_path, second_wav)
+
     def test_explicit_binding_accepts_both_paths_to_the_same_directory(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            pack, _line_id, _text, _hash, _wav = write_synthetic_game_pack(
-                root / "pack"
-            )
+            pack, line_id, _text, _hash, _wav = write_synthetic_game_pack(root / "pack")
             alias = root / "alias"
             symlink_or_skip(alias, pack.parent, target_is_directory=True)
             alias_pack = alias / pack.name
-            for discovered_path in (pack, alias_pack):
-                snapshot = discover_prepared_audio(game_pack=discovered_path)
-                story = snapshot.sources[0].story_index
-                alias_story = alias / story.relative_to(pack.parent)
-                for key, paths in (
-                    ("game_pack", (pack, alias_pack)),
-                    ("story_index", (story, alias_story)),
-                ):
-                    for selected in paths:
-                        with self.subTest(
-                            discovered=discovered_path, selected=selected
-                        ):
-                            self.assertEqual(
-                                snapshot.for_settings(
-                                    AppSettings(**{key: str(selected)})
-                                ).sources,
-                                snapshot.sources,
+            for found, selected in ((pack, alias_pack), (alias_pack, pack)):
+                with self.subTest(found=found, selected=selected):
+                    snapshot = discover_prepared_audio(game_pack=found)
+                    story = selected.with_name("story-index.jsonl")
+                    by_pack = AppSettings(game_pack=str(selected))
+                    by_story = AppSettings(story_index=str(story))
+                    for settings in (by_pack, by_story):
+                        self.assertIsNotNone(
+                            snapshot.for_settings(settings).preloader.line_for_id(
+                                line_id
                             )
-                catalog = open_reading_catalog(story)
-                catalog_only = PreparedAudioSnapshot(catalogs=(catalog,))
-                for selected in (story, alias_story):
+                        )
+
+                    catalog = open_reading_catalog(found.with_name("story-index.jsonl"))
+                    catalog_only = PreparedAudioSnapshot(catalogs=(catalog,))
                     self.assertEqual(
-                        catalog_only.for_settings(
-                            AppSettings(story_index=str(selected))
-                        ).catalogs,
-                        (catalog,),
+                        catalog_only.for_settings(by_story).catalogs, (catalog,)
                     )
 
     def test_new_import_is_discovered_without_watching_admitted_story_files(self):
@@ -773,27 +791,6 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                 self.assertIsNone(library.find(line_id, text_hash))
             self.assertFalse(library.runtime_progress)
 
-    def test_colliding_games_require_explicit_scope(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(root)
-            source = discover_prepared_audio(game_pack=pack).sources[0]
-            for other in (replace(source, game_id="different-game"),):
-                with self.subTest(scope=other.scope):
-                    snapshot = PreparedAudioSnapshot((source, other))
-                    self.assertIsNone(snapshot.preloader.line_for_id(line_id))
-                    self.assertIsNone(
-                        snapshot.library_for(lambda entry: True).find(
-                            line_id, text_hash
-                        )
-                    )
-                    scoped = snapshot.library_for(
-                        lambda entry: True,
-                        game_id=source.game_id,
-                        content_sha256=source.content_sha256,
-                    )
-                    self.assertIsNotNone(scoped.find(line_id, text_hash))
-
     def test_unchanged_canonical_lines_reuse_audio_across_catalog_revisions(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(
@@ -802,7 +799,10 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             source = discover_prepared_audio(game_pack=pack).sources[0]
             newer = replace(source, content_sha256="f" * 64)
             snapshot = PreparedAudioSnapshot((source, newer))
-            self.assertEqual(len(snapshot.preloader.dialogue), 1)
+            self.assertEqual(
+                [row.line_id for row in snapshot.preloader.dialogue], [line_id]
+            )
+            self.assertIsNotNone(snapshot.preloader.line_for_id(line_id))
             self.assertIsNotNone(
                 snapshot.library_for(lambda entry: True).find(line_id, text_hash)
             )
@@ -828,16 +828,6 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             self.assertIsNone(
                 snapshot.library_for(lambda entry: True).reserve(line_id, text_hash)
             )
-
-    def test_repeated_pack_metadata_deduplicates_canonical_story(self):
-        with TemporaryDirectory() as temporary:
-            pack, line_id, _text, _text_hash, _wav = write_synthetic_game_pack(
-                Path(temporary)
-            )
-            source = discover_prepared_audio(game_pack=pack).sources[0]
-            snapshot = PreparedAudioSnapshot((source, source))
-            self.assertEqual(len(snapshot.preloader.dialogue), 1)
-            self.assertIsNotNone(snapshot.preloader.line_for_id(line_id))
 
     def test_changed_component_binding_is_rejected(self):
         with TemporaryDirectory() as temporary:
