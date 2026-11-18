@@ -10,22 +10,11 @@ Evidence: November18 `vntts-support.zip` and recording exports
       window. Confirm the window error appears before model loading, the button
       and notification open window selection, and saving resumes the selected
       story. Check a window that disappears during startup and cancellation.
-- [ ] On Windows, enter Pocket setup from a game voice with cloning assets
-      unavailable. Let a sign-in code expire, retry in the same dialog and
-      complete authorization. Confirm the editor retains the selected voice and
-      that saving or leaving the editor handles reading resume correctly.
 - [ ] If the Stop/Start hold recurs, retain a recording beginning before it and
       the current occurrence's completion/navigation events. The second export
       shows Elma's line315601:55 at Stop/Start, but the preceding playback and
       navigation evidence was evicted. Establish the blocked transition before
       changing reading ownership; do not infer the cause from a static frame.
-- [ ] Repair diagnostic time mapping for Windows process-output capture after
-      Reading recovery work: raw QPC advances contain short gaps at stream
-      boundaries while CAF offsets concatenate PCM. Global offset mapping leaves
-      about425/741ms residual in these recordings and qualifies no source routes.
-      Preserve measured QPC and raw flags, represent actual captured intervals
-      and report uncovered time instead of stretching samples or claiming an
-      audible dropout. Qualify piecewise source correlation with the recordings.
 
 ## Active - Support 111 application crash and Reading holds
 
@@ -62,13 +51,6 @@ the trust-after-admission changes.
 Evidence: `vntts-support (31).zip` and diagnostic session
 `1b42f6a6721a4848a9ee845c37837fd5.zip`, build `579f9a70`, 2026-11-17.
 
-- [ ] Qualify remaining one-time Pocket setup paths: the macOS account/browser
-      flow, cancellation/retry, visible download progress and existing standard
-      cache/login reuse on both systems. Verify the
-      prepared model works after restart/offline without further authorization;
-      preparing it while the public model is loaded must safely replace that
-      worker without restarting the application. A successful Windows setup and
-      subsequent Reading do not qualify every browser step or offline reuse.
 - [ ] Complete Windows process-loopback adverse-path qualification: run native
       clock and activation-blob lifetime tests, then check acquisition/writer
       failure and teardown; a rejected clock must retain previous/current packet

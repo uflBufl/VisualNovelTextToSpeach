@@ -16,7 +16,7 @@ import soundfile as sf
 from scipy.signal import resample_poly
 
 from vntts.diagnostic_caf import MAX_CAPTURE_SECONDS, diagnostic_audio_path
-from vntts.path_safety import open_regular_binary
+from vntts.path_safety import open_regular_binary, safe_relative_path
 
 RATE = 16000
 MAX_SOURCE_SECONDS = 60
@@ -24,6 +24,8 @@ MATCH_STEP = RATE * 30
 MAX_MATCH_SAMPLES = 1 << 22
 _WASAPI_DATA_DISCONTINUITY = 1
 _WASAPI_TIMESTAMP_ERROR = 4
+_CLOCK_RESIDUAL_MS = 0.1
+_MAX_QPC_GAPS = 1024
 
 
 class _CaptureSpan(NamedTuple):
@@ -299,6 +301,76 @@ def _capture_metadata(directory: Path) -> tuple[dict[str, Any], float]:
     return metadata, rate
 
 
+def _wasapi_clock(
+    event: dict, host: float, previous_qpc: int, previous_count: int, rate: float
+) -> tuple[int, float]:
+    flags, qpc, position = (
+        event.get("flags"),
+        event.get("qpc_100ns"),
+        event.get("sample_time"),
+    )
+    if (
+        type(flags) is not int
+        or not 0 <= flags <= 2**32 - 1
+        or flags & _WASAPI_TIMESTAMP_ERROR
+        or (previous_qpc and flags & _WASAPI_DATA_DISCONTINUITY)
+        or type(qpc) is not int
+        or not previous_qpc < qpc <= 2**64 - 1
+        or abs(host - qpc / 10_000_000) > 0.000001
+        or type(position) is not int
+        or not 0 <= position <= 2**64 - 1
+    ):
+        raise ValueError("Invalid or discontinuous WASAPI packet clock")
+    extra = (
+        (qpc - previous_qpc) / 10_000_000 - previous_count / rate
+        if previous_qpc
+        else 0.0
+    )
+    if abs(extra) > 0.050:
+        raise ValueError("Invalid or discontinuous WASAPI packet clock")
+    return qpc, extra
+
+
+def _wasapi_coverage_gap(
+    extra_seconds: float, host: float, frames: int, gaps: list[dict]
+) -> bool:
+    extra_ms = extra_seconds * 1000
+    if extra_ms < -_CLOCK_RESIDUAL_MS:
+        raise ValueError("Overlapping WASAPI virtual packet timestamps")
+    if extra_ms <= _CLOCK_RESIDUAL_MS:
+        return False
+    if len(gaps) >= _MAX_QPC_GAPS:
+        raise ValueError("WASAPI clock gap count exceeds analysis budget")
+    gaps.append(
+        {
+            "kind": "gap",
+            "reason": "wasapi_qpc_gap",
+            "file_frame_start": frames,
+            "started_monotonic_s": host - extra_seconds,
+            "ended_monotonic_s": host,
+        }
+    )
+    return True
+
+
+def _declared_gap_frames(
+    gap: dict, sample_delta: float, host: float, previous_end: float, rate: float
+) -> float:
+    missing = _number(gap.get("sample_delta_frames"))
+    gap_start = _number(gap.get("started_monotonic_s"))
+    gap_end = _number(gap.get("ended_monotonic_s"))
+    if (
+        missing < 0.5
+        or abs(sample_delta - missing) >= 0.5
+        or gap_end <= gap_start
+        or abs(gap_start - previous_end) * rate >= 0.5
+        or abs(gap_end - host) * rate >= 0.5
+        or abs((host - previous_end) * rate - missing) >= 0.5
+    ):
+        raise ValueError("Capture gap differs from adjacent callback clocks")
+    return missing
+
+
 def _capture_clock(
     directory: Path,
     *,
@@ -319,6 +391,7 @@ def _capture_clock(
     if not isinstance(declared_gaps, list) or len(declared_gaps) > 16:
         raise ValueError("Invalid capture acquisition gaps")
     gap_index = 0
+    qpc_gaps: list[dict] = []
     pending_gap: dict | None = None
     previous_sample: float | None = None
     previous_count, previous_qpc = 0, 0
@@ -350,26 +423,12 @@ def _capture_clock(
             _number(event.get("monotonic_s")),
             _number(event.get("sample_time")),
         )
-        if windows:
-            flags, qpc = event.get("flags"), event.get("qpc_100ns")
-            if (
-                type(flags) is not int
-                or not 0 <= flags <= 2**32 - 1
-                or flags & _WASAPI_TIMESTAMP_ERROR
-                or (previous_sample is not None and flags & _WASAPI_DATA_DISCONTINUITY)
-                or type(qpc) is not int
-                or not 0 < qpc <= 2**64 - 1
-                or abs(host - qpc / 10_000_000) > 0.000001
-                or type(event.get("sample_time")) is not int
-                or not 0 <= event["sample_time"] <= 2**64 - 1
-                or previous_sample is not None
-                and (
-                    qpc <= previous_qpc
-                    or abs((qpc - previous_qpc) / 10_000_000 - previous_count / rate)
-                    > 0.050
-                )
-            ):
-                raise ValueError("Invalid or discontinuous WASAPI packet clock")
+        qpc, extra_seconds = (
+            _wasapi_clock(event, host, previous_qpc, previous_count, rate)
+            if windows
+            else (0, 0.0)
+        )
+        host = qpc / 10_000_000 if windows else host
         if (
             not isinstance(count, int)
             or isinstance(count, bool)
@@ -378,46 +437,45 @@ def _capture_clock(
             or start != frames
         ):
             raise ValueError("Invalid capture callback timeline")
+        split, missing = False, 0.0
         if previous_sample is not None:
             if pending_gap is None:
                 # Process-loopback's virtual device position can stay zero.
+                virtual = windows and sample == 0 and previous_sample == previous_count
                 if (
-                    not (windows and sample == 0 and previous_sample == previous_count)
-                    and abs(sample - previous_sample) >= 0.5
+                    not virtual and abs(sample - previous_sample) >= 0.5
                 ) or host <= previous_host:
                     raise ValueError("Discontinuous capture callback timeline")
-            else:
-                missing = _number(pending_gap.get("sample_delta_frames"))
-                gap_start = _number(pending_gap.get("started_monotonic_s"))
-                gap_end = _number(pending_gap.get("ended_monotonic_s"))
-                if (
-                    missing < 0.5
-                    or abs(sample - previous_sample - missing) >= 0.5
-                    or gap_end <= gap_start
-                    or abs(gap_start - previous_host - previous_count / rate) * rate
-                    >= 0.5
-                    or abs(gap_end - host) * rate >= 0.5
-                    or abs((host - previous_host) * rate - previous_count - missing)
-                    >= 0.5
-                ):
-                    raise ValueError(
-                        "Capture gap differs from adjacent callback clocks"
-                    )
-                spans.append(
-                    _CaptureSpan(
-                        span_first,
-                        frames,
-                        float(np.median(offsets)),
-                        (maximum_offset - minimum_offset) * 1000,
-                        round(missing_frames),
-                    )
+                split = virtual and _wasapi_coverage_gap(
+                    extra_seconds, host, frames, qpc_gaps
                 )
-                missing_frames += missing
-                span_first = frames
-                offsets = []
-                minimum_offset, maximum_offset = float("inf"), float("-inf")
-                callback_count = 0
+            else:
+                missing = _declared_gap_frames(
+                    pending_gap,
+                    sample - previous_sample,
+                    host,
+                    previous_host + previous_count / rate,
+                    rate,
+                )
+                split = True
                 pending_gap = None
+        if split:
+            spans.append(
+                _CaptureSpan(
+                    span_first,
+                    frames,
+                    float(np.median(offsets)),
+                    (maximum_offset - minimum_offset) * 1000,
+                    round(missing_frames),
+                )
+            )
+            # QPC gaps establish elapsed time only. Declared sample gaps also
+            # establish how many source frames to restore to the resampling phase.
+            missing_frames += missing
+            span_first = frames
+            offsets = []
+            minimum_offset, maximum_offset = float("inf"), float("-inf")
+            callback_count = 0
         offset = host - frames / rate
         minimum_offset = min(minimum_offset, offset)
         maximum_offset = max(maximum_offset, offset)
@@ -430,7 +488,7 @@ def _capture_clock(
         previous_sample, previous_host, previous_qpc = (
             sample + count,
             host,
-            event.get("qpc_100ns", 0),
+            qpc,
         )
     if (
         not offsets
@@ -467,7 +525,7 @@ def _capture_clock(
             round(missing_frames),
         )
     )
-    return _CaptureClock(rate, tuple(spans), tuple(declared_gaps))
+    return _CaptureClock(rate, tuple(spans), tuple(declared_gaps + qpc_gaps))
 
 
 def _source_path(
@@ -479,7 +537,10 @@ def _source_path(
 ) -> Path:
     if not isinstance(entry.get("audio"), str):
         raise ValueError("Invalid source evidence path")
-    path: Path = directory / entry["audio"]
+    # Older Windows exports used native separators in sources.json.
+    path = directory / safe_relative_path(
+        entry["audio"].replace("\\", "/"), "Source evidence path"
+    )
     if not path.resolve().is_relative_to(directory.resolve()) or path.is_symlink():
         raise ValueError("Source evidence escapes its session")
     digest, total = hashlib.sha256(), 0
@@ -838,7 +899,7 @@ def _correlate_route_capture(
         full_source
         and len(phase_dispatches) == 1
         and score >= 0.9
-        and residual < 0.1
+        and residual < _CLOCK_RESIDUAL_MS
         and identity_verified
         and bool(windows)
     )
@@ -1134,6 +1195,7 @@ def analyze_session(
             "Polyphase-resampled correlation is diagnostic evidence, not an automatic audio-quality verdict.",
             "Source silence, announcements, original-source waits and unmatched/partial recordings cannot qualify continuity.",
             "Correlated windows can reveal timing shifts; inspect the actual recording and window coverage.",
+            "WASAPI QPC gaps describe timing coverage, not missing samples or audible dropouts.",
         ],
     }
     if interrupted:

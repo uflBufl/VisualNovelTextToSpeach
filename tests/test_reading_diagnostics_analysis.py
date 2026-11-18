@@ -351,7 +351,11 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                 self.journal(journal, shifted)
                 if accepted:
                     boundary_clock = _capture_clock(capture)
-                    self.assertAlmostEqual(boundary_clock.spans[0].residual_ms, 50)
+                    self.assertEqual(len(boundary_clock.spans), 2)
+                    gap = boundary_clock.gaps[0]
+                    self.assertAlmostEqual(
+                        gap["ended_monotonic_s"] - gap["started_monotonic_s"], 0.05
+                    )
                 else:
                     with self.assertRaisesRegex(ValueError, "WASAPI packet clock"):
                         _capture_clock(capture)
@@ -377,6 +381,70 @@ class ReadingDiagnosticsAnalysisTest(unittest.TestCase):
                 self.journal(journal, damaged)
                 with self.assertRaises(ValueError):
                     _capture_clock(capture)
+
+    def test_windows_qpc_step_changes_coverage_without_changing_pcm_frame_phase(self):
+        root = self.root
+        for cut, qualified in ((0.1, 1), (0.5, 0), (1.2, 1)):
+            with self.subTest(cut=cut):
+                self.root = root / str(cut)
+                self.root.mkdir()
+                capture, _ = self.fixture(windows=True)
+                journal = capture / "audio.jsonl"
+                cut_frame = round(cut * 48000)
+                shift = 143_001  # QPC duration does not land on a PCM frame.
+                packets = []
+                for line in journal.read_text().splitlines():
+                    packet = json.loads(line)
+                    packet["sample_time"] = 0
+                    if packet["file_frame_start"] >= cut_frame:
+                        packet["qpc_100ns"] += shift
+                        packet["monotonic_s"] = packet["qpc_100ns"] / 10_000_000
+                    packets.append(packet)
+                self.journal(journal, packets)
+                report = analyze_session(self.root)
+                self.assertEqual(report["qualification"], "unqualified")
+                self.assertEqual(report["coverage"]["correlated_routes"], qualified)
+                self.assertEqual(len(report["acquisition_gaps"]), 1)
+                gap = report["acquisition_gaps"][0]
+                self.assertEqual(gap["reason"], "wasapi_qpc_gap")
+                self.assertEqual(gap["file_frame_start"], cut_frame)
+                self.assertAlmostEqual(gap["started_monotonic_s"], 10 + cut)
+                self.assertAlmostEqual(
+                    gap["ended_monotonic_s"], 10 + cut + shift / 10_000_000
+                )
+                self.assertNotIn("sample_delta_frames", gap)
+                if qualified:
+                    self.assertAlmostEqual(
+                        report["clips"][0]["candidate_onset_monotonic"],
+                        10.25 + (shift / 10_000_000 if cut < 0.25 else 0),
+                        places=4,
+                    )
+
+    def test_windows_qpc_timestamp_rebound_cannot_qualify_disjoint_spans(self):
+        capture, _ = self.fixture(windows=True)
+        journal = capture / "audio.jsonl"
+        packets = [
+            dict(json.loads(line), sample_time=0)
+            for line in journal.read_text().splitlines()
+        ]
+        packets[10]["qpc_100ns"] += 50_000
+        packets[10]["monotonic_s"] = packets[10]["qpc_100ns"] / 10_000_000
+        self.journal(journal, packets)
+        report = analyze_session(self.root)
+        self.assertEqual(report["coverage"]["correlated_routes"], 0)
+        self.assertEqual(report["acquisition_gaps"], [])
+        self.assertEqual(report["captures"][0]["status"], "unavailable")
+
+    def test_legacy_windows_source_path_resolves_in_exported_session(self):
+        _, digest = self.fixture(windows=True)
+        sources = self.root / "sources"
+        sources.mkdir()
+        (self.root / "source.wav").rename(sources / f"{digest}.wav")
+        manifest = self.root / "sources.json"
+        data = json.loads(manifest.read_text())
+        data["entries"][0]["audio"] = f"sources\\{digest}.wav"
+        self.write_json(manifest, data)
+        self.assertEqual(analyze_session(self.root)["coverage"]["correlated_routes"], 1)
 
     def test_generated_source_matches_exact_admitted_digest_and_true_owner(self):
         _capture, digest = self.fixture()

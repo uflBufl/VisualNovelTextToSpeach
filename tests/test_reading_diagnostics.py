@@ -292,6 +292,7 @@ class ReadingDiagnosticSessionTest(unittest.TestCase):
             "entries"
         ]
         self.assertEqual(entries[0]["audio_sha256"], digest)
+        self.assertEqual(entries[0]["audio"], f"sources/{digest}.wav")
         self.assertEqual(
             (session.directory / entries[0]["audio"]).read_bytes(), source.read_bytes()
         )

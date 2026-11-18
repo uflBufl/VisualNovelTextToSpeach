@@ -939,7 +939,7 @@ class ReadingDiagnosticSession:
                 self.retained_sources[key] = {
                     "line_id": line_id,
                     "audio_sha256": digest,
-                    "audio": str(output.relative_to(self.directory)),
+                    "audio": output.relative_to(self.directory).as_posix(),
                 }
             except (OSError, ValueError) as error:
                 self.source_errors[key] = str(error)
