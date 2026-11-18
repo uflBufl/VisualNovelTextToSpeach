@@ -221,6 +221,8 @@ class CalibrationReviewDialog(QDialog):
             + ' Use "Draw again" if the area is too small.'
         )
         note.setWordWrap(True)
+        self.guidance_note = note
+        note.installEventFilter(self)
         buttons = self._create_buttons()
         body = QWidget()
         body_layout = QVBoxLayout(body)
@@ -396,9 +398,22 @@ class CalibrationReviewDialog(QDialog):
         return buttons
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.preview and event.type() == QEvent.Type.Resize:
-            QTimer.singleShot(0, self, self._scale_preview)
+        if watched is self.preview:
+            if event.type() == QEvent.Type.Resize:
+                QTimer.singleShot(0, self, self._scale_preview)
+        elif watched is self.guidance_note and event.type() in (
+            QEvent.Type.Resize,
+            QEvent.Type.FontChange,
+        ):
+            QTimer.singleShot(0, self, self._resize_guidance_note)
         return super().eventFilter(watched, event)
+
+    def _resize_guidance_note(self) -> None:
+        # The previous minimum would clamp heightForWidth after widening.
+        self.guidance_note.setMinimumHeight(0)
+        self.guidance_note.setMinimumHeight(
+            self.guidance_note.heightForWidth(self.guidance_note.width())
+        )
 
     def _scale_preview(self) -> None:
         self.preview.setPixmap(
@@ -612,6 +627,7 @@ class DialogRegionOverlay(QWidget):
         self.bounds_inputs: dict[str, QSpinBox] = {}
         for name in ("Left", "Top", "Width", "Height"):
             control = QSpinBox()
+            control.setStyleSheet("QSpinBox { min-height: 1.2em; }")
             control.setAccessibleName(f"Dialogue region {name.lower()} in pixels")
             control.setObjectName(f"calibration_bounds_{name.lower()}")
             control.valueChanged.connect(self._bounds_changed)
@@ -737,10 +753,9 @@ class DialogRegionOverlay(QWidget):
         self.current = event.position().toPoint()
         rectangle = QRect(self.origin, self.current).normalized()
         if rectangle.width() < 20 or rectangle.height() < 20:
-            self.origin = None
-            self.current = None
-            self.update()
+            self._reset_selection()
             return
+        self._sync_bounds_editor()
         self._review_rectangle(rectangle)
 
     def _region_from_rectangle(self, rectangle: QRect) -> DialogRegion:

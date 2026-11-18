@@ -659,12 +659,6 @@ Other remaining defects and native checks:
       do not globally disable Xet.
 - [ ] Verify compact opening without game-focus activation using owner-only
       focus evidence.
-- [ ] **U4 - Validate exact region controls on the native Mac.** Use keyboard/MCP
-      to set Left/Top/Width/Height, retain the maximum-height multiline/nameplate
-      envelope for native 14 ->15, inspect dialogue/cue coverage and
-      review/save/cancel/retry at enlarged text. Confirm the nonmodal coordinate
-      panel remains reachable, values match drag/keyboard movement, stale review
-      callbacks cannot save another selection, and closing review cancels its OCR.
 
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 

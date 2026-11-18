@@ -24,6 +24,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
+    QLabel,
     QScrollArea,
     QTextEdit,
     QWidget,
@@ -471,6 +472,29 @@ class DialogRegionOverlayTest(unittest.TestCase):
         QTest.keyClick(overlay, Qt.Key.Key_Escape)
         self.assertFalse(overlay.bounds_editor.isVisible())
         save.assert_not_called()
+
+    def test_small_drag_restores_reviewable_bounds_at_enlarged_font(self):
+        region = DialogRegion(0.1, 0.6, 0.8, 0.32)
+        saved = []
+        overlay = DialogRegionOverlay(capture_region=region, save_region=saved.append)
+        self.addCleanup(overlay.deleteLater)
+        self.addCleanup(overlay.close)
+        font = overlay.font()
+        font.setPointSize(26)
+        overlay.bounds_editor.setFont(font)
+        overlay.resize(800, 450)
+        overlay.show()
+        self.application.processEvents()
+        for control in overlay.bounds_inputs.values():
+            editor = control.lineEdit()
+            self.assertGreaterEqual(editor.height(), editor.fontMetrics().height())
+        QTest.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=QPoint(35, 45))
+        self.assertEqual(
+            [control.value() for control in overlay.bounds_inputs.values()],
+            [80, 270, 640, 144],
+        )
+        overlay._review_bounds()
+        self.assertEqual(saved, [region])
 
     def test_exact_bounds_error_is_visible_until_bounds_change_or_reset(self):
         save = Mock(
@@ -1045,6 +1069,36 @@ class DialogRegionOverlayTest(unittest.TestCase):
                 )
             )
 
+    def test_review_guidance_fits_wrapped_text_after_resize_and_font_change(self):
+        for story_area in (False, True):
+            with self.subTest(story_area=story_area):
+                dialog = CalibrationReviewDialog(
+                    Image.new("RGB", (800, 450)),
+                    story_area=story_area,
+                    recognizer=lambda _image: OCRResult(
+                        "Name", "Dialogue", 99, "gray", 1
+                    ),
+                )
+                self.addCleanup(dialog.deleteLater)
+                self.addCleanup(dialog.close)
+                note = dialog.guidance_note
+                reference = QLabel(note.text())
+                self.addCleanup(reference.deleteLater)
+                reference.setWordWrap(True)
+                dialog.show()
+                for font_size, width in ((26, 760), (26, 620), (26, 940), (13, 940)):
+                    with self.subTest(font_size=font_size, width=width):
+                        font = dialog.font()
+                        font.setPointSize(font_size)
+                        dialog.setFont(font)
+                        reference.setFont(font)
+                        dialog.resize(width, 380)
+                        self.wait_for(
+                            lambda: (
+                                note.height() == reference.heightForWidth(note.width())
+                            )
+                        )
+
     def test_keyboard_suggestion_uses_current_capture_and_reviews_once(self):
         region = DialogRegion(0.1, 0.5, 0.8, 0.4)
         save = Mock()
@@ -1229,9 +1283,11 @@ class DialogRegionOverlayTest(unittest.TestCase):
     def test_offscreen_window_preview_fits_visible_screen_and_keeps_scaled_region(self):
         background = Image.new("RGB", (1600, 900), "black")
         geometry = WindowGeometry(-1600, -100, 800, 450)
+        origin = self.application.primaryScreen().availableGeometry().topLeft()
         screen = Mock()
-        screen.geometry.return_value = QRect(0, 0, 1000, 800)
-        screen.availableGeometry.return_value = QRect(40, 30, 960, 770)
+        screen.geometry.return_value = QRect(origin, QSize(1000, 800))
+        available = QRect(origin + QPoint(40, 30), QSize(960, 770))
+        screen.availableGeometry.return_value = available
         with (
             patch.object(QApplication, "screens", return_value=[screen]),
             patch.object(QApplication, "primaryScreen", return_value=screen),
@@ -1244,8 +1300,7 @@ class DialogRegionOverlayTest(unittest.TestCase):
 
         self.assertEqual(overlay.geometry().size().width(), 800)
         self.assertEqual(overlay.geometry().size().height(), 450)
-        self.assertEqual(overlay.geometry().left(), 40)
-        self.assertEqual(overlay.geometry().top(), 30)
+        self.assertEqual(overlay.geometry().topLeft(), available.topLeft())
         self.assertAlmostEqual(region.left, 0.1)
         self.assertAlmostEqual(region.top, 0.6)
         self.assertAlmostEqual(region.width, 0.8)
