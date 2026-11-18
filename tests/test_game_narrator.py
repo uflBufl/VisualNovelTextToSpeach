@@ -322,21 +322,39 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(self.library.binding(group.character).source_id, "preset:alba")
         self.assertTrue(dialog.status.isHidden())
 
-    def test_current_audition_preserves_candidate_and_does_not_approve_it(self):
+    def test_cancel_after_comparing_voices_keeps_the_character_on_narrator(self):
         self.bind_narrator()
+        self.library.select("Bob", route="narrator")
         before = self.library.bindings()
         dialog = self.editor()
-        self.select(dialog, "catalog", source="character:centurion")
+        dialog.show()
+        dialog.select_role("Bob")
+        self.drain()
+        self.select(dialog, "catalog", role="Bob", source="character:centurion")
+        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
+        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.toolTip())
         selected = dialog.voice_panel.current_selection
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         dialog.voice_panel.current_original.click()
         self.drain()
-        self.assertEqual(
-            self.player.play_bytes.call_args.args[0],
-            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
-        )
         self.assertEqual(dialog.voice_panel.current_selection, selected)
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+
+        self.listen(dialog, original=True)
+        references = self.manifest.parent / "references"
+        self.assertEqual(
+            [call.args[0] for call in self.player.play_bytes.call_args_list],
+            [
+                (references / name).read_bytes()
+                for name in ("rhiannon.wav", "centurion.wav")
+            ],
+        )
+        self.assertEqual(self.library.bindings(), before)
+        finished = []
+        dialog.finished.connect(finished.append)
+        dialog.cancel_button.click()
+        self.drain()
+        self.assertEqual(finished, [QDialog.DialogCode.Rejected])
         self.assertEqual(self.library.bindings(), before)
 
     def test_current_audition_rejects_binding_change_during_generation(self):
@@ -351,22 +369,6 @@ class GameNarratorTest(unittest.TestCase):
             "Current voice changed", dialog.voice_panel.current_status.toPlainText()
         )
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
-
-    def test_current_narrator_fallback_uses_saved_bytes_without_assignment(self):
-        self.bind_narrator()
-        self.library.select("Bob", route="narrator")
-        before = self.library.bindings()
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Bob", source="character:centurion")
-        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
-        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.toolTip())
-        dialog.voice_panel.current_original.click()
-        self.drain()
-        self.assertEqual(
-            self.player.play_bytes.call_args.args[0],
-            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
-        )
-        self.assertEqual(self.library.bindings(), before)
 
     def test_current_original_unavailable_does_not_block_new_voice(self):
         self.bind_narrator()
@@ -993,17 +995,6 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(self.library.binding("Narrator"))
         self.importer.prepare_voice_roles.assert_not_called()
 
-    def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
-        self.library.select("Aderyn", route="voice", source_id="preset:marius")
-        before = self.library.binding("Aderyn")
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog.reject()
-        self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
-        self.assertEqual(self.library.binding("Aderyn"), before)
-
     def test_cancel_discards_pending_original_and_emits_aggregate_busy(self):
         dialog = self.editor()
         self.select(dialog, "catalog", source="character:rhiannon")
@@ -1019,15 +1010,23 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_cancel_during_save_finishes_exact_selected_target(self):
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        dialog.show()
+        self.select(dialog, "catalog", role="Aderyn", source="character:centurion")
         self.listen(dialog, original=True)
+        finished = []
+        dialog.finished.connect(finished.append)
         dialog.voice_panel.a_use.click()
-        self.assertTrue(dialog.active)
-        dialog.reject()
-        self.assertFalse(dialog._closed)
+        dialog.cancel_button.click()
+        self.assertEqual(finished, [])
+        self.assertTrue(dialog.isVisible())
+        self.assertIsNone(self.library.binding("Aderyn"))
         self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertIsNotNone(self.library.binding("Aderyn"))
+
+        self.assertEqual(finished, [QDialog.DialogCode.Accepted])
+        reference = self.manifest.parent / "references" / "centurion.wav"
+        self.assertEqual(
+            self.library.binding("Aderyn").source_sha256s, (sha256_file(reference),)
+        )
         self.assertIsNone(self.library.binding("Narrator"))
 
     def test_changed_reference_cannot_be_saved_after_listening(self):
