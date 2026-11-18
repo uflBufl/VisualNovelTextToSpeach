@@ -319,8 +319,7 @@ Recheck archived findings against current main before implementation.
       desktop or global-audio fallback. Investigate ScreenCaptureKit -3805 lifetime
       interference only if serialized ownership reproduces it. See R12 for the
       remaining source/output discontinuities; positive capture is not gap removal.
-- [ ] Check that a Rust audio worker crash recovers on the next Read and that
-      playback can recover after the default output device changes.
+- [ ] Check that playback recovers after the default output device changes.
 
 ## Reading setup blockers found during persistent-OCR preflight
 
@@ -670,14 +669,6 @@ Other remaining defects and native checks:
 
 ## Remaining native diagnostic and tooling checks
 
-- [ ] **T3 - Finish native screenshot-safe MCP edge cases.**
-      The desktop MCP host now launches and controls the app and returns explicit
-      widget capture metadata successfully. Keep that path while finishing the
-      remaining native rejection checks in `scripts/pyside6-mcp/README.md`.
-      From a fresh widget tree, check an explicitly selected minimized native window
-      without retargeting. The fresh client already qualifies contract1 metadata and
-      missing/hidden/closed/process-stale rejection; retain those guarantees after
-      reconnecting and relaunching. No implicit screenshots or desktop fallback.
 - [ ] **T4 - Validate Mac product, MCP and video capture provenance.**
       Confirm saved PNG/sidecar, diagnostics and Reading timelines agree
       on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
@@ -697,7 +688,7 @@ Other remaining defects and native checks:
       then activate through the normal installer/restart path without interrupting
       a game run or discarding generation. A202 acknowledgement is not completed
       work; inspect current state and existing invocation-ID logs before another
-      action. Keep the remaining native screenshot edge cases in T3 separate. For VNTTS close,
+      action. For VNTTS close,
       verify bounded real-process exit and report actual returncode; do not infer
       graceful shutdown from quit acknowledgement or bridge disappearance.
 
