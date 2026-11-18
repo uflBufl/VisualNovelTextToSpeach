@@ -3476,18 +3476,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertIn(4, reader.sealed_generations)
         self.assertTrue(reader.wait_until_playable(SpeechChunk(5, "Hotelier", "Next")))
 
-    def test_explicit_skip_still_stops_non_interrupting_playback(self):
-        reader = self.create_reader(
-            interrupt_speech=Mock(return_value=True),
-        )
-        chunk = SpeechChunk(1, "Alice", "Stop this line.")
-        reader.active_generation = 1
-        reader.current_chunk = chunk
-
-        self.assertTrue(reader.skip_current())
-
-        self.assertFalse(reader.wait_until_playable(chunk))
-
     def test_new_dialog_retains_admitted_queued_speech(self):
         speech = QueuedExecutor()
         reader = self.create_reader(speech_executor=speech)
@@ -3613,26 +3601,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertFalse(reader.playback_pause.is_paused())
         self.assertFalse(reader.is_playback_current(chunk))
 
-    def test_skip_interrupts_only_when_speech_is_active(self):
-        interrupt_speech = Mock()
-        reader = self.create_reader(interrupt_speech=interrupt_speech)
-
-        self.assertFalse(reader.skip_current())
-        reader.current_chunk = SpeechChunk(1, "Alice", "Current text.")
-        self.assertTrue(reader.skip_current())
-
-        interrupt_speech.assert_called_once_with()
-
-    def test_skip_marks_synthesizing_chunk_as_unplayable(self):
-        reader = self.create_reader(interrupt_speech=Mock(return_value=False))
-        chunk = SpeechChunk(1, "Alice", "Do not play this.")
-        reader.active_generation = 1
-        reader.current_chunk = chunk
-
-        self.assertTrue(reader.skip_current())
-
-        self.assertFalse(reader.wait_until_playable(chunk))
-
     def test_repeat_queues_last_spoken_chunk_for_current_dialog(self):
         prepare_chunk = Mock(return_value="prepared")
         play_prepared = Mock()
@@ -3745,26 +3713,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader._set_generation(5)
         self.assertFalse(reader.wait_until_playable(replay))
 
-    def test_clear_cancels_pending_speech_and_suppresses_current_dialog(self):
-        speech_executor = Mock()
-        speech_executor.submit.return_value = Future()
-        interrupt_speech = Mock()
-        reader = self.create_reader(
-            speech_executor=speech_executor,
-            interrupt_speech=interrupt_speech,
-        )
-        pending = Future()
-        reader.active_generation = 4
-        reader.current_chunk = SpeechChunk(4, "Alice", "Current text.")
-        reader.speech_futures[pending] = SpeechChunk(4, "Alice", "Pending text.")
-
-        self.assertTrue(reader.clear_queue())
-        reader._schedule([SpeechChunk(4, "Alice", "Queued text.")])
-
-        self.assertTrue(pending.cancelled())
-        interrupt_speech.assert_called_once_with()
-        speech_executor.submit.assert_not_called()
-
     def test_queue_cancellation_reports_cause_and_identity_before_interrupting(self):
         events = []
         interrupt = Mock(side_effect=lambda: events.append(("interrupt", None, {})))
@@ -3798,22 +3746,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertEqual(details["suppressed_generation"], 4)
         self.assertNotIn("Private dialogue", repr(details))
         reader.report_error.assert_not_called()
-
-    def test_clear_interrupts_speech_preparation_that_is_already_running(self):
-        interrupt_speech = Mock()
-        reader = self.create_reader(interrupt_speech=interrupt_speech)
-        preparing = Future()
-        preparing.set_running_or_notify_cancel()
-        reader.speech_futures[preparing] = SpeechChunk(
-            4,
-            "Alice",
-            "Still synthesizing.",
-        )
-
-        self.assertTrue(reader.clear_queue())
-
-        self.assertFalse(preparing.cancelled())
-        interrupt_speech.assert_called_once_with()
 
     def test_emergency_stop_blocks_pending_ocr_until_explicit_resume(self):
         speech_executor = Mock()

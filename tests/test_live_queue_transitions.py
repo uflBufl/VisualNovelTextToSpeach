@@ -189,6 +189,55 @@ class LiveQueueTransitionsTest(unittest.TestCase):
         self.assertEqual(self.played, ["Fresh."])
         self.assertFalse(reader.speech_futures)
 
+    def test_skip_stops_only_the_current_line_when_the_backend_cannot_interrupt(self):
+        interrupt = Mock(return_value=False)
+
+        def play(chunk, audio):
+            if chunk.text == "First.":
+                self.assertTrue(reader.skip_current())
+            if reader.wait_until_playable(chunk):
+                self.played.append(audio)
+
+        reader = self.create_reader(play_prepared=play, interrupt_speech=interrupt)
+        reader.enqueue("Ada", "First.")
+        reader.enqueue("Ada", "Second.")
+        self.assertFalse(reader.skip_current())
+        interrupt.assert_not_called()
+
+        self.drain()
+
+        reader.report_error.assert_not_called()
+        interrupt.assert_called_once_with()
+        self.assertEqual(self.played, ["Second."])
+
+    def test_clear_during_preparation_discards_late_audio_and_pending_dialogue(self):
+        interrupt = Mock()
+        prepared = []
+
+        def prepare(chunk):
+            prepared.append(chunk.text)
+            if chunk.text == "First.":
+                self.assertTrue(reader.clear_queue())
+            return chunk.text
+
+        reader = self.create_reader(prepare_chunk=prepare, interrupt_speech=interrupt)
+        reader.enqueue("Ada", "First.")
+        reader.enqueue("Ada", "Second.")
+        pending = self.speech.jobs[1][0]
+
+        self.speech.run_next()
+        self.assertTrue(pending.cancelled())
+        reader._schedule([SpeechChunk(reader.active_generation, "Ada", "Late suffix.")])
+        self.drain()
+        self.assertEqual(self.played, [])
+        interrupt.assert_called_once_with()
+
+        reader.enqueue("Ada", "Fresh.")
+        self.drain()
+        reader.report_error.assert_not_called()
+        self.assertEqual(prepared, ["First.", "Fresh."])
+        self.assertEqual(self.played, ["Fresh."])
+
     def test_clear_releases_buffered_preparation_capacity(self):
         reader = self.create_reader()
         reader.enqueue("Ada", "First.")
