@@ -700,10 +700,6 @@ Other remaining defects and native checks:
       action. Keep the remaining native screenshot edge cases in T3 separate. For VNTTS close,
       verify bounded real-process exit and report actual returncode; do not infer
       graceful shutdown from quit acknowledgement or bridge disappearance.
-      Reproduce numeric-input replacement through MCP: selecting the diagnostic
-      duration editor with Ctrl/Meta+A then type_text appended digits (0600) instead
-      of replacing them. Native QSpinBox scroll changes the value correctly; fix
-      the tool selection/key contract and verify both Qt value and displayed text.
 
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 

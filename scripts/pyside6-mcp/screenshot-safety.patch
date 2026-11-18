@@ -37,7 +37,7 @@ index e8f0329..315e755 100644
  ]
  
 diff --git a/pyside6_mcp/bridge.py b/pyside6_mcp/bridge.py
-index 99d7503..5e15db0 100644
+index 99d7503..2c90e79 100644
 --- a/pyside6_mcp/bridge.py
 +++ b/pyside6_mcp/bridge.py
 @@ -11,20 +11,27 @@ import logging
@@ -354,7 +354,19 @@ index 99d7503..5e15db0 100644
      return {"ok": True}
  
  
-@@ -422,14 +556,23 @@ def _qt_press_key(body: dict) -> dict:
+@@ -413,23 +547,30 @@ def _qt_press_key(body: dict) -> dict:
+     from PySide6.QtTest import QTest
+ 
+     app = QApplication.instance()
+-    widget = app.focusWidget() or next(
+-        (w for w in app.topLevelWidgets() if w.isVisible()), None
+-    )
+-    if not widget:
+-        return {"error": "No focus widget"}
++    widget = app.focusWidget()
++    if widget is None:
++        return {"error": "No focused widget. Focus the target control before pressing a key."}
+ 
      key_str = body.get("key", "").lower()
      if key_str in _KEY_MAP:
          QTest.keyClick(widget, _KEY_MAP[key_str])
@@ -379,7 +391,7 @@ index 99d7503..5e15db0 100644
      if w is None:
          app = QApplication.instance()
          w = next((ww for ww in app.topLevelWidgets() if ww.isVisible()), None)
-@@ -438,18 +581,24 @@ def _qt_scroll(body: dict) -> dict:
+@@ -438,18 +579,24 @@ def _qt_scroll(body: dict) -> dict:
  
      dx = int(body.get("dx", 0))
      dy = int(body.get("dy", 0))
@@ -415,7 +427,7 @@ index 99d7503..5e15db0 100644
      return {"ok": True}
  
  
-@@ -583,21 +732,13 @@ def _qt_app_info() -> dict:
+@@ -583,21 +730,13 @@ def _qt_app_info() -> dict:
      }
  
  
@@ -1033,16 +1045,16 @@ index 9f3d9d8..63aebef 100644
      finally:
 diff --git a/tests/test_interactions.py b/tests/test_interactions.py
 new file mode 100644
-index 0000000..87edf87
+index 0000000..4b1aeec
 --- /dev/null
 +++ b/tests/test_interactions.py
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,299 @@
 +"""Qt ownership and input regressions for the developer bridge."""
 +import gc
 +from unittest.mock import Mock
 +
 +import pytest
-+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
++from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPlainTextEdit, QScrollArea, QSpinBox, QVBoxLayout, QWidget
 +from shiboken6 import delete, getCppPointer
 +
 +from pyside6_mcp import bridge, server
@@ -1121,6 +1133,27 @@ index 0000000..87edf87
 +    editor.setProperty("example", "value")
 +    info = bridge._qt_widget_info(bridge._widget_id(editor))
 +    assert info["dynamic_properties"] == {"example": "value"}
++
++
++def test_select_all_requires_focus_and_replaces_spinbox_digits(app):
++    duration = QSpinBox()
++    duration.setRange(1, 3600)
++    duration.setSuffix(" s")
++    duration.setValue(600)
++    duration.show()
++    app.processEvents()
++    duration.clearFocus()
++    assert app.focusWidget() is None
++    assert "error" in bridge._qt_press_key({"key": "Ctrl+A"})
++    assert duration.lineEdit().selectedText() == ""
++    assert (duration.text(), duration.value()) == ("600 s", 600)
++
++    duration.setFocus()
++    assert app.focusWidget() is duration
++    assert bridge._qt_press_key({"key": "Ctrl+A"}) == {"ok": True}
++    assert duration.lineEdit().selectedText() == "600"
++    assert bridge._qt_type(bridge._widget_id(duration), {"text": "125"}) == {"ok": True}
++    assert (duration.text(), duration.value()) == ("125 s", 125)
 +
 +
 +def test_named_key_and_portable_combo_replace_text_without_literal_chord(app):
