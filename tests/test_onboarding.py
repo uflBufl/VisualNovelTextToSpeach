@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -35,6 +36,7 @@ from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
+from vntts.profiles import GameProfile, GameProfileStore  # noqa: E402
 from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
@@ -305,12 +307,6 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            diagnostics = OnboardingDiagnostics(
-                tesseract_probe=lambda: "5.5.0",
-                audio_probe=lambda: "Speakers",
-                model_path_resolver=lambda _model: model_path,
-                permission_status_provider=granted_permissions,
-            )
             settings = AppSettings(
                 capture_mode="window",
                 game_window_title="Reverse: 1999",
@@ -318,12 +314,30 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 tts_model="xtts_v2",
                 voice_manifest=str(manifest),
             )
+            profile = GameProfile.from_settings(
+                "Calibrated game", settings, region=DialogRegion(0.1, 0.7, 0.8, 0.2)
+            )
+            store = GameProfileStore(
+                root / "profiles.json",
+                [replace(profile, story_region=DialogRegion(0.05, 0.1, 0.9, 0.85))],
+            )
+            diagnostics = OnboardingDiagnostics(
+                tesseract_probe=lambda: "5.5.0",
+                audio_probe=lambda: "Speakers",
+                model_path_resolver=lambda _model: model_path,
+                permission_status_provider=granted_permissions,
+                profile_store_loader=lambda: store,
+            )
+            with (
+                patch("vntts.onboarding.sys.platform", "win32"),
+                patch.dict(os.environ, {"VNTTS_DIALOG_REGION": ""}),
+            ):
+                results = diagnostics.run(
+                    settings.updated(active_profile_id=profile.id)
+                )
 
-            with patch("vntts.onboarding.sys.platform", "win32"):
-                results = diagnostics.run(settings)
-
-        self.assertTrue(all(result.passed for result in results))
-        self.assertTrue(all(result.status == "ok" for result in results))
+        self.assertIn("Character voices", [result.name for result in results])
+        self.assertEqual([result for result in results if result.status != "ok"], [])
 
     def test_missing_external_components_are_actionable_errors(self):
         def fail_tesseract():
