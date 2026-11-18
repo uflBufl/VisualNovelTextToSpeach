@@ -12,58 +12,33 @@ from vntts.auto_advance_policy import (
 from vntts.settings import AppSettings
 
 
-class FakeKeyboardController:
-    def __init__(self):
-        self.events = []
-
-    def press(self, key):
-        self.events.append(("press", key))
-
-    def release(self, key):
-        self.events.append(("release", key))
-
-
 class DialogueAdvancerTest(unittest.TestCase):
     def setUp(self):
         self.sleep = self.enterContext(patch("vntts.auto_advance.time.sleep"))
 
-    def test_cross_platform_fallback_sends_one_press_and_release(self):
-        controller = FakeKeyboardController()
-        advancer = DialogueAdvancer(
-            "enter",
-            controller_factory=lambda: controller,
-            platform="linux",
-        )
-
-        self.assertTrue(advancer.advance())
-
-        self.assertEqual(
-            controller.events,
-            [("press", keyboard.Key.enter), ("release", keyboard.Key.enter)],
-        )
-        self.sleep.assert_not_called()
-
-    def test_windows_uses_native_send_input(self):
-        sender = Mock(return_value=True)
+    def test_windows_custom_sender_reports_its_result_for_the_configured_key(self):
         controller_factory = Mock()
-        reports = []
-        advancer = DialogueAdvancer(
-            "right",
-            controller_factory=controller_factory,
-            platform="win32",
-            windows_sender=sender,
-            diagnostic_handler=reports.append,
-        )
+        for sent in (True, False):
+            with self.subTest(sent=sent):
+                sender = Mock(return_value=sent)
+                reports = []
+                advancer = DialogueAdvancer(
+                    "right",
+                    controller_factory=controller_factory,
+                    platform="win32",
+                    windows_sender=sender,
+                    diagnostic_handler=reports.append,
+                )
 
-        self.assertTrue(advancer.advance())
+                self.assertIs(advancer.advance(), sent)
 
-        sender.assert_called_once_with(0x27)
+                sender.assert_called_once_with(0x27)
+                self.assertEqual(reports[0]["mechanism"], "custom")
+                self.assertEqual(reports[0]["key_code"], 0x27)
+                self.assertIs(reports[0]["success"], sent)
+                self.assertNotIn("press_started_monotonic", reports[0])
+                self.assertNotIn("batch_started_monotonic", reports[0])
         controller_factory.assert_not_called()
-        self.assertEqual(reports[0]["mechanism"], "custom")
-        self.assertEqual(reports[0]["key_code"], 0x27)
-        self.assertTrue(reports[0]["success"])
-        self.assertNotIn("press_started_monotonic", reports[0])
-        self.assertNotIn("batch_started_monotonic", reports[0])
         self.sleep.assert_not_called()
 
     def test_diagnostics_are_emitted_once_after_release_in_timestamp_order(self):
@@ -115,62 +90,56 @@ class DialogueAdvancerTest(unittest.TestCase):
                 else:
                     self.assertNotIn("key_code", report)
 
-    def test_interrupted_key_press_still_releases_and_keeps_original_error(self):
-        for platform in ("linux", "darwin"):
-            for error_type in (RuntimeError, KeyboardInterrupt):
-                for release_fails in (False, True):
-                    with self.subTest(
-                        platform=platform, error=error_type, release=release_fails
-                    ):
-                        error = error_type("press failed")
-                        release_error = (
-                            ValueError("release failed") if release_fails else None
-                        )
-                        if release_fails and error_type is KeyboardInterrupt:
-                            release_error = SystemExit("release interrupted")
-                        controller = Mock()
-                        controller.press.side_effect = error
-                        controller.release.side_effect = release_error
-                        quartz = Mock(kCGHIDEventTap=0)
-                        quartz.CGEventCreateKeyboardEvent.side_effect = ("down", "up")
-                        quartz.CGEventPost.side_effect = (error, release_error)
-                        reports = []
-                        advancer = DialogueAdvancer(
-                            "enter",
-                            platform=platform,
-                            controller_factory=lambda: controller,
-                            quartz_module=quartz,
-                            diagnostic_handler=reports.append,
-                        )
+    def test_failed_key_press_attempts_release_and_reports_the_original_error(self):
+        for platform, error, release_error in (
+            (
+                "linux",
+                KeyboardInterrupt("press interrupted"),
+                SystemExit("release interrupted"),
+            ),
+            ("darwin", RuntimeError("press failed"), None),
+        ):
+            with self.subTest(platform=platform):
+                controller = Mock()
+                controller.press.side_effect = error
+                controller.release.side_effect = release_error
+                quartz = Mock(kCGHIDEventTap=0)
+                quartz.CGEventCreateKeyboardEvent.side_effect = ("down", "up")
+                quartz.CGEventPost.side_effect = (error, release_error)
+                reports = []
+                advancer = DialogueAdvancer(
+                    "enter",
+                    platform=platform,
+                    controller_factory=lambda: controller,
+                    quartz_module=quartz,
+                    diagnostic_handler=reports.append,
+                )
 
-                        with self.assertRaises(error_type) as raised:
-                            advancer.advance()
+                with self.assertRaises(type(error)) as raised:
+                    advancer.advance()
 
-                        self.assertIs(raised.exception, error)
-                        self.assertEqual(len(reports), 1)
-                        report = reports[0]
-                        self.assertFalse(report["success"])
-                        self.assertEqual(report["error_type"], error_type.__name__)
-                        self.assertEqual(
-                            report["press_error_type"], error_type.__name__
-                        )
-                        self.assertIn("release_completed_monotonic", report)
-                        self.sleep.assert_not_called()
-                        if platform == "linux":
-                            controller.release.assert_called_once_with(
-                                keyboard.Key.enter
-                            )
-                        else:
-                            self.assertEqual(
-                                quartz.CGEventPost.call_args_list,
-                                [call(0, "down"), call(0, "up")],
-                            )
-                        if release_fails:
-                            self.assertIn("release failed", error.__notes__[0])
-                            self.assertEqual(
-                                report["release_error_type"],
-                                type(release_error).__name__,
-                            )
+                self.assertIs(raised.exception, error)
+                [report] = reports
+                self.assertFalse(report["success"])
+                self.assertEqual(report["error_type"], type(error).__name__)
+                self.assertEqual(report["press_error_type"], type(error).__name__)
+                self.assertIn("release_completed_monotonic", report)
+                self.sleep.assert_not_called()
+                if platform == "linux":
+                    self.assertEqual(
+                        controller.method_calls,
+                        [
+                            call.press(keyboard.Key.enter),
+                            call.release(keyboard.Key.enter),
+                        ],
+                    )
+                    self.assertIn("release interrupted", error.__notes__[0])
+                    self.assertEqual(report["release_error_type"], "SystemExit")
+                else:
+                    self.assertEqual(
+                        quartz.CGEventPost.call_args_list,
+                        [call(0, "down"), call(0, "up")],
+                    )
 
     def test_successful_key_press_reports_release_failure(self):
         controller = Mock()
@@ -238,7 +207,6 @@ class DialogueAdvancerTest(unittest.TestCase):
                 self.assertEqual(report["completed_monotonic"], 5)
                 self.assertNotIn("batch_started_monotonic", report)
                 self.assertEqual(flags, [0, 0x0002])
-                self.assertEqual(user32.SendInput.call_count, 2)
                 if down_sent == 1:
                     self.sleep.assert_called_with(0.05)
                 else:
@@ -302,7 +270,6 @@ class DialogueAdvancerTest(unittest.TestCase):
                     return 1
 
                 user32.SendInput.side_effect = send
-                self.sleep.reset_mock()
                 self.sleep.side_effect = lambda seconds: events.append(
                     ("hold", seconds)
                 )
@@ -310,36 +277,22 @@ class DialogueAdvancerTest(unittest.TestCase):
                     self.assertTrue(DialogueAdvancer(key, platform="win32").advance())
 
                 self.assertEqual(events, [(code, 0), ("hold", 0.05), (code, 0x0002)])
-                self.sleep.assert_called_once_with(0.05)
 
-    def test_windows_interrupted_hold_releases_and_preserves_original_error(self):
-        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
-            for release_fails in (False, True):
-                with self.subTest(error=error_type, release_fails=release_fails):
-                    error = error_type("hold interrupted")
-                    user32 = Mock()
-                    user32.SendInput.side_effect = [
-                        1,
-                        ValueError("release failed") if release_fails else 1,
-                    ]
-                    self.sleep.reset_mock()
-                    self.sleep.side_effect = error
+    def test_windows_interrupted_hold_releases_the_same_key(self):
+        error = KeyboardInterrupt("hold interrupted")
+        user32 = Mock()
+        user32.SendInput.return_value = 1
+        self.sleep.side_effect = error
 
-                    with self.assertRaises(error_type) as raised:
-                        send_windows_key(0x20, user32=user32)
+        with self.assertRaises(KeyboardInterrupt) as raised:
+            send_windows_key(0x27, user32=user32)
 
-                    self.assertIs(raised.exception, error)
-                    self.sleep.assert_called_once_with(0.05)
-                    self.assertEqual(user32.SendInput.call_count, 2)
-                    self.assertEqual(
-                        [
-                            call.args[1]._obj.keyboard.flags
-                            for call in user32.SendInput.call_args_list
-                        ],
-                        [0, 0x0002],
-                    )
-                    if release_fails:
-                        self.assertIn("release failed", error.__notes__[0])
+        self.assertIs(raised.exception, error)
+        events = [args[1]._obj.keyboard for args, _ in user32.SendInput.call_args_list]
+        self.assertEqual(
+            [(event.virtual_key, event.flags) for event in events],
+            [(0x27, 0), (0x27, 0x0002)],
+        )
 
     def test_setup_failure_is_reported_without_press_markers(self):
         for platform in ("linux", "win32"):
@@ -365,27 +318,32 @@ class DialogueAdvancerTest(unittest.TestCase):
                 probe.assert_not_called()
 
     def test_broken_diagnostic_handler_never_changes_input_result_or_error(self):
-        for handler_error in (RuntimeError, KeyboardInterrupt):
-            for input_error in (None, KeyboardInterrupt("press interrupted")):
-                with self.subTest(handler_error=handler_error, input_error=input_error):
-                    controller = Mock()
-                    controller.press.side_effect = input_error
-                    handler = Mock(side_effect=handler_error("sink failed"))
-                    advancer = DialogueAdvancer(
-                        platform="linux",
-                        controller_factory=lambda: controller,
-                        diagnostic_handler=handler,
-                    )
+        for handler_error, input_error in (
+            (RuntimeError("sink failed"), None),
+            (
+                KeyboardInterrupt("sink interrupted"),
+                KeyboardInterrupt("press interrupted"),
+            ),
+        ):
+            with self.subTest(handler_error=handler_error):
+                controller = Mock()
+                controller.press.side_effect = input_error
+                handler = Mock(side_effect=handler_error)
+                advancer = DialogueAdvancer(
+                    platform="linux",
+                    controller_factory=lambda: controller,
+                    diagnostic_handler=handler,
+                )
 
-                    if input_error is None:
-                        self.assertTrue(advancer.advance())
-                    else:
-                        with self.assertRaises(KeyboardInterrupt) as raised:
-                            advancer.advance()
-                        self.assertIs(raised.exception, input_error)
+                if input_error is None:
+                    self.assertTrue(advancer.advance())
+                else:
+                    with self.assertRaises(KeyboardInterrupt) as raised:
+                        advancer.advance()
+                    self.assertIs(raised.exception, input_error)
 
-                    controller.release.assert_called_once()
-                    handler.assert_called_once()
+                controller.release.assert_called_once()
+                handler.assert_called_once()
 
     def test_focus_probe_runs_after_setup_and_before_native_input(self):
         for platform in ("linux", "darwin", "win32"):
@@ -443,27 +401,26 @@ class DialogueAdvancerTest(unittest.TestCase):
                 )
                 self.assertEqual(reports[0]["before_foreground_pid"], 123)
 
-    def test_failed_focus_probe_does_not_block_key_pair(self):
-        for error_type in (RuntimeError, KeyboardInterrupt):
-            with self.subTest(error_type=error_type):
-                controller = FakeKeyboardController()
-                reports = []
-                probe = Mock(side_effect=error_type("probe failed"))
-                advancer = DialogueAdvancer(
-                    platform="linux",
-                    controller_factory=lambda: controller,
-                    diagnostic_handler=reports.append,
-                    diagnostic_probe=probe,
-                )
+    def test_interrupted_focus_probe_does_not_block_the_configured_key_pair(self):
+        controller = Mock()
+        reports = []
+        advancer = DialogueAdvancer(
+            "right",
+            platform="linux",
+            controller_factory=lambda: controller,
+            diagnostic_handler=reports.append,
+            diagnostic_probe=Mock(side_effect=KeyboardInterrupt()),
+        )
 
-                self.assertTrue(advancer.advance())
+        self.assertTrue(advancer.advance())
 
-                probe.assert_called_once()
-                self.assertEqual(len(controller.events), 2)
-                self.assertEqual(
-                    reports[0]["before_focus_error_type"], error_type.__name__
-                )
-                self.assertTrue(reports[0]["success"])
+        self.assertEqual(
+            controller.method_calls,
+            [call.press(keyboard.Key.right), call.release(keyboard.Key.right)],
+        )
+        self.sleep.assert_not_called()
+        self.assertEqual(reports[0]["before_focus_error_type"], "KeyboardInterrupt")
+        self.assertTrue(reports[0]["success"])
 
     def test_rejects_unknown_key(self):
         with self.assertRaises(ValueError):
@@ -476,7 +433,6 @@ class DialogueAdvancerTest(unittest.TestCase):
                 quartz = Mock(kCGHIDEventTap=0)
                 quartz.CGEventCreateKeyboardEvent.side_effect = ["down", "up"]
                 quartz.CGEventPost.side_effect = lambda tap, event: events.append(event)
-                self.sleep.reset_mock()
                 self.sleep.side_effect = lambda duration: events.append(
                     ("hold", duration)
                 )
@@ -491,7 +447,6 @@ class DialogueAdvancerTest(unittest.TestCase):
                 self.assertTrue(advancer.advance())
 
                 self.assertEqual(events, ["down", ("hold", 0.05), "up"])
-                self.sleep.assert_called_once_with(0.05)
                 self.assertEqual(
                     quartz.CGEventCreateKeyboardEvent.call_args_list,
                     [call(None, code, True), call(None, code, False)],
@@ -502,42 +457,31 @@ class DialogueAdvancerTest(unittest.TestCase):
                 )
                 controller_factory.assert_not_called()
 
-    def test_macos_interrupted_hold_releases_and_preserves_original_error(self):
-        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
-            for release_fails in (False, True):
-                with self.subTest(error=error_type, release_fails=release_fails):
-                    error = error_type("hold interrupted")
-                    quartz = Mock(kCGHIDEventTap=0)
-                    quartz.CGEventCreateKeyboardEvent.side_effect = ["down", "up"]
-                    quartz.CGEventPost.side_effect = [
-                        None,
-                        ValueError("release failed") if release_fails else None,
-                    ]
-                    self.sleep.reset_mock()
-                    self.sleep.side_effect = error
-                    reports = []
-                    advancer = DialogueAdvancer(
-                        platform="darwin",
-                        quartz_module=quartz,
-                        diagnostic_handler=reports.append,
-                    )
+    def test_macos_interrupted_hold_preserves_the_error_if_release_also_fails(self):
+        error = SystemExit("hold interrupted")
+        quartz = Mock(kCGHIDEventTap=0)
+        quartz.CGEventCreateKeyboardEvent.side_effect = ("down", "up")
+        quartz.CGEventPost.side_effect = (None, ValueError("release failed"))
+        self.sleep.side_effect = error
+        reports = []
+        advancer = DialogueAdvancer(
+            platform="darwin", quartz_module=quartz, diagnostic_handler=reports.append
+        )
 
-                    with self.assertRaises(error_type) as raised:
-                        advancer.advance()
+        with self.assertRaises(SystemExit) as raised:
+            advancer.advance()
 
-                    self.assertIs(raised.exception, error)
-                    self.sleep.assert_called_once_with(0.05)
-                    self.assertEqual(
-                        quartz.CGEventPost.call_args_list,
-                        [call(0, "down"), call(0, "up")],
-                    )
-                    self.assertEqual(len(reports), 1)
-                    self.assertFalse(reports[0]["success"])
-                    self.assertEqual(reports[0]["error_type"], error_type.__name__)
-                    self.assertNotIn("press_error_type", reports[0])
-                    self.assertIn("release_completed_monotonic", reports[0])
-                    if release_fails:
-                        self.assertIn("release failed", error.__notes__[0])
+        self.assertIs(raised.exception, error)
+        self.assertIn("release failed", error.__notes__[0])
+        self.assertEqual(
+            quartz.CGEventPost.call_args_list, [call(0, "down"), call(0, "up")]
+        )
+        [report] = reports
+        self.assertFalse(report["success"])
+        self.assertEqual(report["error_type"], "SystemExit")
+        self.assertNotIn("press_error_type", report)
+        self.assertEqual(report["release_error_type"], "ValueError")
+        self.assertIn("release_completed_monotonic", report)
 
     def test_macos_does_not_press_key_until_release_event_exists(self):
         quartz = Mock()

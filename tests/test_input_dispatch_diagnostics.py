@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID
 
+from pynput import keyboard
+
 from tests import test_controller_transition_observation as sequence_fixtures
 from tests.test_live import AutoAdvanceFakeFrameHarness
 from vntts.auto_advance import DialogueAdvancer
@@ -59,7 +61,11 @@ class InputDispatchDiagnosticsTest(unittest.TestCase):
             )
 
         controller = AppController(
-            AppSettings(capture_mode="window", auto_advance_enabled=True),
+            AppSettings(
+                capture_mode="window",
+                auto_advance_enabled=True,
+                auto_advance_key="enter",
+            ),
             pipeline_event_handler=record,
         )
         controller.capture_target = SimpleNamespace(
@@ -105,7 +111,9 @@ class InputDispatchDiagnosticsTest(unittest.TestCase):
             self.assertLessEqual(
                 native["press_completed_monotonic"], native["release_started_monotonic"]
             )
-            self.assertEqual([e[0] for e in keys], ["press", "release"])
+            self.assertEqual(
+                keys, [("press", keyboard.Key.enter), ("release", keyboard.Key.enter)]
+            )
             stored = [
                 e
                 for t in timeline.snapshot()
