@@ -480,23 +480,6 @@ preparation Mac gates in the next relevant run. Do not repeat ordinary
 Read/restart or the full Hansel chapter solely to measure matching. Windows
 acceptance is outside this pass. Book reading remains deferred.
 
-- [ ] **Repair cancellation reported as a synthesis failure.** Native GUI Stop
-      during cold original-duration preparation also stopped an active MOSS render,
-      but briefly announced `isolated worker stopped during render` after the
-      stopped status. In the shared speech worker, recheck cancellation after the
-      blocking frame receive and put first-chunk acquisition under the same
-      cancellation/cleanup handling as subsequent chunks. Handle both a received
-      EOF and an exception raised by the receive after the process exits;
-      deterministic transport reproduction confirms both currently escape even
-      after actual backend Stop. Preserve real failures without cancellation.
-      Cover cancellation before first PCM and after a chunk, no audio output for
-      an already cancelled request, and a fresh retry through play_prepared;
-      do not clear Stop inside shared render and revive an old request.
-      Then repeat the bounded GUI
-      Stop check. Existing native evidence shows no late old-run keys or PCM and
-      successful retry, but the cancellation UX gate remains open. Evidence:
-      `combined-native-20261118/cold-stop-summary.json`.
-
 - [ ] **Current Mac verification pass.** Finish the foreign-only donor check
       in RUN-11-UI-02, then its background-preparation gate and the cold GUI
       cancellation gate below.
@@ -539,6 +522,10 @@ acceptance is outside this pass. Book reading remains deferred.
 - [ ] **RUN-16-02 - Qualify cancellation during a genuinely cold chapter timing request.**
       Remaining integration gate: use GUI Stop while first-time original-duration
       analysis is active, then Read again without late publication/playback/keys.
+      Keep live synthesis active at Stop and require no false synthesis-error
+      notice from the terminated worker; native cancellation UX remains to be
+      checked after the shared EOF/first-chunk handling repair. Retained failure:
+      `combined-native-20261118/cold-stop-summary.json`.
       Use a source that actually requests timing, not an already timed archived
       dialogue. Do not repeat the real-decoder provider cancellation/retry/reuse
       checks or ordinary native Stop/Read; those now pass. Keep this with the next

@@ -1558,8 +1558,7 @@ class IsolatedSpeechBackend:
             deadline = monotonic() + self.request_timeout
             while True:
                 if self._stop_requested.is_set() or request.cancellation_requested():
-                    self._terminate_process(process)
-                    return self._cancelled_result(request, chunks)
+                    break
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     self._terminate_process(process)
@@ -1573,6 +1572,15 @@ class IsolatedSpeechBackend:
                     )
                 except queue.Empty:
                     continue
+                except TTSSynthesisError:
+                    if not (
+                        self._stop_requested.is_set()
+                        or request.cancellation_requested()
+                    ):
+                        raise
+                    break
+                if self._stop_requested.is_set() or request.cancellation_requested():
+                    break
                 if document.get("request_id") not in {None, request_id}:
                     continue
                 message_type = document.get("type")
@@ -1608,6 +1616,8 @@ class IsolatedSpeechBackend:
                         document.get("error")
                         or f"{self.name} isolated worker stopped during render"
                     )
+            self._terminate_process(process)
+            return self._cancelled_result(request, chunks)
 
     def _cancelled_result(
         self, request: SynthesisRequest, chunks: Sequence[NDArray[np.float32]]
@@ -1695,16 +1705,17 @@ class IsolatedSpeechBackend:
             first_audio_at: float | None = None
             interrupted = False
             try:
-                first = next(rendered)
-            except StopIteration:
-                result = rendered.result
-                return outcome_for_prepared(
-                    prepared,
-                    PlaybackStatus.INTERRUPTED,
-                    (self.clock() - started) * 1000,
-                    generation_limited=result.completion is SynthesisCompletion.LIMITED,
-                )
-            try:
+                try:
+                    first = next(rendered)
+                except StopIteration:
+                    result = rendered.result
+                    return outcome_for_prepared(
+                        prepared,
+                        PlaybackStatus.INTERRUPTED,
+                        (self.clock() - started) * 1000,
+                        generation_limited=result.completion
+                        is SynthesisCompletion.LIMITED,
+                    )
                 audio_output = self._resolve_audio_output()
                 with audio_output.OutputStream(
                     samplerate=first.sample_rate,
@@ -1767,19 +1778,20 @@ class IsolatedSpeechBackend:
                     first_audio_at=first_audio_at,
                 )
             except Exception as error:
+                cancelled = playback_cancelled(self._stop_requested, playback_guard)
                 return outcome_for_prepared(
                     prepared,
                     (
                         PlaybackStatus.INTERRUPTED
-                        if self._stop_requested.is_set()
+                        if cancelled
                         else PlaybackStatus.FAILED
                     ),
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     first_audio_ms=first_audio_ms,
                     first_audio_at=first_audio_at,
-                    error=None if self._stop_requested.is_set() else str(error),
-                    error_type=None if self._stop_requested.is_set() else type(error),
+                    error=None if cancelled else str(error),
+                    error_type=None if cancelled else type(error),
                 )
             finally:
                 rendered.close()

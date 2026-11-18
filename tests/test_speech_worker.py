@@ -624,6 +624,234 @@ class DeferredWorkerStartupTests(unittest.TestCase):
         self.assertTrue(constructor.call_args.kwargs["defer_startup"])
 
 
+class WorkerRenderCancellationTests(unittest.TestCase):
+    def backend(self):
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), audio_output=MagicMock()
+            )
+        backend.process = FakeProcess(None)
+        backend.sample_rate = 24_000
+        self.addCleanup(backend.shutdown)
+        return backend
+
+    @staticmethod
+    def chunk_frame(pcm):
+        return (
+            {
+                "type": "chunk",
+                "shape": list(pcm.shape),
+                "sample_rate": 24_000,
+                "index": 0,
+                "elapsed_ms": 0.0,
+            },
+            pcm.tobytes(),
+        )
+
+    def test_stop_during_receive_cancels_render_and_preserves_partial_pcm(self):
+        pcm = np.array([[0.25], [-0.25]], dtype=np.float32)
+        for partial in (False, True):
+            for reader_raises in (False, True):
+                with self.subTest(partial=partial, reader_raises=reader_raises):
+                    backend = self.backend()
+                    process = backend.process
+                    received = []
+
+                    def receive(*_args, **_options):
+                        if partial and not received:
+                            received.append(True)
+                            return self.chunk_frame(pcm)
+                        self.assertTrue(backend.stop())
+                        if reader_raises:
+                            raise TTSSynthesisError("worker pipe closed")
+                        return {"type": "eof"}, b""
+
+                    with patch.object(backend, "_next_frame", side_effect=receive):
+                        result = backend.render(
+                            SynthesisRequest("Narrator", "Stopped line.")
+                        ).collect()
+
+                    self.assertIs(result.completion, SynthesisCompletion.CANCELLED)
+                    np.testing.assert_array_equal(
+                        result.pcm,
+                        pcm if partial else np.empty((0, 1), dtype=np.float32),
+                    )
+                    self.assertEqual(process.returncode, -15)
+                    self.assertIsNone(backend.process)
+                    self.assertFalse(backend._request_lock.locked())
+
+    def test_stop_during_receive_discards_late_chunk_and_result(self):
+        for message_type in ("chunk", "result"):
+            with self.subTest(message_type=message_type):
+                backend = self.backend()
+                request = SynthesisRequest("Narrator", "Stopped line.")
+                result = FakeWorkerBackend(backend.registry).render(request).collect()
+                frame = (
+                    self.chunk_frame(result.pcm)
+                    if message_type == "chunk"
+                    else ({"type": "result", "result": _result_document(result)}, b"")
+                )
+
+                def receive(*_args, **_options):
+                    backend.stop()
+                    return frame
+
+                with patch.object(backend, "_next_frame", side_effect=receive) as read:
+                    cancelled = backend.render(request).collect()
+
+                self.assertIs(cancelled.completion, SynthesisCompletion.CANCELLED)
+                self.assertEqual(cancelled.pcm.shape, (0, 1))
+                read.assert_called_once()
+
+    def test_expired_guard_during_receive_interrupts_before_audio(self):
+        for reader_raises in (False, True):
+            with self.subTest(reader_raises=reader_raises):
+                backend = self.backend()
+                active = Event()
+                active.set()
+
+                def receive(*_args, **_options):
+                    active.clear()
+                    if reader_raises:
+                        raise TTSSynthesisError("worker pipe closed")
+                    return {"type": "eof"}, b""
+
+                with patch.object(backend, "_next_frame", side_effect=receive):
+                    outcome = backend.play_prepared(
+                        backend.prepare_playback("Narrator", "Outdated line."),
+                        playback_guard=active.is_set,
+                    )
+
+                self.assertEqual(outcome.status.value, "interrupted")
+                self.assertIsNone(outcome.error)
+                self.assertIsNone(outcome.error_type)
+                backend.audio_output.OutputStream.assert_not_called()
+                self.assertFalse(backend._request_lock.locked())
+                self.assertFalse(backend._playback_lock.locked())
+                self.assertIsNone(backend._active_stream)
+
+    def test_receive_failure_without_cancellation_remains_an_error(self):
+        for reader_raises in (False, True):
+            with self.subTest(reader_raises=reader_raises):
+                backend = self.backend()
+
+                def receive(*_args, **_options):
+                    if reader_raises:
+                        raise TTSSynthesisError("worker pipe closed")
+                    return {"type": "eof"}, b""
+
+                with patch.object(backend, "_next_frame", side_effect=receive):
+                    with self.assertRaises(TTSSynthesisError):
+                        backend.render(
+                            SynthesisRequest("Narrator", "Broken line.")
+                        ).collect()
+                    rendered = backend.render(
+                        SynthesisRequest("Narrator", "Broken line.")
+                    )
+                    with (
+                        patch.object(backend, "render", return_value=rendered),
+                        patch.object(rendered, "close", wraps=rendered.close) as close,
+                    ):
+                        outcome = backend.play_prepared(
+                            backend.prepare_playback("Narrator", "Broken line.")
+                        )
+
+                self.assertEqual(outcome.status.value, "failed")
+                self.assertIn(
+                    "worker pipe closed" if reader_raises else "stopped during render",
+                    outcome.error,
+                )
+                self.assertIs(outcome.error_type, TTSSynthesisError)
+                close.assert_called_once_with()
+                backend.audio_output.OutputStream.assert_not_called()
+                self.assertFalse(backend._request_lock.locked())
+                self.assertFalse(backend._playback_lock.locked())
+                self.assertIsNone(backend._active_stream)
+
+    def test_expired_guard_during_startup_error_interrupts_before_audio(self):
+        backend = self.backend()
+        active = Event()
+        active.set()
+
+        def ensure_worker(**_options):
+            active.clear()
+            raise TTSSynthesisError("worker startup was cancelled")
+
+        with patch.object(backend, "_ensure_worker", side_effect=ensure_worker):
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Outdated line."),
+                playback_guard=active.is_set,
+            )
+
+        self.assertEqual(outcome.status.value, "interrupted")
+        self.assertIsNone(outcome.error)
+        self.assertIsNone(outcome.error_type)
+        backend.audio_output.OutputStream.assert_not_called()
+        self.assertFalse(backend._request_lock.locked())
+        self.assertFalse(backend._playback_lock.locked())
+
+    def test_playback_retries_with_a_fresh_worker_after_stop_during_receive(self):
+        backend = self.backend()
+        original = backend.process
+
+        def receive(*_args, **_options):
+            backend.stop()
+            return {"type": "eof"}, b""
+
+        with patch.object(backend, "_next_frame", side_effect=receive):
+            stopped = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Stopped line.")
+            )
+        self.assertEqual(stopped.status.value, "interrupted")
+        self.assertIsNone(stopped.error)
+        self.assertEqual(original.returncode, -15)
+        self.assertIsNone(backend.process)
+        backend.audio_output.OutputStream.assert_not_called()
+
+        replacement = FakeProcess(None)
+        backend.process_factory = MagicMock(return_value=replacement)
+        backend._runtime_use = MagicMock()
+        result = (
+            FakeWorkerBackend(backend.registry)
+            .render(SynthesisRequest("Narrator", "Retry."))
+            .collect()
+        )
+        frames = (
+            (
+                {
+                    "type": "health",
+                    "interpreter": "/runtime/python",
+                    "prefix": "/runtime",
+                    "sample_rate": 24_000,
+                },
+                b"",
+            ),
+            self.chunk_frame(result.pcm),
+            ({"type": "result", "result": _result_document(result)}, b""),
+        )
+        with (
+            patch("vntts.speech_worker.threading.Thread.start"),
+            patch.object(backend, "_next_frame", side_effect=frames),
+        ):
+            retried = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Retry.")
+            )
+
+        self.assertTrue(retried.successful)
+        self.assertIsNone(retried.error)
+        self.assertIs(backend.process, replacement)
+        backend.process_factory.assert_called_once()
+        stream = backend.audio_output.OutputStream.return_value.__enter__.return_value
+        stream.write.assert_called_once()
+        np.testing.assert_array_equal(stream.write.call_args.args[0], result.pcm)
+
+
 class SpeechWorkerTest(unittest.TestCase):
     def test_parent_preserves_only_explicit_configuration_errors_from_worker(self):
         for command in ("prime", "render"):
