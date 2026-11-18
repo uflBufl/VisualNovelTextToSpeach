@@ -790,13 +790,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] On Windows, qualify admitted ZIP intake for MOSS runtime, managed game decoder and packaged licences, plus native-probe archive member sources. Verify valid/invalid archives, source closure, member bytes/metadata, refusal before publication and retry. Mac FIFO/byte-parity tests do not establish Windows filesystem or DLL behavior.
 
-## Coordinate source-audio producer numeric admission
-
-- [ ] Once the extractor revision containing the decoder and cache overflow fix
-      is available in the configured remote, update the VNTTS dependency pin and
-      lockfile and verify source-audio timing with the installed dependency.
-      The local extractor fix is on branch `source-duration-overflow`.
-
 ## Qualify remaining model dependency risks
 
 - [ ] Rerun `scripts/dependency_audit.py` after explicit permission to send
