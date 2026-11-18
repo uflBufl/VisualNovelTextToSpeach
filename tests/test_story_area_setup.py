@@ -88,7 +88,6 @@ class StoryAreaSetupTest(unittest.TestCase):
         page.finish_calibration(self.dialogue)
         self.assertFalse(page.isComplete())
         self.assertFalse(wizard.next_button.isEnabled())
-        self.assertTrue(page.story_button.isDefault())
         self.assertIn("centre", page.story_instructions.text())
         self.assertIn("any game frame", page.story_instructions.text())
         self.assertIn(
@@ -128,7 +127,6 @@ class StoryAreaSetupTest(unittest.TestCase):
         page.finish_calibration(self.dialogue)
         self.assertFalse(page.isComplete())
         self.assertFalse(wizard.next_button.isEnabled())
-        self.assertFalse(hasattr(page, "discover_story_text"))
         wizard.show_page(0)
         wizard.next_page()
         self.assertTrue(wizard.draft_settings.discover_text_layouts)

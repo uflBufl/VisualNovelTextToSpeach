@@ -948,36 +948,31 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.cancel_button.isEnabled())
         wizard.deleteLater()
 
-    def test_completed_test_hides_progress_and_cancel_for_every_outcome(self):
-        for successful, message in (
-            (True, "Read a line"),
-            (False, "No dialogue"),
-            (False, "Test cancelled"),
-        ):
-            with self.subTest(successful=successful, message=message):
-                wizard = OnboardingWizard(AppSettings(), reading_setup=True)
-                wizard.calibration_page.finish_calibration(
-                    DialogRegion(0.1, 0.7, 0.8, 0.2)
-                )
-                wizard.calibration_page.finish_story_area(
-                    DialogRegion(0.05, 0.1, 0.9, 0.8)
-                )
-                wizard.show_page(len(wizard.pages) - 1)
-                page = wizard.test_page
-                page.run_test()
-                page.set_progress(55, "Speaking")
-                page.set_result(successful, message)
-                self.assertTrue(page.progress.isHidden())
-                self.assertTrue(page.cancel_button.isHidden())
-                self.assertTrue(page.button.isEnabled())
-                self.assertEqual(wizard.finish_button.isEnabled(), successful)
-                final_text = page.status.text()
-                page.set_progress(75, "Late progress")
-                self.assertEqual(page.status.text(), final_text)
-                wizard.deleteLater()
-
-    def test_test_cancellation_keeps_its_message_and_emits_once(self):
+    def test_failed_test_can_be_retried_and_late_progress_cannot_replace_result(self):
         wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
+        wizard.show_page(len(wizard.pages) - 1)
+        page = wizard.test_page
+        for successful, message in ((False, "No dialogue"), (True, "Read a line")):
+            page.button.click()
+            self.assertTrue(page.running)
+            page.set_progress(55, "Speaking")
+            page.set_result(successful, message)
+            self.assertTrue(page.progress.isHidden())
+            self.assertTrue(page.cancel_button.isHidden())
+            self.assertTrue(page.button.isEnabled())
+            self.assertEqual(wizard.finish_button.isEnabled(), successful)
+            final_text = page.status.text()
+            self.assertIn(message, final_text)
+            page.set_progress(75, "Late progress")
+            self.assertEqual(page.status.text(), final_text)
+        wizard.deleteLater()
+
+    def test_cancelled_test_ignores_late_updates_and_allows_retry(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         wizard.show_page(len(wizard.pages) - 1)
         requests = []
         wizard.cancel_requested.connect(lambda: requests.append(True))
@@ -989,11 +984,17 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(requests, [True])
         self.assertIn("Cancelling", page.status.text())
         self.assertTrue(page.running)
-        page.set_result(False, "Cancelled")
-        page.run_test()
+        page.set_result(True, "A late completed recording")
+        self.assertIn("cancelled", page.status.text())
+        self.assertFalse(page.successful)
+        self.assertFalse(wizard.finish_button.isEnabled())
+        self.assertTrue(page.progress.isHidden())
+        self.assertTrue(page.cancel_button.isHidden())
+        page.button.click()
         page.set_progress(20, "Retry running")
         self.assertEqual(page.status.text(), "Retry running")
-        page.set_result(False, "Done")
+        page.set_result(True, "Read on retry")
+        self.assertTrue(wizard.finish_button.isEnabled())
         wizard.deleteLater()
 
     def test_primary_test_button_prepares_then_plays_and_cancels_without_resizing(self):
@@ -1023,18 +1024,6 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(page.button.sizeHint(), size)
         page.set_playing(True)
         self.assertEqual(page.button.property("playbackState"), "idle")
-        wizard.deleteLater()
-
-    def test_cancelled_test_ignores_a_late_success(self):
-        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
-        wizard.show_page(len(wizard.pages) - 1)
-        page = wizard.test_page
-        page.run_test()
-        page.request_cancel()
-        page.set_result(True, "A late completed recording")
-        self.assertFalse(page.successful)
-        self.assertFalse(wizard.finish_button.isEnabled())
-        self.assertIn("cancelled", page.status.text())
         wizard.deleteLater()
 
     def test_new_calibration_invalidates_previous_test_and_reuses_selected_region(self):
@@ -1747,22 +1736,6 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.remediation_button.isHidden())
         wizard.deleteLater()
 
-    def test_successful_test_has_one_explicit_finish_handoff(self):
-        wizard = OnboardingWizard(AppSettings())
-        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.7, 0.8, 0.2))
-        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
-        wizard.show_page(len(wizard.pages) - 1)
-
-        wizard.test_page.set_result(True, "Success. Recognized Rhiannon: Hello.")
-
-        self.assertEqual(wizard.finish_button.text(), "Finish setup")
-        self.assertTrue(wizard.finish_button.isDefault())
-        self.assertTrue(wizard.finish_button.isEnabled())
-        self.assertIn("Prepare offline audio", wizard.test_page.status.text())
-        self.assertIn("Start reading", wizard.test_page.status.text())
-        self.assertEqual(wizard.test_page.button.text(), "Run OCR-to-speech test")
-        wizard.deleteLater()
-
     def test_first_run_journey_needs_only_game_window_before_guided_test(self):
 
         diagnostics = Mock()
@@ -1804,6 +1777,12 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.test_page.button.click()
         self.assertEqual(len(test_requests), 1)
         wizard.test_page.set_result(True, "Recognized and spoke the visible line.")
+        self.assertEqual(wizard.finish_button.text(), "Finish setup")
+        self.assertTrue(wizard.finish_button.isDefault())
+        self.assertTrue(wizard.finish_button.isEnabled())
+        self.assertIn("Prepare offline audio", wizard.test_page.status.text())
+        self.assertIn("Start reading", wizard.test_page.status.text())
+        self.assertEqual(wizard.test_page.button.text(), "Run OCR-to-speech test")
         wizard.finish_button.click()
 
         self.assertTrue(wizard.settings().onboarding_completed)

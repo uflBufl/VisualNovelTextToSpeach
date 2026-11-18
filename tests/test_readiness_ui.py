@@ -23,24 +23,6 @@ class ReadinessDialogTest(unittest.TestCase):
                 widget.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
-    def test_missing_worker_shows_build_guidance_instead_of_device_guidance(self):
-        pool = ManualThreadPool()
-        diagnostics = Mock()
-        diagnostics.run.return_value = (
-            DiagnosticResult(
-                "Audio output", "error", "Run cargo build", "external-audio-runtime"
-            ),
-        )
-        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
-        pool.run_next()
-        self.application.processEvents()
-        dialog.table.selectRow(0)
-        self.assertIn("cargo build", dialog.selected_details.toPlainText())
-        self.assertFalse(dialog.selected_details.isHidden())
-        self.assertNotIn("cargo build", dialog.remediation_reason.text())
-        self.assertIn("automatically", dialog.remediation_reason.text())
-        self.assertNotIn("Connect", dialog.remediation_reason.text())
-
     def test_macos_hotkey_warning_points_to_controls_without_retry_or_fix(self):
         with patch("vntts.onboarding.sys.platform", "darwin"):
             result = OnboardingDiagnostics()._check_hotkeys(AppSettings())
@@ -62,11 +44,14 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertTrue(dialog.remediation_button.isHidden())
         dialog.close()
 
-    def test_missing_capture_component_opens_full_build_instructions(self):
+    def test_missing_audio_and_capture_workers_open_their_build_instructions(self):
         pool = ManualThreadPool()
         diagnostics = Mock()
         instruction = "Run uv run --no-project python scripts/build.py"
         diagnostics.run.return_value = (
+            DiagnosticResult(
+                "Audio output", "error", "Run cargo build", "external-audio-runtime"
+            ),
             DiagnosticResult(
                 "Capture component", "error", instruction, "external-capture-runtime"
             ),
@@ -74,7 +59,14 @@ class ReadinessDialogTest(unittest.TestCase):
         dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
         pool.run_next()
         self.application.processEvents()
-        dialog.select_check("Capture component")
+        self.assertIn("cargo build", dialog.selected_details.toPlainText())
+        self.assertFalse(dialog.selected_details.isHidden())
+        self.assertNotIn("cargo build", dialog.remediation_reason.text())
+        self.assertIn("automatically", dialog.remediation_reason.text())
+        self.assertNotIn("Connect", dialog.remediation_reason.text())
+
+        dialog.details_toggle.click()
+        dialog.table.selectRow(1)
         self.assertTrue(dialog.details_toggle.isChecked())
         self.assertEqual(
             dialog.selected_details.toPlainText(),
@@ -221,25 +213,7 @@ class ReadinessDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_loading_state_names_readiness_and_has_no_stale_details(self):
-        dialog = ReadinessDialog(
-            AppSettings(),
-            type(
-                "Diagnostics",
-                (),
-                {"run": lambda _self, _settings, *, cancellation=None: ()},
-            )(),
-            thread_pool=ManualThreadPool(),
-        )
-        self.assertEqual(dialog.windowTitle(), "Check readiness")
-        self.assertEqual(dialog.summary.text(), "Running readiness checks...")
-        self.assertTrue(dialog.details_toggle.isHidden())
-        self.assertTrue(dialog.selected_details.isHidden())
-        self.assertTrue(dialog.cancel_button.isDefault())
-        dialog.close()
-        dialog.deleteLater()
-
-    def test_summarizes_errors_and_warnings(self):
+    def test_loading_controls_give_way_to_error_and_warning_summary(self):
         pool = ManualThreadPool()
         diagnostics = type(
             "Diagnostics",
@@ -254,6 +228,10 @@ class ReadinessDialogTest(unittest.TestCase):
 
         dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
 
+        self.assertEqual(dialog.windowTitle(), "Check readiness")
+        self.assertTrue(dialog.details_toggle.isHidden())
+        self.assertTrue(dialog.selected_details.isHidden())
+        self.assertTrue(dialog.cancel_button.isDefault())
         self.assertEqual(dialog.summary.text(), "Running readiness checks...")
         self.assertEqual(dialog.table.rowCount(), 0)
         self.assertTrue(dialog.copy_selected.isHidden())
