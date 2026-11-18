@@ -1137,32 +1137,6 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 self.assertEqual(self.backend.requests, [])
 
-    def test_pocket_save_requires_local_capability_without_setting_flag(self):
-        readiness = self.enterContext(pocket_model_readiness(False))
-        before = self.library.bindings()
-        missing = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(missing, "catalog", source="character:rhiannon")
-        group = missing.voice_panel.current_group()
-        missing._capture_save(None)
-        with self.assertRaisesRegex(ValueError, "Set up the Pocket cloning model"):
-            missing.remember_many(((group, "character:rhiannon"),))
-        self.assertEqual(self.library.bindings(), before)
-        self.assertIsNone(missing.result_settings)
-        self.assertFalse(hasattr(missing.settings_value, "pocket_gated_model_accepted"))
-        readiness.return_value = True
-        accepted = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(accepted, "catalog", source="character:rhiannon")
-        self.listen(accepted, original=True)
-        self.save(accepted)
-        self.assertFalse(
-            hasattr(accepted.result_settings, "pocket_gated_model_accepted")
-        )
-        self.assertIsNotNone(self.library.binding("Narrator"))
-
     def test_pocket_setup_preserves_game_voice_edits_without_saving(self):
         readiness = self.enterContext(pocket_model_readiness(False))
         plan, group, _manifest = ambiguous_fixture(self.root / "pocket-setup")
@@ -1202,12 +1176,20 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(panel.a_use.isEnabled())
         self.assertEqual(self.backend.requests, [])
 
-    def test_pocket_setup_allows_selected_imported_voice_after_preparation(self):
+    def test_pocket_setup_unlocks_save_for_the_selected_imported_voice(self):
         readiness = self.enterContext(pocket_model_readiness(False))
         dialog = self.editor(
             settings=self.settings.updated(speech_backend="pocket-tts")
         )
         self.select(dialog, "catalog", source="character:rhiannon")
+        before = self.library.bindings()
+        group = dialog.voice_panel.current_group()
+        dialog._capture_save(None)
+        with self.assertRaisesRegex(ValueError, "Set up the Pocket cloning model"):
+            dialog.remember_many(((group, "character:rhiannon"),))
+        self.assertEqual(self.library.bindings(), before)
+        self.assertIsNone(dialog.result_settings)
+
         readiness.return_value = True
         dialog.pocket_setup.refresh()
         self.drain()
@@ -1216,7 +1198,14 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(dialog.result_settings)
         self.listen(dialog, original=True)
         self.save(dialog)
-        self.assertIsNotNone(self.library.binding("Narrator"))
+        narrator = initialize_voice_registry(
+            dialog.result_settings, voice_library=self.library
+        ).resolve("Narrator")
+        self.assertEqual(narrator.source_character, "Rhiannon")
+        self.assertEqual(
+            narrator.references[0].read_bytes(),
+            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
+        )
 
     @pocket_model_readiness(True)
     def test_switching_sources_keeps_model_visible_and_preserves_capability(
@@ -1229,6 +1218,7 @@ class GameNarratorTest(unittest.TestCase):
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
+                self.assertEqual(dialog.source.currentData(), mode)
                 self.assertTrue(dialog.tts_model_label.isVisible())
                 self.assertIs(dialog.settings_value, settings)
         self.assertEqual(self.backend.requests, [])
