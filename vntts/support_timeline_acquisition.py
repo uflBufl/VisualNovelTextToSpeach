@@ -12,6 +12,7 @@ from threading import Event, Lock, Thread
 from typing import Mapping
 from uuid import UUID, uuid4
 
+from vntts.capture_provenance import CAPTURE_GEOMETRY_FIELDS, sanitize_capture_geometry
 from vntts.cleanup import attempt_cleanup
 
 INPUT_DIAGNOSTIC_TIMINGS = frozenset(
@@ -111,6 +112,7 @@ _IDENTITY_FIELDS = {
     "stream_id",
     "action",
     "session_id",
+    "capture_session_id",
     "run_id",
     "playback_id",
     "capture_id",
@@ -454,7 +456,11 @@ class TimelineAcquisition:
                 "frame_equivalence_ms",
             ) and isinstance(value, bool):
                 continue
-            if key == "frame_comparison_passed" and isinstance(value, bool):
+            if key in CAPTURE_GEOMETRY_FIELDS and event.get("stage") == "capture":
+                geometry = sanitize_capture_geometry(key, value)
+                if geometry is not None:
+                    safe[key] = geometry
+            elif key == "frame_comparison_passed" and isinstance(value, bool):
                 safe[key] = value
             elif key in _NUMERIC_FIELDS and isinstance(value, (bool, int)):
                 if isinstance(value, bool) or value.bit_length() <= 64:

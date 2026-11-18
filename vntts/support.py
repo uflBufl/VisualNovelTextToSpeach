@@ -31,6 +31,11 @@ from uuid import UUID
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.audio_lifecycle import audio_lifecycle_context
+from vntts.capture_provenance import (
+    CAPTURE_GEOMETRY_FIELDS,
+    CaptureProvenance,
+    sanitize_capture_geometry,
+)
 from vntts.diagnostics import macos_permission_warnings
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.fatal_crashes import fatal_crash_report
@@ -325,16 +330,14 @@ generation_timeline_detail_fields = (
     "phase",
     "window_id",
     "owner_pid",
-    "window_bounds",
-    "capture_bounds",
     "coordinate_space",
+    "capture_session_id",
     "session_id",
     "frame_sequence",
     "layout_epoch",
     "acquired_monotonic",
     "source_monotonic",
     "clock_uncertainty_ms",
-    "output_dimensions",
     "success",
     "error_type",
     "mechanism",
@@ -477,11 +480,16 @@ def _sanitize_timeline_details(stage: str, details: SupportDetails) -> SupportDo
         } | sanitize_input_diagnostics(details)
     if stage in preroute_timeline_stages:
         return _sanitize_preroute_details(details)
-    return {
+    sanitized = {
         key: _sanitize_event_value(details[key])
         for key in generation_timeline_detail_fields
         if key in details and details[key] is not None
     } | sanitize_input_diagnostics({"dispatch_id": details.get("dispatch_id")})
+    for key in CAPTURE_GEOMETRY_FIELDS.intersection(details):
+        geometry = sanitize_capture_geometry(key, details[key])
+        if geometry is not None:
+            sanitized[key] = geometry
+    return sanitized
 
 
 def _record_stable_frame_gate(existing: SupportDetails, event: SupportDocument) -> None:
@@ -3269,39 +3277,19 @@ def sanitize_diagnostic(snapshot: object) -> SupportDocument:
         "cache_source": getattr(snapshot, "cache_source", None),
     }
     result = {key: _sanitize_event_value(value) for key, value in values.items()}
-    from vntts.capture_provenance import CaptureProvenance
-
     provenance = getattr(snapshot, "capture_provenance", None)
     if isinstance(provenance, Mapping):
         allowed = {field.name for field in fields(CaptureProvenance)}
         result["capture_provenance"] = {
             key: (
-                _sanitize_capture_geometry(value)
-                if key in {"window_bounds", "capture_bounds", "output_dimensions"}
+                sanitize_capture_geometry(key, value)
+                if key in CAPTURE_GEOMETRY_FIELDS
                 else _sanitize_event_value(value)
             )
             for key, value in provenance.items()
             if key in allowed
         }
     return result
-
-
-def _sanitize_capture_geometry(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            key: _sanitize_event_value(item)
-            for key, item in value.items()
-            if key in {"left", "top", "width", "height"}
-            and isinstance(item, (int, float))
-            and not isinstance(item, bool)
-        }
-    if isinstance(value, (list, tuple)):
-        return [
-            _sanitize_event_value(item)
-            for item in value[:2]
-            if isinstance(item, (int, float)) and not isinstance(item, bool)
-        ]
-    return None
 
 
 def _ocr_metric_average(values: Sequence[int | float]) -> int | float | None:

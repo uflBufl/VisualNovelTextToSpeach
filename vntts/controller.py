@@ -1703,8 +1703,9 @@ class AppController:
         details = {
             key: value
             for key, value in provenance.as_dict().items()
-            if key not in {"requested_window_title", "window_title"}
+            if key not in {"requested_window_title", "window_title", "session_id"}
         }
+        details["capture_session_id"] = provenance.session_id
         details.update(health)
         self.pipeline_event_handler(
             "capture",

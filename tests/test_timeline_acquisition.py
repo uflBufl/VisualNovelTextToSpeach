@@ -17,6 +17,117 @@ def read_journal(path):
 
 
 class TimelineAcquisitionTest(unittest.TestCase):
+    def test_capture_and_ocr_share_reading_identity_and_keep_safe_geometry(self):
+        from unittest.mock import Mock
+
+        from vntts.capture_provenance import CaptureProvenance
+        from vntts.controller import AppController
+        from vntts.live import LiveDialogReader
+
+        session_id, capture_session_id, capture_id = (uuid4().hex for _ in range(3))
+        log = GenerationTimelineLog()
+        controller = AppController.__new__(AppController)
+        controller._pipeline_event_sink = log.record
+        controller.pipeline_event_handler = controller._record_pipeline_event
+        controller.live_reader_session_id = session_id
+        reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=Mock(),
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            report_error=Mock(),
+            pipeline_event_handler=controller.pipeline_event_handler,
+        )
+        controller.live_reader = reader
+        reader.active_generation = 1
+        bounds = {"left": 10, "top": 20, "width": 300, "height": 140}
+        provenance = CaptureProvenance(
+            capture_id=capture_id,
+            run_id=reader.run_id,
+            started_monotonic=1.0,
+            completed_monotonic=1.1,
+            requested_window_title="PRIVATE requested title",
+            window_id=12,
+            window_title="PRIVATE title",
+            owner_pid=42,
+            window_bounds={**bounds, "extra": {"text": "PRIVATE nested"}},
+            capture_bounds=bounds,
+            output_dimensions=(600, 280),
+            success=True,
+            session_id=capture_session_id,
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            log.start_acquisition(path)
+            controller._record_capture_provenance(provenance)
+            reader._report_pipeline_event("ocr-attempt", 1, 1.2, capture_id=capture_id)
+            log.stop_acquisition()
+            journal = [
+                entry for entry in read_journal(path) if entry["kind"] == "event"
+            ]
+            self.assertNotIn("PRIVATE", path.read_text())
+
+        timelines = log.snapshot()
+        self.assertEqual(len(timelines), 1)
+        timeline = timelines[0]
+        self.assertEqual(
+            (timeline["session_id"], timeline["run_id"]), (session_id, reader.run_id)
+        )
+        events = timeline["events"]
+        self.assertEqual(
+            [event["stage"] for event in events], ["capture", "ocr-attempt"]
+        )
+        for capture in (events[0], journal[0]):
+            self.assertEqual(capture["capture_session_id"], capture_session_id)
+            self.assertEqual(capture["window_bounds"], bounds)
+            self.assertEqual(capture["capture_bounds"], bounds)
+            self.assertEqual(capture["output_dimensions"], [600, 280])
+            self.assertNotIn("PRIVATE", repr(capture))
+        for event in journal:
+            self.assertEqual(
+                (event["session_id"], event["run_id"]), (session_id, reader.run_id)
+            )
+            self.assertEqual(event["capture_id"], capture_id)
+
+    def test_journal_omits_invalid_capture_geometry(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.jsonl"
+            log = GenerationTimelineLog()
+            log.start_acquisition(path)
+            log.acquisition.record(
+                {
+                    "stage": "capture",
+                    "window_bounds": {
+                        "left": 1,
+                        "top": 2,
+                        "width": "PRIVATE",
+                        "height": 4,
+                    },
+                    "capture_bounds": {"left": 1, "top": 2, "width": True, "height": 4},
+                    "output_dimensions": [1, {"text": "PRIVATE"}],
+                }
+            )
+            log.acquisition.record(
+                {
+                    "stage": "capture",
+                    "window_bounds": "{'left': 1, 'top': 2, 'width': 3, 'height': 4}",
+                    "output_dimensions": "(6, 8)",
+                }
+            )
+            log.stop_acquisition()
+            events = [entry for entry in read_journal(path) if entry["kind"] == "event"]
+            self.assertNotIn("PRIVATE", path.read_text())
+        for field in ("window_bounds", "capture_bounds", "output_dimensions"):
+            self.assertNotIn(field, events[0])
+        self.assertEqual(
+            events[1]["window_bounds"], {"left": 1, "top": 2, "width": 3, "height": 4}
+        )
+        self.assertEqual(events[1]["output_dimensions"], [6, 8])
+
     def test_borrowed_recording_keeps_audio_identity_without_chapter_identity(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "capture.jsonl"

@@ -668,17 +668,13 @@ Other remaining defects and native checks:
 
 ## Remaining native diagnostic and tooling checks
 
-- [ ] **T4 - Validate Mac product, MCP and video capture provenance.**
-      Confirm saved PNG/sidecar, diagnostics and Reading timelines agree
-      on capture ID, separate run ID, selected window ID/title/PID, bounds, dimensions,
-      monotonic time, method/scope and outcome for the same capture. Old desktop
-      recordings may contain overlaps. Close/minimize/move/resize/reopen
-      the selected window and confirm failures and new target identities remain
-      explicit; never enumerate unrelated titles or log pixels/dialogue. Validate
-      native-video target/frame timestamps and MCP contract1 independently.
-      Label window-ID namespaces: Qt WId/Cocoa view handles in MCP are not Quartz
-      CGWindowIDs used by native recording; correlate owners without equating these
-      numeric values. Product screenshot metadata does not qualify video or MCP.
+- [ ] **T4 - Validate native video capture provenance on macOS.** Record a
+      selected test window with a visible frame marker. Verify the recording's
+      Quartz window ID and owner PID, then compare frame timestamps with marker
+      changes while moving, resizing, minimizing and reopening the window.
+      Confirm any capture gaps and changes of target are explicit. Older desktop
+      recordings may include overlapping windows. When comparing with MCP, use
+      the owner PID and distinguish its Qt WId from the Quartz window ID.
 - [ ] Reconnect the existing desktop PySide6 MCP session and verify
       `list_apps` succeeds. The affected connection reports a missing
       `fastmcp.server.providers.prefab_payload` module.
