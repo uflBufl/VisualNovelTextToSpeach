@@ -343,6 +343,7 @@ class TrayApplicationTest(unittest.TestCase):
         details = f"Audio playback unavailable: {instruction}"
         self.assertEqual(tray.dashboard.status.text(), expected)
         self.assertEqual(tray.compact_controller.status.toPlainText(), expected)
+        self.assertEqual(tray.compact_controller.status.toolTip(), details)
         self.assertFalse(tray.dashboard.audio_setup_button.isHidden())
         tray.dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), details)
@@ -360,9 +361,11 @@ class TrayApplicationTest(unittest.TestCase):
             open_audio.assert_called_once_with()
         self.audio_runtime_check.side_effect = None
         tray._refresh_audio_setup()
-        self.assertIsNone(tray._audio_runtime_error)
+        ready = "Audio playback is available. Retry playback to continue."
         self.assertTrue(tray.dashboard.audio_setup_button.isHidden())
-        self.assertNotIn("cargo", tray.dashboard.status.toolTip())
+        self.assertEqual(tray.dashboard.status.text(), ready)
+        tray.dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), ready)
 
     def test_audio_setup_recheck_clears_error_in_existing_readiness_window(self):
         tray = TrayApplication(
