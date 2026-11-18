@@ -666,12 +666,6 @@ Other remaining defects and native checks:
       panel remains reachable, values match drag/keyboard movement, stale review
       callbacks cannot save another selection, and closing review cancels its OCR.
 
-## Remaining native diagnostic and tooling checks
-
-- [ ] Reconnect the existing desktop PySide6 MCP session and verify
-      `list_apps` succeeds. The affected connection reports a missing
-      `fastmcp.server.providers.prefab_payload` module.
-
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 
 Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
