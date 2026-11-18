@@ -92,38 +92,53 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertFalse(self.panel.current_play.icon().isNull())
         self.decisions.remember_many.assert_not_called()
 
-    def test_explicit_playback_waits_for_host_before_generating_or_playing(self):
-        for current_voice in (False, True):
-            for original in (False, True):
-                with self.subTest(current_voice=current_voice, original=original):
-                    self.configure_current()
-                    preview = self.service.generate.return_value
-                    self.service.reference_audio.return_value = VoiceAuditionReference(
-                        preview.path, preview.path.read_bytes()
-                    )
-                    continuations = []
-                    self.panel.before_playback = continuations.append
-                    self.service.reset_mock()
-                    self.panel.player.reset_mock()
-                    if original:
-                        self.panel._play_original(current_voice=current_voice)
-                    elif current_voice:
-                        self.panel.play_current()
-                    else:
-                        self.panel.play_a()
-                    self.run_tasks()
-                    self.assertEqual(len(continuations), 1)
-                    self.service.generate.assert_not_called()
-                    self.service.reference_audio.assert_not_called()
-                    self.panel.player.play_bytes.assert_not_called()
-                    continuations[0]()
-                    self.run_tasks()
-                    self.panel.player.play_bytes.assert_called_once()
-                    if original:
-                        self.service.reference_audio.assert_called_once()
-                    else:
-                        self.service.generate.assert_called_once()
-                    self.panel.stop_playback()
+    def test_play_buttons_wait_for_the_host_and_can_stop_before_or_after_playback(self):
+        _, _, saved_candidate = self.configure_current()
+        candidate_source = self.group.candidates[0].source_id
+        preview = self.service.generate.return_value
+        self.service.reference_audio.return_value = VoiceAuditionReference(
+            preview.path, preview.path.read_bytes()
+        )
+        callbacks = []
+        self.panel.before_playback = callbacks.append
+        for button, prepare, source in (
+            (self.panel.a_play, self.service.generate, candidate_source),
+            (self.panel.a_original, self.service.reference_audio, candidate_source),
+            (self.panel.current_play, self.service.generate, saved_candidate.source_id),
+            (
+                self.panel.current_original,
+                self.service.reference_audio,
+                saved_candidate.source_id,
+            ),
+        ):
+            with self.subTest(button=button.accessibleName()):
+                self.service.reset_mock()
+                self.panel.player.reset_mock()
+                button.click()
+                self.assertEqual(button.property("playbackState"), "preparing")
+                button.click()
+                self.assertEqual(button.property("playbackState"), "idle")
+                callbacks.pop()()
+                self.run_tasks()
+                self.service.generate.assert_not_called()
+                self.service.reference_audio.assert_not_called()
+                self.panel.player.play_bytes.assert_not_called()
+
+                button.click()
+                self.run_tasks()
+                self.service.generate.assert_not_called()
+                self.service.reference_audio.assert_not_called()
+                self.panel.player.play_bytes.assert_not_called()
+                callbacks.pop()()
+                self.run_tasks()
+                prepare.assert_called_once()
+                self.assertEqual(prepare.call_args.args[2], source)
+                self.panel.player.play_bytes.assert_called_once()
+                self.panel.player.stop.reset_mock()
+                button.click()
+                self.panel.player.stop.assert_called_once()
+                self.assertEqual(button.property("playbackState"), "idle")
+                self.assertEqual(callbacks, [])
 
     def test_cached_previews_also_wait_for_host(self):
         self.configure_current()
@@ -167,50 +182,28 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 self.panel.player.play_bytes.assert_not_called()
 
     def test_new_playback_request_supersedes_pending_request(self):
-        self.configure_current()
-        continuations = []
-        self.panel.before_playback = continuations.append
-        self.panel.play_a()
-        self.panel.play_current()
-        continuations[0]()
+        _, _, saved = self.configure_current()
+        callbacks = []
+        self.panel.before_playback = callbacks.append
+        self.panel.a_original.click()
+        self.panel.a_play.click()
+        self.panel.current_play.click()
+        original, candidate, current = callbacks
+        original()
         self.run_tasks()
-        self.service.generate.assert_not_called()
-        continuations[1]()
-        self.run_tasks()
-        self.assertEqual(self.panel._playing_source, "current-preview")
-        self.assertEqual(self.service.generate.call_count, 1)
+        self.service.reference_audio.assert_not_called()
+        self.panel.player.play_bytes.assert_not_called()
 
-    def test_playback_toggle_stops_immediately_without_host_gate(self):
-        for current_voice in (False, True):
-            for original in (False, True):
-                with self.subTest(current_voice=current_voice, original=original):
-                    self.configure_current()
-                    preview = self.service.generate.return_value
-                    self.service.reference_audio.return_value = VoiceAuditionReference(
-                        preview.path, preview.path.read_bytes()
-                    )
-                    if original:
-                        button = (
-                            self.panel.current_original
-                            if current_voice
-                            else self.panel.a_original
-                        )
-                    else:
-                        button = (
-                            self.panel.current_play
-                            if current_voice
-                            else self.panel.a_play
-                        )
-                    self.panel.before_playback = None
-                    button.click()
-                    self.run_tasks()
-                    gate = Mock()
-                    self.panel.before_playback = gate
-                    self.panel.player.stop.reset_mock()
-                    button.click()
-                    gate.assert_not_called()
-                    self.panel.player.stop.assert_called_once()
-                    self.assertIsNone(self.panel._playing_source)
+        current()
+        self.run_tasks()
+        self.panel.player.stop.reset_mock()
+        candidate()
+        self.run_tasks()
+        self.service.generate.assert_called_once()
+        self.assertEqual(self.service.generate.call_args.args[2], saved.source_id)
+        self.panel.player.play_bytes.assert_called_once()
+        self.panel.player.stop.assert_not_called()
+        self.assertFalse(self.panel.a_use.isEnabled())
 
     def test_current_audition_preserves_candidate_acceptance_and_uses_one_player(self):
         self.configure_current()

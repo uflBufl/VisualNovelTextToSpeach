@@ -662,20 +662,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.assertEqual(panel.size(), size)
                     self.assertEqual([c.geometry() for c in controls], geometry)
 
-    def test_cancel_while_waiting_for_playback_owner_ignores_late_callback(self):
-        panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
-        self.addCleanup(panel.deleteLater)
-        self.addCleanup(panel.shutdown)
-        callbacks = []
-        panel.before_playback = callbacks.append
-        action = Mock()
-        panel._request_playback(action, source="preview")
-        self.assertEqual(panel.a_play.property("playbackState"), "preparing")
-        panel.stop_playback()
-        callbacks.pop()()
-        action.assert_not_called()
-        self.assertEqual(panel.a_play.property("playbackState"), "idle")
-
     def test_owner_exception_restores_play_and_keeps_visible_error(self):
         panel = VoiceAuditionPanel(Mock(), preview_service=Mock(), player=Mock())
         self.addCleanup(panel.deleteLater)
