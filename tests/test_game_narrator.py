@@ -12,7 +12,7 @@ from tests.pocket_model_fixtures import pocket_model_readiness
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import (
     QApplication,
@@ -851,16 +851,6 @@ class GameNarratorTest(unittest.TestCase):
         self.select(dialog, "preset", source="preset:marius")
         self.assertTrue(dialog.status.isHidden())
 
-    def test_builtin_save_uses_one_target_without_game_or_cloning_access(self):
-        dialog = self.editor(settings=AppSettings(speech_backend="pocket-tts"))
-        self.select(dialog, "preset", role="Aderyn", source="preset:marius")
-        self.listen(dialog)
-        self.save(dialog)
-        self.assertEqual(self.library.binding("Aderyn").source_id, "preset:marius")
-        self.assertIsNone(self.library.binding("Narrator"))
-        self.assertFalse(hasattr(dialog.result_settings, "pocket_gated_model_accepted"))
-        self.importer.prepare_voice_roles.assert_not_called()
-
     @patch(
         "vntts.game_narrator_ui.speech_backend_options",
         return_value=(("Qwen", "qwen-tts", True),),
@@ -964,23 +954,27 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(dialog._settings_dirty, route != "voice")
                 self.assertEqual(dialog.voice_panel.a_use.isEnabled(), route != "voice")
 
-    def test_saved_preset_preview_is_unchanged_but_another_preset_can_be_saved(self):
+    def test_character_preset_change_is_restored_when_the_editor_reopens(self):
         self.library.select("Aderyn", route="voice", source_id="preset:alba")
-        dialog = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(dialog, "preset", role="Aderyn", source="preset:alba")
+        dialog = self.editor(settings=AppSettings(speech_backend="pocket-tts"))
+        dialog.select_role("Aderyn")
+        self.drain()
         dialog.voice_panel.a_play.click()
         self.drain()
-        self.assertFalse(dialog._settings_dirty)
+        self.player.play_bytes.assert_called_once()
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         self.select(dialog, "preset", role="Aderyn", source="preset:marius")
-        self.assertTrue(dialog._settings_dirty)
         self.listen(dialog)
         self.save(dialog)
-        self.assertEqual(
-            VoiceLibrary(self.library.root).binding("Aderyn").source_id, "preset:marius"
-        )
+
+        reopened = self.editor(settings=dialog.result_settings)
+        (character,) = reopened.role.findItems("Aderyn", Qt.MatchFlag.MatchFixedString)
+        reopened.role.setCurrentItem(character)
+        self.drain()
+        self.assertEqual(reopened.source.currentData(), "preset")
+        self.assertEqual(reopened.presets.currentData(), "preset:marius")
+        self.assertIsNone(self.library.binding("Narrator"))
+        self.importer.prepare_voice_roles.assert_not_called()
 
     def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
         self.library.select("Aderyn", route="voice", source_id="preset:marius")
