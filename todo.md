@@ -640,15 +640,16 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] **U2 - Validate remaining held-out adaptive-crop cases on Mac.**
-      The corrected glyph/background fallback and generated-pixel regressions pass;
-      native Narrator6 and Cornerstone15 now have correct dialogue/name handling.
-      Retain maximum-height/nameplate-inclusive calibration and qualify additional
-      held-out scenes through the existing adaptive-crop/speaker-presence owner.
-      Gate: narrator scenes, named speech, short/punctuation-only/1-4-line text,
-      scenery behind absent names, faint/unanchored/clipped labels and full continue
-      cues pass held-out Mac captures without lowering confidence or clipping
-      text; development controls alone do not establish general accuracy.
+- [ ] **U2 - Distinguish scenery from faint speaker names and qualify four-line dialogue on Mac.**
+      On narrator line `100631:75` (“The street looks like an exploded powder keg.”),
+      raw OCR reads an ember as the name `j`. On the older `segment3-line101` control,
+      scenery in the name band causes rejection despite correctly recognized dialogue.
+      Capture labeled Mac frames with faint, off-center and partially clipped real
+      names. Use them alongside the empty name bands to test the speaker-presence
+      fix at the existing confidence threshold, including single-character names.
+      Validate a complete four-line lower-dialogue scene against the source text;
+      the maximum-height calibration must retain the nameplate, every line and the
+      entire continue cue. Replay named, narrator and punctuation-only controls.
 - [ ] **U7 - Complete model-asset evidence and native offline reuse.**
       Qualify normal GUI/preflight with network unavailable and no experiment-only
       environment: offline-first and Reading-first must reuse the same managed
