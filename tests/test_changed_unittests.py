@@ -59,6 +59,25 @@ class ChangedUnittestsTest(unittest.TestCase):
                 "vntts.consumer": "from vntts.base import VALUE\n",
                 "tests.test_consumer": "from vntts.consumer import VALUE\n",
                 "tests.test_follow": "from tests.test_consumer import VALUE\n",
+                "vntts.gui": "from vntts.base import VALUE\n",
+                "vntts.platform": (
+                    "def launch(): return ['python', '-m', 'vntts.gui']\n"
+                    "def permissions(): return True\n"
+                ),
+                "tests.test_launch": "from vntts.platform import launch\n",
+                "tests.test_permissions": "from vntts.platform import permissions\n",
+                "vntts.metadata": "FIELD = 'vntts.gui'\n",
+                "tests.test_metadata": "from vntts.metadata import FIELD\n",
+                "vntts.facade": (
+                    "from importlib import import_module as load\n"
+                    "MODULES = {'screen': 'vntts.gui'}\n"
+                    "def __getattr__(name): return load(MODULES[name])\n"
+                ),
+                "vntts.facade.other": "VALUE = 2\n",
+                "tests.test_export": "from vntts.facade import screen\n",
+                "tests.test_other": "from vntts.facade.other import VALUE\n",
+                "tests.test_child": "COMMAND = ['python', '-m', 'vntts.gui']\n",
+                "tests.test_ci": "WORKFLOW = '.github/workflows/example.yml'\n",
             }
             modules = {}
             for module, source in sources.items():
@@ -68,13 +87,38 @@ class ChangedUnittestsTest(unittest.TestCase):
 
             self.assertEqual(
                 select_test_modules({"vntts/base.py"}, modules),
-                (["tests.test_consumer", "tests.test_follow"], None),
+                (
+                    [
+                        "tests.test_child",
+                        "tests.test_consumer",
+                        "tests.test_export",
+                        "tests.test_follow",
+                        "tests.test_launch",
+                    ],
+                    None,
+                ),
             )
             self.assertEqual(
                 select_test_modules({"tests/test_consumer.py"}, modules),
                 (["tests.test_consumer", "tests.test_follow"], None),
             )
             self.assertIsNone(select_test_modules({"uv.lock"}, modules)[0])
+            self.assertEqual(
+                select_test_modules({"vntts/gui.py"}, modules),
+                (
+                    [
+                        "tests.test_child",
+                        "tests.test_export",
+                        "tests.test_launch",
+                        "tests.test_metadata",
+                    ],
+                    None,
+                ),
+            )
+            self.assertEqual(
+                select_test_modules({".github/workflows/example.yml"}, modules),
+                (["tests.test_ci"], None),
+            )
 
 
 if __name__ == "__main__":

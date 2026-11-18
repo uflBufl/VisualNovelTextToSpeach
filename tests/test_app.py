@@ -349,6 +349,7 @@ class TrayApplicationTest(unittest.TestCase):
         details = f"Audio playback unavailable: {instruction}"
         self.assertEqual(tray.dashboard.status.text(), expected)
         self.assertEqual(tray.compact_controller.status.toPlainText(), expected)
+        self.assertEqual(tray.compact_controller.status.toolTip(), details)
         self.assertFalse(tray.dashboard.audio_setup_button.isHidden())
         tray.dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), details)
@@ -366,9 +367,11 @@ class TrayApplicationTest(unittest.TestCase):
             open_audio.assert_called_once_with()
         self.audio_runtime_check.side_effect = None
         tray._refresh_audio_setup()
-        self.assertIsNone(tray._audio_runtime_error)
+        ready = "Audio playback is available. Retry playback to continue."
         self.assertTrue(tray.dashboard.audio_setup_button.isHidden())
-        self.assertNotIn("cargo", tray.dashboard.status.toolTip())
+        self.assertEqual(tray.dashboard.status.text(), ready)
+        tray.dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), ready)
 
     def test_audio_setup_recheck_clears_error_in_existing_readiness_window(self):
         tray = TrayApplication(
@@ -7527,6 +7530,10 @@ class TrayApplicationTest(unittest.TestCase):
 
         dialog.validate_and_accept()
 
+        self.assertEqual(
+            [widget for _, widget, _ in dialog.validation_errors()],
+            [dialog.live_hotkey],
+        )
         self.assertIn("duplicates", dialog.validation_summary.toPlainText())
         self.assertEqual(dialog.section_navigation.currentIndex(), 0)
         self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
@@ -8693,12 +8700,12 @@ class TrayApplicationTest(unittest.TestCase):
             tray.shutdown()
 
     def test_native_hotkey_callbacks_are_queued_on_the_qt_thread(self):
-        read_threads, live_threads = [], []
+        actions = []
         controller = Mock(is_live_running=False, live_reader=None)
-        controller.read_once.side_effect = lambda: read_threads.append(get_ident())
+        controller.read_once.side_effect = lambda: actions.append(("read", get_ident()))
         tray = TrayApplication(
             self.application,
-            AppSettings(),
+            AppSettings(read_hotkey="<ctrl>+j", live_hotkey="<ctrl>+k"),
             controller_factory=Mock(return_value=controller),
         )
         try:
@@ -8707,35 +8714,34 @@ class TrayApplicationTest(unittest.TestCase):
                 patch.object(
                     tray,
                     "_start_live_with_available_scope",
-                    side_effect=lambda: live_threads.append(get_ident()),
+                    side_effect=lambda: actions.append(("live", get_ident())),
                 ),
             ):
                 tray.start_hotkeys()
                 callbacks = listener_factory.call_args.args[0]
 
-                def activate():
-                    callbacks[tray.settings.read_hotkey]()
-                    callbacks[tray.settings.live_hotkey]()
-
-                with patch.object(
-                    tray,
-                    "_runtime_control_state",
-                    return_value=RuntimeControlState(ready=True),
-                ):
-                    with ThreadPoolExecutor(max_workers=1) as executor:
-                        executor.submit(activate).result(timeout=2)
-                    self.assertEqual(read_threads, [])
-                    self.assertEqual(live_threads, [])
-                    self.wait_until(lambda: bool(read_threads and live_threads))
-                    self.assertEqual(read_threads, [get_ident()])
-                    self.assertEqual(live_threads, [get_ident()])
-
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    executor.submit(activate).result(timeout=2)
+                    with patch.object(
+                        tray,
+                        "_runtime_control_state",
+                        return_value=RuntimeControlState(ready=True),
+                    ):
+                        executor.submit(callbacks["<ctrl>+j"]).result(timeout=2)
+                        self.assertEqual(actions, [])
+                        self.wait_until(lambda: bool(actions))
+                        self.assertEqual(actions, [("read", get_ident())])
+
+                        executor.submit(callbacks["<ctrl>+k"]).result(timeout=2)
+                        self.assertEqual(actions, [("read", get_ident())])
+                        self.wait_until(lambda: len(actions) == 2)
+
+                    expected = [("read", get_ident()), ("live", get_ident())]
+                    self.assertEqual(actions, expected)
+                    for callback in callbacks.values():
+                        executor.submit(callback).result(timeout=2)
                 tray.shutdown()
                 self.application.processEvents()
-                self.assertEqual(read_threads, [get_ident()])
-                self.assertEqual(live_threads, [get_ident()])
+                self.assertEqual(actions, expected)
         finally:
             tray.shutdown()
 
@@ -8783,7 +8789,6 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.start_hotkeys()
 
         registered_hotkeys = listener_factory.call_args.args[0]
-        self.assertIn(AppSettings().read_hotkey, registered_hotkeys)
         self.assertEqual(
             set(registered_hotkeys),
             {
@@ -8898,26 +8903,29 @@ class TrayApplicationTest(unittest.TestCase):
     def test_hotkey_refresh_keeps_current_ui_and_registers_only_supported_platforms(
         self,
     ):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray.show_dashboard()
+        tray.set_status("Saved configuration.")
         for platform in ("darwin", "win32", "linux"):
-            with self.subTest(platform=platform):
-                tray = TrayApplication(
-                    self.application,
-                    AppSettings(),
-                    controller_factory=Mock(return_value=Mock()),
-                )
-                tray.show_dashboard()
-                tray.set_status("Saved configuration.")
-                with (
-                    patch("vntts.app.sys.platform", platform),
-                    patch.object(tray, "start_hotkeys") as start_hotkeys,
-                ):
-                    tray.signals.hotkeys_requested.emit()
-                    QTest.qWait(350)
+            with (
+                self.subTest(platform=platform),
+                patch("vntts.app.sys.platform", platform),
+                patch(
+                    "vntts.app.QTimer.singleShot",
+                    side_effect=lambda ms, owner, fn: fn(),
+                ),
+                patch.object(tray, "start_hotkeys") as start_hotkeys,
+            ):
+                tray.signals.hotkeys_requested.emit()
                 self.assertEqual(start_hotkeys.call_count, int(platform != "darwin"))
                 self.assertTrue(tray.dashboard.isVisible())
                 self.assertFalse(tray.compact_controller.isVisible())
                 self.assertEqual(tray.status_action.text(), "Saved configuration.")
-                tray.shutdown()
+        tray.shutdown()
 
     def test_cold_reading_state_offers_read_only_after_setup(self):
         for configured in (False, True):

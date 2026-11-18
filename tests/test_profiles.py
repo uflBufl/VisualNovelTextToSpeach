@@ -64,27 +64,6 @@ class GameProfileStoreTest(unittest.TestCase):
                 DialogRegion(0, 0, 1, 1),
             )
 
-    def test_profile_round_trips_optional_ocr_regions(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "profiles.json"
-            regions = OCRRegions(
-                speaker=DialogRegion(0.1, 0.6, 0.3, 0.08),
-                dialogue=DialogRegion(0.1, 0.7, 0.8, 0.2),
-            )
-            store = GameProfileStore(path)
-            profile = store.create("Game", AppSettings(), ocr_regions=regions)
-
-            loaded = GameProfileStore.load(path).get(profile.id)
-
-        self.assertEqual(loaded.ocr_regions, regions)
-        self.assertEqual(
-            loaded.to_mapping()["ocr_regions"],
-            {
-                "speaker": regions.speaker.to_json(),
-                "dialogue": regions.dialogue.to_json(),
-            },
-        )
-
     def test_schema8_profile_migrates_without_ocr_regions(self):
         profile = GameProfile.from_settings("Game", AppSettings())
         values = profile.to_mapping()
@@ -252,60 +231,70 @@ class GameProfileStoreTest(unittest.TestCase):
             new_region,
         )
 
-    def test_profiles_can_be_duplicated_renamed_and_removed(self):
-        with TemporaryDirectory() as temporary_directory:
-            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
-            original = store.create("Game", AppSettings())
+    def test_renaming_a_duplicate_preserves_the_original_and_its_settings(self):
+        with TemporaryDirectory() as directory:
+            store = GameProfileStore(Path(directory) / "profiles.json")
+            settings = AppSettings(
+                game_window_title="Original window", ocr_language="pol"
+            )
+            original = store.create(
+                "Game", settings, region=DialogRegion(0.1, 0.6, 0.8, 0.3)
+            )
 
             duplicate = store.duplicate(original.id, "Game copy")
-            renamed = store.rename(duplicate.id, "Second game")
-            removed = store.remove(original.id)
-            reloaded = GameProfileStore.load(store.path).profiles
+            self.assertNotEqual(duplicate.id, original.id)
+            store.rename(duplicate.id, "Second game")
+            reloaded = GameProfileStore.load(store.path)
+            self.assertEqual(reloaded.get(original.id), original)
+            copy = reloaded.get(duplicate.id)
+            self.assertEqual(copy.name, "Second game")
+            self.assertEqual(copy.game_window_title, "Original window")
+            self.assertEqual(copy.ocr_language, "pol")
+            self.assertEqual(copy.dialog_region, original.dialog_region)
 
-        self.assertEqual(renamed.name, "Second game")
-        self.assertEqual(removed, original)
-        self.assertEqual(store.profiles, [renamed])
-        self.assertEqual(reloaded, [renamed])
+            self.assertEqual(reloaded.remove(original.id), original)
+            self.assertEqual(GameProfileStore.load(store.path).profiles, [copy])
 
-    def test_profile_mutations_publish_memory_only_after_persistence(self):
-        operations = (
-            lambda store, profile: store.create("Other", AppSettings()),
-            lambda store, profile: store.duplicate(profile.id, "Copy"),
-            lambda store, profile: store.rename(profile.id, "Renamed"),
-            lambda store, profile: store.remove(profile.id),
-            lambda store, profile: store.update_from_settings(
-                profile.id,
-                AppSettings(game_window_title="Changed"),
-            ),
-            lambda store, profile: store.update_region(
-                profile.id,
-                DialogRegion(0.2, 0.2, 0.5, 0.5),
-            ),
-            lambda store, profile: store.update_story_region(
-                profile.id,
-                DialogRegion(0.1, 0.1, 0.9, 0.9),
-            ),
-        )
-        for operation in operations:
-            with self.subTest(operation=operation), TemporaryDirectory() as directory:
-                store = GameProfileStore(Path(directory) / "profiles.json")
-                profile = store.create("Game", AppSettings())
-                before = list(store.profiles)
-                revision = store._revision
-                disk_error = OSError("disk full")
-                with (
-                    patch(
-                        "vntts.versioned_json.atomic_write_bytes",
-                        side_effect=disk_error,
-                    ) as write,
-                    self.assertRaisesRegex(OSError, "disk full") as raised,
-                ):
-                    operation(store, profile)
+    def test_failed_profile_writes_preserve_saved_state_and_allow_retry(self):
+        with TemporaryDirectory() as directory:
+            store = GameProfileStore(Path(directory) / "profiles.json")
+            profile = store.create(
+                "Game", AppSettings(), region=DialogRegion(0.1, 0.6, 0.8, 0.3)
+            )
+            saved = store.path.read_bytes()
+            for method, arguments in (
+                (store.create, ("Other", AppSettings())),
+                (store.duplicate, (profile.id, "Copy")),
+                (store.rename, (profile.id, "Renamed")),
+                (store.remove, (profile.id,)),
+                (
+                    store.update_from_settings,
+                    (profile.id, AppSettings(game_window_title="Changed")),
+                ),
+                (store.update_region, (profile.id, DialogRegion(0.2, 0.2, 0.5, 0.5))),
+                (
+                    store.update_story_region,
+                    (profile.id, DialogRegion(0.1, 0.1, 0.9, 0.9)),
+                ),
+            ):
+                with self.subTest(operation=method.__name__):
+                    disk_error = OSError("disk full")
+                    with (
+                        patch(
+                            "vntts.versioned_json.atomic_write_bytes",
+                            side_effect=disk_error,
+                        ),
+                        self.assertRaises(OSError) as raised,
+                    ):
+                        method(*arguments)
+                    self.assertIs(raised.exception, disk_error)
+                    self.assertEqual(store.profiles, [profile])
+                    self.assertEqual(store.path.read_bytes(), saved)
 
-                self.assertIs(raised.exception, disk_error)
-                write.assert_called_once()
-                self.assertEqual(store._revision, revision)
-                self.assertEqual(store.profiles, before)
+            store.rename(profile.id, "Renamed")
+            self.assertEqual(
+                GameProfileStore.load(store.path).get(profile.id).name, "Renamed"
+            )
 
     def test_profile_replacement_while_saving_preserves_external_data_until_reload(
         self,
@@ -768,11 +757,26 @@ class GameProfilesDialogTest(unittest.TestCase):
                 store,
             )
             with patch.object(dialog, "_ask_name", return_value="Copied setup"):
-                dialog.create_profile()
+                dialog.create_button.click()
 
-            copied = store.get(dialog.profiles.currentData())
+            selected_id = dialog.profiles.currentData()
+            self.assertNotEqual(selected_id, active.id)
+            reloaded = GameProfileStore.load(store.path)
+            self.assertEqual(reloaded.get(active.id), active)
+            copied = reloaded.get(selected_id)
+            saved = json.loads(store.path.read_text(encoding="utf-8"))
+            saved_copy = next(
+                profile for profile in saved["profiles"] if profile["id"] == selected_id
+            )
+            self.assertEqual(
+                saved_copy["ocr_regions"],
+                {
+                    "speaker": regions.speaker.to_json(),
+                    "dialogue": regions.dialogue.to_json(),
+                },
+            )
 
-        self.assertIsNotNone(copied)
+        self.assertEqual(copied.name, "Copied setup")
         self.assertEqual(copied.dialog_region, active.dialog_region)
         self.assertEqual(copied.ocr_regions, regions)
         dialog.close()
@@ -782,7 +786,7 @@ class GameProfilesDialogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             store = GameProfileStore(Path(temporary_directory) / "profiles.json")
             first = store.create("Active game", AppSettings())
-            second = store.create("Other game", AppSettings())
+            second = store.create("Other game", AppSettings(ocr_language="pol"))
             dialog = GameProfilesDialog(
                 AppSettings(active_profile_id=first.id),
                 store,
@@ -814,6 +818,10 @@ class GameProfilesDialogTest(unittest.TestCase):
                 dialog.use_button.accessibleName(),
                 "Activate selected game profile",
             )
+            self.assertEqual(dialog.settings().active_profile_id, first.id)
+            dialog.use_button.click()
+            self.assertEqual(dialog.settings().active_profile_id, second.id)
+            self.assertEqual(dialog.settings().ocr_language, "pol")
             dialog.close()
             dialog.deleteLater()
 
@@ -995,88 +1003,70 @@ class GameProfilesDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
-    def test_remove_profile_requires_explicit_button_and_deletes_corrections(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            store = GameProfileStore(root / "profiles.json")
-            active = store.create("Active game", AppSettings())
-            removable = store.create("Other game", AppSettings())
-            correction_store = OCRCorrectionStore(
-                root / "corrections.json",
-                profile_entries={
-                    removable.id: {
-                        "Vertln": "Vertin",
-                        "mareus": "Ms. Marcus",
-                    }
-                },
-            )
-            dialog = GameProfilesDialog(
-                AppSettings(active_profile_id=active.id),
-                store,
-                correction_store,
-            )
-            dialog.profiles.setCurrentIndex(dialog.profiles.findData(removable.id))
-            prompt_evidence = {}
-
-            def confirm_prompt():
-                prompt = self.application.activeModalWidget()
-                self.assertIsInstance(prompt, QMessageBox)
-                prompt_evidence["details"] = prompt.informativeText()
-                remove_button = next(
-                    button
-                    for button in prompt.buttons()
-                    if button.text() == "Remove profile"
-                )
-                remove_button.click()
-
-            QTimer.singleShot(0, confirm_prompt)
-            dialog.remove_profile()
-
-            self.assertIn(
-                "2 profile-scoped OCR corrections", prompt_evidence["details"]
-            )
-            self.assertIsNone(store.get(removable.id))
-            self.assertNotIn(removable.id, correction_store.profile_entries)
-            dialog.close()
-            dialog.deleteLater()
-
-    def test_failed_correction_cleanup_restores_profile_for_retry(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_remove_profile_restores_on_cleanup_failure_and_retries_only_selected_profile(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             store = GameProfileStore(root / "profiles.json")
             active = store.create("Active", AppSettings())
-            removable = store.create("Other", AppSettings())
+            removable = store.create("Other", AppSettings(ocr_language="pol"))
+            rules = {
+                active.id: {"A": "Active"},
+                removable.id: {"Vertln": "Vertin", "mareus": "Marcus"},
+            }
             corrections = OCRCorrectionStore(
                 root / "corrections.json",
-                profile_entries={removable.id: {"Vertln": "Vertin"}},
+                global_entries={"W": "World"},
+                profile_entries=rules,
             )
+            corrections.save()
             dialog = GameProfilesDialog(
                 AppSettings(active_profile_id=active.id), store, corrections
             )
+            self.addCleanup(dialog.deleteLater)
             dialog.profiles.setCurrentIndex(dialog.profiles.findData(removable.id))
+            prompts = []
 
-            def confirm_prompt():
+            def confirm_removal():
                 prompt = self.application.activeModalWidget()
-                next(
-                    button
-                    for button in prompt.buttons()
-                    if button.text() == "Remove profile"
-                ).click()
+                prompts.append((prompt.text(), prompt.informativeText()))
+                for button in prompt.buttons():
+                    if button.text() == "Remove profile":
+                        button.click()
+                        return
+                prompt.reject()
 
-            QTimer.singleShot(0, confirm_prompt)
+            QTimer.singleShot(0, confirm_removal)
             with (
-                patch.object(
-                    corrections, "remove_profile", side_effect=OSError("disk full")
+                patch(
+                    "vntts.ocr_corrections.write_versioned_json_if_unchanged",
+                    side_effect=OSError("disk full"),
                 ),
                 patch.object(QMessageBox, "warning") as warning,
+                self.assertLogs("vntts.profiles_ui", level="ERROR"),
             ):
-                dialog.remove_profile()
+                dialog.remove_button.click()
 
-            self.assertIsNotNone(store.get(removable.id))
-            self.assertEqual(
-                corrections.profile_entries[removable.id], {"Vertln": "Vertin"}
-            )
             self.assertIn("retry removal", warning.call_args.args[-1])
+            self.assertEqual(
+                GameProfileStore.load(store.path).get(removable.id), removable
+            )
+            self.assertEqual(
+                OCRCorrectionStore.load(corrections.path).profile_entries, rules
+            )
+            self.assertEqual(dialog.profiles.currentData(), removable.id)
+            QTimer.singleShot(0, confirm_removal)
+            dialog.remove_button.click()
+
+            self.assertEqual(len(prompts), 2)
+            for target, details in prompts:
+                self.assertIn("Other", target)
+                self.assertIn("2 profile-scoped OCR corrections", details)
+            self.assertEqual(GameProfileStore.load(store.path).profiles, [active])
+            saved = OCRCorrectionStore.load(corrections.path)
+            self.assertEqual(saved.profile_entries, {active.id: {"A": "Active"}})
+            self.assertEqual(saved.global_entries, {"W": "World"})
 
 
 if __name__ == "__main__":

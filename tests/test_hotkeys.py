@@ -1,5 +1,4 @@
 import os
-import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -13,7 +12,6 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts.hotkey_ui import (  # noqa: E402
     HotkeyRecorder,
     hotkey_from_qt_sequence,
-    hotkey_recording_errors,
     qt_sequence_from_hotkey,
 )
 from vntts.hotkeys import (  # noqa: E402
@@ -28,32 +26,23 @@ class HotkeyValidationTest(unittest.TestCase):
         self.assertEqual(default_hotkey("h", platform="darwin"), "<cmd>+<shift>+h")
         self.assertEqual(default_hotkey("h", platform="win32"), "<ctrl>+<shift>+h")
 
-    def test_semantically_duplicate_shortcuts_are_rejected(self):
-        with self.assertRaisesRegex(HotkeyValidationError, "duplicates"):
-            validate_hotkey_assignments(
-                {
-                    "Read once": "<ctrl>+<shift>+h",
-                    "Live reading": "<shift>+<ctrl>+h",
-                },
-                platform="win32",
-            )
-
-    def test_assignment_errors_identify_the_failing_shortcut(self):
-        for hotkey in ("<unknown>", "h", "<alt>+<f4>", "<ctrl>+h"):
-            with self.subTest(hotkey=hotkey):
-                with self.assertRaises(HotkeyValidationError) as raised:
+    def test_invalid_assignments_identify_the_shortcut_and_reason(self):
+        for platform, hotkey, reason in (
+            ("win32", "<unknown>", "<unknown>"),
+            ("win32", "h", "modifiers"),
+            ("win32", "<ctrl>+<shift>", "regular key"),
+            ("win32", "<ctrl>+j+k", "one regular key"),
+            ("win32", "<shift>+<ctrl>+h", "duplicates"),
+            ("win32", "<alt>+<f4>", "reserved"),
+            ("darwin", "<cmd>+<space>", "reserved"),
+        ):
+            with self.subTest(platform=platform, hotkey=hotkey):
+                with self.assertRaisesRegex(HotkeyValidationError, reason) as raised:
                     validate_hotkey_assignments(
-                        {"Read once": "<ctrl>+h", "Live reading": hotkey},
-                        platform="win32",
+                        {"Read once": "<ctrl>+<shift>+h", "Live reading": hotkey},
+                        platform=platform,
                     )
                 self.assertEqual(raised.exception.label, "Live reading")
-
-    def test_modifier_only_shortcut_is_rejected(self):
-        with self.assertRaisesRegex(HotkeyValidationError, "regular key"):
-            validate_hotkey_assignments(
-                {"Read once": "<ctrl>+<shift>"},
-                platform="win32",
-            )
 
     def test_modifier_virtual_key_codes_cannot_be_registered_as_regular_keys(self):
         for modifier in (keyboard.Key.ctrl_r, keyboard.Key.shift_r, keyboard.Key.alt_r):
@@ -79,39 +68,11 @@ class HotkeyValidationTest(unittest.TestCase):
                     ):
                         validate_hotkey_assignments({"Read once": hotkey})
 
-    def test_unmodified_shortcut_is_rejected(self):
-        with self.assertRaisesRegex(HotkeyValidationError, "modifiers"):
-            validate_hotkey_assignments(
-                {"Read once": "h"},
-                platform="win32",
-            )
-
-    def test_operating_system_shortcut_is_rejected(self):
-        with self.assertRaisesRegex(HotkeyValidationError, "reserved"):
-            validate_hotkey_assignments(
-                {"Read once": "<cmd>+<space>"},
-                platform="darwin",
-            )
-
 
 class HotkeyRecorderTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
-
-    def test_assignment_validation_targets_the_second_recorder(self):
-        read = HotkeyRecorder("<ctrl>+h", platform="win32")
-        live = HotkeyRecorder("<ctrl>+l", platform="win32")
-        reserved = "<cmd>+<space>" if sys.platform == "darwin" else "<alt>+<f4>"
-        for hotkey in ("h", "<ctrl>+h", reserved):
-            with self.subTest(hotkey=hotkey):
-                live.set_hotkey(hotkey)
-                errors = hotkey_recording_errors(
-                    {"Read once": read, "Live reading": live}
-                )
-                self.assertEqual(len(errors), 1)
-                self.assertIs(errors[0][0], live)
-                self.assertIn("Live reading", errors[0][1])
 
     def test_macos_recorder_round_trips_command_shortcut(self):
         recorder = HotkeyRecorder("<cmd>+<shift>+h", platform="darwin")

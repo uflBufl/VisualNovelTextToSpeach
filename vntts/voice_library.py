@@ -146,6 +146,7 @@ class VoiceDiscovery:
     algorithm: str | None = None
     timestamp: str | None = None
     bind_if_missing: bool = False
+    expected_sha256: str | None = None
 
 
 @dataclass
@@ -262,6 +263,13 @@ class VoiceLibrary:
         evidence, algorithm = discovery.evidence, discovery.algorithm
         timestamp, bind_if_missing = discovery.timestamp, discovery.bind_if_missing
         checksum = hashlib.sha256(payload).hexdigest()
+        if (
+            discovery.expected_sha256 is not None
+            and checksum != discovery.expected_sha256
+        ):
+            raise VoiceLibraryError(
+                "Selected voice reference changed. Reopen the voice editor."
+            )
         identity, display_role, display_variant = self._role_identity(
             role, variant_key, document
         )

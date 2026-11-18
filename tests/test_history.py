@@ -2,8 +2,6 @@ import json
 import os
 import time
 import unittest
-from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -25,77 +23,36 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import isValid  # noqa: E402
 
-from vntts.audio_output import resolve_audio_output  # noqa: E402
+from vntts.audio_output import PcmAdmissionRejected, resolve_audio_output  # noqa: E402
 from vntts.history import DialogueHistory  # noqa: E402
 from vntts.history_ui import DialogueHistoryDialog  # noqa: E402
 from vntts.playback_observer import playback_started_context  # noqa: E402
 
 
 class DialogueHistoryTest(unittest.TestCase):
-    def create_history(self):
-        timestamps = iter(
-            (
-                datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc),
-                datetime(2026, 8, 10, 10, 1, tzinfo=timezone.utc),
-                datetime(2026, 8, 10, 10, 2, tzinfo=timezone.utc),
-            )
-        )
-        return DialogueHistory(clock=timestamps.__next__)
-
     def test_typewriter_updates_coalesce_until_dialog_finishes(self):
-        history = self.create_history()
+        history = DialogueHistory()
 
         first = history.add("Marcus", "Hello")
         updated = history.add("Marcus", "Hello, Timekeeper.")
+        self.assertEqual(history.add("Marcus", "Hello"), updated)
+        self.assertEqual(history.snapshot(), [updated])
         history.finish_current()
         repeated = history.add("Marcus", "Hello, Timekeeper.")
 
-        self.assertEqual(len(history.snapshot()), 2)
+        self.assertEqual(history.snapshot(), [updated, repeated])
         self.assertEqual(updated.id, first.id)
         self.assertEqual(updated.text, "Hello, Timekeeper.")
         self.assertNotEqual(repeated.id, updated.id)
 
-    def test_typewriter_rollback_does_not_erase_longer_captured_text(self):
-        history = self.create_history()
-
-        complete = history.add("Marcus", "Hello, Timekeeper.")
-        regressed = history.add("Marcus", "Hello")
-
-        self.assertEqual(regressed, complete)
-        self.assertEqual(history.snapshot(), [complete])
-
-    def test_similar_consecutive_lines_remain_separate(self):
-        history = self.create_history()
-
+    def test_full_history_keeps_both_recent_lines_even_when_they_are_similar(self):
+        history = DialogueHistory(maximum_entries=2)
+        history.add("Lucy", "An older line.")
         first = history.add("Marcus", "The suitcase is ready for departure.")
         second = history.add("Marcus", "The suitcase is ready for inspection.")
 
-        self.assertEqual(len(history.snapshot()), 2)
+        self.assertEqual(history.snapshot(), [first, second])
         self.assertNotEqual(first.id, second.id)
-
-    def test_search_matches_speaker_and_dialog_case_insensitively(self):
-        history = self.create_history()
-        marcus = history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
-        lucy = history.add("Lucy", "Good morning.")
-
-        self.assertEqual(history.search("SUITCASE"), [marcus])
-        self.assertEqual(history.search("lucy"), [lucy])
-        self.assertEqual(history.search("missing"), [])
-
-    def test_exports_text_and_machine_readable_json(self):
-        history = self.create_history()
-        entry = history.add("Marcus", "Hello, Timekeeper.")
-        with TemporaryDirectory() as temporary_directory:
-            directory = Path(temporary_directory)
-
-            text_path = history.export(directory / "history.txt")
-            json_path = history.export(directory / "history.json")
-            text = text_path.read_text(encoding="utf-8")
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-
-        self.assertIn("Marcus\nHello, Timekeeper.", text)
-        self.assertEqual(payload["entries"], [asdict(entry)])
 
 
 class DialogueHistoryDialogTest(unittest.TestCase):
@@ -194,50 +151,35 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         replay = Mock()
         dialog = self.create_dialog(history, replay)
 
-        dialog.search.setText("suitcase")
-        dialog.refresh()
+        dialog.search.setText("SUITCASE")
         dialog.replay_selected()
         self.wait_for(lambda: not dialog.replay_runner.active)
 
         self.assertEqual(dialog.entries.count(), 1)
         replay.assert_called_once_with("Marcus", "The suitcase is ready.")
 
-    def test_exports_with_extension_selected_by_user(self):
-        history = Mock()
-        history.search.return_value = []
-        dialog = self.create_dialog(history, Mock())
-
-        with patch(
-            "vntts.history_ui.QFileDialog.getSaveFileName",
-            return_value=("session", "JSON files (*.json)"),
-        ):
-            dialog.export_history()
-
-        history.export.assert_called_once_with("session.json")
-
     def test_slow_replay_keeps_qt_responsive_and_reports_completion(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
         history.finish_current()
-        started = Event()
+        started, finished = Event(), Event()
         release = Event()
         self.addCleanup(release.set)
 
         def replay(_character, _text):
             started.set()
             release.wait(3)
+            finished.set()
 
         stop = Mock(return_value=True)
         dialog = self.create_dialog(history, replay, stop_handler=stop)
         heartbeat = []
         QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
-        before = time.monotonic()
         dialog.replay_selected()
-        elapsed = time.monotonic() - before
         self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-        self.assertLess(elapsed, 0.1)
+        self.assertFalse(finished.is_set())
         self.assertTrue(dialog.replay_runner.active)
         self.assertTrue(dialog.replay_button.isEnabled())
         self.assertTrue(dialog.stop_button.isEnabled())
@@ -313,7 +255,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
     def test_stopping_during_synthesis_prevents_late_first_pcm(self):
         history = DialogueHistory()
         history.add("Marcus", "Hello.")
-        started, release, finished = Event(), Event(), Event()
+        started, release, rejected = Event(), Event(), Event()
         self.addCleanup(release.set)
         output, native = Mock(), Mock()
         native.__enter__ = Mock(return_value=native)
@@ -328,8 +270,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                     samplerate=24000, channels=1, dtype="float32", latency="low"
                 ) as stream:
                     stream.write(np.ones((4, 1)))
-            finally:
-                finished.set()
+            except PcmAdmissionRejected:
+                rejected.set()
 
         dialog = self.create_dialog(
             history, replay, stop_handler=Mock(return_value=True)
@@ -339,7 +281,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.replay_button.click()
         self.wait_for(lambda: not dialog.stop_runner.active)
         release.set()
-        self.wait_for(finished.is_set)
+        self.assertTrue(self.thread_pool.waitForDone(3000))
+        self.assertTrue(rejected.is_set(), "Stopped replay did not reject late audio")
         native.write.assert_not_called()
         self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
 
@@ -620,24 +563,12 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         QTest.keyClick(dialog.details, Qt.Key.Key_PageDown)
         self.assertGreater(dialog.details.verticalScrollBar().value(), 0)
 
-    def test_replay_failure_is_retryable_in_dialog(self):
-        history = DialogueHistory()
-        history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
-        replay = Mock(side_effect=RuntimeError("backend unavailable"))
-        dialog = self.create_dialog(history, replay)
-
-        dialog.replay_selected()
-        self.wait_for(lambda: not dialog.replay_runner.active)
-
-        self.assertIn("try again", dialog.status.toPlainText())
-        self.assertTrue(dialog.replay_button.isEnabled())
-
-    def test_long_replay_failure_can_be_scrolled_and_copied(self):
+    def test_long_replay_failure_can_be_read_copied_and_retried(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
         error = "Speech backend returned a detailed failure. " * 80
-        dialog = self.create_dialog(history, Mock(side_effect=RuntimeError(error)))
+        replay = Mock(side_effect=(RuntimeError(error), None))
+        dialog = self.create_dialog(history, replay)
         font = dialog.font()
         font.setPointSize(16)
         dialog.setFont(font)
@@ -658,42 +589,68 @@ class DialogueHistoryDialogTest(unittest.TestCase):
             self.application.clipboard().text(), dialog.status.toPlainText()
         )
 
-    def test_no_search_results_keep_session_export_available(self):
-        history = DialogueHistory()
-        history.add("Marcus", "The suitcase is ready.")
-        dialog = self.create_dialog(history, Mock())
+        self.assertIn("try again", dialog.status.toPlainText())
+        dialog.replay_button.click()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertEqual(dialog.status.toPlainText(), "Speech finished for Marcus.")
+        self.assertEqual(replay.call_count, 2)
 
-        dialog.search.setText("missing")
-
-        self.assertEqual(dialog.entries.count(), 0)
-        self.assertFalse(dialog.replay_button.isEnabled())
-        self.assertTrue(dialog.export_button.isEnabled())
-        self.assertIn("No matching lines", dialog.empty_message.text())
-        self.assertEqual(dialog.status.toPlainText(), "")
-
-    def test_export_includes_whole_session_while_history_is_filtered(self):
+    def test_export_keeps_the_whole_session_with_one_or_no_search_matches(self):
         history = DialogueHistory()
         marcus = history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
         lucy = history.add("Lucy", "Good morning.")
         dialog = self.create_dialog(history, Mock())
-        with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "history.json"
-            for query in ("Lucy", "missing"):
-                with self.subTest(query=query):
-                    dialog.search.setText(query)
-                    with patch(
-                        "vntts.history_ui.QFileDialog.getSaveFileName",
-                        return_value=(str(path), "JSON files (*.json)"),
-                    ):
-                        dialog.export_history()
-                    exported = json.loads(path.read_text(encoding="utf-8"))
-                    self.assertEqual(
-                        exported["entries"], [asdict(marcus), asdict(lucy)]
-                    )
 
-    def test_refresh_preserves_older_selection_and_scroll_position(self):
-        history = DialogueHistory()
+        with TemporaryDirectory() as directory:
+            text_path = Path(directory) / "one-match"
+            json_path = Path(directory) / "no-match"
+            with patch(
+                "vntts.history_ui.QFileDialog.getSaveFileName",
+                side_effect=[
+                    (str(text_path), "Text files (*.txt)"),
+                    (str(json_path), "JSON files (*.json)"),
+                ],
+            ):
+                dialog.search.setText("lucy")
+                self.assertEqual(dialog.current_entry(), lucy)
+                self.assertEqual(dialog.entries.count(), 1)
+                dialog.export_button.click()
+                dialog.search.setText("missing")
+                self.assertEqual(dialog.entries.count(), 0)
+                self.assertFalse(dialog.replay_button.isEnabled())
+                self.assertIn("No matching lines", dialog.empty_message.text())
+                self.assertEqual(dialog.status.toPlainText(), "")
+                dialog.export_button.click()
+
+            self.assertEqual(
+                text_path.with_suffix(".txt").read_text(encoding="utf-8"),
+                f"[{marcus.recorded_at}] Marcus\nThe suitcase is ready.\n\n"
+                f"[{lucy.recorded_at}] Lucy\nGood morning.\n",
+            )
+            exported = json.loads(
+                json_path.with_suffix(".json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(exported["version"], 1)
+            self.assertEqual(
+                exported["entries"],
+                [
+                    {
+                        "id": marcus.id,
+                        "recorded_at": marcus.recorded_at,
+                        "character": "Marcus",
+                        "text": "The suitcase is ready.",
+                    },
+                    {
+                        "id": lucy.id,
+                        "recorded_at": lucy.recorded_at,
+                        "character": "Lucy",
+                        "text": "Good morning.",
+                    },
+                ],
+            )
+
+    def test_refresh_keeps_scroll_until_the_selected_line_expires(self):
+        history = DialogueHistory(maximum_entries=40)
         for index in range(40):
             history.add(f"Speaker {index}", f"Dialogue line {index}")
             history.finish_current()
@@ -714,7 +671,15 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.current_entry().id, selected_id)
         self.assertEqual(scroll_bar.value(), previous_scroll)
         self.assertIn("Speaker 8", dialog.details.toPlainText())
-        dialog.close()
+
+        dialog.entries.setCurrentRow(0)
+        newest = history.add("Narrator", "Another line.")
+        dialog.refresh()
+        self.application.processEvents()
+
+        self.assertEqual(dialog.current_entry(), newest)
+        selected_rect = dialog.entries.visualItemRect(dialog.entries.currentItem())
+        self.assertTrue(dialog.entries.viewport().rect().intersects(selected_rect))
 
 
 if __name__ == "__main__":

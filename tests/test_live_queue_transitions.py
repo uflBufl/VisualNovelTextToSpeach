@@ -3,6 +3,7 @@ from threading import Event, Thread
 from unittest.mock import Mock
 
 from tests import test_live as live_tests
+from vntts.audio_output import playback_pause_context
 from vntts.live_tracking import IncrementalDialogTracker, SpeechChunk
 
 
@@ -14,8 +15,9 @@ class LiveQueueTransitionsTest(unittest.TestCase):
         return live_tests.LiveDialogReaderTest().create_reader(
             speech_executor=self.speech,
             playback_executor=self.playback,
+            prepare_chunk=options.pop("prepare_chunk", lambda chunk: chunk.text),
             play_prepared=options.pop(
-                "play_prepared", lambda chunk, _: self.played.append(chunk.text)
+                "play_prepared", lambda _chunk, prepared: self.played.append(prepared)
             ),
             **options,
         )
@@ -88,55 +90,62 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["First.", "Second."])
 
-    def test_distinct_explicit_repeats_are_preserved_while_paused(self):
-        reader = self.create_reader()
-        reader.enqueue("Ada", "Again.")
+    def test_paused_repeats_play_the_last_spoken_line_across_a_dialogue_seal(self):
+        reader = self.create_reader(prepare_chunk=lambda chunk: chunk.line_id)
+        reader.enqueue("Ada", "Again.", line_id="first")
+        reader.enqueue("Ada", "Again.", line_id="second")
         self.drain()
         reader.toggle_pause()
 
         self.assertTrue(reader.repeat_last())
+        reader.seal_generation(reader.active_generation)
         self.assertTrue(reader.repeat_last())
+        self.assertEqual(self.speech.jobs, [])
+        self.assertEqual(self.played, ["first", "second"])
         reader.toggle_pause()
         self.drain()
 
-        self.assertEqual(self.played, ["Again.", "Again.", "Again."])
+        self.assertEqual(self.played, ["first", "second", "second", "second"])
 
     def test_paused_first_line_retains_playback_ahead_of_prepared_second_line(self):
-        from vntts.audio_output import playback_pause_context
-
         interrupt = Mock()
-        starts = []
+        audio = {"First.": b"first recording", "Second.": b"second recording"}
+        prepare = Mock(side_effect=lambda chunk: audio[chunk.text])
 
-        def play(chunk, _prepared):
-            starts.append(chunk.text)
-            if len(starts) == 1:
-                lease = reader.playback_future
+        def play(chunk, prepared):
+            self.played.append((chunk.text, prepared))
+            if len(self.played) == 1:
                 token = playback_pause_context.get()
-                self.assertIs(token, reader.playback_pause)
+                playing = reader.playback_future
                 self.assertTrue(reader.toggle_pause())
-                self.assertTrue(token.is_paused())
-                self.assertIs(reader.current_chunk, chunk)
-                self.assertIs(reader.playback_future, lease)
-                self.assertFalse(lease.done())
-                self.assertEqual(self.playback.jobs, [])
-                self.assertEqual(reader.completed_playback_ids, set())
-                reader._set_generation(3)
-                self.assertTrue(reader.is_playback_current(chunk))
-                self.assertFalse(reader.toggle_pause())
-                self.assertIs(reader.playback_future, lease)
+                try:
+                    self.assertTrue(token.is_paused())
+                    self.assertIs(reader.current_chunk, chunk)
+                    reader._set_generation(3)
+                    self.assertTrue(reader.is_playback_current(chunk))
+                finally:
+                    self.assertFalse(reader.toggle_pause())
+                self.assertFalse(token.is_paused())
+                self.assertIs(reader.playback_future, playing)
 
-        reader = self.create_reader(play_prepared=play, interrupt_speech=interrupt)
+        reader = self.create_reader(
+            prepare_chunk=prepare, play_prepared=play, interrupt_speech=interrupt
+        )
         reader.enqueue("Ada", "First.")
         reader.enqueue("Ada", "Second.")
         self.drain()
 
-        self.assertEqual(starts, ["First.", "Second."])
+        reader.report_error.assert_not_called()
+        self.assertEqual(self.played, list(audio.items()))
+        self.assertEqual(prepare.call_count, 2)
         interrupt.assert_not_called()
 
     def test_running_preparation_finishes_during_pause_without_losing_fifo(self):
         started, finish = Event(), Event()
+        prepared = []
 
         def prepare(chunk):
+            prepared.append(chunk.text)
             if chunk.text == "First.":
                 started.set()
                 if not finish.wait(2):
@@ -148,35 +157,87 @@ class LiveQueueTransitionsTest(unittest.TestCase):
         reader.enqueue("Ada", "Second.")
         worker = Thread(target=self.speech.run_next)
         worker.start()
-        self.assertTrue(started.wait(2))
-        reader.toggle_pause()
-        finish.set()
-        worker.join(2)
+        try:
+            self.assertTrue(started.wait(2))
+            reader.toggle_pause()
+        finally:
+            finish.set()
+            worker.join(2)
         self.assertFalse(worker.is_alive())
         self.assertEqual(self.playback.jobs, [])
 
         reader.toggle_pause()
         self.drain()
 
+        self.assertEqual(prepared, ["First.", "Second."])
         self.assertEqual(self.played, ["First.", "Second."])
 
     def test_cancelled_buffered_preparation_releases_capacity_for_next_line(self):
-        reader = self.create_reader(max_speech_jobs=1)
-        reader.toggle_pause()
+        def prepare(chunk):
+            if chunk.text == "Old.":
+                reader.toggle_pause()
+            return chunk.text
+
+        reader = self.create_reader(max_speech_jobs=1, prepare_chunk=prepare)
         reader.enqueue("Ada", "Old.")
-        reader.toggle_pause()
-        # Pause from preparation so its completed result is buffered.
-        reader.prepare_chunk = lambda chunk: reader.toggle_pause() or chunk
         self.speech.run_next()
         old = next(iter(reader.accepted_chunks.values()))
         reader.cancelled_chunk_ids.add(old.playback_id)
-        reader.prepare_chunk = lambda chunk: chunk
         reader.enqueue("Ada", "Fresh.")
         reader.toggle_pause()
         self.drain()
 
         self.assertEqual(self.played, ["Fresh."])
         self.assertFalse(reader.speech_futures)
+
+    def test_skip_stops_only_the_current_line_when_the_backend_cannot_interrupt(self):
+        interrupt = Mock(return_value=False)
+
+        def play(chunk, audio):
+            if chunk.text == "First.":
+                self.assertTrue(reader.skip_current())
+            if reader.wait_until_playable(chunk):
+                self.played.append(audio)
+
+        reader = self.create_reader(play_prepared=play, interrupt_speech=interrupt)
+        reader.enqueue("Ada", "First.")
+        reader.enqueue("Ada", "Second.")
+        self.assertFalse(reader.skip_current())
+        interrupt.assert_not_called()
+
+        self.drain()
+
+        reader.report_error.assert_not_called()
+        interrupt.assert_called_once_with()
+        self.assertEqual(self.played, ["Second."])
+
+    def test_clear_during_preparation_discards_late_audio_and_pending_dialogue(self):
+        interrupt = Mock()
+        prepared = []
+
+        def prepare(chunk):
+            prepared.append(chunk.text)
+            if chunk.text == "First.":
+                self.assertTrue(reader.clear_queue())
+            return chunk.text
+
+        reader = self.create_reader(prepare_chunk=prepare, interrupt_speech=interrupt)
+        reader.enqueue("Ada", "First.")
+        reader.enqueue("Ada", "Second.")
+        pending = self.speech.jobs[1][0]
+
+        self.speech.run_next()
+        self.assertTrue(pending.cancelled())
+        reader._schedule([SpeechChunk(reader.active_generation, "Ada", "Late suffix.")])
+        self.drain()
+        self.assertEqual(self.played, [])
+        interrupt.assert_called_once_with()
+
+        reader.enqueue("Ada", "Fresh.")
+        self.drain()
+        reader.report_error.assert_not_called()
+        self.assertEqual(prepared, ["First.", "Fresh."])
+        self.assertEqual(self.played, ["Fresh."])
 
     def test_clear_releases_buffered_preparation_capacity(self):
         reader = self.create_reader()
@@ -327,18 +388,6 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["Next."])
         self.assertIn(suffix.playback_id, reader.completed_playback_ids)
-
-    def test_sealing_preserves_already_accepted_explicit_repeat(self):
-        reader = self.create_reader()
-        reader.toggle_pause()
-        reader._set_generation(1)
-        reader._schedule([SpeechChunk(1, "Ada", "Repeat.", explicit_replay=True)])
-
-        reader.seal_generation(1)
-        reader.toggle_pause()
-        self.drain()
-
-        self.assertEqual(self.played, ["Repeat."])
 
     def test_all_accepted_lines_survive_capacity_pressure_in_order(self):
         reader = self.create_reader(max_speech_jobs=2)

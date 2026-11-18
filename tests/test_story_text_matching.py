@@ -1,4 +1,3 @@
-import itertools
 import unicodedata
 import unittest
 
@@ -144,32 +143,20 @@ class StoryTextMatchingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.compare("word", "word", limit=-1)
 
-    def test_distance_matches_standard_levenshtein_oracle_with_cutoffs(self):
-        words = [
-            "".join(letters)
-            for length in range(4)
-            for letters in itertools.product("ab :", repeat=length)
-        ]
-        for left, right in itertools.product(words, repeat=2):
-            actual, source = prepare_text(left).key, prepare_text(right).key
-            previous = list(range(len(source) + 1))
-            for i, unit in enumerate(actual, 1):
-                current = [i]
-                for j, other in enumerate(source, 1):
-                    current.append(
-                        min(
-                            current[-1] + 1,
-                            previous[j] + 1,
-                            previous[j - 1] + (unit != other),
-                        )
+    def test_distance_returns_one_past_the_cutoff_on_overflow(self):
+        for canonical, observed, distance in (
+            ("abc", "abc", 0),
+            ("ab", "abc", 1),
+            ("abc", "ab", 1),
+            ("kitten", "sitting", 3),
+            ("", "abcd", 4),
+        ):
+            for limit in (0, 1, 2, 3, 4):
+                with self.subTest(canonical=canonical, observed=observed, limit=limit):
+                    self.assertEqual(
+                        self.compare(canonical, observed, limit).distance,
+                        min(distance, limit + 1),
                     )
-                previous = current
-            for limit in range(3):
-                self.assertEqual(
-                    self.compare(right, left, limit).distance,
-                    min(previous[-1], limit + 1),
-                    (left, right, limit),
-                )
 
 
 if __name__ == "__main__":

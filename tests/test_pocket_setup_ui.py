@@ -34,30 +34,29 @@ class PocketSetupControlTest(unittest.TestCase):
         self.control = PocketSetupControl()
         self.addCleanup(self._delete_control)
 
-    def test_browser_auth_and_terms_continue_run_without_blocking_the_ui(self):
-        sign_in = Event()
+    def test_browser_retry_and_terms_continue_without_blocking_the_ui(self):
         terms = Event()
-        finished = Event()
-        worker_thread = []
-        browser_threads = []
+        browser_calls = []
+        sign_in_url = "https://huggingface.co/device"
+        terms_url = "https://huggingface.co/kyutai/pocket-tts"
         changes = []
         self.control.readyChanged.connect(changes.append)
-        self.browser.side_effect = lambda _url: browser_threads.append(
-            QThread.currentThread()
-        )
+
+        def open_browser(url):
+            browser_calls.append((url.toString(), QThread.currentThread()))
+            return len(browser_calls) > 1
+
+        self.browser.side_effect = open_browser
 
         def prepare(*, cancel_event, continue_event, progress, authorize):
-            worker_thread.append(QThread.currentThread())
             progress("Waiting for browser sign-in")
-            authorize("https://huggingface.co/device", "ABCD-EFGH")
-            sign_in.set()
+            authorize(sign_in_url, "ABCD-EFGH")
             self.assertTrue(terms.wait(3))
-            authorize("https://huggingface.co/kyutai/pocket-tts", "")
+            authorize(terms_url, "")
             self.assertTrue(continue_event.wait(3))
             self.assertFalse(cancel_event.is_set())
             progress("Downloading original model")
             self.readiness.return_value = True
-            finished.set()
 
         with patch("vntts.pocket_setup_ui.prepare_pocket_model", side_effect=prepare):
             self.control.button.click()
@@ -66,57 +65,59 @@ class PocketSetupControlTest(unittest.TestCase):
             thread = Thread(target=self.pool.run_next)
             thread.start()
             try:
-                self.assertTrue(sign_in.wait(3))
-                self.application.processEvents()
+                self._wait_until(lambda: "Unable to open" in dialog.status.text())
+                self.assertIn(sign_in_url, dialog.status.text())
+                self.assertFalse(dialog.browser_button.isHidden())
+                dialog.browser_button.click()
                 self.assertIn("ABCD-EFGH", dialog.code.text())
                 self.assertTrue(dialog.continue_button.isHidden())
                 terms.set()
                 self._wait_until(lambda: not dialog.continue_button.isHidden())
                 dialog.continue_button.click()
-                self.assertTrue(finished.wait(3))
+                self._wait_until(lambda: not dialog.runner.active)
             finally:
                 terms.set()
                 dialog.continue_event.set()
                 thread.join(3)
                 self.assertFalse(thread.is_alive())
-            self._wait_until(lambda: not dialog.runner.active)
             self.assertTrue(self.control.is_ready)
             self.assertFalse(self.control.button.isEnabled())
             self.assertEqual(changes, [True])
-            self.assertTrue(browser_threads)
-            self.assertTrue(
-                all(value == self.application.thread() for value in browser_threads)
+            self.assertEqual(
+                browser_calls,
+                [
+                    (url, self.application.thread())
+                    for url in (sign_in_url, sign_in_url, terms_url)
+                ],
             )
-            self.assertNotEqual(worker_thread[0], self.application.thread())
             dialog.close()
 
-    def test_failed_browser_launch_shows_a_copyable_address(self):
-        self.browser.return_value = False
-        self.control.button.click()
-        dialog = self.control._dialog
-        dialog._signals.authorize.emit(
-            "https://huggingface.co/oauth/device", "ABCD-EFGH"
-        )
-        self.assertIn("Unable to open", dialog.status.text())
-        self.assertIn("https://huggingface.co/oauth/device", dialog.status.text())
-        self.assertIn("ABCD-EFGH", dialog.code.text())
-        dialog.close()
-        self.pool.run_next()
+    def test_deleting_owner_cancels_inflight_setup_and_ignores_late_auth(self):
+        started = Event()
+        finished = Event()
 
-    def test_closing_owner_cancels_worker_and_ignores_late_auth(self):
-        callbacks = {}
-
-        def prepare(**arguments):
-            callbacks.update(arguments)
+        def prepare(*, cancel_event, continue_event, progress, authorize):
+            started.set()
+            if cancel_event.wait(3):
+                authorize("https://huggingface.co/device", "late-code")
+                progress("late update")
+                finished.set()
 
         with patch("vntts.pocket_setup_ui.prepare_pocket_model", side_effect=prepare):
             self.control.button.click()
-            self.pool.run_next()
-            self.control.deleteLater()
-            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-            self.assertTrue(callbacks["cancel_event"].is_set())
-            callbacks["authorize"]("https://huggingface.co/device", "late-code")
-            callbacks["progress"]("late update")
+            cancel_event = self.control._dialog.cancel_event
+            thread = Thread(target=self.pool.run_next)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(3))
+                self.control.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                self.assertTrue(cancel_event.is_set())
+                self.assertTrue(finished.wait(3))
+            finally:
+                cancel_event.set()
+                thread.join(3)
+            self.assertFalse(thread.is_alive())
             self.application.processEvents()
             self.browser.assert_not_called()
 

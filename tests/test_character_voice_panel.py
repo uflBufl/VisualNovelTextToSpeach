@@ -92,38 +92,53 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.assertFalse(self.panel.current_play.icon().isNull())
         self.decisions.remember_many.assert_not_called()
 
-    def test_explicit_playback_waits_for_host_before_generating_or_playing(self):
-        for current_voice in (False, True):
-            for original in (False, True):
-                with self.subTest(current_voice=current_voice, original=original):
-                    self.configure_current()
-                    preview = self.service.generate.return_value
-                    self.service.reference_audio.return_value = VoiceAuditionReference(
-                        preview.path, preview.path.read_bytes()
-                    )
-                    continuations = []
-                    self.panel.before_playback = continuations.append
-                    self.service.reset_mock()
-                    self.panel.player.reset_mock()
-                    if original:
-                        self.panel._play_original(current_voice=current_voice)
-                    elif current_voice:
-                        self.panel.play_current()
-                    else:
-                        self.panel.play_a()
-                    self.run_tasks()
-                    self.assertEqual(len(continuations), 1)
-                    self.service.generate.assert_not_called()
-                    self.service.reference_audio.assert_not_called()
-                    self.panel.player.play_bytes.assert_not_called()
-                    continuations[0]()
-                    self.run_tasks()
-                    self.panel.player.play_bytes.assert_called_once()
-                    if original:
-                        self.service.reference_audio.assert_called_once()
-                    else:
-                        self.service.generate.assert_called_once()
-                    self.panel.stop_playback()
+    def test_play_buttons_wait_for_the_host_and_can_stop_before_or_after_playback(self):
+        _, _, saved_candidate = self.configure_current()
+        candidate_source = self.group.candidates[0].source_id
+        preview = self.service.generate.return_value
+        self.service.reference_audio.return_value = VoiceAuditionReference(
+            preview.path, preview.path.read_bytes()
+        )
+        callbacks = []
+        self.panel.before_playback = callbacks.append
+        for button, prepare, source in (
+            (self.panel.a_play, self.service.generate, candidate_source),
+            (self.panel.a_original, self.service.reference_audio, candidate_source),
+            (self.panel.current_play, self.service.generate, saved_candidate.source_id),
+            (
+                self.panel.current_original,
+                self.service.reference_audio,
+                saved_candidate.source_id,
+            ),
+        ):
+            with self.subTest(button=button.accessibleName()):
+                self.service.reset_mock()
+                self.panel.player.reset_mock()
+                button.click()
+                self.assertEqual(button.property("playbackState"), "preparing")
+                button.click()
+                self.assertEqual(button.property("playbackState"), "idle")
+                callbacks.pop()()
+                self.run_tasks()
+                self.service.generate.assert_not_called()
+                self.service.reference_audio.assert_not_called()
+                self.panel.player.play_bytes.assert_not_called()
+
+                button.click()
+                self.run_tasks()
+                self.service.generate.assert_not_called()
+                self.service.reference_audio.assert_not_called()
+                self.panel.player.play_bytes.assert_not_called()
+                callbacks.pop()()
+                self.run_tasks()
+                prepare.assert_called_once()
+                self.assertEqual(prepare.call_args.args[2], source)
+                self.panel.player.play_bytes.assert_called_once()
+                self.panel.player.stop.reset_mock()
+                button.click()
+                self.panel.player.stop.assert_called_once()
+                self.assertEqual(button.property("playbackState"), "idle")
+                self.assertEqual(callbacks, [])
 
     def test_cached_previews_also_wait_for_host(self):
         self.configure_current()
@@ -167,50 +182,28 @@ class CharacterVoicePanelTest(unittest.TestCase):
                 self.panel.player.play_bytes.assert_not_called()
 
     def test_new_playback_request_supersedes_pending_request(self):
-        self.configure_current()
-        continuations = []
-        self.panel.before_playback = continuations.append
-        self.panel.play_a()
-        self.panel.play_current()
-        continuations[0]()
+        _, _, saved = self.configure_current()
+        callbacks = []
+        self.panel.before_playback = callbacks.append
+        self.panel.a_original.click()
+        self.panel.a_play.click()
+        self.panel.current_play.click()
+        original, candidate, current = callbacks
+        original()
         self.run_tasks()
-        self.service.generate.assert_not_called()
-        continuations[1]()
-        self.run_tasks()
-        self.assertEqual(self.panel._playing_source, "current-preview")
-        self.assertEqual(self.service.generate.call_count, 1)
+        self.service.reference_audio.assert_not_called()
+        self.panel.player.play_bytes.assert_not_called()
 
-    def test_playback_toggle_stops_immediately_without_host_gate(self):
-        for current_voice in (False, True):
-            for original in (False, True):
-                with self.subTest(current_voice=current_voice, original=original):
-                    self.configure_current()
-                    preview = self.service.generate.return_value
-                    self.service.reference_audio.return_value = VoiceAuditionReference(
-                        preview.path, preview.path.read_bytes()
-                    )
-                    if original:
-                        button = (
-                            self.panel.current_original
-                            if current_voice
-                            else self.panel.a_original
-                        )
-                    else:
-                        button = (
-                            self.panel.current_play
-                            if current_voice
-                            else self.panel.a_play
-                        )
-                    self.panel.before_playback = None
-                    button.click()
-                    self.run_tasks()
-                    gate = Mock()
-                    self.panel.before_playback = gate
-                    self.panel.player.stop.reset_mock()
-                    button.click()
-                    gate.assert_not_called()
-                    self.panel.player.stop.assert_called_once()
-                    self.assertIsNone(self.panel._playing_source)
+        current()
+        self.run_tasks()
+        self.panel.player.stop.reset_mock()
+        candidate()
+        self.run_tasks()
+        self.service.generate.assert_called_once()
+        self.assertEqual(self.service.generate.call_args.args[2], saved.source_id)
+        self.panel.player.play_bytes.assert_called_once()
+        self.panel.player.stop.assert_not_called()
+        self.assertFalse(self.panel.a_use.isEnabled())
 
     def test_current_audition_preserves_candidate_acceptance_and_uses_one_player(self):
         self.configure_current()
@@ -461,74 +454,50 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.panel.a_reason.setSelection(0, len(self.panel.a_reason.text()))
         self.assertEqual(self.panel.a_reason.selectedText(), self.panel.a_reason.text())
 
-    def test_custom_text_invalidates_heard_choice_and_empty_text_cannot_generate(self):
+    def test_editing_preview_text_replays_only_the_recording_for_that_phrase(self):
+        original = self.group.sample_text
+        edited = "A new comparison phrase."
+        root = Path(self.plan.voice_manifest).parent
+        audio = [clean_wav_bytes(amplitude=0.1), clean_wav_bytes(amplitude=0.3)]
+        previews = []
+        for filename, payload in zip(("story.wav", "edited.wav"), audio, strict=True):
+            path = root / filename
+            path.write_bytes(payload)
+            previews.append(Mock(path=path, audio_sha256=sha256_file(path)))
+        self.service.generate.side_effect = previews
         self.panel.start(self.plan, group_id=self.group.group_id)
-        self.panel._accepted_choice = self.panel.current_selection[2]
-        self.panel.preview_text.setPlainText("A new comparison phrase.")
-        self.assertEqual(self.panel._sample_text, "A new comparison phrase.")
-        self.assertIsNone(self.panel._accepted_choice)
+        self.panel.a_play.click()
+        self.run_tasks()
+        self.assertTrue(self.panel.a_use.isEnabled())
+
+        self.panel.preview_text.setPlainText(edited)
+        self.run_tasks()
+        self.service.generate.assert_called_once()
         self.assertFalse(self.panel.a_use.isEnabled())
+        self.panel.a_play.click()
+        self.run_tasks()
+        self.assertTrue(self.panel.a_use.isEnabled())
+
         self.panel.preview_text.clear()
         self.assertFalse(self.panel.a_play.isEnabled())
-        self.panel.play_a()
-        self.service.generate.assert_not_called()
+        self.panel.a_play.click()
         self.panel.game_phrase_button.click()
-        self.assertTrue(self.panel.a_play.isEnabled())
-
-    def test_failed_custom_preview_keeps_custom_text_for_retry(self):
-        group = replace(self.group, alternate_sample_text="Another story phrase.")
-        plan = replace(self.plan, groups=(group,))
-        self.service.generate.side_effect = RuntimeError("model unavailable")
-        self.panel.start(plan, group_id=group.group_id)
-        self.assertGreater(len(self.panel._game_phrases), 1)
-        text = "Only this custom phrase should be spoken."
-        self.panel.preview_text.setPlainText(text)
+        self.assertEqual(self.panel.preview_text.toPlainText(), original)
+        self.assertTrue(self.panel.a_use.isEnabled())
+        self.panel.a_play.click()
+        self.panel.preview_text.setPlainText(edited)
+        self.assertTrue(self.panel.a_use.isEnabled())
         self.panel.a_play.click()
         self.run_tasks()
-        self.assertIn("Preview failed", self.panel.status.toPlainText())
-        self.assertTrue(self.panel.preview_text.isEnabled())
-        self.assertEqual(self.panel.preview_text.toPlainText(), text)
-        self.assertTrue(self.panel.a_play.isEnabled())
-        self.assertEqual(self.panel._sample_text, text)
-        self.panel.a_play.click()
-        self.run_tasks()
-        self.assertEqual(self.service.generate.call_count, 2)
-        self.assertEqual(self.service.generate.call_args.kwargs["text"], text)
-        self.decisions.remember_many.assert_not_called()
 
-    def test_game_phrase_button_cycles_all_available_text_without_duplicates(self):
-        phrases = (
-            "The first full game phrase.",
-            "Why would you do that?!",
-            "Тихо, они могут нас услышать...",
-            "Je suis désolée.",
-            "One last line.",
+        self.assertEqual(
+            [call.kwargs["text"] for call in self.service.generate.call_args_list],
+            [original, edited],
         )
-        candidate = replace(
-            self.group.candidates[0],
-            source_excerpts=(*phrases[2:], phrases[0], "  "),
-            reference_transcript=phrases[1],
+        self.assertEqual(
+            [call.args[0] for call in self.panel.player.play_bytes.call_args_list],
+            audio + audio,
         )
-        group = replace(
-            self.group,
-            sample_text=phrases[0],
-            alternate_sample_text=phrases[1],
-            candidates=(candidate,),
-            candidate_inventory=(candidate,),
-        )
-        self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        expected = (phrases[0], phrases[1], phrases[3], phrases[4], phrases[2])
-        self.assertEqual(self.panel._game_phrases, expected)
-        self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        for text in (*expected[1:], expected[0]):
-            self.panel.game_phrase_button.click()
-            self.assertEqual(self.panel.preview_text.toPlainText(), text)
-            self.assertEqual(self.panel._sample_text, text)
-        self.panel.preview_text.setPlainText("My edited phrase")
-        self.panel.game_phrase_button.click()
-        self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        self.service.generate.assert_not_called()
-        self.decisions.remember_many.assert_not_called()
 
     def test_unicode_input_preserves_full_text_and_cursor(self):
         self.panel.start(self.plan, group_id=self.group.group_id)

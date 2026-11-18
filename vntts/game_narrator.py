@@ -159,6 +159,7 @@ def bind_voice_library_selection(
     rollback: VoiceBindingRollback | None = None,
     reference_transcript: str | None = None,
     source_excerpts: Sequence[str] = (),
+    expected_reference_sha256s: tuple[str, ...] | None = None,
 ) -> AppSettings:
     """Save a role once in the authoritative library, not another manifest."""
     del additional_manifest
@@ -171,6 +172,7 @@ def bind_voice_library_selection(
     selected = registry.resolve_source(source_id)
     if selected is None or not selected.references:
         raise ValueError("Choose an available game voice")
+    checked_sha256s = []
     for index, path in enumerate(selected.references, 1):
         try:
             report = analyze_reference_bytes(
@@ -178,11 +180,17 @@ def bind_voice_library_selection(
             )
             if report["objective_preflight"] != "pass":
                 raise ValueError(", ".join(report["rejection_reasons"]))
+            checked_sha256s.append(report["sha256"])
         except ValueError as error:
             raise ValueError(
                 f"Cannot save {character}: reference {index} is unusable ({error}). "
                 "Choose another spoken reference."
             ) from error
+    if (
+        expected_reference_sha256s is not None
+        and tuple(checked_sha256s) != expected_reference_sha256s
+    ):
+        raise ValueError("Selected voice reference changed. Reopen the voice editor.")
     library = VoiceLibrary(root) if root is not None else application_voice_library()
     remember_voice_binding(
         library,
@@ -196,6 +204,7 @@ def bind_voice_library_selection(
         source_excerpts=source_excerpts,
         algorithm="voice-picker-v1",
         rollback=rollback,
+        expected_reference_sha256s=tuple(checked_sha256s),
     )
     return settings.updated(
         voice_manifest=settings.voice_manifest or str(manifest),

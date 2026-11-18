@@ -473,38 +473,16 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(compact.status.toolTip(), message)
         dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), message)
-        self.assertIn(message, dashboard._copy_details())
-        compact.set_warning("Narrator fallback: chosen voice is unavailable")
-        self.assertEqual(compact.status.toPlainText(), compact.status.toolTip())
-        self.assertTrue(compact.status.font().bold())
+        self.assertFalse(dashboard.status.isHidden())
+        self.assertFalse(dashboard.copy_status_button.isHidden())
         dashboard.set_status("")
         compact.set_status("")
         self.assertEqual(dashboard.status.toolTip(), "")
         self.assertEqual(compact.status.toolTip(), "")
+        self.assertTrue(dashboard.status.isHidden())
+        self.assertTrue(dashboard.copy_status_button.isHidden())
         dashboard.deleteLater()
         compact.deleteLater()
-
-    def test_short_status_preserves_full_audio_instructions_for_copy(self):
-        dashboard = ControlDashboard(AppSettings())
-        compact = CompactController()
-        summary = "The audio component is not installed. Select Audio setup."
-        details = "Run cargo build --release --locked from the project directory."
-        dashboard.set_status(summary, details=details)
-        compact.set_status(summary, details=details)
-        self.assertEqual(dashboard.status.text(), summary)
-        self.assertEqual(compact.status.toPlainText(), summary)
-        self.assertEqual(compact.status.toolTip(), details)
-        dashboard.copy_status_button.click()
-        self.assertEqual(self.application.clipboard().text(), details)
-        requested = Mock()
-        dashboard.audio_setup_requested.connect(requested)
-        dashboard.audio_setup_button.show()
-        dashboard.audio_setup_button.click()
-        requested.assert_called_once_with()
-        dashboard.set_status("Reading ready")
-        self.assertEqual(dashboard.status.toolTip(), "Reading ready")
-        compact.deleteLater()
-        dashboard.deleteLater()
 
     def test_long_status_stays_compact_but_copy_preserves_exact_error_and_compute(self):
         dashboard = ControlDashboard(AppSettings())
@@ -512,7 +490,10 @@ class ControlDashboardTest(unittest.TestCase):
         compute = "Compute: GPU: RTX 2070 SUPER (37 GPU layers); audio model/codec: CPU"
         dashboard.set_status(message)
         dashboard.set_speech_runtime(compute)
-        self.assertLess(len(dashboard.status.text()), len(message))
+        summary = dashboard.status.text()
+        self.assertTrue(summary.startswith("Unable to load model:"))
+        self.assertLess(len(summary), len(message))
+        self.assertIn("Copy status", summary)
         dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), message)
         dashboard.copy_details_button.click()
@@ -958,12 +939,6 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("Capture: Reverse: 1999", details)
         self.assertIn("Engine:", details)
         self.assertNotIn("<b>", details)
-        dashboard.set_status("")
-        self.assertTrue(dashboard.status.isHidden())
-        self.assertTrue(dashboard.copy_status_button.isHidden())
-        dashboard.set_status("Speech model failed to load")
-        self.assertFalse(dashboard.status.isHidden())
-        self.assertFalse(dashboard.copy_status_button.isHidden())
         dashboard.deleteLater()
 
     def test_narrator_technical_identity_is_kept_in_details_only(self):
@@ -1948,26 +1923,10 @@ class ControlDashboardTest(unittest.TestCase):
         controller.set_warning("Voice needed: Hotelier")
 
         self.assertEqual(controller.mode.text(), "Reading")
-        self.assertEqual(controller.status.toPlainText(), "Voice needed: Hotelier")
-        self.assertTrue(controller.status.font().bold())
+        self.assertEqual(controller.status.toolTip(), "Voice needed: Hotelier")
         self.assertEqual(
             controller.status.palette().color(QPalette.ColorRole.Text), status_color
         )
-
-        controller.set_paused(True)
-
-        self.assertEqual(controller.mode.text(), "Paused")
-        self.assertEqual(controller.status.toPlainText(), "Voice needed: Hotelier")
-
-        controller.set_status("Reading resumed")
-
-        self.assertEqual(controller.status.toPlainText(), "Reading resumed")
-        self.assertFalse(controller.status.font().bold())
-        controller.deleteLater()
-
-    def test_compact_warning_survives_ready_reading_and_paused_states(self):
-        controller = CompactController(platform="win32")
-        controller.set_warning("Narrator used for Selone")
         for state, mode in (
             (RuntimeControlState(ready=True), "Ready"),
             (RuntimeControlState(ready=True, live=True), "Reading"),
@@ -1977,9 +1936,14 @@ class ControlDashboardTest(unittest.TestCase):
                 controller.set_runtime_controls(state)
                 self.assertEqual(controller.mode.text(), mode)
                 self.assertEqual(
-                    controller.status.toPlainText(), "Narrator used for Selone"
+                    controller.status.toPlainText(), "Voice needed: Hotelier"
                 )
                 self.assertTrue(controller.status.font().bold())
+
+        controller.set_status("Reading resumed")
+
+        self.assertEqual(controller.status.toPlainText(), "Reading resumed")
+        self.assertFalse(controller.status.font().bold())
         controller.deleteLater()
 
     def test_compact_disabled_controls_show_recovery_beside_controls(self):

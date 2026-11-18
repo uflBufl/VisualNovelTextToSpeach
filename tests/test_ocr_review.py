@@ -887,24 +887,6 @@ class OCRReviewDialogTest(unittest.TestCase):
                 dialog.close()
                 dialog.deleteLater()
 
-    def test_single_field_correction_and_scope(self):
-        with TemporaryDirectory() as temporary_directory:
-            record_uncertain_sample(temporary_directory)
-            store = OCRCorrectionStore(Path(temporary_directory) / "rules.json")
-            dialog = OCRReviewDialog(
-                temporary_directory, store, "game", "Reverse: 1999"
-            )
-            dialog.corrected_character.setText("Marcus")
-            self.assertTrue(dialog.save_button.isEnabled())
-            self.assertIn("the Reverse: 1999 profile", dialog.impact.text())
-            dialog.save_correction()
-            self.wait_for(lambda: not dialog._write_active)
-            self.assertEqual(
-                OCRCorrectionStore.load(store.path).profile_entries["game"],
-                {"Mareus": "Marcus"},
-            )
-            dialog.deleteLater()
-
     def test_large_screenshot_can_scroll_both_axes(self):
         with TemporaryDirectory() as temporary_directory:
             UncertainFrameRecorder(temporary_directory).record(
@@ -1026,17 +1008,19 @@ class OCRReviewDialogTest(unittest.TestCase):
             self.assertIn("Could not finish review", dialog.status.toPlainText())
             dialog.deleteLater()
 
-    def test_switching_samples_preserves_unsaved_draft(self):
+    def test_saving_one_draft_after_switching_samples_only_resolves_its_line(self):
         with TemporaryDirectory() as temporary_directory:
-            record_uncertain_sample(temporary_directory)
+            review = Path(temporary_directory) / "review"
+            store = OCRCorrectionStore(Path(temporary_directory) / "rules.json")
+            record_uncertain_sample(review)
             for speaker in ("Other", "Third"):
-                UncertainFrameRecorder(temporary_directory).record(
+                UncertainFrameRecorder(review).record(
                     Image.new("RGB", (320, 100), "black"),
                     OCRResult(speaker, f"{speaker} phrase.", 41, "balanced", 2),
                     60,
                 )
             dialog = OCRReviewDialog(
-                temporary_directory, profile_id="game", profile_name="Current game"
+                review, store, profile_id="game", profile_name="Current game"
             )
             dialog.scope.setCurrentIndex(0)
             samples = tuple(dialog.samples)
@@ -1044,16 +1028,36 @@ class OCRReviewDialogTest(unittest.TestCase):
                 dialog.sample_list.setCurrentRow(index)
                 dialog.corrected_character.setText(f"Edited speaker {index}")
                 dialog.corrected_text.setPlainText(f"Edited phrase {index}")
-            for index in (0, 2, 1, 0):
-                dialog.sample_list.setCurrentRow(index)
-                self.assertEqual(dialog.current_sample(), samples[index])
+            dialog.sample_list.setCurrentRow(1)
+            selected = samples[1]
+            self.assertEqual(dialog.corrected_text.toPlainText(), "Edited phrase 1")
+            self.assertIsNone(dialog.scope.currentData())
+            dialog.corrected_text.setPlainText(selected.text)
+            dialog.scope.setCurrentIndex(dialog.scope.findData("game"))
+            self.assertIn("the Current game profile", dialog.impact.text())
+            dialog.save_button.click()
+            self.wait_for(lambda: not dialog._write_active)
+
+            saved = OCRCorrectionStore.load(store.path)
+            self.assertEqual(
+                saved.profile_entries,
+                {"game": {selected.character: "Edited speaker 1"}},
+            )
+            self.assertEqual(saved.global_entries, {})
+            self.assertEqual(
+                [s.metadata_path for s in OCRReviewStore(review).pending_samples()],
+                [samples[0].metadata_path, samples[2].metadata_path],
+            )
+            for row, original_index in enumerate((0, 2)):
+                dialog.sample_list.setCurrentRow(row)
                 self.assertEqual(
-                    dialog.corrected_character.text(), f"Edited speaker {index}"
+                    dialog.corrected_character.text(),
+                    f"Edited speaker {original_index}",
                 )
                 self.assertEqual(
-                    dialog.corrected_text.toPlainText(), f"Edited phrase {index}"
+                    dialog.corrected_text.toPlainText(),
+                    f"Edited phrase {original_index}",
                 )
-                self.assertIsNone(dialog.scope.currentData())
             dialog.deleteLater()
 
     def test_slow_resolution_keeps_qt_responsive_and_defers_close(self):

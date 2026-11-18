@@ -88,51 +88,16 @@ class OCRCorrectionDictionaryTest(unittest.TestCase):
             ("Mareus -> Marcus", "tiniekeeper -> timekeeper"),
         )
 
-    def test_does_not_replace_text_inside_another_word(self):
-        dictionary = OCRCorrectionDictionary({"son": "sun"})
-
-        corrected, changes = dictionary.correct_text("A son speaks reasonably.")
-
-        self.assertEqual(corrected, "A sun speaks reasonably.")
-        self.assertEqual(changes, ("son -> sun",))
-
-    def test_can_correct_letter_case(self):
+    def test_case_only_correction_changes_whole_words(self):
         dictionary = OCRCorrectionDictionary({"marcus": "Marcus"})
 
-        corrected, _changes = dictionary.correct_text("MARCUS")
+        corrected, changes = dictionary.correct_text("MARCUS, marcusson and demarcus.")
 
-        self.assertEqual(corrected, "Marcus")
+        self.assertEqual(corrected, "Marcus, marcusson and demarcus.")
+        self.assertEqual(changes, ("marcus -> Marcus",))
 
 
 class OCRCorrectionStoreTest(unittest.TestCase):
-    def test_round_trips_global_and_profile_entries(self):
-        with TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "ocr-corrections.json"
-            store = OCRCorrectionStore(path)
-            store.replace_entries(
-                {"Mareus": "Marcus"},
-                "reverse-1999",
-                {"Vertln": "Vertin"},
-            )
-
-            loaded = OCRCorrectionStore.load(path)
-
-        self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
-        self.assertEqual(
-            loaded.profile_entries,
-            {"reverse-1999": {"Vertln": "Vertin"}},
-        )
-
-    def test_profile_entries_override_global_entries_case_insensitively(self):
-        store = OCRCorrectionStore(
-            global_entries={"Vertln": "Vertin", "Mareus": "Marcus"},
-            profile_entries={"game": {"vertln": "Ms. Vertin"}},
-        )
-
-        corrected, _changes = store.dictionary_for("game").correct_text("Vertln Mareus")
-
-        self.assertEqual(corrected, "Ms. Vertin Marcus")
-
     def test_profile_entries_can_be_copied_and_removed(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "ocr-corrections.json"
@@ -197,8 +162,12 @@ class OCRCorrectionStoreTest(unittest.TestCase):
                         store.profile_entries, {"game": {"Vertln": "Vertin"}}
                     )
                     self.assertEqual(store.path.read_bytes(), original)
-                    store.save()
-                    self.assertEqual(store.path.read_bytes(), original)
+            store.upsert_entries({"New": "Profile"}, "game")
+            saved = OCRCorrectionStore.load(store.path)
+            self.assertEqual(saved.global_entries, {"Mareus": "Marcus"})
+            self.assertEqual(
+                saved.profile_entries, {"game": {"Vertln": "Vertin", "New": "Profile"}}
+            )
 
     def test_replacement_while_saving_preserves_foreign_entries_until_reload(self):
         with TemporaryDirectory() as directory:
@@ -395,14 +364,26 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             self.application.processEvents()
             dialog._append_row(dialog.global_table, " Mareus ", " Marcus ")
             dialog._append_row(dialog.global_table, " ", " ")
-            dialog._append_row(dialog.profile_table, " Vertln ", " Vertin ")
+            dialog._append_row(dialog.global_table, "Vertln", "Vertin")
+            dialog._append_row(dialog.profile_table, " vertln ", " Ms. Vertin ")
 
-            dialog.save()
+            dialog.save_button.click()
             self.wait_for(lambda: not dialog._save_active)
 
             loaded = OCRCorrectionStore.load(store.path)
-        self.assertEqual(loaded.global_entries, {"Mareus": "Marcus"})
-        self.assertEqual(loaded.profile_entries["game"], {"Vertln": "Vertin"})
+        self.assertEqual(
+            loaded.global_entries, {"Mareus": "Marcus", "Vertln": "Vertin"}
+        )
+        self.assertEqual(loaded.profile_entries, {"game": {"vertln": "Ms. Vertin"}})
+        for profile, expected in (
+            ("game", "Ms. Vertin Marcus"),
+            ("other", "Vertin Marcus"),
+        ):
+            with self.subTest(profile=profile):
+                self.assertEqual(
+                    loaded.dictionary_for(profile).correct_text("Vertln Mareus")[0],
+                    expected,
+                )
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
         dialog.deleteLater()
 
@@ -669,34 +650,9 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
         self.assertEqual(dialog.global_table.rowCount(), 0)
         dialog.deleteLater()
 
-    def test_unsaved_close_requires_explicit_discard(self):
-        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
-        dialog._append_row(dialog.global_table, "Mareus", "Marcus")
-        dialog.show()
-        self.application.processEvents()
-
-        first_close = QCloseEvent()
-        with patch.object(
-            QMessageBox,
-            "exec",
-            return_value=QMessageBox.StandardButton.Cancel,
-        ):
-            dialog.closeEvent(first_close)
-
-        self.assertFalse(first_close.isAccepted())
-
-        with patch.object(
-            QMessageBox,
-            "exec",
-            return_value=QMessageBox.StandardButton.Discard,
-        ) as confirmation:
-            self.assertTrue(dialog.close())
-        confirmation.assert_called_once()
-        self.assertFalse(dialog.isVisible())
-        dialog.deleteLater()
-
-    def test_keep_editing_protects_both_scopes_for_each_exit_action(self):
-        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore())
+    def test_both_scopes_remain_in_the_editor_until_explicit_discard(self):
+        path = Path(self.enterContext(TemporaryDirectory())) / "rules.json"
+        dialog = OCRCorrectionsDialog("game", "Game", OCRCorrectionStore(path))
         dialog._append_row(dialog.global_table, "Mareus", "Marcus")
         dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
         dialog.show()
@@ -716,6 +672,15 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
                 dialog._all_table_rows(),
                 ((("Mareus", "Marcus"),), (("Vertln", "Vertin"),)),
             )
+        with patch.object(
+            QMessageBox,
+            "exec",
+            return_value=QMessageBox.StandardButton.Discard,
+        ) as confirmation:
+            self.assertTrue(dialog.close())
+        confirmation.assert_called_once()
+        self.assertFalse(dialog.isVisible())
+        self.assertFalse(path.exists())
         dialog.deleteLater()
 
     def test_keyboard_reaches_first_error_and_footer_actions_in_order(self):

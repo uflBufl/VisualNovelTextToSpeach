@@ -12,7 +12,7 @@ from tests.pocket_model_fixtures import pocket_model_readiness
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,6 +37,7 @@ from vntts.game_narrator import (
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
 from vntts.preview_content_advisor import PreviewContentAdvisor
+from vntts.reference_quality import analyze_reference_bytes
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
@@ -93,9 +94,7 @@ class GameNarratorTest(unittest.TestCase):
             self.pool.run_next()
         self.fail("Voice editor did not become idle")
 
-    def editor(
-        self, *, settings=None, rollback=None, binder=bind_voice_library_selection
-    ):
+    def editor(self, *, settings=None, rollback=None):
         self.backend.name = (settings or self.settings).speech_backend
         dialog = GameNarratorDialog(
             settings or self.settings,
@@ -106,7 +105,6 @@ class GameNarratorTest(unittest.TestCase):
             voice_library=self.library,
             voice_binding_rollback=rollback,
             use_offline_engine=False,
-            binder=binder,
         )
         self.addCleanup(self.close_editor, dialog)
         self.application.processEvents()
@@ -325,21 +323,39 @@ class GameNarratorTest(unittest.TestCase):
         self.assertEqual(self.library.binding(group.character).source_id, "preset:alba")
         self.assertTrue(dialog.status.isHidden())
 
-    def test_current_audition_preserves_candidate_and_does_not_approve_it(self):
+    def test_cancel_after_comparing_voices_keeps_the_character_on_narrator(self):
         self.bind_narrator()
+        self.library.select("Bob", route="narrator")
         before = self.library.bindings()
         dialog = self.editor()
-        self.select(dialog, "catalog", source="character:centurion")
+        dialog.show()
+        dialog.select_role("Bob")
+        self.drain()
+        self.select(dialog, "catalog", role="Bob", source="character:centurion")
+        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
+        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.toolTip())
         selected = dialog.voice_panel.current_selection
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         dialog.voice_panel.current_original.click()
         self.drain()
-        self.assertEqual(
-            self.player.play_bytes.call_args.args[0],
-            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
-        )
         self.assertEqual(dialog.voice_panel.current_selection, selected)
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+
+        self.listen(dialog, original=True)
+        references = self.manifest.parent / "references"
+        self.assertEqual(
+            [call.args[0] for call in self.player.play_bytes.call_args_list],
+            [
+                (references / name).read_bytes()
+                for name in ("rhiannon.wav", "centurion.wav")
+            ],
+        )
+        self.assertEqual(self.library.bindings(), before)
+        finished = []
+        dialog.finished.connect(finished.append)
+        dialog.cancel_button.click()
+        self.drain()
+        self.assertEqual(finished, [QDialog.DialogCode.Rejected])
         self.assertEqual(self.library.bindings(), before)
 
     def test_current_audition_rejects_binding_change_during_generation(self):
@@ -354,22 +370,6 @@ class GameNarratorTest(unittest.TestCase):
             "Current voice changed", dialog.voice_panel.current_status.toPlainText()
         )
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
-
-    def test_current_narrator_fallback_uses_saved_bytes_without_assignment(self):
-        self.bind_narrator()
-        self.library.select("Bob", route="narrator")
-        before = self.library.bindings()
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Bob", source="character:centurion")
-        self.assertEqual(dialog.voice_panel.current_voice_label.text(), "Rhiannon")
-        self.assertIn("Narrator", dialog.voice_panel.current_voice_label.toolTip())
-        dialog.voice_panel.current_original.click()
-        self.drain()
-        self.assertEqual(
-            self.player.play_bytes.call_args.args[0],
-            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
-        )
-        self.assertEqual(self.library.bindings(), before)
 
     def test_current_original_unavailable_does_not_block_new_voice(self):
         self.bind_narrator()
@@ -851,16 +851,6 @@ class GameNarratorTest(unittest.TestCase):
         self.select(dialog, "preset", source="preset:marius")
         self.assertTrue(dialog.status.isHidden())
 
-    def test_builtin_save_uses_one_target_without_game_or_cloning_access(self):
-        dialog = self.editor(settings=AppSettings(speech_backend="pocket-tts"))
-        self.select(dialog, "preset", role="Aderyn", source="preset:marius")
-        self.listen(dialog)
-        self.save(dialog)
-        self.assertEqual(self.library.binding("Aderyn").source_id, "preset:marius")
-        self.assertIsNone(self.library.binding("Narrator"))
-        self.assertFalse(hasattr(dialog.result_settings, "pocket_gated_model_accepted"))
-        self.importer.prepare_voice_roles.assert_not_called()
-
     @patch(
         "vntts.game_narrator_ui.speech_backend_options",
         return_value=(("Qwen", "qwen-tts", True),),
@@ -890,20 +880,40 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(saved_voice.reference_transcript)
         self.assertIsNone(self.library.binding("Narrator"))
 
-    def test_imported_donor_saves_target_and_keeps_narrator(self):
-        self.library.select("Narrator", route="voice", source_id="preset:alba")
+    def test_retry_saves_the_auditioned_character_voice_and_keeps_the_narrator(self):
+        self.bind_narrator()
+        narrator = self.library.binding("Narrator")
+        previous = self.library.select("Aderyn", route="narrator")
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        dialog.show()
+        dialog.select_role("Aderyn")
+        self.drain()
+        self.select(dialog, "catalog", role="Aderyn", source="character:centurion")
         self.listen(dialog, original=True)
-        self.save(dialog)
-        binding = self.library.binding("Aderyn")
-        self.assertEqual(len(binding.source_sha256s), 1)
-        self.assertEqual(self.library.binding("Narrator").source_id, "preset:alba")
+        with patch(
+            "vntts.voice_library.atomic_write_json", side_effect=OSError("disk full")
+        ):
+            dialog.voice_panel.a_use.click()
+            self.drain()
+        self.assertIn("disk full", dialog.voice_panel.status.toPlainText())
+        self.assertTrue(dialog.voice_panel.retry_save_button.isVisible())
+        self.assertEqual(self.library.binding("Aderyn"), previous)
+
+        dialog.voice_panel.retry_save_button.click()
+        self.drain()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        reference = self.manifest.parent / "references" / "centurion.wav"
         self.assertEqual(
-            initialize_voice_registry(self.settings, voice_library=self.library)
+            self.library.binding("Aderyn").source_sha256s, (sha256_file(reference),)
+        )
+        self.assertEqual(self.library.binding("Narrator"), narrator)
+        self.assertEqual(
+            initialize_voice_registry(
+                dialog.result_settings, voice_library=self.library
+            )
             .resolve("Aderyn")
             .source_character,
-            "Rhiannon",
+            "Centurion",
         )
         self.assertEqual(self.backend.requests, [])
 
@@ -964,48 +974,27 @@ class GameNarratorTest(unittest.TestCase):
                 self.assertEqual(dialog._settings_dirty, route != "voice")
                 self.assertEqual(dialog.voice_panel.a_use.isEnabled(), route != "voice")
 
-    def test_saved_preset_preview_is_unchanged_but_another_preset_can_be_saved(self):
+    def test_character_preset_change_is_restored_when_the_editor_reopens(self):
         self.library.select("Aderyn", route="voice", source_id="preset:alba")
-        dialog = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(dialog, "preset", role="Aderyn", source="preset:alba")
+        dialog = self.editor(settings=AppSettings(speech_backend="pocket-tts"))
+        dialog.select_role("Aderyn")
+        self.drain()
         dialog.voice_panel.a_play.click()
         self.drain()
-        self.assertFalse(dialog._settings_dirty)
+        self.player.play_bytes.assert_called_once()
         self.assertFalse(dialog.voice_panel.a_use.isEnabled())
         self.select(dialog, "preset", role="Aderyn", source="preset:marius")
-        self.assertTrue(dialog._settings_dirty)
         self.listen(dialog)
         self.save(dialog)
-        self.assertEqual(
-            VoiceLibrary(self.library.root).binding("Aderyn").source_id, "preset:marius"
-        )
 
-    def test_browsing_and_cancel_leave_saved_binding_unchanged(self):
-        self.library.select("Aderyn", route="voice", source_id="preset:marius")
-        before = self.library.binding("Aderyn")
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog.reject()
+        reopened = self.editor(settings=dialog.result_settings)
+        (character,) = reopened.role.findItems("Aderyn", Qt.MatchFlag.MatchFixedString)
+        reopened.role.setCurrentItem(character)
         self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
-        self.assertEqual(self.library.binding("Aderyn"), before)
-
-    def test_library_write_failure_keeps_choice_available_for_retry(self):
-        binder = Mock(side_effect=[ValueError("disk full"), self.settings])
-        dialog = self.editor(binder=binder)
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog.voice_panel.a_use.click()
-        self.drain()
-        self.assertIn("disk full", dialog.voice_panel.status.toPlainText())
-        self.assertFalse(dialog._closed)
-        dialog.voice_panel.retry_save_button.click()
-        self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertEqual(binder.call_args.kwargs["target_character"], "Aderyn")
+        self.assertEqual(reopened.source.currentData(), "preset")
+        self.assertEqual(reopened.presets.currentData(), "preset:marius")
+        self.assertIsNone(self.library.binding("Narrator"))
+        self.importer.prepare_voice_roles.assert_not_called()
 
     def test_cancel_discards_pending_original_and_emits_aggregate_busy(self):
         dialog = self.editor()
@@ -1022,40 +1011,56 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_cancel_during_save_finishes_exact_selected_target(self):
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        dialog.show()
+        self.select(dialog, "catalog", role="Aderyn", source="character:centurion")
         self.listen(dialog, original=True)
+        finished = []
+        dialog.finished.connect(finished.append)
         dialog.voice_panel.a_use.click()
-        self.assertTrue(dialog.active)
-        dialog.reject()
-        self.assertFalse(dialog._closed)
+        dialog.cancel_button.click()
+        self.assertEqual(finished, [])
+        self.assertTrue(dialog.isVisible())
+        self.assertIsNone(self.library.binding("Aderyn"))
         self.drain()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertIsNotNone(self.library.binding("Aderyn"))
+
+        self.assertEqual(finished, [QDialog.DialogCode.Accepted])
+        reference = self.manifest.parent / "references" / "centurion.wav"
+        self.assertEqual(
+            self.library.binding("Aderyn").source_sha256s, (sha256_file(reference),)
+        )
         self.assertIsNone(self.library.binding("Narrator"))
 
-    def test_changed_reference_cannot_be_saved_after_listening(self):
+    def test_missing_catalog_and_changed_recording_preserve_the_saved_voice(self):
+        self.bind_narrator()
+        previous = self.library.binding("Narrator")
         dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
+        self.select(dialog, "catalog", source="character:centurion")
         self.listen(dialog, original=True)
-        (self.manifest.parent / "references" / "rhiannon.wav").write_bytes(
-            clean_wav_bytes(amplitude=0.31)
+        moved = self.manifest.rename(self.manifest.with_suffix(".bak"))
+        dialog.voice_panel.a_use.click()
+        self.drain()
+        self.assertIn(
+            "Unable to read voice manifest", dialog.voice_panel.status.toPlainText()
         )
-        dialog.voice_panel.a_use.click()
-        self.drain()
+        self.assertEqual(self.library.binding("Narrator"), previous)
+
+        moved.rename(self.manifest)
+
+        def replace_after_quality_check(payload, *, path):
+            report = analyze_reference_bytes(payload, path=path)
+            path.write_bytes(clean_wav_bytes(amplitude=0.31))
+            return report
+
+        with patch(
+            "vntts.game_narrator.analyze_reference_bytes", replace_after_quality_check
+        ):
+            dialog.voice_panel.retry_save_button.click()
+            self.drain()
+        self.assertEqual(self.library.binding("Narrator"), previous)
         self.assertIn("reference changed", dialog.voice_panel.status.toPlainText())
-        self.assertIsNone(self.library.binding("Aderyn"))
-
-    def test_missing_manifest_cannot_be_saved_after_listening(self):
-        dialog = self.editor()
-        self.select(dialog, "catalog", role="Aderyn", source="character:rhiannon")
-        self.listen(dialog, original=True)
-        dialog._candidate_manifest = None
-
-        dialog.voice_panel.a_use.click()
+        dialog.voice_panel.retry_save_button.click()
         self.drain()
-
-        self.assertIn("checked voice manifest", dialog.voice_panel.status.toPlainText())
-        self.assertIsNone(self.library.binding("Aderyn"))
+        self.assertEqual(self.library.binding("Narrator"), previous)
         self.assertIsNone(dialog.result_settings)
 
     def test_inherited_variant_without_optional_metadata_keeps_defaults(self):
@@ -1137,32 +1142,6 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 self.assertEqual(self.backend.requests, [])
 
-    def test_pocket_save_requires_local_capability_without_setting_flag(self):
-        readiness = self.enterContext(pocket_model_readiness(False))
-        before = self.library.bindings()
-        missing = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(missing, "catalog", source="character:rhiannon")
-        group = missing.voice_panel.current_group()
-        missing._capture_save(None)
-        with self.assertRaisesRegex(ValueError, "Set up the Pocket cloning model"):
-            missing.remember_many(((group, "character:rhiannon"),))
-        self.assertEqual(self.library.bindings(), before)
-        self.assertIsNone(missing.result_settings)
-        self.assertFalse(hasattr(missing.settings_value, "pocket_gated_model_accepted"))
-        readiness.return_value = True
-        accepted = self.editor(
-            settings=self.settings.updated(speech_backend="pocket-tts")
-        )
-        self.select(accepted, "catalog", source="character:rhiannon")
-        self.listen(accepted, original=True)
-        self.save(accepted)
-        self.assertFalse(
-            hasattr(accepted.result_settings, "pocket_gated_model_accepted")
-        )
-        self.assertIsNotNone(self.library.binding("Narrator"))
-
     def test_pocket_setup_preserves_game_voice_edits_without_saving(self):
         readiness = self.enterContext(pocket_model_readiness(False))
         plan, group, _manifest = ambiguous_fixture(self.root / "pocket-setup")
@@ -1202,12 +1181,20 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(panel.a_use.isEnabled())
         self.assertEqual(self.backend.requests, [])
 
-    def test_pocket_setup_allows_selected_imported_voice_after_preparation(self):
+    def test_pocket_setup_unlocks_save_for_the_selected_imported_voice(self):
         readiness = self.enterContext(pocket_model_readiness(False))
         dialog = self.editor(
             settings=self.settings.updated(speech_backend="pocket-tts")
         )
         self.select(dialog, "catalog", source="character:rhiannon")
+        before = self.library.bindings()
+        group = dialog.voice_panel.current_group()
+        dialog._capture_save(None)
+        with self.assertRaisesRegex(ValueError, "Set up the Pocket cloning model"):
+            dialog.remember_many(((group, "character:rhiannon"),))
+        self.assertEqual(self.library.bindings(), before)
+        self.assertIsNone(dialog.result_settings)
+
         readiness.return_value = True
         dialog.pocket_setup.refresh()
         self.drain()
@@ -1216,7 +1203,14 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(dialog.result_settings)
         self.listen(dialog, original=True)
         self.save(dialog)
-        self.assertIsNotNone(self.library.binding("Narrator"))
+        narrator = initialize_voice_registry(
+            dialog.result_settings, voice_library=self.library
+        ).resolve("Narrator")
+        self.assertEqual(narrator.source_character, "Rhiannon")
+        self.assertEqual(
+            narrator.references[0].read_bytes(),
+            (self.manifest.parent / "references" / "rhiannon.wav").read_bytes(),
+        )
 
     @pocket_model_readiness(True)
     def test_switching_sources_keeps_model_visible_and_preserves_capability(
@@ -1229,6 +1223,7 @@ class GameNarratorTest(unittest.TestCase):
         for mode in ("catalog", "saved", "game", "preset", "automatic"):
             with self.subTest(mode=mode):
                 self.select(dialog, mode)
+                self.assertEqual(dialog.source.currentData(), mode)
                 self.assertTrue(dialog.tts_model_label.isVisible())
                 self.assertIs(dialog.settings_value, settings)
         self.assertEqual(self.backend.requests, [])

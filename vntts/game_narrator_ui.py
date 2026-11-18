@@ -1595,6 +1595,9 @@ class GameNarratorDialog(QDialog):
         source_id: str,
         candidate: VoiceCandidate,
     ) -> None:
+        manifest = self._selection_manifest
+        if manifest is None:
+            raise ValueError("Choose a checked voice manifest")
         context: dict[str, object] = {}
         if (
             self.binder is bind_voice_library_selection
@@ -1605,22 +1608,21 @@ class GameNarratorDialog(QDialog):
                 rollback=self._voice_binding_rollback,
                 reference_transcript=candidate.reference_transcript,
                 source_excerpts=candidate.source_excerpts,
+                expected_reference_sha256s=candidate.reference_sha256s,
             )
+        else:
+            registry = CharacterVoiceRegistry.from_file(manifest)
+            selected = registry.resolve_source(source_id)
+            if (
+                selected is None
+                or tuple(sha256_file(path) for path in selected.references)
+                != candidate.reference_sha256s
+            ):
+                raise ValueError(
+                    "Selected voice reference changed. Reopen the voice editor."
+                )
         if not is_narrator(role):
             context["target_character"] = role
-        manifest = self._selection_manifest
-        if manifest is None:
-            raise ValueError("Choose a checked voice manifest")
-        registry = CharacterVoiceRegistry.from_file(manifest)
-        selected = registry.resolve_source(source_id)
-        if (
-            selected is None
-            or tuple(sha256_file(path) for path in selected.references)
-            != candidate.reference_sha256s
-        ):
-            raise ValueError(
-                "Selected voice reference changed. Reopen the voice editor."
-            )
         self.result_settings = self.binder(
             settings,
             manifest,

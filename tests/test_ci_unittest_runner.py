@@ -66,8 +66,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         for system in ("Darwin", "Windows"):
             with (
                 self.subTest(system=system),
-                patch(
-                    "scripts.run_ci_unittests._flatten_suite",
+                patch.object(
+                    unittest.defaultTestLoader,
+                    "discover",
                     return_value=(
                         Mock(id=Mock(return_value=value)) for value in test_ids
                     ),
@@ -149,9 +150,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             path.write_text(json.dumps([name, name]), encoding="utf-8")
             output = StringIO()
             with (
-                patch(
-                    "scripts.run_ci_unittests.unittest.defaultTestLoader.loadTestsFromNames"
-                ) as load,
+                patch("unittest.TestLoader.loadTestsFromNames") as load,
                 patch("scripts.run_ci_unittests.unittest.TextTestRunner") as runner,
                 redirect_stderr(output),
             ):
@@ -177,6 +176,12 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ]
             path.write_text(json.dumps(names), encoding="utf-8")
             self.assertEqual(_run_exact_test_file(path), 0)
+            path.write_text(
+                json.dumps([names[0], names[1].rsplit(".", 1)[0]]), encoding="utf-8"
+            )
+            with patch("unittest.TextTestRunner.run") as run:
+                self.assertEqual(_run_exact_test_file(path), 2)
+                run.assert_not_called()
 
     def test_shard_spawn_failure_survives_transcript_and_inventory_cleanup(self):
         primary = OSError("shard launch failed")
@@ -201,8 +206,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 raise OSError("inventory cleanup failed")
 
         with (
-            patch(
-                "scripts.run_ci_unittests._flatten_suite",
+            patch.object(
+                unittest.defaultTestLoader,
+                "discover",
                 return_value=(Mock(id=Mock(return_value="test-id")),),
             ),
             patch(
@@ -231,8 +237,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
     def test_macos_shard_timeout_fails_instead_of_hanging(self):
         run = Mock(side_effect=subprocess.TimeoutExpired(("python",), 60))
         with (
-            patch(
-                "scripts.run_ci_unittests._flatten_suite",
+            patch.object(
+                unittest.defaultTestLoader,
+                "discover",
                 return_value=(Mock(id=Mock(return_value="test-id")),),
             ),
             patch(
@@ -287,28 +294,32 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 )
                 self.assertIn("caf\ufffd", errors.getvalue())
 
-    def test_selected_module_runs_only_its_macos_shard(self):
-        test_ids = (
-            "tests.test_app.AppTest.test_ui",
-            "tests.test_asset_ui.AssetTest.test_ui",
-            "tests.test_ocr_review.OcrTest.test_ui",
-            "tests.test_settings.SettingsTest.test_value",
-        )
+    def test_local_selection_runs_only_the_requested_inventory(self):
+        module = "tests.test_ci_unittest_runner"
+        expected = [
+            f"{module}.CiUnitTestRunnerTest.{name}"
+            for name in unittest.TestLoader().getTestCaseNames(CiUnitTestRunnerTest)
+        ]
+        inventories = []
+
+        def run(system, shard, inventory):
+            inventories.append((shard, json.loads(inventory.read_text())))
+            return 0
+
         with (
-            patch(
-                "scripts.run_ci_unittests._flatten_suite",
-                return_value=(Mock(id=Mock(return_value=value)) for value in test_ids),
-            ),
-            patch(
-                "scripts.run_ci_unittests.subprocess.run",
-                return_value=Mock(returncode=0),
-            ) as run,
+            patch("scripts.run_ci_unittests.platform.system", return_value="Darwin"),
+            patch.object(unittest.TestLoader, "discover", side_effect=AssertionError),
+            patch("scripts.run_ci_unittests._run_shard", side_effect=run),
         ):
-            self.assertEqual(
-                _run_sharded_full_discovery("Darwin", ["tests.test_app"]), 0
-            )
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0][-3:-1], ["--shard", "qt-app"])
+            self.assertEqual(main(["--local-selected", module, module]), 0)
+            self.assertEqual(inventories, [("remainder", expected)])
+
+            with redirect_stderr(StringIO()) as errors:
+                self.assertEqual(
+                    main(["--local-selected", module, "tests.test_typo_missing"]), 2
+                )
+            self.assertIn("tests.test_typo_missing", errors.getvalue())
+            self.assertEqual(inventories, [("remainder", expected)])
 
     def test_selected_modules_are_forwarded_once_in_first_seen_order(self):
         selected = ["tests.test_alpha", "tests.test_beta"]
@@ -348,8 +359,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         for system in ("Darwin", "Windows"):
             with (
                 self.subTest(system=system),
-                patch(
-                    "scripts.run_ci_unittests._flatten_suite",
+                patch.object(
+                    unittest.defaultTestLoader,
+                    "discover",
                     return_value=(
                         Mock(id=Mock(return_value=value)) for value in test_ids
                     ),
@@ -398,7 +410,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 "class ShutdownProbe(unittest.TestCase):\n"
                 "    def test_worker(self):\n"
                 "        threading.Thread(target=blocked_worker, daemon=False).start()\n"
-                "        faulthandler.dump_traceback_later(0.2)\n",
+                "        faulthandler.dump_traceback_later(0.2, exit=True)\n",
                 encoding="utf-8",
             )
             inventory = root / "tests.json"
@@ -415,17 +427,17 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 "except SystemExit as result:\n"
                 "    print('SHARD_MAIN_RETURNED:', result.code, flush=True)\n"
             )
-            with self.assertRaises(subprocess.TimeoutExpired) as caught:
-                subprocess.run(
-                    [sys.executable, "-u", "-c", script, str(inventory)],
-                    cwd=Path(__file__).resolve().parents[1],
-                    env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    timeout=10,
-                    check=False,
-                )
-        output = caught.exception.stdout.decode("utf-8")
+            completed = subprocess.run(
+                [sys.executable, "-u", "-c", script, str(inventory)],
+                cwd=Path(__file__).resolve().parents[1],
+                env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                encoding="utf-8",
+                timeout=10,
+            )
+        output = completed.stdout
+        self.assertEqual(completed.returncode, 1, output)
         self.assertIn("SHARD_MAIN_RETURNED: 0", output)
         self.assertIn("OK", output.splitlines())
         self.assertIn("Timeout (", output)

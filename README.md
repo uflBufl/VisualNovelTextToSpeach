@@ -882,8 +882,10 @@ After code changes, run the changed-test selector in local mode first:
 uv run python -m scripts.run_changed_unittests --local
 ```
 
-This selects tests affected by staged, unstaged and untracked files. To validate
-all changes in the current branch against the merge base with `origin/main`,
+This selects tests affected by staged, unstaged and untracked files. On macOS
+and Windows, local runs collect cases from the selected modules directly, while
+branch validation checks the full inventory before running the selected shards.
+To validate all branch changes against the merge base with `origin/main`,
 including local edits, omit `--local`:
 
 ```sh

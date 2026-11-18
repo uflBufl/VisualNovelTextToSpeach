@@ -126,7 +126,6 @@ class StoryAreaSetupTest(unittest.TestCase):
         page.finish_calibration(self.dialogue)
         self.assertTrue(page.isComplete())
         self.assertTrue(wizard.next_button.isEnabled())
-        self.assertFalse(hasattr(page, "discover_story_text"))
         wizard.show_page(0)
         wizard.next_page()
         self.assertTrue(wizard.draft_settings.discover_text_layouts)

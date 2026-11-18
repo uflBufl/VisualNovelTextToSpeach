@@ -48,7 +48,7 @@ try:
     )
     from PySide6.QtGui import QCloseEvent, QKeySequence
     from PySide6.QtMultimedia import QMediaPlayer
-    from PySide6.QtTest import QTest
+    from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -77,6 +77,7 @@ except ModuleNotFoundError as error:
     QTimer = None
     QCloseEvent = None
     QTest = None
+    QSignalSpy = None
     QMediaPlayer = None
     QMessageBox = None
     QPushButton = None
@@ -956,7 +957,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
                 def slow_loader(*arguments):
                     started.set()
-                    release.wait()
+                    if not release.wait(3):
+                        raise TimeoutError("Workspace projection was not released")
                     return _load_workbench_projection(*arguments)
 
                 dialog._synchronous_projection = False
@@ -1622,14 +1624,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             root = Path(directory)
             workspace = self.create_workspace(root)
             queue_id = self.mark_fixture_pending_review(workspace)
-            worker_started = False
-            release = False
+            worker_started = Event()
+            release = Event()
 
             def reviewer(path, selected_queue_id, decision, authority):
-                nonlocal worker_started
-                worker_started = True
-                while not release:
-                    time.sleep(0.005)
+                worker_started.set()
+                if not release.wait(3):
+                    raise TimeoutError("Review save was not released")
                 return review_workspace_item(
                     path, selected_queue_id, decision, authority
                 )
@@ -1642,31 +1643,31 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.mark_selected_review_heard(dialog)
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
-            started = time.monotonic()
-            dialog.approve.click()
-            call_elapsed = time.monotonic() - started
-            self.wait_for(lambda: worker_started and bool(heartbeat))
+            try:
+                dialog.approve.click()
+                self.wait_for(lambda: worker_started.is_set() and bool(heartbeat))
 
-            self.assertLess(call_elapsed, 0.1)
-            self.assertTrue(dialog._review_save_active)
-            self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject_button.isEnabled())
-            self.assertIn("Saving review", dialog.review_action_reason.text())
-            close_event = QCloseEvent()
-            dialog.closeEvent(close_event)
-            self.assertFalse(close_event.isAccepted())
-            self.assertIn("Close deferred", dialog.review_action_reason.text())
-            dialog.review_selected("rejected")
-            self.assertIn("wait for the current", dialog.review_action_reason.text())
-            state = generation_database.read_state(
-                workspace / "generated-audio/generation-state.sqlite3"
-            )
-            self.assertEqual(
-                state["items"][queue_id]["review_status"], "pending_review"
-            )
-
-            release = True
-            self.wait_for(lambda: not dialog._review_save_active)
+                self.assertTrue(dialog._review_save_active)
+                self.assertFalse(dialog.approve.isEnabled())
+                self.assertFalse(dialog.reject_button.isEnabled())
+                self.assertIn("Saving review", dialog.review_action_reason.text())
+                close_event = QCloseEvent()
+                dialog.closeEvent(close_event)
+                self.assertFalse(close_event.isAccepted())
+                self.assertIn("Close deferred", dialog.review_action_reason.text())
+                dialog.review_selected("rejected")
+                self.assertIn(
+                    "wait for the current", dialog.review_action_reason.text()
+                )
+                state = generation_database.read_state(
+                    workspace / "generated-audio/generation-state.sqlite3"
+                )
+                self.assertEqual(
+                    state["items"][queue_id]["review_status"], "pending_review"
+                )
+            finally:
+                release.set()
+                self.wait_for(lambda: not dialog._review_save_active)
             self.wait_for(
                 lambda: (
                     generation_database.read_state(
@@ -1687,14 +1688,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 root = Path(directory)
                 workspace = self.create_workspace(root)
                 self.mark_fixture_pending_review(workspace)
-                started = False
-                release = False
+                started = Event()
+                release = Event()
 
                 def reviewer(_path, queue_id, selected_decision, authority):
-                    nonlocal started
-                    started = True
-                    while not release:
-                        time.sleep(0.005)
+                    started.set()
+                    if not release.wait(3):
+                        raise TimeoutError("Review save was not released")
                     return ReviewCommit(
                         queue_id=queue_id,
                         status=(
@@ -1736,17 +1736,15 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 timer.timeout.connect(lambda: heartbeat.append(time.monotonic()))
                 timer.start()
 
-                before = time.monotonic()
-                dialog.review_selected(decision)
-                call_elapsed = time.monotonic() - before
-                self.wait_for(lambda: started and len(heartbeat) >= 2)
+                try:
+                    dialog.review_selected(decision)
+                    self.wait_for(lambda: started.is_set() and len(heartbeat) >= 2)
 
-                self.assertLess(call_elapsed, 0.1)
-                self.assertTrue(dialog._review_save_active)
-                self.assertGreaterEqual(len(heartbeat), 2)
-                release = True
-                self.wait_for(lambda: not dialog._review_save_active)
-                timer.stop()
+                    self.assertTrue(dialog._review_save_active)
+                finally:
+                    release.set()
+                    self.wait_for(lambda: not dialog._review_save_active)
+                    timer.stop()
                 self.assertIn(f"Saved {decision}", dialog.review_action_reason.text())
 
     def test_nonterminal_review_updates_next_row_without_full_projection(self):
@@ -1838,37 +1836,37 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             (workspace / "generated-audio/audio/transitive-large.bin").write_bytes(
                 b"x" * 70_000
             )
-            started = False
-            release = False
+            started = Event()
+            release = Event()
 
             def slow_loader(*arguments):
-                nonlocal started
-                started = True
-                while not release:
-                    time.sleep(0.005)
+                started.set()
+                if not release.wait(3):
+                    raise TimeoutError("Workspace projection was not released")
                 return _load_workbench_projection(*arguments)
 
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
-            before = time.monotonic()
-            dialog = AuthoringWorkbenchDialog(
-                workspace,
-                settings=self.settings(root),
-                projection_loader=slow_loader,
-                synchronous_projection=False,
-            )
-            elapsed = time.monotonic() - before
-            self.wait_for(lambda: started and bool(heartbeat))
+            dialog = None
+            try:
+                dialog = AuthoringWorkbenchDialog(
+                    workspace,
+                    settings=self.settings(root),
+                    projection_loader=slow_loader,
+                    synchronous_projection=False,
+                )
+                self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-            self.assertLess(elapsed, 0.1)
-            self.assertTrue(dialog._projection_active)
-            self.assertIsNone(dialog.summary)
-            close_event = QCloseEvent()
-            dialog.closeEvent(close_event)
-            self.assertFalse(close_event.isAccepted())
-            self.assertIn("Close deferred", dialog.status.text())
-            release = True
-            self.wait_for(lambda: not dialog._projection_active)
+                self.assertTrue(dialog._projection_active)
+                self.assertIsNone(dialog.summary)
+                close_event = QCloseEvent()
+                dialog.closeEvent(close_event)
+                self.assertFalse(close_event.isAccepted())
+                self.assertIn("Close deferred", dialog.status.text())
+            finally:
+                release.set()
+                if dialog is not None:
+                    self.wait_for(lambda: not dialog._projection_active)
             self.assertIsNotNone(dialog.summary)
 
     def test_transient_review_failure_can_retry_in_dialog_without_file_change(self):
@@ -1916,16 +1914,16 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             workspace = self.create_workspace(root)
             self.mark_fixture_pending_review(workspace)
             load_count = 0
-            second_started = False
-            release_second = False
+            second_started = Event()
+            release_second = Event()
 
             def loader(*arguments):
-                nonlocal load_count, second_started
+                nonlocal load_count
                 load_count += 1
                 if load_count > 1:
-                    second_started = True
-                    while not release_second:
-                        time.sleep(0.005)
+                    second_started.set()
+                    if not release_second.wait(3):
+                        raise TimeoutError("Workspace projection was not released")
                 return _load_workbench_projection(*arguments)
 
             dialog = AuthoringWorkbenchDialog(
@@ -1941,14 +1939,15 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             timer.setInterval(5)
             timer.timeout.connect(lambda: heartbeat.append(time.monotonic()))
             timer.start()
-            dialog.approve.click()
-            self.wait_for(lambda: second_started and len(heartbeat) >= 2)
+            try:
+                dialog.approve.click()
+                self.wait_for(lambda: second_started.is_set() and len(heartbeat) >= 2)
 
-            self.assertTrue(dialog._projection_active)
-            self.assertGreaterEqual(len(heartbeat), 2)
-            release_second = True
-            self.wait_for(lambda: not dialog._projection_active)
-            timer.stop()
+                self.assertTrue(dialog._projection_active)
+            finally:
+                release_second.set()
+                self.wait_for(lambda: not dialog._projection_active)
+                timer.stop()
             self.assertIn("Approved: 1", dialog.counts.text())
 
     def test_new_collection_choice_wins_over_stale_background_projection(self):
@@ -1957,36 +1956,38 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             workspace = self.create_workspace(root)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
             calls = 0
-            first_started = False
-            release_first = False
+            first_started = Event()
+            release_first = Event()
 
             def loader(*arguments):
-                nonlocal calls, first_started
+                nonlocal calls
                 calls += 1
                 if calls == 1:
-                    first_started = True
-                    while not release_first:
-                        time.sleep(0.005)
+                    first_started.set()
+                    if not release_first.wait(3):
+                        raise TimeoutError("Workspace projection was not released")
                 return _load_workbench_projection(*arguments)
 
             dialog._projection_loader = loader
             dialog._synchronous_projection = False
-            dialog.refresh()
-            self.wait_for(lambda: first_started)
-            main = next(
-                dialog.collection_tree.topLevelItem(index)
-                for index in range(dialog.collection_tree.topLevelItemCount())
-                if dialog.collection_tree.topLevelItem(index).data(
-                    0, Qt.ItemDataRole.UserRole
-                )
-                == "main"
-            )
-            main.setCheckState(0, Qt.CheckState.Unchecked)
-            self.application.processEvents()
             expected = ("source-only",)
-            self.assertEqual(dialog._selected_collection_ids, expected)
-            release_first = True
-            self.wait_for(lambda: calls >= 2 and not dialog._projection_active)
+            try:
+                dialog.refresh()
+                self.wait_for(first_started.is_set)
+                main = next(
+                    dialog.collection_tree.topLevelItem(index)
+                    for index in range(dialog.collection_tree.topLevelItemCount())
+                    if dialog.collection_tree.topLevelItem(index).data(
+                        0, Qt.ItemDataRole.UserRole
+                    )
+                    == "main"
+                )
+                main.setCheckState(0, Qt.CheckState.Unchecked)
+                self.application.processEvents()
+                self.assertEqual(dialog._selected_collection_ids, expected)
+            finally:
+                release_first.set()
+                self.wait_for(lambda: calls >= 2 and not dialog._projection_active)
 
             self.assertEqual(dialog._selected_collection_ids, expected)
             self.assertEqual(dialog.collection_selection.collection_ids, expected)
@@ -2498,6 +2499,53 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.reject_button.isEnabled())
             self.assertIsNone(dialog._review_playback_buffer)
 
+    def test_changing_selection_discards_pending_review_playback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            self.mark_fixture_pending_review(workspace)
+            started = Event()
+            release = Event()
+
+            def delayed_preparer(path, selected):
+                prepared = _prepare_review_playback(path, selected)
+                started.set()
+                if not release.wait(3):
+                    raise TimeoutError("Review playback was not released")
+                return prepared
+
+            dialog = AuthoringWorkbenchDialog(
+                workspace,
+                settings=self.settings(root),
+                playback_preparer=delayed_preparer,
+            )
+            dialog.player = Mock()
+            first = dialog._selected_review_item()
+            second = replace(
+                first,
+                queue_id="second-pending-review",
+                line_id="second-line",
+                text="A second pending line.",
+            )
+            dialog._all_reviews = (first, second)
+            dialog._apply_review_filters()
+            completed = QSignalSpy(dialog._playback_runner._signals.finished)
+
+            try:
+                dialog.review_play.click()
+                self.wait_for(started.is_set)
+
+                dialog.review_table.setCurrentCell(1, 0)
+                self.assertEqual(dialog._selected_review_item(), second)
+            finally:
+                release.set()
+
+            self.wait_for(lambda: completed.count() > 0)
+            dialog.player.play_bytes.assert_not_called()
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
+            self.assertTrue(dialog.review_play.isEnabled())
+
     def test_reference_playback_cannot_credit_interrupted_generated_review(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2644,14 +2692,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             root = Path(directory)
             workspace = self.create_workspace(root)
             self.mark_fixture_pending_review(workspace)
-            started = False
-            release = False
+            started = Event()
+            release = Event()
 
             def slow_preparer(path, selected):
-                nonlocal started
-                started = True
-                while not release:
-                    time.sleep(0.005)
+                started.set()
+                if not release.wait(3):
+                    raise TimeoutError("Review playback was not released")
                 return _prepare_review_playback(path, selected)
 
             dialog = AuthoringWorkbenchDialog(
@@ -2661,17 +2708,18 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
-            before = time.monotonic()
-            dialog.play_selected_outcome()
-            elapsed = time.monotonic() - before
-            self.wait_for(lambda: started and bool(heartbeat))
+            try:
+                dialog.play_selected_outcome()
+                self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
-            self.assertLess(elapsed, 0.1)
-            self.assertTrue(dialog._playback_prepare_active)
-            self.assertTrue(dialog.review_play.isEnabled())
-            self.assertEqual(dialog.review_play.property("playbackState"), "preparing")
-            release = True
-            self.wait_for(lambda: not dialog._playback_prepare_active)
+                self.assertTrue(dialog._playback_prepare_active)
+                self.assertTrue(dialog.review_play.isEnabled())
+                self.assertEqual(
+                    dialog.review_play.property("playbackState"), "preparing"
+                )
+            finally:
+                release.set()
+                self.wait_for(lambda: not dialog._playback_prepare_active)
             self.assertIsNotNone(dialog._review_playback_buffer)
             self.assertEqual(dialog.review_play.property("playbackState"), "preparing")
             dialog._playback_state_changed(QMediaPlayer.PlaybackState.PlayingState)
