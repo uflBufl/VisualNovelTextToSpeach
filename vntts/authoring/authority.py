@@ -6,8 +6,9 @@ import hashlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +24,22 @@ from vntts.path_safety import (
 
 class AuthoringAuthorityError(RuntimeError):
     """An immutable authoring input cannot be captured or published safely."""
+
+
+_path_collectors: ContextVar[tuple[set[Path], ...]] = ContextVar(
+    "authority_path_collectors", default=()
+)
+
+
+@contextmanager
+def collect_authority_paths() -> Iterator[set[Path]]:
+    """Collect canonical files captured by this operation and its nested validators."""
+    paths: set[Path] = set()
+    token = _path_collectors.set((*_path_collectors.get(), paths))
+    try:
+        yield paths
+    finally:
+        _path_collectors.reset(token)
 
 
 @dataclass(frozen=True)
@@ -91,6 +108,8 @@ def capture_authority_file(
         raise AuthoringAuthorityError(
             f"{label.capitalize()} changed while it was captured: {candidate}"
         )
+    for paths in _path_collectors.get():
+        paths.add(resolved)
     return AuthoritySnapshot(
         resolved,
         payload,
@@ -204,5 +223,6 @@ __all__ = [
     "canonical_document_sha256",
     "capture_authority_file",
     "capture_successor_base_authority",
+    "collect_authority_paths",
     "write_json_document_no_replace",
 ]

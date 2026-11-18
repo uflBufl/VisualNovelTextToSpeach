@@ -22,6 +22,7 @@ from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
+from vntts.authoring.authority import collect_authority_paths
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
     decode_generation_state_snapshot,
@@ -240,8 +241,13 @@ def build_failure_comparison_corpus(
         [str | Path, str | Path], JsonDocument
     ] = load_generation_state,
 ) -> JsonDocument:
-    """Bind failures, Pocket recoveries and MOSS controls into one exact corpus."""
-    capture = _capture_failure_corpus_inputs(queue_path, state_path, state_loader)
+    """Bind failures, Pocket recoveries and MOSS controls into one exact corpus.
+
+    Custom state loaders can protect additional inputs by reading them with
+    capture_authority_file during validation.
+    """
+    with collect_authority_paths() as authority_paths:
+        capture = _capture_failure_corpus_inputs(queue_path, state_path, state_loader)
     failed, recovered, controls = _comparison_state_groups(
         capture.state, capture.queue_by_id
     )
@@ -264,7 +270,7 @@ def build_failure_comparison_corpus(
     )
     _verify_failure_corpus_sources(capture, voice_context)
     output_path = Path(output_path).expanduser().resolve()
-    inputs = [capture.queue_path, capture.state_path]
+    inputs = [capture.queue_path, capture.state_path, *authority_paths]
     if voice_context is not None:
         inputs.append(voice_context.path)
     for result in _json_document(

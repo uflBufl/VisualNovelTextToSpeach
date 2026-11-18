@@ -11,7 +11,10 @@ from unittest.mock import patch
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    write_voice_generation_queue,
+)
 
 import vntts.authoring.audio_event_workspace as audio_event_workspace_module
 import vntts.authoring.workbench as workbench_module
@@ -25,6 +28,7 @@ from tests.authoring_fixtures import (
 )
 from tests.generation_state_fixtures import replace_generation_state
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
+from tests.symlink_support import symlink_or_skip
 from vntts import generation_database
 from vntts.authoring.audio_event_composition import (
     publish_audio_event_composition,
@@ -48,6 +52,10 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_review import review_generation_item
+from vntts.authoring.model_benchmark import (
+    ModelBenchmarkError,
+    build_failure_comparison_corpus,
+)
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     create_audio_event_composition_workspace,
@@ -534,6 +542,100 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                         queue_item.queue_id,
                         state["items"][queue_item.queue_id],
                     )
+
+    def test_failure_corpus_refuses_transitive_composition_inputs(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, _queue_item, composition = self._base_and_composition(root)
+            created = create_audio_event_composition_workspace(
+                base, composition.directory, root / "successors"
+            )
+            queue_path = created.directory / "queue.jsonl"
+            queue = VoiceGenerationQueue.load(queue_path)
+            failed_item = {
+                **queue.items[0].document,
+                "queue_id": f"line:failed:{queue.items[0].text_sha256[:16]}",
+                "line_id": "line:failed",
+                "action": "generate",
+            }
+            write_voice_generation_queue(
+                queue_path,
+                queue.metadata,
+                [*(item.document for item in queue.items), failed_item],
+            )
+            state_path = created.directory / "generated-audio/generation-state.sqlite3"
+            state = generation_database.read_state(state_path)
+            state["queue_sha256"] = sha256_file(queue_path)
+            state["items"][failed_item["queue_id"]] = {
+                "status": "failed",
+                "attempts": 1,
+                "provider": "moss-tts",
+            }
+            replace_generation_state(state_path, state)
+            workspace_path = created.directory / "workspace.json"
+            config = json.loads(workspace_path.read_text())["audio_event_composition"]
+            composition_path = created.directory / config["path"]
+            composition_document = json.loads(composition_path.read_text())
+            review_path = composition_path.parent / composition_document["review"]
+            review = json.loads(review_path.read_text())
+            candidate_audio = review_path.parent / review["candidate"]["audio"]
+            sources = [
+                workspace_path,
+                *(
+                    created.directory / config[key]
+                    for key in (
+                        "path",
+                        "decision_path",
+                        "base_workspace_path",
+                        "base_state_path",
+                        "base_audio_path",
+                    )
+                ),
+                *(
+                    composition_path.parent / composition_document[key]
+                    for key in ("review", "review_decision", "queue", "final_audio")
+                ),
+                candidate_audio,
+            ]
+
+            def create(output):
+                return build_failure_comparison_corpus(
+                    queue_path,
+                    state_path,
+                    output,
+                    pocket_sample_size=0,
+                    control_sample_size=0,
+                )
+
+            output = created.directory / "corpus.json"
+            output.write_text("old corpus", encoding="utf-8")
+            corpus = create(output)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), corpus)
+            self.assertEqual(
+                [sample["id"] for sample in corpus["samples"]],
+                [failed_item["queue_id"]],
+            )
+            original = tree_hashes(created.directory)
+            for source in sources:
+                with self.subTest(source=source.relative_to(created.directory)):
+                    with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                        create(source)
+                    self.assertEqual(tree_hashes(created.directory), original)
+
+            for alias in ("hardlink", "symlink"):
+                with self.subTest(alias=alias):
+                    output = root / "alias.json"
+                    if alias == "hardlink":
+                        output.hardlink_to(candidate_audio)
+                    else:
+                        symlink_or_skip(output, workspace_path)
+                    before = tree_hashes(root)
+                    with self.assertRaisesRegex(ModelBenchmarkError, "must differ"):
+                        create(output)
+                    self.assertEqual(tree_hashes(root), before)
+                    if alias == "symlink":
+                        self.assertTrue(output.is_symlink())
+                    output.unlink()
 
     def test_workspace_and_item_versions_have_exact_types(self):
         with TemporaryDirectory() as directory:

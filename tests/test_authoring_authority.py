@@ -12,12 +12,28 @@ from vntts.authoring.authority import (
     AuthoringAuthorityError,
     assert_authority_snapshot,
     capture_authority_file,
+    collect_authority_paths,
     write_json_document_no_replace,
 )
 from vntts.document_identity import canonical_document_sha256
 
 
 class AuthoringAuthorityTest(unittest.TestCase):
+    def test_capture_inventory_includes_nested_reads_and_ends_on_error(self):
+        with TemporaryDirectory() as directory:
+            first = Path(directory).resolve() / "first.json"
+            second = first.with_name("second.json")
+            first.write_bytes(b"{}")
+            second.write_bytes(b"{}")
+            with collect_authority_paths() as outer:
+                with self.assertRaises(AuthoringAuthorityError):
+                    with collect_authority_paths() as inner:
+                        capture_authority_file(first, "first")
+                        capture_authority_file(first.with_name("missing"), "missing")
+                capture_authority_file(second, "second")
+            self.assertEqual(inner, {first})
+            self.assertEqual(outer, {first, second})
+
     def test_working_state_requires_sqlite_while_published_json_proofs_remain_explicit(
         self,
     ):
