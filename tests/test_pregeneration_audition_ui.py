@@ -1559,10 +1559,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             panel.deleteLater()
 
-    def test_automatic_voice_inspector_explains_exact_reference_set(self):
+    def test_automatic_voice_inspector_plays_and_saves_the_selected_original(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            plan, unresolved, _manifest = ambiguous_fixture(root)
+            plan, unresolved, manifest = ambiguous_fixture(root)
             plan, unresolved = with_second_candidate(plan, unresolved)
             candidate = unresolved.candidates[0]
             group = replace(
@@ -1587,14 +1587,16 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             verifier = VoiceAuditionPreviewService()
             self.addCleanup(verifier.close)
             preview_service.reference_audio.side_effect = verifier.reference_audio
-            pool = ManualThreadPool()
+            pool, player = ManualThreadPool(), Mock()
             panel = VoiceAuditionPanel(
                 decisions,
                 preview_service=preview_service,
-                player=Mock(),
+                player=player,
                 thread_pool=pool,
             )
 
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=group.group_id)
 
             self.assertEqual(panel.a_play.text(), "Preview")
@@ -1610,11 +1612,26 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             alternative = unresolved.candidate_inventory[1]
             select_reference(panel, 1)
             self.assertTrue(reference_text(panel).startswith("2"))
-            self.assertFalse(panel.a_box.inherits("QGroupBox"))
+            self.assertFalse(panel.a_use.isEnabled())
+            self.assertEqual(
+                panel.a_use.toolTip(), "Play Original or Preview to enable Save."
+            )
             panel.a_original.click()
             self.finish_task(pool.tasks.pop())
             preview_service.reference_audio.assert_called_once_with(
                 plan, group, alternative.source_id
+            )
+            reference = manifest.parent / "references" / "centurion.wav"
+            player.play_bytes.assert_called_once()
+            playback = player.play_bytes.call_args
+            self.assertEqual(
+                Path(playback.kwargs["source"]).resolve(), reference.resolve()
+            )
+            self.assertEqual(playback.args[0], reference.read_bytes())
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
             )
             panel.a_use.click()
             self.finish_task(pool.tasks.pop())
@@ -1622,8 +1639,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 alternative.source_id,
             )
-            panel.shutdown()
-            panel.deleteLater()
+            preview_service.generate.assert_not_called()
 
     def _assert_audition_replay_cycle(self, panel, pool, player, preview_service):
         panel.a_play.click()
@@ -1748,37 +1764,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.finish_task(pool.tasks.pop())
             self.assertEqual(choices_at_completion, [candidate.source_id])
             cancelled.assert_not_called()
-
-    def test_original_reference_can_be_accepted_without_generating_audio(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            decisions = Mock()
-            service = Mock(spec=VoiceAuditionPreviewService)
-            service.reference_audio.side_effect = (
-                VoiceAuditionPreviewService().reference_audio
-            )
-            pool = ManualThreadPool()
-            panel = VoiceAuditionPanel(
-                decisions, preview_service=service, thread_pool=pool, player=Mock()
-            )
-            self.addCleanup(panel.deleteLater)
-            self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            self.assertFalse(panel.a_use.isEnabled())
-            self.assertEqual(
-                panel.a_use.toolTip(), "Play Original or Preview to enable Save."
-            )
-            panel.a_original.click()
-            self.finish_task(pool.tasks.pop())
-            self.assertTrue(panel.a_use.isEnabled())
-            self.assertEqual(panel.a_use.toolTip(), "")
-            panel.a_use.click()
-            self.finish_task(pool.tasks.pop())
-            service.generate.assert_not_called()
-            decisions.remember_many.assert_called_once_with(
-                ((group, group.candidates[0].source_id),)
-            )
 
     def test_unavailable_audio_runtime_blocks_preview_and_original_before_preparation(
         self,
