@@ -37,7 +37,7 @@ index e8f0329..315e755 100644
  ]
  
 diff --git a/pyside6_mcp/bridge.py b/pyside6_mcp/bridge.py
-index 99d7503..f5717c9 100644
+index 99d7503..0762a2e 100644
 --- a/pyside6_mcp/bridge.py
 +++ b/pyside6_mcp/bridge.py
 @@ -11,20 +11,27 @@ import logging
@@ -57,7 +57,7 @@ index 99d7503..f5717c9 100644
 -from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QPointF, Qt
 -from PySide6.QtGui import QWheelEvent
 +from PySide6.QtCore import QBuffer, QEvent, QIODevice, QMetaObject, QObject, QPoint, QPointF, Qt
-+from PySide6.QtGui import QKeySequence, QWheelEvent
++from PySide6.QtGui import QInputMethodEvent, QKeySequence, QWheelEvent
  from PySide6.QtWidgets import QApplication, QWidget
  
  logger = logging.getLogger("pyside6_mcp.bridge")
@@ -238,7 +238,11 @@ index 99d7503..f5717c9 100644
 +        "scope": None,
 +        "status": "failure",
 +    }
-+
+ 
+-    buf = QBuffer()
+-    buf.open(QIODevice.OpenMode.ReadWrite)
+-    pixmap.save(buf, "PNG")
+-    return base64.b64encode(bytes(buf.data())).decode()
 +
 +def _capture_failure(capture: dict, code: str, message: str) -> dict:
 +    capture["status"] = "failure"
@@ -246,11 +250,7 @@ index 99d7503..f5717c9 100644
 +    logger.info("screenshot_capture %s", json.dumps(capture))
 +    return {"error": message, "capture": capture}
 +
- 
--    buf = QBuffer()
--    buf.open(QIODevice.OpenMode.ReadWrite)
--    pixmap.save(buf, "PNG")
--    return base64.b64encode(bytes(buf.data())).decode()
++
 +def _target_details(target: QWidget, window: QWidget) -> dict:
 +    origin = target.mapToGlobal(QPoint(0, 0))
 +    return {
@@ -326,12 +326,39 @@ index 99d7503..f5717c9 100644
      }
      return d
  
-@@ -422,14 +546,23 @@ def _qt_press_key(body: dict) -> dict:
+@@ -359,14 +483,24 @@ def _qt_click_widget(wid: str, body: dict) -> dict:
+     return {"ok": True}
+ 
+ 
+-def _qt_type(wid: str, body: dict) -> dict:
++def _type_text(widget: QWidget, text: str) -> None:
+     from PySide6.QtTest import QTest
+ 
++    # QtTest's ASCII key table also accepts Backspace, Tab, Return and Escape.
++    if text.isascii() and all(c.isprintable() or c in "\b\t\r\x1b" for c in text):
++        QTest.keyClicks(widget, text)
++    else:
++        event = QInputMethodEvent()
++        event.setCommitString(text)
++        QApplication.sendEvent(widget, event)
++
++
++def _qt_type(wid: str, body: dict) -> dict:
+     w = _resolve(wid)
+     if not w:
+         return {"error": f"Widget {wid!r} not found"}
+     w.setFocus(Qt.FocusReason.OtherFocusReason)
+-    QTest.keyClicks(w, body.get("text", ""))
++    _type_text(w, body.get("text", ""))
+     return {"ok": True}
+ 
+ 
+@@ -422,14 +556,23 @@ def _qt_press_key(body: dict) -> dict:
      key_str = body.get("key", "").lower()
      if key_str in _KEY_MAP:
          QTest.keyClick(widget, _KEY_MAP[key_str])
 +    elif len(body.get("key", "")) == 1:
-+        QTest.keyClicks(widget, body["key"])
++        _type_text(widget, body["key"])
      else:
 -        QTest.keyClicks(widget, body.get("key", ""))
 +        sequence = QKeySequence.fromString(body.get("key", ""),
@@ -351,7 +378,7 @@ index 99d7503..f5717c9 100644
      if w is None:
          app = QApplication.instance()
          w = next((ww for ww in app.topLevelWidgets() if ww.isVisible()), None)
-@@ -583,21 +716,13 @@ def _qt_app_info() -> dict:
+@@ -583,21 +726,13 @@ def _qt_app_info() -> dict:
      }
  
  
@@ -375,7 +402,7 @@ index 99d7503..f5717c9 100644
      try:
          result = eval(code, ctx)  # noqa: S307
 diff --git a/pyside6_mcp/server.py b/pyside6_mcp/server.py
-index 601ad07..5abcb7d 100644
+index 601ad07..f02b78b 100644
 --- a/pyside6_mcp/server.py
 +++ b/pyside6_mcp/server.py
 @@ -18,6 +18,9 @@ from typing import Annotated, IO
@@ -568,16 +595,18 @@ index 601ad07..5abcb7d 100644
  
  
  @mcp.tool()
-@@ -403,7 +453,8 @@ def double_click(
+@@ -403,8 +453,9 @@ def double_click(
  @mcp.tool()
  def type_text(text: str, widget_id: str | None = None, pid: PidParam = None) -> str:
      """
 -    Type text into a widget (focuses it first) or the currently focused widget.
-+    Append text at the cursor in a widget (focuses it first) or the focused widget.
+-    For special characters use press_key instead.
++    Insert Unicode text at the cursor in a widget (focuses it first) or the focused widget.
 +    To replace existing text, press_key("Ctrl+A") first.
-     For special characters use press_key instead.
++    For named keys and keyboard shortcuts use press_key.
      """
      if widget_id:
+         return json.dumps(_post(f"/widget/{widget_id}/type", {"text": text}, pid=pid))
 @@ -423,7 +474,9 @@ def press_key(key: str, pid: PidParam = None) -> str:
      Named keys: enter, return, escape, tab, backtab, backspace, delete,
                  up, down, left, right, space, home, end, pageup, pagedown,
@@ -967,16 +996,16 @@ index 9f3d9d8..63aebef 100644
      finally:
 diff --git a/tests/test_interactions.py b/tests/test_interactions.py
 new file mode 100644
-index 0000000..03f2c63
+index 0000000..6fcae26
 --- /dev/null
 +++ b/tests/test_interactions.py
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,256 @@
 +"""Qt ownership and input regressions for the developer bridge."""
 +import gc
 +from unittest.mock import Mock
 +
 +import pytest
-+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
++from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPlainTextEdit
 +from shiboken6 import delete, getCppPointer
 +
 +from pyside6_mcp import bridge, server
@@ -1070,6 +1099,29 @@ index 0000000..03f2c63
 +    assert editor.text() == "ne"
 +    assert bridge._qt_press_key({"key": "A"}) == {"ok": True}
 +    assert editor.text() == "neA"
++    assert bridge._qt_type(bridge._widget_id(editor), {"text": "\b!"}) == {"ok": True}
++    assert editor.text() == "ne!"
++
++
++@pytest.mark.parametrize("text", ["Привет", "café", "Qt — ё🙂"])
++def test_unicode_text_uses_cursor_and_replaces_selection(app, text):
++    editor = QPlainTextEdit("[]")
++    editor.show()
++    editor.setFocus()
++    app.processEvents()
++    cursor = editor.textCursor()
++    cursor.setPosition(1)
++    editor.setTextCursor(cursor)
++    changed = []
++    editor.textChanged.connect(lambda: changed.append(editor.toPlainText()))
++    wid = bridge._widget_id(editor)
++    assert bridge._qt_type(wid, {"text": text}) == {"ok": True}
++    assert changed == ["[" + text + "]"]
++    assert bridge._qt_press_key({"key": "Ctrl+A"}) == {"ok": True}
++    assert bridge._qt_type(wid, {"text": text}) == {"ok": True}
++    assert changed[-1] == text
++    assert bridge._qt_press_key({"key": "Ж"}) == {"ok": True}
++    assert changed[-1] == text + "Ж"
 +
 +
 +@pytest.mark.parametrize("key", ["Ctrl+Bogus", "Ctrl+A, Ctrl+B", "unsupported", ""])

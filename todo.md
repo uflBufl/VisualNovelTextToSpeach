@@ -792,7 +792,10 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Coordinate source-audio producer numeric admission
 
-- [ ] In `reverse1999-extractor`, qualify and fix `SourceAudioDurationProbe.probe` optional decoder ratio overflow: positive unbounded `playSamples=10**400` and `sampleRate=1` raise outside its tolerant exception tuple. Add `OverflowError` to that boundary, test overflowing and finite huge ratios, and release/pin only through the separately authorized cross-repository workflow; the current VNTTS consumer repair does not fix the pinned producer.
+- [ ] Once the extractor revision containing the decoder and cache overflow fix
+      is available in the configured remote, update the VNTTS dependency pin and
+      lockfile and verify source-audio timing with the installed dependency.
+      The local extractor fix is on branch `source-duration-overflow`.
 
 ## Qualify remaining model dependency risks
 
@@ -1421,10 +1424,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## Qualify packaged preview ASR isolation
 
 - [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
-
-## MCP Unicode text input
-
-- [ ] Fix the PySide6 MCP `type_text` input path for Unicode. Native macOS reproduction: focus a QPlainTextEdit and call `type_text` with Cyrillic; QtTest aborts the application at `testlib/qasciikey.cpp:192` (`ASSERT: "false"`). Use Unicode-capable Qt text/input events for non-ASCII instead of ASCII-only simulated keys, preserving cursor/selection and textChanged behavior. Gate: Cyrillic, accented Latin and mixed text append/replace correctly without aborting; ordinary ASCII shortcuts still work. Isolated UI fixtures only; this failure is in MCP input simulation, not evidence of normal keyboard input failing.
 
 ## Remaining - Shared audio storage
 
