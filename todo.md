@@ -679,17 +679,13 @@ Other remaining defects and native checks:
       Label window-ID namespaces: Qt WId/Cocoa view handles in MCP are not Quartz
       CGWindowIDs used by native recording; correlate owners without equating these
       numeric values. Product screenshot metadata does not qualify video or MCP.
-- [ ] **T5 - Finish native activation of truthful MCP action outcomes.**
-      Fresh pinned patch/build regressions now cover queued/dispatched/completed/
-      error, a true modal QDialog.exec acknowledgement, exactly-once POST, late
-      error correlation, key chords, widget lifetime/property access and real-PID
-      shutdown. Qualify the modal-action candidate on a native generated fixture,
-      then activate through the normal installer/restart path without interrupting
-      a game run or discarding generation. A202 acknowledgement is not completed
-      work; inspect current state and existing invocation-ID logs before another
-      action. For VNTTS close,
-      verify bounded real-process exit and report actual returncode; do not infer
-      graceful shutdown from quit acknowledgement or bridge disappearance.
+- [ ] **T5 - Check MCP readiness on the native VNTTS dashboard.** A fresh
+      launch timed out after 45 seconds while the dashboard was visible and
+      accepted an explicit widget screenshot. Identify what keeps resetting the
+      500 ms idle check and verify launch readiness on the responsive dashboard.
+      Reconnect the existing desktop PySide6 MCP session and verify
+      `list_apps` succeeds; it reported a missing
+      `fastmcp.server.providers.prefab_payload` module.
 
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 
