@@ -461,19 +461,50 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.panel.a_reason.setSelection(0, len(self.panel.a_reason.text()))
         self.assertEqual(self.panel.a_reason.selectedText(), self.panel.a_reason.text())
 
-    def test_custom_text_invalidates_heard_choice_and_empty_text_cannot_generate(self):
+    def test_editing_preview_text_replays_only_the_recording_for_that_phrase(self):
+        original = self.group.sample_text
+        edited = "A new comparison phrase."
+        root = Path(self.plan.voice_manifest).parent
+        audio = [clean_wav_bytes(amplitude=0.1), clean_wav_bytes(amplitude=0.3)]
+        previews = []
+        for filename, payload in zip(("story.wav", "edited.wav"), audio, strict=True):
+            path = root / filename
+            path.write_bytes(payload)
+            previews.append(Mock(path=path, audio_sha256=sha256_file(path)))
+        self.service.generate.side_effect = previews
         self.panel.start(self.plan, group_id=self.group.group_id)
-        self.panel._accepted_choice = self.panel.current_selection[2]
-        self.panel.preview_text.setPlainText("A new comparison phrase.")
-        self.assertEqual(self.panel._sample_text, "A new comparison phrase.")
-        self.assertIsNone(self.panel._accepted_choice)
+        self.panel.a_play.click()
+        self.run_tasks()
+        self.assertTrue(self.panel.a_use.isEnabled())
+
+        self.panel.preview_text.setPlainText(edited)
+        self.run_tasks()
+        self.service.generate.assert_called_once()
         self.assertFalse(self.panel.a_use.isEnabled())
+        self.panel.a_play.click()
+        self.run_tasks()
+        self.assertTrue(self.panel.a_use.isEnabled())
+
         self.panel.preview_text.clear()
         self.assertFalse(self.panel.a_play.isEnabled())
-        self.panel.play_a()
-        self.service.generate.assert_not_called()
+        self.panel.a_play.click()
         self.panel.game_phrase_button.click()
-        self.assertTrue(self.panel.a_play.isEnabled())
+        self.assertEqual(self.panel.preview_text.toPlainText(), original)
+        self.assertTrue(self.panel.a_use.isEnabled())
+        self.panel.a_play.click()
+        self.panel.preview_text.setPlainText(edited)
+        self.assertTrue(self.panel.a_use.isEnabled())
+        self.panel.a_play.click()
+        self.run_tasks()
+
+        self.assertEqual(
+            [call.kwargs["text"] for call in self.service.generate.call_args_list],
+            [original, edited],
+        )
+        self.assertEqual(
+            [call.args[0] for call in self.panel.player.play_bytes.call_args_list],
+            audio + audio,
+        )
 
     def test_failed_custom_preview_keeps_custom_text_for_retry(self):
         group = replace(self.group, alternate_sample_text="Another story phrase.")
@@ -494,40 +525,6 @@ class CharacterVoicePanelTest(unittest.TestCase):
         self.run_tasks()
         self.assertEqual(self.service.generate.call_count, 2)
         self.assertEqual(self.service.generate.call_args.kwargs["text"], text)
-        self.decisions.remember_many.assert_not_called()
-
-    def test_game_phrase_button_cycles_all_available_text_without_duplicates(self):
-        phrases = (
-            "The first full game phrase.",
-            "Why would you do that?!",
-            "Тихо, они могут нас услышать...",
-            "Je suis désolée.",
-            "One last line.",
-        )
-        candidate = replace(
-            self.group.candidates[0],
-            source_excerpts=(*phrases[2:], phrases[0], "  "),
-            reference_transcript=phrases[1],
-        )
-        group = replace(
-            self.group,
-            sample_text=phrases[0],
-            alternate_sample_text=phrases[1],
-            candidates=(candidate,),
-            candidate_inventory=(candidate,),
-        )
-        self.panel.start(replace(self.plan, groups=(group,)), group_id=group.group_id)
-        expected = (phrases[0], phrases[1], phrases[3], phrases[4], phrases[2])
-        self.assertEqual(self.panel._game_phrases, expected)
-        self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        for text in (*expected[1:], expected[0]):
-            self.panel.game_phrase_button.click()
-            self.assertEqual(self.panel.preview_text.toPlainText(), text)
-            self.assertEqual(self.panel._sample_text, text)
-        self.panel.preview_text.setPlainText("My edited phrase")
-        self.panel.game_phrase_button.click()
-        self.assertEqual(self.panel.preview_text.toPlainText(), phrases[0])
-        self.service.generate.assert_not_called()
         self.decisions.remember_many.assert_not_called()
 
     def test_unicode_input_preserves_full_text_and_cursor(self):
