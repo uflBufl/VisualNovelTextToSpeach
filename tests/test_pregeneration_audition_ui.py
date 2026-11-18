@@ -1707,33 +1707,47 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             preview_service.close.assert_called_once_with()
             panel.deleteLater()
 
-    def test_single_sample_waits_for_acceptance(self):
+    def test_single_candidate_requires_save_and_back_waits_for_the_choice_on_disk(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            self.assertEqual(len(group.candidates), 1)
-            decisions = Mock()
-            previews = Mock()
+            (candidate,) = group.candidates
+            decisions = VoiceDecisionStore(root / "decisions.json")
+
+            def saved_choice():
+                return VoiceDecisionStore(decisions.path).choice_for(
+                    group.group_id, group.decision_context_sha256
+                )
+
+            previews, pool = Mock(), ManualThreadPool()
             previews.generate.return_value = generated_preview(root)
-            pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions, preview_service=previews, thread_pool=pool, player=Mock()
             )
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            self.assertTrue(panel.a_use.isEnabled())
-            decisions.remember_many.assert_not_called()
-            self.assertEqual(pool.tasks, [])
-            panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            decisions.remember_many.assert_called_once_with(
-                ((group, group.candidates[0].source_id),)
+            choices_at_completion = []
+            panel.completed.connect(
+                lambda: choices_at_completion.append(saved_choice())
             )
+            cancelled = Mock()
+            panel.cancelled.connect(cancelled)
+
+            panel.start(plan, group_id=group.group_id)
+            panel.a_play.click()
+            self.finish_task(pool.tasks.pop())
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(pool.tasks, [])
+            self.assertIsNone(saved_choice())
+
+            panel.a_use.click()
+            panel.cancel()
+            self.assertIn("Finishing", panel.status.toPlainText())
+            self.assertTrue(panel.isVisible())
+            self.assertEqual(choices_at_completion, [])
+            self.finish_task(pool.tasks.pop())
+            self.assertEqual(choices_at_completion, [candidate.source_id])
+            cancelled.assert_not_called()
 
     def test_original_reference_can_be_accepted_without_generating_audio(self):
         with TemporaryDirectory() as directory:
@@ -2176,44 +2190,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             completed.assert_called_once_with()
             self.assertTrue(panel.isHidden())
-
-    def test_back_during_save_finishes_the_choice_before_returning(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            decisions = Mock()
-            preview_service = Mock()
-            preview_service.generate.return_value = generated_preview(root)
-            pool = ManualThreadPool()
-            completed = Mock()
-            cancelled = Mock()
-            panel = VoiceAuditionPanel(
-                decisions,
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
-            )
-            panel.completed.connect(completed)
-            panel.cancelled.connect(cancelled)
-            panel.start(plan, group_id=group.group_id)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            panel.a_use.click()
-
-            panel.cancel()
-
-            self.assertFalse(panel._cancel_requested)
-            self.assertIn("Finishing", panel.status.toPlainText())
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            decisions.remember_many.assert_called_once_with(
-                ((group, group.candidates[0].source_id),)
-            )
-            self.assertEqual(completed.call_count, 1)
-            self.assertEqual(cancelled.call_count, 0)
-            panel.shutdown()
-            panel.deleteLater()
 
     def test_failed_preview_requires_an_explicit_choice_and_next_sample_can_be_accepted(
         self,
