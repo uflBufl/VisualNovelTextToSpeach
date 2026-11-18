@@ -105,6 +105,33 @@ class ReadinessDialogTest(unittest.TestCase):
         self.assertTrue(dialog.remediation_button.isEnabled())
         dialog.close()
 
+    def test_capture_timeout_retries_without_opening_settings(self):
+        diagnostics = Mock()
+        result = DiagnosticResult(
+            "Capture source",
+            "error",
+            "Unlock the screen and open the game",
+            "retry-capture",
+        )
+        diagnostics.run.return_value = (result,)
+        pool = ManualThreadPool()
+        dialog = ReadinessDialog(
+            AppSettings(game_window_title="Game"), diagnostics, thread_pool=pool
+        )
+        requests = []
+        dialog.settings_requested.connect(lambda: requests.append(True))
+        pool.run_next()
+        self.application.processEvents()
+        dialog.select_check("Capture source")
+        self.assertEqual(dialog.remediation_button.text(), "Retry capture")
+        self.assertEqual(dialog.remediation_reason.text(), result.message)
+        dialog.remediation_button.click()
+        self.assertEqual(requests, [])
+        pool.run_next()
+        self.application.processEvents()
+        self.assertEqual(diagnostics.run.call_count, 2)
+        self.assertEqual(diagnostics.run.call_args.args[0].game_window_title, "Game")
+
     def test_requested_audio_check_opens_full_copyable_details(self):
         for pending in (True, False):
             with self.subTest(pending=pending):

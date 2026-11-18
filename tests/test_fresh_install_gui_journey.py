@@ -208,9 +208,7 @@ def _complete_fresh_onboarding(application, settings):
             wizard.calibration_page.finish_calibration(
                 DialogRegion(0.1, 0.2, 0.4, 0.16)
             )
-            wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
             wizard.next_button.click()
-            wizard.test_page.button.click()
             _wait_until(
                 application,
                 lambda: wizard.test_page.successful,
@@ -358,7 +356,10 @@ def _first_process(root):
             raise AssertionError("The prepared pack was not activated")
         if tray.settings.game_pack is not None:
             raise AssertionError("Prepared playback leaked into user preferences")
-        if tray.settings.last_main_section != "reading":
+        if (
+            tray.dashboard.sections.tabText(tray.dashboard.sections.currentIndex())
+            != "Reading"
+        ):
             raise AssertionError("Activation did not return to Reading")
         if controller.start.called:
             raise AssertionError("Preparation started playback automatically")

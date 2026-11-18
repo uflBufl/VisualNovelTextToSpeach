@@ -16,6 +16,15 @@ Evidence: November18 `vntts-support.zip` and recording exports
       navigation evidence was evicted. Establish the blocked transition before
       changing reading ownership; do not infer the cause from a static frame.
 
+## Reader-first desktop experience
+
+- [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
+      and returning players. Ask them to choose a window, hear a line, switch
+      games, stop, and find the page-turn setting without guidance.
+- [ ] Exercise real game audio and focus changes on Windows and macOS, including
+      an explicitly prepared chapter. Verify keyboard and screen-reader access
+      to the window picker and Stop at enlarged text size.
+
 ## Active - Support 111 application crash and Reading holds
 
 Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support

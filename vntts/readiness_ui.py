@@ -444,6 +444,7 @@ class ReadinessDialog(QDialog):
             )
             return
         actions = {
+            "retry-capture": ("Retry capture", "refresh-cw"),
             "story-area": ("Set story area", "scan"),
             "settings": ("Open Settings", "settings"),
             "permissions": ("Open Permissions", "key-round"),
@@ -482,6 +483,8 @@ class ReadinessDialog(QDialog):
                 )
                 + "Changing this fallback is optional."
             )
+        elif remediation == "retry-capture":
+            self.remediation_reason.setText(result.message)
         else:
             self.remediation_reason.setText(
                 f"{result.name}: fix this check, then run checks again."
@@ -490,6 +493,9 @@ class ReadinessDialog(QDialog):
     def _run_selected_remediation(self) -> None:
         result = self._selected_result()
         if result is None or result.status == "ok":
+            return
+        if result.remediation == "retry-capture":
+            self.refresh()
             return
         if result.remediation == "external-ocr":
             if not QDesktopServices.openUrl(

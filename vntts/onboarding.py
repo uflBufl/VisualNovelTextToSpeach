@@ -15,7 +15,11 @@ from vntts.hotkeys import (
 )
 from vntts.macos import get_macos_permission_status
 from vntts.model_assets import ModelAssetManager
-from vntts.native_capture import SOURCE_BUILD_COMMAND, probe_capture_worker
+from vntts.native_capture import (
+    SOURCE_BUILD_COMMAND,
+    CaptureError,
+    probe_capture_worker,
+)
 from vntts.ocr import CaptureRegionNeedsCalibration
 from vntts.profiles import GameProfileStore, resolve_story_region
 from vntts.release_backends import packaged_speech_backend_available
@@ -76,9 +80,15 @@ class OnboardingDiagnostics:
         self.profile_store_loader = profile_store_loader or GameProfileStore.load
 
     def run(
-        self, settings: AppSettings, *, cancellation: Cancellation = None
+        self,
+        settings: AppSettings,
+        *,
+        cancellation: Cancellation = None,
+        capture_only: bool = False,
     ) -> tuple[DiagnosticResult, ...]:
         check_runtime_cancelled(cancellation)
+        if capture_only:
+            return (self._check_capture_source(settings, cancellation=cancellation),)
         results = [self._check_hotkeys(settings, cancellation=cancellation)]
         check_runtime_cancelled(cancellation)
         capture_component = self._check_capture_worker(cancellation=cancellation)
@@ -325,6 +335,19 @@ class OnboardingDiagnostics:
             logging.getLogger(__name__).exception(
                 "Readiness capture source probe failed"
             )
+            if settings.capture_mode == "window" and (
+                isinstance(error, TimeoutError)
+                or isinstance(error, CaptureError)
+                and error.code in {"timeout", "frame_timeout", "capture_timeout"}
+            ):
+                return DiagnosticResult(
+                    "Capture source",
+                    "error",
+                    "The game window did not send an image in time. Check that your "
+                    "screen is unlocked and the game window is open and not minimized, "
+                    "then choose Retry capture to try the same window again.",
+                    "retry-capture",
+                )
             return DiagnosticResult("Capture source", "error", str(error), "settings")
         description = (
             settings.game_window_title or ""

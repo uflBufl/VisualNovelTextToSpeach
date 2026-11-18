@@ -9,8 +9,21 @@ For a portable build, unpack the complete archive and launch VNTTS. Keep its
 runtime folders beside the executable; copying only the executable is not enough.
 For a source checkout, use the developer instructions below.
 
-1. Launch VNTTS before opening the game. It opens **Stories** and can find
-   installed content without loading OCR or TTS. Select detected content, use
+1. Open a dialogue scene in your game and launch VNTTS. On **Reading**, use
+   **Game window** to choose the window. The list refreshes whenever you open
+   it. The selected title is saved for your next launch.
+2. Choose **Start narration**. If the game needs setup, **Set up and start**
+   lets you mark the dialogue box and choose **Read this line** for a preview.
+   Choose **Save and start narration**, then return to the game. You can add
+   a **Story area** later in Settings for captions outside the dialogue box.
+3. Under **Reading options**, choose whether to advance after speech or open
+   **Compact** controls. Keep the game focused for automatic advancement.
+   **Stop narration** ends capture and queued VNTTS speech. Choosing a different
+   window also stops the old session; press **Start narration** for the new game.
+
+### Prepare a chapter in advance
+
+1. Open **Stories** to use installed content. Select detected content, use
    **Find installed Reverse: 1999**, or select its **Game folder...**.
 2. Check the stories you want and choose the generation engine.
 3. Choose any ambiguous character voices, then confirm the narrator and voice
@@ -22,7 +35,7 @@ For a source checkout, use the developer instructions below.
    checks and repairs can take additional time. Cancel preserves finished work;
    reopen preparation and choose **Continue** to resume.
 5. Choose **Use prepared audio** to activate the result. Open that story in the
-   game, then choose **Set up reading** if it is offered or **Start reading** when
+   game, then choose **Set up and start** if offered or **Start narration** on Reading when
    ready. This same button follows game dialogue whether speech comes from prepared
    recordings or live TTS; it is not a separate generation command. Keep the game
    focused for automatic advancement.
@@ -33,7 +46,7 @@ saved recordings retain their own generating model and voice. Activating prepare
 audio replaces live overrides for covered roles, not unrelated character choices.
 Any remaining live fallbacks are shown before activation.
 
-Preparation is optional: **Start reading** can use live TTS immediately after
+Preparation is optional. **Start narration** can use live TTS immediately after
 setup. **Narrator voice** changes the live fallback voice; it does not revoice saved
 recordings. To revoice a story, prepare it again with the desired voice choices.
 Pocket built-in voices need no account. Pocket game-voice cloning is prepared once with **Prepare voice cloning...**
@@ -41,11 +54,9 @@ in Settings, setup or Stories. Sign in and accept the original model terms in
 your browser; the application downloads the original Kyutai model and remembers
 its local readiness. Other engines have their own model requirements.
 
-Use **Stop reading** to immediately end reading and all current or queued speech.
-**Read current dialogue** speaks the visible line once when reading is stopped.
-**Compact controls** opens the floating strip; **Full controls** returns to the
-main window. **More setup options -> Settings** opens settings by category.
-If controls remain unavailable, use **Check readiness** for the required fix.
+**Dialogue** under **Reading options** speaks the visible line once when reading
+is stopped. **Expand** in compact controls returns to the main window. Settings
+and the readiness check are also available through the desktop controls.
 
 ## Developer setup
 
@@ -108,8 +119,7 @@ respectively. Linux X11 capture is best effort.
   supported. Global hotkeys are unavailable in the current macOS build; keep
   the control window or compact floating controls open and use their buttons.
 - Windows: run the application in an interactive desktop session. No extra
-  permission is normally required. Select the game under **Settings -> Capture
-  source** and use borderless-windowed mode; minimized and exclusive-fullscreen
+  permission is normally required. Select the window under **Reading -> Game window** and use borderless-windowed mode; minimized and exclusive-fullscreen
   windows cannot be captured reliably.
 - Linux: run under an X11 desktop session with `DISPLAY` set. Screen-region and
   selected-window capture use the existing python-xlib dependency. Native
@@ -169,8 +179,8 @@ reference-audit launchers, handles `-h/--help` before creating a Qt application,
 opening screen capture or touching native services. Help is therefore safe in
 headless shells and returns exit status zero.
 
-The application opens first-time setup or the previously selected control view,
-and can optionally keep running in the system tray. Its settings are stored in the current user's application-data
+The application opens Reading without starting speech and can optionally keep
+running in the system tray. Its settings are stored in the current user's application-data
 directory. Settings, game profiles, OCR corrections, and OCR review metadata
 use versioned JSON documents with shared compatibility checks, damaged-file
 fallback, and atomic publication. Settings, profile edits, and voice assignments
@@ -179,7 +189,8 @@ write failures leave the previous in-memory state active and are reported in the
 UI. A failed settings write also restores the prior macOS login-item state.
 Follow [Start playing](#start-playing) for the player workflow. Optional pack and
 reference-file fields are under **Advanced options** in first-time setup, and
-under **Speech and voices** in Settings. Setup does not start playback automatically.
+under **Speech and voices** in Settings. Setup opened separately saves settings. Setup opened to start narration offers
+**Save and start narration**.
 The privacy-safe `runtime.log` is an atomically replaced JSONL snapshot bounded
 to 200 events and 512 KiB, so a long live session cannot grow it indefinitely.
 After the speech engine is ready, use **Narrator voice** to compare candidates

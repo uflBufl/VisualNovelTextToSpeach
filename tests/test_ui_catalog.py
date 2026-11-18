@@ -1339,6 +1339,7 @@ class UiCatalogTest(unittest.TestCase):
                     "dashboard.reading-loading",
                     "dashboard.reading-active",
                     "dashboard.reading-empty",
+                    "dashboard.reading-ready",
                     "dashboard.reading-setup-error",
                     "dashboard.reading-live-tts",
                     "dashboard.auto-advance-off",

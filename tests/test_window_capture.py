@@ -262,6 +262,48 @@ class WindowCaptureIdentityTest(unittest.TestCase):
         self.fingerprint = fingerprint.start()
         self.addCleanup(fingerprint.stop)
 
+    def test_explicit_selection_pins_native_capture_and_focus_before_first_frame(self):
+        self.target.bind_window(self.window)
+        self.backend.get_foreground_handle.return_value = self.window.handle
+        self.target.capture_native()
+        self.assertEqual(
+            self.create.call_args.args[0],
+            {
+                "kind": "window",
+                "window_id": self.window.handle,
+                "pid": self.window.process_id,
+            },
+        )
+        self.assertTrue(self.target.is_focused())
+        self.assertEqual(
+            self.target.input_focus_snapshot()["selected_window_id"], self.window.handle
+        )
+        self.backend.list_windows.assert_not_called()
+
+    def test_explicit_selection_does_not_fall_back_to_reused_title_or_substring(self):
+        self.target.bind_window(self.window)
+        self.backend.list_windows.return_value = [WindowInfo(200, "Game", 84)]
+        for replacement in (
+            None,
+            WindowInfo(100, "Game", 84),
+            WindowInfo(100, "Game clone", 42),
+            WindowInfo(200, "Game", 42),
+        ):
+            with self.subTest(replacement=replacement):
+                self.backend.get_window.return_value = replacement
+                for action in (
+                    self.target.capture_native,
+                    self.target.get_geometry,
+                    self.target.is_focused,
+                    self.target.input_focus_snapshot,
+                ):
+                    with self.assertRaisesRegex(
+                        WindowNotFoundError, "changed or closed"
+                    ):
+                        action()
+        self.backend.list_windows.assert_not_called()
+        self.create.assert_not_called()
+
     def test_wall_clock_adjustment_keeps_selected_process_across_source_reopen(self):
         self.process.return_value.create_time.return_value = 1000.0
         self.target.capture_native()

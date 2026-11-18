@@ -945,6 +945,8 @@ class DiagnosticsPage(QWizardPage):
         self.complete = False
         self.moss_download_allowed = False
         self.diagnostic_results: tuple[DiagnosticResult, ...] = ()
+        self._checked_settings: AppSettings | None = None
+        self._capture_retry_results: tuple[DiagnosticResult, ...] = ()
         self.cancellation = Event()
         self.runtime_progress.connect(self._runtime_progress)
         self.runner = LatestTaskRunner(self)
@@ -1056,9 +1058,17 @@ class DiagnosticsPage(QWizardPage):
         self.moss_download_allowed = True
         self.start_checks()
 
-    def start_checks(self) -> None:
-        if not self.moss_download_allowed and isinstance(
-            self.diagnostics, OnboardingDiagnostics
+    def start_checks(self, *, capture_only: bool = False) -> None:
+        capture_only = (
+            capture_only
+            and isinstance(self.diagnostics, OnboardingDiagnostics)
+            and self._checked_settings == self.flow.draft_settings
+            and bool(self.diagnostic_results)
+        )
+        if (
+            not capture_only
+            and not self.moss_download_allowed
+            and isinstance(self.diagnostics, OnboardingDiagnostics)
         ):
             space = self.diagnostics.moss_installation_space(self.flow.draft_settings)
             if space is not None:
@@ -1067,12 +1077,16 @@ class DiagnosticsPage(QWizardPage):
         self.cancellation.set()
         self.cancellation = Event()
         self.runner.cancel()
+        self._capture_retry_results = self.diagnostic_results if capture_only else ()
+        self._checked_settings = self.flow.draft_settings
         self.results.clear()
         self.results.hide()
         self.diagnostic_results = ()
         self.complete = False
         self.status.setText(
-            "Preparing speech runtime and checking required components. Please wait..."
+            "Capturing the selected game window. Please wait..."
+            if capture_only
+            else "Preparing speech runtime and checking required components. Please wait..."
         )
         self.progress.show()
         self.install_moss_button.hide()
@@ -1083,6 +1097,14 @@ class DiagnosticsPage(QWizardPage):
         self.cancel_button.show()
         self._update_remediation()
         self.completeChanged.emit()
+        if capture_only and isinstance(self.diagnostics, OnboardingDiagnostics):
+            self.runner.start(
+                self.diagnostics.run,
+                self.flow.draft_settings,
+                cancellation=self.cancellation,
+                capture_only=True,
+            )
+            return
         if isinstance(self.diagnostics, OnboardingDiagnostics):
             cancellation = self.cancellation
             self.runner.start(
@@ -1147,7 +1169,10 @@ class DiagnosticsPage(QWizardPage):
             self._update_remediation()
             self.completeChanged.emit()
             return
-        if not is_diagnostic_results(diagnostics):
+        if not is_diagnostic_results(diagnostics) or (
+            self._capture_retry_results
+            and (len(diagnostics) != 1 or diagnostics[0].name != "Capture source")
+        ):
             self.complete = False
             self.diagnostic_results = ()
             self.results.clear()
@@ -1159,6 +1184,12 @@ class DiagnosticsPage(QWizardPage):
             self._update_remediation()
             self.completeChanged.emit()
             return
+        if self._capture_retry_results:
+            diagnostics = tuple(
+                diagnostics[0] if result.name == "Capture source" else result
+                for result in self._capture_retry_results
+            )
+            self._capture_retry_results = ()
         self.diagnostic_results = diagnostics
         self.complete = all(result.passed for result in self.diagnostic_results)
         for result in self.diagnostic_results:
@@ -1236,6 +1267,7 @@ class DiagnosticsPage(QWizardPage):
             return
         self.remediation_reason.setText(result.message)
         labels = {
+            "retry-capture": "Retry capture",
             "story-area": "Select reading areas",
             "settings": "Open setup options",
             "voices": "Manage models and voices",
@@ -1254,6 +1286,7 @@ class DiagnosticsPage(QWizardPage):
             else "Show installation help"
         )
         icon = {
+            "retry-capture": "refresh-cw",
             "story-area": "scan",
             "settings": "settings",
             "voices": "audio-lines",
@@ -1286,6 +1319,7 @@ class DiagnosticsPage(QWizardPage):
                 )
             return
         actions = {
+            "retry-capture": lambda: self.start_checks(capture_only=True),
             "permissions": self.flow.configuration_page.open_macos_permissions,
             "story-area": lambda: self.flow.show_page(
                 self.flow.pages.index(self.flow.calibration_page)
@@ -1402,7 +1436,12 @@ class CalibrationPage(QWizardPage):
         self.story_status.setText(
             "Story area selected. It will be saved with Reading setup."
             if self.story_region is not None
-            else "Select the Story area to finish Reading setup. Any game frame will do."
+            else (
+                "Optional: add a Story area now or later from Settings to read text "
+                "outside the dialogue area."
+                if self.flow.reading_setup
+                else "Select the Story area to finish setup. Any game frame will do."
+            )
         )
 
     def calibrate(self, *, story_area: bool = False) -> None:
@@ -1605,8 +1644,11 @@ class CalibrationPage(QWizardPage):
         return (
             self.calibrated
             and self.capture_region is not None
-            and self.story_region is not None
-            and self.story_region.contains(self.capture_region)
+            and (
+                self.flow.reading_setup
+                if self.story_region is None
+                else self.story_region.contains(self.capture_region)
+            )
         )
 
 
@@ -1663,9 +1705,7 @@ class EndToEndTestPage(QWizardPage):
         self.button.setEnabled(True)
         set_playback_button_state(self.button, "idle", label="OCR-to-speech test")
         self.button.setText(
-            "Read the visible line"
-            if self.flow.reading_setup
-            else "Run OCR-to-speech test"
+            "Read this line" if self.flow.reading_setup else "Run OCR-to-speech test"
         )
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
@@ -1744,8 +1784,12 @@ class EndToEndTestPage(QWizardPage):
         self.progress.hide()
         self.status.setText(
             f"{message}\n\nTest completed. If you heard no sound, check system "
-            "output and read the line again. Save setup to return to Reading, "
-            "then choose Start reading."
+            "output and read the line again. "
+            + (
+                "Save and start narration to begin following the game dialogue."
+                if self.flow.start_live_after_save
+                else "Save setup to return to Reading, then choose Start reading."
+            )
             if successful and self.flow.reading_setup
             else f"{message}\n\nSetup is ready. Finish setup, then choose Prepare offline "
             "audio to select stories and voices, or use Start reading immediately."
@@ -1775,6 +1819,7 @@ class OnboardingWizard(QDialog):
         window_loader: WindowLoader = list_windows,
         auto_discover_windows: bool | None = None,
         reading_setup: bool = False,
+        start_live: bool = False,
         save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
@@ -1782,6 +1827,7 @@ class OnboardingWizard(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.start_live_after_save = bool(reading_setup and start_live)
         settings = settings.updated(discover_text_layouts=True)
         self._initialize_state(settings, auto_discover_windows, reading_setup)
         self._build_pages(
@@ -1874,9 +1920,14 @@ class OnboardingWizard(QDialog):
         if reading_setup:
             self.diagnostics_page.setTitle("Get Reading ready")
             self.diagnostics_page.setSubTitle("")
-            self.calibration_page.setTitle("Select reading areas")
+            self.calibration_page.setTitle("Select dialogue area")
+            self.calibration_page.story_instructions.setText(
+                "For captions outside the dialogue box, select the Story area on any game frame. "
+                "Include the centre of the scene and the whole dialogue box. Leave menus and "
+                "controls outside. You can add this later in Settings."
+            )
             self.test_page.setTitle("Try one dialogue line")
-            self.test_page.button.setText("Read the visible line")
+            self.test_page.button.setText("Read this line")
 
         self.stack = QStackedWidget()
         self.configuration_page.flow = self
@@ -1922,16 +1973,22 @@ class OnboardingWizard(QDialog):
         self.next_button = QPushButton("Next")
         set_action_icon(self.next_button, "chevron-right")
         self.finish_button = QPushButton(
-            "Save setup" if reading_setup else "Finish setup"
+            "Save and start narration"
+            if self.start_live_after_save
+            else "Save setup"
+            if reading_setup
+            else "Finish setup"
         )
         set_action_icon(self.finish_button, "save" if reading_setup else "check")
         self.finish_button.setAccessibleDescription(
-            "Save setup and return to the dashboard without starting playback"
+            "Save setup and start narration in the selected game window"
+            if self.start_live_after_save
+            else "Save setup and return to the dashboard without starting playback"
         )
         self.cancel_button = QPushButton("Cancel")
         set_action_icon(self.cancel_button, "x")
         self.back_button.clicked.connect(self.previous_page)
-        self.next_button.clicked.connect(self.next_page)
+        self.next_button.clicked.connect(lambda: self.next_page(read_line=True))
         self.finish_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
         navigation = QHBoxLayout()
@@ -1976,7 +2033,7 @@ class OnboardingWizard(QDialog):
         if self.current_page_index:
             self.show_page(self.current_page_index - 1)
 
-    def next_page(self) -> None:
+    def next_page(self, *, read_line: bool = False) -> None:
         page = self.pages[self.current_page_index]
         prior_settings = self.draft_settings
         validator = getattr(page, "validatePage", None)
@@ -1993,6 +2050,14 @@ class OnboardingWizard(QDialog):
             self.test_page.successful = False
         if self.current_page_index < len(self.pages) - 1:
             self.show_page(self.current_page_index + 1)
+            if (
+                read_line
+                and self.reading_setup
+                and page is self.calibration_page
+                and page.isComplete()
+                and not self.test_page.successful
+            ):
+                self.test_page.run_test()
 
     def update_navigation(self) -> None:
         final = self.current_page_index == len(self.pages) - 1
@@ -2004,6 +2069,13 @@ class OnboardingWizard(QDialog):
         self.back_button.setEnabled(self.current_page_index > 0 and not test_running)
         self.cancel_button.setEnabled(not test_running)
         self.next_button.setVisible(not final)
+        self.next_button.setText(
+            "Read this line"
+            if self.reading_setup
+            and page is self.calibration_page
+            and not self.test_page.successful
+            else "Next"
+        )
         self.next_button.setEnabled(bool(complete))
         self.finish_button.setVisible(final)
         self.finish_button.setEnabled(bool(complete))

@@ -629,6 +629,18 @@ class WindowCaptureTarget(DisplayCaptureTarget):
         self._backend = backend
         self._handle: int | None = None
         self.last_window: WindowInfo | None = None
+        self._selected_window: WindowInfo | None = None
+
+    @property
+    def selected_window(self) -> WindowInfo | None:
+        return self._selected_window
+
+    def bind_window(self, window: WindowInfo) -> None:
+        if window.title.strip().casefold() != self.window_title.casefold():
+            raise ValueError("Selected window does not match the configured title")
+        self._selected_window = window
+        self._handle = window.handle
+        self.last_window = window
 
     @property
     def backend(self) -> _WindowBackend:
@@ -706,7 +718,23 @@ class WindowCaptureTarget(DisplayCaptureTarget):
 
     def _resolve_window(self, *, update_selection: bool = True) -> WindowInfo:
         if not self.window_title:
-            raise WindowNotFoundError("Select a game window in Settings")
+            raise WindowNotFoundError("Select a game window on Reading")
+
+        selected = self._selected_window
+        if selected is not None:
+            window = self.backend.get_window(selected.handle)
+            if (
+                window is None
+                or window.handle != selected.handle
+                or window.process_id != selected.process_id
+                or window.title.strip().casefold() != selected.title.strip().casefold()
+            ):
+                raise WindowNotFoundError(
+                    "Selected game window changed or closed; select its window again"
+                )
+            if update_selection:
+                self.last_window = window
+            return window
 
         if self._handle is not None:
             window = self.backend.get_window(self._handle)

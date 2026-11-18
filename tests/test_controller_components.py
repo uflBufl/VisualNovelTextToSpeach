@@ -19,9 +19,44 @@ from vntts.playback_observer import observe_playback_start, playback_started_con
 from vntts.settings import AppSettings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceRouter
+from vntts.window_capture import WindowCaptureTarget, WindowGeometry, WindowInfo
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_explicit_window_binding_survives_runtime_reconfiguration_until_reselected(
+        self,
+    ):
+        selected = WindowInfo(100, "Game", 42)
+        backend = Mock()
+        backend.get_window.return_value = selected
+        backend.get_client_geometry.return_value = WindowGeometry(0, 0, 1280, 720)
+        controller = AppController(
+            AppSettings(capture_mode="window", game_window_title="Game"),
+            capture_target_factory=lambda title: WindowCaptureTarget(title, backend),
+        )
+        self.addCleanup(controller.shutdown)
+        controller.select_game_window(selected)
+        controller.apply_settings(controller.settings)
+        bound = controller.capture_target
+        self.assertEqual(bound.get_geometry().width, 1280)
+        controller.apply_settings(controller.settings.updated(output_volume_percent=25))
+        self.assertIs(controller.capture_target, bound)
+        self.assertIs(controller.window_capture_target("Game"), bound)
+        controller.shutdown()
+        controller.apply_settings(
+            controller.settings.updated(live_sequence_mode="audio-manual")
+        )
+        self.assertIs(controller.capture_target, bound)
+        replacement = WindowInfo(200, "Game", 84)
+        backend.get_window.return_value = replacement
+        controller.select_game_window(replacement)
+        controller.apply_settings(controller.settings)
+        self.assertIsNot(controller.capture_target, bound)
+        self.assertEqual(controller.capture_target.get_geometry().width, 1280)
+        backend.get_client_geometry.assert_called_with(replacement.handle)
+        controller.apply_settings(controller.settings.updated(capture_mode="screen"))
+        self.assertIsNone(controller.selected_game_window)
+
     def test_automatic_start_uses_prepared_metadata_without_reading_recordings(self):
         routed = Mock(spec=GeneratedAudioFallbackBackend)
         routed.library = SimpleNamespace(index=SimpleNamespace(entries=[object()]))

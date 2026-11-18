@@ -180,23 +180,12 @@ class SettingsTest(unittest.TestCase):
             self.assertEqual(saved_path, Path(directory) / "settings.json")
             self.assertTrue(loaded.onboarding_completed)
 
-    def test_last_main_section_is_validated_and_round_trips(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "settings.json"
-            for section in ("stories", "voices", "reading"):
-                AppSettings(last_main_section=section).save(path)
-                self.assertEqual(
-                    load_app_settings(path, environment={}).last_main_section, section
-                )
-        for section in ("missing", "", None, {}, False):
-            warnings = []
-            self.assertEqual(
-                AppSettings.from_mapping(
-                    {"last_main_section": section}, warn=warnings.append
-                ).last_main_section,
-                "stories",
+    def test_old_navigation_preference_preserves_game_window(self):
+        for section in ("stories", "voices", "reading"):
+            settings = AppSettings.from_mapping(
+                {"last_main_section": section, "game_window_title": "Saved game"}
             )
-            self.assertTrue(warnings)
+            self.assertEqual(settings.game_window_title, "Saved game")
 
     def test_invalid_saved_pack_is_strict_unless_recovery_is_requested(self):
         from vntts.game_pack import GamePackError

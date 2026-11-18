@@ -289,6 +289,12 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertLessEqual(len(tray.dialog_action.text()), 96)
         self.assertIn(text, tray.dashboard._copy_details())
 
+        tray.signals.dialog_changed.emit("Narrator", "")
+        self.application.processEvents()
+        self.assertEqual(tray.dialog_action.text(), "No dialogue detected")
+        self.assertEqual(tray.dashboard.speaker.text(), "Cornerstone")
+        self.assertEqual(tray.dashboard.dialogue.toPlainText(), text)
+
     def test_screen_observation_signal_is_separate_and_rejects_old_readers(self):
         controller = Mock()
         tray = TrayApplication(
@@ -634,8 +640,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray._pregeneration_activation_generation = tray._begin_controller_lifecycle()
         controller.settings = effective
         result = OfflinePackActivationResult(effective, Path("state.json"), True)
-        with patch.object(tray, "_save_main_section"):
-            tray._pregeneration_activation_finished(result, None)
+        tray._pregeneration_activation_finished(result, None)
         self.assertEqual(tray._prepared_settings, effective)
         self.assertEqual(pool.tasks, [])
         self.application.processEvents()
@@ -1404,10 +1409,10 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(status_text, message)
             self.assertNotIn(message, reason_text)
             self.assertFalse(controls.live_button.isEnabled())
-        self.assertIn("Set up reading", tray.dashboard.action_reason.text())
+        self.assertIn("Set up and start", tray.dashboard.action_reason.text())
         self.assertEqual(
             tray.compact_controller.action_reason.toPlainText(),
-            "Reading unavailable: Select Set up reading in the Reading tab to start.",
+            "Reading unavailable: Choose Set up and start on Reading.",
         )
         self.assertNotIn(message, tray.live_action.toolTip())
         tray.shutdown()
@@ -1868,10 +1873,10 @@ class TrayApplicationTest(unittest.TestCase):
                 tray.settings = (
                     AppSettings().updated(tts_speaker="marius")
                     if state == "changed"
-                    else AppSettings().updated(last_main_section="reading")
-                    if state == "navigation"
                     else AppSettings()
                 )
+                if state == "navigation":
+                    tray.dashboard.show_reading()
                 controller.is_live_running = state == "reading"
                 tray._controller_busy = state == "busy"
                 tray.narrator_dialog = Mock() if state == "voice" else None
@@ -1888,7 +1893,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray.shutdown()
 
     def test_stopping_reading_keeps_deferred_pack_inactive_on_stories(self):
-        saved = AppSettings(last_main_section="reading")
+        saved = AppSettings()
         controller = Mock(
             settings=saved,
             is_ready=True,
@@ -1930,7 +1935,6 @@ class TrayApplicationTest(unittest.TestCase):
         activate.assert_not_called()
         self.assertIs(tray.pregeneration_dialog, panel)
         self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
-        self.assertEqual(tray.settings.last_main_section, "stories")
         self.assertEqual(
             tray._playback_source(tray._runtime_settings()), runtime_source
         )
@@ -2943,7 +2947,7 @@ class TrayApplicationTest(unittest.TestCase):
                             reload.assert_called_once_with(True, None, after_apply=None)
                             if same_preparation:
                                 preparation.apply_narrator_settings.assert_called_once_with(
-                                    candidate.updated(last_main_section="reading"),
+                                    candidate,
                                     voice_changed=True,
                                 )
                         else:
@@ -2961,10 +2965,6 @@ class TrayApplicationTest(unittest.TestCase):
                                 candidate
                                 if result == QDialog.DialogCode.Accepted
                                 else original
-                            ).updated(
-                                last_main_section="stories"
-                                if origin == 0 and same_preparation
-                                else "reading"
                             ),
                         )
                         tray.pregeneration_dialog = None
@@ -3176,10 +3176,8 @@ class TrayApplicationTest(unittest.TestCase):
             ),
         )
         tray._set_reading_status("Reading is ready.")
-        self.assertIn("Reading setup", tray.dashboard.status.text())
-        self.assertIn(
-            "No central text needs to be visible", tray.dashboard.status.text()
-        )
+        self.assertIn("Reading uses the dialogue area", tray.dashboard.status.text())
+        self.assertIn("Set story area in Settings", tray.dashboard.status.text())
         region = DialogRegion(0, 0, 1, 1)
         save_dialog_region(region, Path(os.environ["VNTTS_DIALOG_REGION_FILE"]))
         save_story_region(
@@ -3192,23 +3190,39 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray.dashboard.status.text(), "Reading is ready.")
         tray.shutdown()
 
-    def test_completed_legacy_setup_requires_story_area_before_reading(self):
-        settings = AppSettings(onboarding_completed=True)
+    def test_completed_dialogue_setup_starts_without_optional_story_area(self):
+        settings = AppSettings(onboarding_completed=True, live_sequence_mode="off")
         controller = Mock(is_ready=True, is_live_running=False, settings=settings)
         controller._story_region.return_value = None
         tray = TrayApplication(
             self.application, settings, controller_factory=Mock(return_value=controller)
         )
-        for start in (tray.prepare_reading, tray.toggle_live):
-            with (
-                self.subTest(start=start.__name__),
-                patch.object(tray, "run_onboarding") as setup,
-            ):
-                start()
-                setup.assert_called_once_with()
-        controller._story_region.return_value = DialogRegion(0, 0, 1, 1)
-        self.assertFalse(tray._story_area_needs_setup())
+        tray.set_ready(True)
+        with (
+            patch.object(tray, "run_onboarding") as setup,
+            patch.object(
+                tray, "_start_live_with_available_scope", return_value=True
+            ) as start,
+        ):
+            self.assertTrue(tray.toggle_live())
+            start.assert_called_once_with()
+            setup.assert_not_called()
         tray.shutdown()
+
+    def test_prepare_reading_preserves_explicit_manual_source_through_setup(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        manual = tray.settings.updated(
+            live_sequence_mode="audio-manual",
+            live_sequence_plan="selected-sequence.json",
+            story_index="selected-story.json",
+        )
+        with patch.object(tray, "run_onboarding") as setup:
+            tray.prepare_reading(start_live=True, reading_settings=manual)
+        setup.assert_called_once_with(reading_settings=manual, start_live=True)
 
     def test_uncertain_ocr_keeps_last_dialogue_and_reports_only_status(self):
         tray = TrayApplication(
@@ -7556,6 +7570,462 @@ class TrayApplicationTest(unittest.TestCase):
         save.assert_called_once_with(tray_application.settings)
         tray_application.shutdown()
 
+    def test_dashboard_window_choice_stops_speech_before_saving_and_applying(self):
+        tray, controller, _reader, speech, queued, pool = (
+            self.reading_stop_with_running_speech()
+        )
+        chosen = WindowInfo(42, "Chosen game", 123)
+        with (
+            patch("vntts.app.list_windows", return_value=[chosen]),
+            patch.object(tray, "_start_configuration_apply") as apply,
+        ):
+            tray.dashboard.game_window_requested.emit(chosen)
+            self.assertFalse(tray._settings_path.exists())
+            apply.assert_not_called()
+            pool.run_next()
+            self.wait_until(lambda: apply.called)
+        self.assertTrue(speech.done())
+        self.assertTrue(queued.cancelled())
+        saved = load_app_settings(tray._settings_path, environment={})
+        self.assertEqual(saved.capture_mode, "window")
+        self.assertEqual(saved.game_window_title, chosen.title)
+        self.assertEqual(tray.settings.game_window_title, chosen.title)
+        self.assertEqual(apply.call_args.args, (tray.settings,))
+        self.assertNotIn("after_apply", apply.call_args.kwargs)
+        controller.toggle_live.assert_not_called()
+
+    def test_window_choice_invalidates_pending_start_and_scope(self):
+        controller = Mock(is_ready=False, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        generation = tray._begin_controller_lifecycle()
+        tray._initial_start_generation = generation
+        tray._start_live_after_initial_start = True
+        cancellation = tray._live_scope_cancellation = Event()
+        tray._live_scope_generation = generation
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        chosen = WindowInfo(42, "Chosen game", 123)
+        with (
+            patch("vntts.app.list_windows", return_value=[chosen]),
+            patch.object(tray, "_start_configuration_apply") as apply,
+        ):
+            tray.choose_game_window(chosen)
+            self.assertTrue(cancellation.is_set())
+            self.assertFalse(tray.session_owner.is_current(generation))
+            self.assertFalse(tray._start_live_after_initial_start)
+            tray._initial_start_finished(True, None)
+            pool.run_next()
+            self.wait_until(lambda: apply.called)
+        controller.toggle_live.assert_not_called()
+        self.assertFalse(tray._controller_ready)
+
+    def test_window_choice_on_cold_controller_only_rebinds_capture_without_loading_speech(
+        self,
+    ):
+        speech_factory = Mock()
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=lambda settings, **options: AppController(
+                settings, tts_factory=speech_factory, **options
+            ),
+        )
+        tray.live_stop_runner.thread_pool = ImmediateTaskPool()
+        tray.configuration_runner.thread_pool = ImmediateTaskPool()
+        chosen = WindowInfo(42, "Chosen game", 123)
+        tray.set_dialog("Vertin", "A line from the previous game.")
+        with (
+            patch("vntts.app.list_windows", return_value=[chosen]),
+            patch.object(tray.controller, "prepare_startup") as prepare,
+            patch.object(tray.controller, "start") as start,
+        ):
+            tray.choose_game_window(chosen)
+            self.wait_until(
+                lambda: tray.controller.settings.game_window_title == chosen.title
+            )
+        speech_factory.assert_not_called()
+        prepare.assert_not_called()
+        start.assert_not_called()
+        self.assertIsNone(tray.controller.speech_backend)
+        self.assertIsNone(tray.controller.live_reader)
+        self.assertFalse(tray._controller_ready)
+        self.assertFalse(tray._controller_busy)
+        self.assertIsInstance(tray.controller.capture_target, WindowCaptureTarget)
+        self.assertEqual(tray.controller.capture_target.window_title, chosen.title)
+        self.assertEqual(tray.controller.capture_target.selected_window, chosen)
+        self.assertTrue(tray.dashboard.dialogue_card.isHidden())
+        tray.run_onboarding()
+        wizard = tray.onboarding_wizard
+        self.assertIs(
+            wizard.calibration_page.capture_target_factory(chosen.title),
+            tray.controller.capture_target,
+        )
+        self.assertIsNone(
+            wizard.calibration_page.capture_target_factory(
+                "Manually typed game"
+            ).selected_window
+        )
+        self.assertEqual(wizard.current_page_index, 0)
+        wizard.reject()
+        with patch("vntts.onboarding_ui.DiagnosticsPage.initializePage"):
+            tray.run_onboarding(start_live=True)
+        wizard = tray.onboarding_wizard
+        self.assertIs(wizard.pages[wizard.current_page_index], wizard.diagnostics_page)
+        wizard.previous_page()
+        self.assertEqual(
+            wizard.configuration_page.game_window.currentText(), chosen.title
+        )
+        wizard.reject()
+
+    def test_failed_window_write_after_cancelling_initialization_keeps_controls_truthful(
+        self,
+    ):
+        original = AppSettings(capture_mode="window", game_window_title="Original")
+        tray = TrayApplication(
+            self.application,
+            original,
+            controller_factory=lambda settings, **options: AppController(
+                settings, tts_factory=Mock(), **options
+            ),
+        )
+        pool = ManualThreadPool()
+        tray.initial_start_runner.thread_pool = pool
+        tray.live_stop_runner.thread_pool = pool
+        generation = tray._begin_controller_lifecycle()
+        tray._initial_start_generation = generation
+        tray._start_live_after_initial_start = True
+        tray.initial_start_runner.start(
+            tray._initialize_controller, generation, original
+        )
+        chosen = WindowInfo(42, "Chosen game", 123)
+        with (
+            patch("vntts.app.list_windows", return_value=[chosen]),
+            patch.object(tray, "_save_settings_candidate", side_effect=OSError("disk")),
+            patch.object(tray.controller, "start") as start,
+        ):
+            tray.choose_game_window(chosen)
+            pool.run_next()
+            self.application.processEvents()
+            pool.run_next()
+            self.wait_until(lambda: "Unable to save" in tray.status_action.text())
+        start.assert_not_called()
+        self.assertFalse(tray._controller_ready)
+        self.assertFalse(tray._controller_busy)
+        self.assertFalse(tray.controller.is_ready)
+        self.assertFalse(tray._start_live_after_initial_start)
+        self.assertEqual(tray.settings, original)
+        self.assertEqual(
+            tray.dashboard.game_window.currentText(), original.game_window_title
+        )
+        self.assertTrue(tray.dashboard.game_window.isEnabled())
+
+    def test_window_choice_waits_for_open_setup_and_voice_editors(self):
+        chosen = WindowInfo(42, "Chosen game", 123)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title="Original"),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        for editor in ("onboarding_wizard", "narrator_dialog"):
+            with self.subTest(editor=editor):
+                setattr(tray, editor, Mock())
+                try:
+                    with patch.object(tray, "_stop_live_then") as stop:
+                        tray.choose_game_window(chosen)
+                    stop.assert_not_called()
+                    self.assertEqual(tray.settings.game_window_title, "Original")
+                    self.assertEqual(
+                        tray.dashboard.game_window.currentText(), "Original"
+                    )
+                    self.assertIn("Finish or cancel", tray.status_action.text())
+                finally:
+                    setattr(tray, editor, None)
+
+    def test_window_choice_waits_for_runtime_model_loading(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title="Original"),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray._begin_controller_lifecycle()
+        with patch.object(tray, "_stop_live_then") as stop:
+            tray.choose_game_window(WindowInfo(42, "Chosen game", 123))
+        stop.assert_not_called()
+        self.assertEqual(tray.settings.game_window_title, "Original")
+        self.assertIn("updating", tray.status_action.text())
+
+    def test_window_choice_preserves_old_profile_and_clears_global_story_binding(self):
+        from vntts.ocr import save_story_region
+        from vntts.profiles import resolve_story_region
+
+        original = AppSettings(capture_mode="window", game_window_title="Original")
+        region = DialogRegion(0, 0, 1, 1)
+        region_path = Path(os.environ["VNTTS_DIALOG_REGION_FILE"])
+        save_story_region(
+            region,
+            region_path,
+            capture_mode="window",
+            game_window_title=original.game_window_title,
+        )
+        with TemporaryDirectory() as directory:
+            store = GameProfileStore(Path(directory) / "profiles.json")
+            profile = store.create("Game", original)
+            store.update_story_region(profile.id, region)
+            tray = TrayApplication(
+                self.application,
+                original.updated(active_profile_id=profile.id),
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=store,
+            )
+            chosen = WindowInfo(42, "Chosen game", 123)
+            with (
+                patch("vntts.app.list_windows", return_value=[chosen]),
+                patch.object(tray, "_start_configuration_apply"),
+            ):
+                tray._apply_game_window(chosen)
+            saved_profile = GameProfileStore.load(store.path).get(profile.id)
+            self.assertEqual(
+                saved_profile.game_window_title, original.game_window_title
+            )
+            self.assertEqual(saved_profile.story_region, region)
+            self.assertIsNone(tray.settings.active_profile_id)
+            self.assertIsNone(resolve_story_region(tray.settings, store))
+            self.assertNotIn("story_region", json.loads(region_path.read_text()))
+
+    def test_new_game_requires_dialogue_setup_on_cold_and_ready_controller(self):
+        for ready in (False, True):
+            with self.subTest(ready=ready):
+                original = AppSettings(
+                    onboarding_completed=True,
+                    capture_mode="window",
+                    game_window_title="Original",
+                    live_sequence_mode="off",
+                )
+                controller = Mock(
+                    settings=original, is_ready=ready, is_live_running=False
+                )
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray.set_ready(ready)
+                chosen = WindowInfo(42, "Different game", 123)
+                with (
+                    patch("vntts.app.list_windows", return_value=[chosen]),
+                    patch.object(tray, "_start_configuration_apply"),
+                ):
+                    tray._apply_game_window(chosen)
+                controller.settings = tray.settings
+                tray.set_ready(ready)
+                self.assertFalse(tray.settings.onboarding_completed)
+                self.assertFalse(
+                    load_app_settings(
+                        tray._settings_path, environment={}
+                    ).onboarding_completed
+                )
+                self.assertFalse(tray._runtime_control_state().can_read)
+                self.assertEqual(
+                    tray.dashboard.prepare_reading_button.text(), "Set up and start"
+                )
+                self.assertFalse(tray.dashboard.prepare_reading_button.isHidden())
+                with (
+                    patch.object(
+                        tray, "_reading_source_choice", return_value=(None, False)
+                    ),
+                    patch.object(tray, "run_onboarding") as setup,
+                    patch.object(tray, "_start_live_with_available_scope") as start,
+                ):
+                    self.assertFalse(tray.toggle_live())
+                    setup.assert_called_once_with(
+                        reading_settings=None, start_live=True
+                    )
+                    start.assert_not_called()
+
+    def test_same_target_rebinding_keeps_completed_dialogue_setup(self):
+        from vntts.ocr import save_story_region
+        from vntts.profiles import resolve_story_region
+
+        for use_profile in (False, True):
+            for source in ("picker", "settings"):
+                with (
+                    self.subTest(use_profile=use_profile, source=source),
+                    TemporaryDirectory() as directory,
+                ):
+                    original = AppSettings(
+                        onboarding_completed=True,
+                        capture_mode="window",
+                        game_window_title="Game",
+                    )
+                    region = DialogRegion(0, 0, 1, 1)
+                    region_path = Path(os.environ["VNTTS_DIALOG_REGION_FILE"])
+                    save_dialog_region(region, region_path)
+                    save_story_region(
+                        region,
+                        region_path,
+                        capture_mode="window",
+                        game_window_title="Game",
+                    )
+                    store = GameProfileStore(Path(directory) / "profiles.json")
+                    if use_profile:
+                        profile = store.create("Saved game", original, region=region)
+                        store.update_story_region(profile.id, region)
+                        original = original.updated(active_profile_id=profile.id)
+                    tray = TrayApplication(
+                        self.application,
+                        original,
+                        controller_factory=Mock(return_value=Mock(settings=original)),
+                        profile_store=store,
+                    )
+                    with patch.object(tray, "_start_configuration_apply"):
+                        if source == "picker":
+                            chosen = WindowInfo(42, "GAME", 123)
+                            with patch("vntts.app.list_windows", return_value=[chosen]):
+                                tray._apply_game_window(chosen)
+                        else:
+                            dialog = Mock()
+                            dialog.exec.return_value = QDialog.DialogCode.Accepted
+                            dialog.settings.return_value = original.updated(
+                                game_window_title=" GAME "
+                            )
+                            with (
+                                patch.object(
+                                    tray, "_create_settings_dialog", return_value=dialog
+                                ),
+                                patch.object(
+                                    tray, "_needs_modal_stop", return_value=False
+                                ),
+                            ):
+                                tray.open_settings()
+                    self.assertTrue(tray.settings.onboarding_completed)
+                    self.assertEqual(tray.settings.game_window_title, "Game")
+                    self.assertEqual(resolve_story_region(tray.settings, store), region)
+                    saved = load_app_settings(tray._settings_path, environment={})
+                    self.assertTrue(saved.onboarding_completed)
+                    self.assertEqual(
+                        resolve_story_region(saved, GameProfileStore.load(store.path)),
+                        region,
+                    )
+
+    def test_settings_capture_change_requires_new_dialogue_setup(self):
+        for mode, title, requires_setup in (
+            ("window", "Other game", True),
+            ("screen", None, True),
+            ("window", " GAME ", False),
+        ):
+            with self.subTest(mode=mode, title=title):
+                original = AppSettings(
+                    onboarding_completed=True,
+                    capture_mode="window",
+                    game_window_title="Game",
+                )
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=Mock(settings=original)),
+                )
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = original.updated(
+                    capture_mode=mode, game_window_title=title
+                )
+                tray.set_ready(True)
+                with (
+                    patch.object(tray, "_create_settings_dialog", return_value=dialog),
+                    patch.object(tray, "_needs_modal_stop", return_value=False),
+                    patch.object(tray, "_start_configuration_apply"),
+                ):
+                    tray.open_settings()
+                self.assertEqual(tray.settings.onboarding_completed, not requires_setup)
+                self.assertEqual(
+                    tray._runtime_control_state().ready, not requires_setup
+                )
+
+    def test_window_choice_rejects_missing_replaced_and_ambiguous_windows(self):
+        chosen = WindowInfo(42, "Chosen game", 123)
+        cases = ([], [WindowInfo(42, chosen.title, 456)], [chosen, chosen])
+        for windows in cases:
+            with self.subTest(windows=windows):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                with (
+                    patch("vntts.app.list_windows", return_value=windows),
+                    patch.object(tray, "_save_settings_candidate") as save,
+                    patch.object(tray, "_start_configuration_apply") as apply,
+                ):
+                    tray._apply_game_window(chosen)
+                save.assert_not_called()
+                apply.assert_not_called()
+                self.assertIsNone(tray.settings.game_window_title)
+                self.assertIn("unavailable or", tray.status_action.text())
+
+    def test_failed_window_choice_write_keeps_current_configuration(self):
+        original = AppSettings(capture_mode="window", game_window_title="Original")
+        tray = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=Mock()),
+        )
+        chosen = WindowInfo(42, "Chosen game", 123)
+        with (
+            patch("vntts.app.list_windows", return_value=[chosen]),
+            patch.object(tray, "_save_settings_candidate", side_effect=OSError("disk")),
+            patch.object(tray, "_start_configuration_apply") as apply,
+        ):
+            tray._apply_game_window(chosen)
+        self.assertEqual(tray.settings, original)
+        apply.assert_not_called()
+        self.assertIn("Unable to save", tray.status_action.text())
+
+    def test_reselecting_current_game_window_can_replace_stale_process_identity(self):
+        chosen = WindowInfo(42, "Chosen game", 123)
+        target = WindowCaptureTarget(chosen.title, Mock())
+        target.bind_window(WindowInfo(42, chosen.title, 99))
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title=chosen.title),
+            controller_factory=Mock(return_value=Mock(capture_target=target)),
+        )
+        with patch.object(tray, "_stop_live_then") as stop:
+            tray.dashboard.game_window_requested.emit(chosen)
+        stop.assert_called_once()
+        self.assertEqual(stop.call_args.args[0].args, (chosen,))
+
+    def test_reselecting_bound_game_window_does_not_stop_narration(self):
+        chosen = WindowInfo(42, "Chosen game", 123)
+        target = WindowCaptureTarget(chosen.title, Mock())
+        target.bind_window(chosen)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title=chosen.title),
+            controller_factory=Mock(return_value=Mock(capture_target=target)),
+        )
+        with patch.object(tray, "_stop_live_then") as stop:
+            tray.dashboard.game_window_requested.emit(chosen)
+        stop.assert_not_called()
+
+    def test_game_window_enumeration_os_error_keeps_previous_configuration(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title="Original"),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        with (
+            patch("vntts.app.list_windows", side_effect=OSError("enumeration failed")),
+            patch.object(tray, "_save_settings_candidate") as save,
+        ):
+            tray._apply_game_window(WindowInfo(42, "Chosen game", 123))
+        save.assert_not_called()
+        self.assertEqual(tray.settings.game_window_title, "Original")
+        self.assertIn("enumeration failed", tray.status_action.text())
+
     def test_dashboard_can_toggle_auto_advance_while_reading(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -8459,7 +8929,7 @@ class TrayApplicationTest(unittest.TestCase):
                     AppSettings(onboarding_completed=configured),
                     controller_factory=Mock(return_value=controller),
                 )
-                action = "Select Read" if configured else "Set up reading"
+                action = "Start narration" if configured else "Set up and start"
                 for _ in range(2):
                     tray.set_status("Settings saved")
                     tray._refresh_speech_runtime()
@@ -8548,6 +9018,7 @@ class TrayApplicationTest(unittest.TestCase):
         for entry in ("main", "compact", "menu", "hotkey"):
             with self.subTest(entry=entry):
                 tray, controller, pool = self._cold_reading_tray()
+                controller._story_region.return_value = None
                 with patch.object(tray, "schedule_hotkeys"):
                     if entry == "main":
                         tray.dashboard.live_button.click()
@@ -8858,7 +9329,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertFalse(tray.toggle_live())
             setup.assert_not_called()
             tray.dashboard.prepare_reading_button.click()
-            setup.assert_called_once_with()
+            setup.assert_called_once_with(reading_settings=None, start_live=True)
         controller.start.assert_not_called()
         controller.toggle_live.assert_not_called()
         self.assertEqual(pool.tasks, [])
@@ -9003,6 +9474,36 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(hotkey_events, [])
         self.assertTrue(tray_application._shutting_down)
         controller.request_shutdown.assert_called_once_with()
+
+    def test_reading_guidance_tracks_focus_and_speech_across_status_updates(self):
+        controller = Mock(is_live_running=True, game_focused=False)
+        controller.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        tray.set_status("Game focus lost")
+        with patch("vntts.app.sys.platform", "darwin"):
+            tray._start_hotkeys_safely()
+        self.assertEqual(tray.dashboard.status.text(), "Game focus lost")
+        self.assertEqual(
+            tray.dashboard.reading_state.text(),
+            "Return to the game to continue reading",
+        )
+        tray.set_status("Model is already downloaded and verified")
+        self.assertEqual(
+            tray.dashboard.reading_state.text(),
+            "Return to the game to continue reading",
+        )
+        controller.game_focused = True
+        controller.runtime_control_snapshot.return_value = {
+            "speaking": True,
+            "speaking_character": "Mira",
+        }
+        tray._refresh_speech_runtime()
+        self.assertEqual(tray.dashboard.reading_state.text(), "Speaking: Mira")
 
     def test_macos_skips_unstable_native_hotkey_listener(self):
         for compact in (False, True):
@@ -9873,6 +10374,8 @@ class TrayApplicationTest(unittest.TestCase):
             )
             controller.start.assert_called_once_with()
             self.assertIn("Reverse: 1999", tray_application.status_action.text())
+            self.assertFalse(tray_application.settings.onboarding_completed)
+            self.assertFalse(tray_application._runtime_control_state().ready)
             tray_application.shutdown()
 
     def test_failed_settings_write_keeps_previous_profile_active(self):
@@ -10796,71 +11299,37 @@ class TrayApplicationTest(unittest.TestCase):
         opened.assert_not_called()
         self.assertFalse(tray_application.history_action.isEnabled())
 
-    def test_main_section_restores_without_playback_and_survives_lazy_library_loading(
-        self,
-    ):
-        for section, index in (("voices", 1), ("reading", 2)):
-            with self.subTest(section=section), TemporaryDirectory() as directory:
-                path = Path(directory) / "settings.json"
-                controller = Mock(is_live_running=False)
-                settings = AppSettings(last_main_section=section)
-                settings.save(path)
-                with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
-                    tray = TrayApplication(
-                        self.application,
-                        settings,
-                        controller_factory=Mock(return_value=controller),
-                    )
-                    with (
-                        patch.object(tray.tray, "show"),
-                        patch("vntts.app.QTimer.singleShot"),
-                        patch.object(tray, "_save_settings_candidate") as save,
-                    ):
-                        tray.start()
-                        self.assertEqual(tray.dashboard.sections.currentIndex(), index)
-                        self.assertTrue(tray.dashboard.status.isHidden())
-                        self.assertTrue(tray.dashboard.copy_status_button.isHidden())
-                        with patch.object(
-                            tray,
-                            "open_pregeneration",
-                            side_effect=tray.dashboard.show_stories,
-                        ) as load_library:
-                            tray._load_initial_library()
-                        load_library.assert_called_once()
-                        save.assert_not_called()
-                    self.assertEqual(tray.dashboard.sections.currentIndex(), index)
-                    self.assertEqual(tray.settings.last_main_section, section)
-                    self.assertIsNone(tray.onboarding_wizard)
-                    controller.start.assert_not_called()
-                    controller.toggle_live.assert_not_called()
-                    tray.shutdown()
-
-    def test_main_section_navigation_saves_and_reports_write_failure(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "settings.json"
-            with patch.dict(os.environ, {"VNTTS_SETTINGS_FILE": str(path)}):
-                tray = TrayApplication(
-                    self.application,
-                    AppSettings(),
-                    controller_factory=Mock(return_value=Mock()),
-                )
-                tray.dashboard.show()
-                QTest.keyClick(tray.dashboard.sections.tabBar(), Qt.Key.Key_Right)
-                self.assertEqual(tray.settings.last_main_section, "voices")
-                self.assertIn('"last_main_section": "voices"', path.read_text())
-                with (
-                    patch.object(
-                        tray,
-                        "_save_settings_candidate",
-                        side_effect=OSError("disk full"),
-                    ),
-                    patch.object(tray, "show_error") as error,
-                ):
-                    QTest.keyClick(tray.dashboard.sections.tabBar(), Qt.Key.Key_Right)
-                self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
-                self.assertEqual(tray.settings.last_main_section, "voices")
-                self.assertIn("disk full", error.call_args.args[0])
-                tray.shutdown()
+    def test_start_opens_reading_after_lazy_library_loading_without_playback(self):
+        controller = Mock(is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.addCleanup(tray.shutdown)
+        with (
+            patch.object(tray.tray, "show"),
+            patch("vntts.app.QTimer.singleShot"),
+            patch.object(tray, "_save_settings_candidate") as save,
+            patch.object(tray, "_audio_runtime_available"),
+            patch.object(
+                tray, "open_pregeneration", side_effect=tray.dashboard.show_stories
+            ),
+        ):
+            tray.start()
+            tray._load_initial_library()
+            self.assertTrue(tray.dashboard.game_window.isVisible())
+            self.assertEqual(
+                tray.dashboard.sections.tabText(tray.dashboard.sections.currentIndex()),
+                "Reading",
+            )
+            self.assertTrue(tray.dashboard.status.isHidden())
+            tray.dashboard.show_voices()
+            tray.dashboard.show_stories()
+            save.assert_not_called()
+        self.assertIsNone(tray.onboarding_wizard)
+        controller.start.assert_not_called()
+        controller.toggle_live.assert_not_called()
 
     def test_fallback_settings_cannot_replace_future_document(self):
         with TemporaryDirectory() as directory:
@@ -11019,12 +11488,10 @@ class TrayApplicationTest(unittest.TestCase):
                     controller_factory=Mock(return_value=Mock()),
                 )
                 first._save_compact_preference(True)
-                first._save_main_section("reading")
-                second._save_main_section("voices")
+                second._save_compact_preference(True)
 
             saved = load_app_settings(path, environment={})
             self.assertTrue(saved.compact_controls)
-            self.assertEqual(saved.last_main_section, "reading")
             self.assertEqual(first.settings, saved)
             self.assertEqual(second.settings, original)
             self.assertIn("changed on disk", second.status_action.toolTip())
@@ -11056,13 +11523,11 @@ class TrayApplicationTest(unittest.TestCase):
                 chosen = tray.settings.updated(game_window_title="Chosen game")
                 tray._save_settings_candidate(chosen)
                 tray.settings = chosen
-                tray._save_main_section("reading")
                 tray.shutdown()
 
             saved = load_app_settings(path, environment={})
             self.assertEqual(saved.game_window_title, "Chosen game")
             self.assertTrue(saved.compact_controls)
-            self.assertEqual(saved.last_main_section, "reading")
 
     def test_unrelated_save_preserves_external_pack_under_internal_pack_environment_override(
         self,
@@ -11106,13 +11571,12 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 self.assertEqual(tray.settings.game_pack, str(internal_pack))
                 tray._save_compact_preference(True)
-                tray._save_main_section("reading")
                 self.assertEqual(tray.settings.game_pack, str(internal_pack))
                 self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
                 persisted = load_app_settings(path, environment={})
                 self.assertEqual(
                     persisted,
-                    saved.updated(compact_controls=True, last_main_section="reading"),
+                    saved.updated(compact_controls=True),
                 )
                 document = json.loads(path.read_bytes())
                 for name in (
@@ -11446,7 +11910,6 @@ class TrayApplicationTest(unittest.TestCase):
                 candidate = original.updated(audio_source_policy="prefer-generated")
                 tray._show_preparation_reading(original)
                 self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
-                self.assertEqual(tray.settings.last_main_section, "stories")
                 with patch.object(tray.pregeneration_activation_runner, "start"):
                     tray._start_pregeneration_activation(
                         Mock(spec=OfflinePackResult),
@@ -11458,14 +11921,12 @@ class TrayApplicationTest(unittest.TestCase):
                     OfflinePackActivationResult(candidate, path, False), None
                 )
 
-                self.assertEqual(tray.settings.last_main_section, "reading")
                 self.assertEqual(
                     tray.settings.audio_source_policy, original.audio_source_policy
                 )
                 self.assertEqual(
                     tray._runtime_settings().audio_source_policy, "prefer-generated"
                 )
-                self.assertIn('"last_main_section": "reading"', path.read_text())
                 self.assertIs(
                     tray.dashboard.focusWidget(), tray.dashboard.prepare_reading_button
                 )
@@ -11538,7 +11999,6 @@ class TrayApplicationTest(unittest.TestCase):
                 self.application.processEvents()
                 section = tray.dashboard.sections.currentIndex()
                 focused = tray.dashboard.focusWidget()
-                saved_section = tray.settings.last_main_section
 
                 candidate = original.updated(audio_source_policy="prefer-generated")
                 tray._pregeneration_activation_finished(
@@ -11549,7 +12009,6 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray.dashboard.sections.currentIndex(), section)
                 self.assertEqual(tray.dashboard.isVisible(), destination != "hidden")
                 self.assertIs(tray.dashboard.focusWidget(), focused)
-                self.assertEqual(tray.settings.last_main_section, saved_section)
                 self.assertEqual(
                     tray._runtime_settings().audio_source_policy, "prefer-generated"
                 )
@@ -11741,7 +12200,7 @@ class TrayApplicationTest(unittest.TestCase):
             controller.toggle_live.assert_not_called()
             tray.shutdown()
 
-    def _onboarding_preview_case(self, outcome):
+    def _onboarding_preview_case(self, outcome, *, start_live=False):
         saved = AppSettings(onboarding_completed=True, game_window_title="Saved")
         controller = Mock(settings=saved, is_ready=False, is_live_running=False)
         tray = TrayApplication(
@@ -11750,7 +12209,7 @@ class TrayApplicationTest(unittest.TestCase):
         pool = ManualThreadPool()
         tray.onboarding_test_runner.thread_pool = pool
         tray.configuration_runner.thread_pool = pool
-        tray.run_onboarding()
+        tray.run_onboarding(start_live=start_live)
         wizard = tray.onboarding_wizard
         wizard.draft_settings = (
             saved
@@ -11790,6 +12249,38 @@ class TrayApplicationTest(unittest.TestCase):
         pool.run_next()
         self.application.processEvents()
         self.assertFalse(wizard.test_page.running)
+
+    def test_explicit_start_intent_runs_once_only_after_setup_is_saved(self):
+        for outcome in ("success", "cancel", "save-error"):
+            with self.subTest(outcome=outcome):
+                _saved, _controller, tray, pool, wizard = self._onboarding_preview_case(
+                    outcome, start_live=True
+                )
+                self._complete_onboarding_preview(wizard, pool)
+                self.assertEqual(
+                    wizard.finish_button.text(), "Save and start narration"
+                )
+                with (
+                    patch.object(tray, "prepare_reading") as prepare,
+                    patch.object(
+                        tray,
+                        "_save_settings_candidate",
+                        side_effect=OSError("disk full")
+                        if outcome == "save-error"
+                        else None,
+                    ),
+                ):
+                    if outcome == "cancel":
+                        wizard.reject()
+                    else:
+                        wizard.accept()
+                    wizard.finished.emit(QDialog.DialogCode.Accepted)
+                if outcome == "success":
+                    prepare.assert_called_once_with(
+                        start_live=True, reading_settings=None
+                    )
+                else:
+                    prepare.assert_not_called()
 
     def test_cancelled_or_unsaved_onboarding_restores_its_applied_preview(self):
         for outcome in (

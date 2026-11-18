@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from vntts.game_pack import GamePackImport
 
 settings_schema_version = 33
-main_sections = ("stories", "voices", "reading")
 content_path_setting_names = (
     "game_pack",
     "story_index",
@@ -89,6 +88,17 @@ def user_preferences(settings: "AppSettings") -> "AppSettings":
         else None,
         generated_audio_manifest=settings.generated_audio_manifest
         if values["generated_audio_manifest"] is not None
+        else None,
+    )
+
+
+def capture_target_identity(
+    capture_mode: str, game_window_title: str | None
+) -> tuple[str, str | None]:
+    return (
+        capture_mode,
+        (game_window_title or "").strip().casefold()
+        if capture_mode == "window"
         else None,
     )
 
@@ -180,7 +190,6 @@ class AppSettingsChanges(TypedDict, total=False):
     launch_at_login: bool
     keep_running_on_close: bool
     compact_controls: bool
-    last_main_section: str
     game_pack: str | None
     voice_manifest: str | None
     story_index: str | None
@@ -288,7 +297,6 @@ class AppSettings:
     launch_at_login: bool = False
     keep_running_on_close: bool = False
     compact_controls: bool = False
-    last_main_section: str = "stories"
     game_pack: str | None = field(
         default=None,
         metadata={"support_sensitivity": "path"},
@@ -481,12 +489,6 @@ class AppSettings:
             parsed["capture_mode"] = capture_mode
         else:
             report("Invalid 'capture_mode' setting; using its default")
-
-        last_main_section = values.get("last_main_section", defaults.last_main_section)
-        if last_main_section in main_sections:
-            parsed["last_main_section"] = last_main_section
-        else:
-            report("Invalid 'last_main_section' setting; using Stories")
 
         for name, choices in (
             ("auto_advance_key", {"space", "enter", "right", "down"}),

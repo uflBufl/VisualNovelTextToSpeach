@@ -179,6 +179,31 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                         self.assertTrue(probe_cancel())
                         target.close.assert_called_once_with()
 
+    def test_window_capture_timeout_explains_how_to_retry_same_window(self):
+        from vntts.native_capture import CaptureError
+
+        diagnostics = OnboardingDiagnostics()
+        for failure in (
+            CaptureError("Response timed out", code="timeout"),
+            CaptureError("Native capture deadline expired", code="frame_timeout"),
+            CaptureError("No frame before deadline", code="capture_timeout"),
+            TimeoutError(),
+        ):
+            with self.subTest(failure=failure):
+                self.window_target.return_value.capture_native.side_effect = failure
+                result = diagnostics._check_capture_source(
+                    AppSettings(capture_mode="window", game_window_title="Game")
+                )
+                self.assertEqual(result.remediation, "retry-capture")
+                self.assertIn("screen is unlocked", result.message)
+                self.assertIn("game window is open", result.message)
+                self.assertIn("same window", result.message)
+        self.display_target.return_value.capture_native.side_effect = CaptureError(
+            "Response timed out", code="timeout"
+        )
+        result = diagnostics._check_capture_source(AppSettings(capture_mode="screen"))
+        self.assertEqual(result.remediation, "settings")
+
     def test_hotkey_readiness_reports_runtime_platform_availability(self):
         diagnostics = OnboardingDiagnostics()
         for platform, status in (("darwin", "warning"), ("win32", "ok")):
@@ -319,6 +344,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
                 speech_backend="coqui-xtts",
                 tts_model="xtts_v2",
                 voice_manifest=str(manifest),
+                discover_text_layouts=False,
             )
 
             region_file = root / "regions.json"
@@ -526,6 +552,31 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
 class OnboardingWizardTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(pocket_model_readiness(False))
+
+    def test_reading_setup_names_start_only_when_explicitly_requested(self):
+        for start_live in (False, True):
+            with self.subTest(start_live=start_live):
+                wizard = OnboardingWizard(
+                    AppSettings(), reading_setup=True, start_live=start_live
+                )
+                self.addCleanup(wizard.deleteLater)
+                wizard.test_page.set_result(True, "Recognized dialogue.")
+                if start_live:
+                    self.assertEqual(
+                        wizard.finish_button.text(), "Save and start narration"
+                    )
+                    self.assertIn(
+                        "Save and start narration", wizard.test_page.status.text()
+                    )
+                    self.assertNotIn(
+                        "then choose Start reading", wizard.test_page.status.text()
+                    )
+                else:
+                    self.assertEqual(wizard.finish_button.text(), "Save setup")
+                    self.assertIn(
+                        "Save setup to return to Reading",
+                        wizard.test_page.status.text(),
+                    )
 
     def test_manual_managed_content_paths_are_rejected_without_blocking_existing_paths(
         self,
@@ -921,6 +972,39 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.live_hotkey.isEnabled())
         wizard.deleteLater()
 
+    def test_reading_dialogue_selection_runs_first_line_without_story_area(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        self.addCleanup(wizard.deleteLater)
+        wizard.show_page(wizard.pages.index(wizard.calibration_page))
+        requests = []
+        wizard.test_requested.connect(requests.append)
+        self.assertFalse(wizard.next_button.isEnabled())
+        region = DialogRegion(0.1, 0.7, 0.8, 0.2)
+
+        wizard.calibration_page.finish_calibration(region)
+
+        self.assertTrue(wizard.calibration_page.isComplete())
+        self.assertIsNone(wizard.calibration_page.story_region)
+        self.assertIn("Optional", wizard.calibration_page.story_status.text())
+        self.assertEqual(wizard.next_button.text(), "Read this line")
+        self.assertTrue(wizard.next_button.isDefault())
+        wizard.next_button.click()
+        self.assertIs(wizard.pages[wizard.current_page_index], wizard.test_page)
+        self.assertEqual(requests, [wizard.draft_settings])
+        self.assertTrue(wizard.test_page.running)
+        self.assertFalse(wizard.finish_button.isEnabled())
+        wizard.reject()
+        self.assertTrue(wizard.test_page.cancelling)
+        wizard.test_page.set_result(True, "Late preview result")
+        self.assertFalse(wizard.test_page.successful)
+        self.assertFalse(wizard.finish_button.isEnabled())
+        wizard.test_page.button.click()
+        self.assertEqual(requests, [wizard.draft_settings, wizard.draft_settings])
+        wizard.test_page.set_result(True, "Read the dialogue")
+        wizard.accept()
+        self.assertTrue(wizard.settings().onboarding_completed)
+        self.assertEqual(wizard.capture_regions(), (region, None))
+
     def test_finish_requires_successful_end_to_end_test(self):
         wizard = OnboardingWizard(AppSettings(discover_text_layouts=False))
 
@@ -1068,7 +1152,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(wizard.test_page.successful)
         self.assertFalse(wizard.finish_button.isEnabled())
         self.assertEqual(wizard.test_page.status.text(), "The test has not run.")
-        self.assertEqual(wizard.test_page.button.text(), "Read the visible line")
+        self.assertEqual(wizard.test_page.button.text(), "Read this line")
         wizard.test_page.set_result(True, "Spoke from changed area")
         wizard.previous_page()
         wizard.calibration_page.finish_calibration(changed)
@@ -1194,15 +1278,13 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIs(wizard.pages[wizard.current_page_index], wizard.calibration_page)
         self.assertTrue(wizard.calibration_page.button.isDefault())
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
-        self.assertFalse(wizard.next_button.isEnabled())
-        self.assertTrue(wizard.calibration_page.story_button.isDefault())
-        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.8, 0.8))
+        self.assertTrue(wizard.next_button.isEnabled())
         self.assertTrue(wizard.next_button.isDefault())
-        wizard.next_page()
+        self.assertEqual(wizard.next_button.text(), "Read this line")
         requests = []
         wizard.test_requested.connect(requests.append)
-        self.assertTrue(wizard.test_page.button.isDefault())
         QTest.keyClick(wizard, Qt.Key.Key_Return)
+        self.assertIs(wizard.pages[wizard.current_page_index], wizard.test_page)
         self.assertEqual(len(requests), 1)
         self.assertFalse(wizard.test_page.button.isDefault())
         QTest.keyClick(wizard, Qt.Key.Key_Return)
@@ -1611,6 +1693,61 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(wizard.current_page_index, 1)
         self.assertTrue(wizard.configuration_page.advanced_toggle.isChecked())
         wizard.deleteLater()
+
+    def test_capture_retry_preserves_checks_and_selected_window(self):
+        for changed_settings in (False, True):
+            with self.subTest(changed_settings=changed_settings):
+                diagnostics = OnboardingDiagnostics()
+                original = (
+                    DiagnosticResult("Capture component", "ok", "Ready"),
+                    DiagnosticResult(
+                        "Capture source", "error", "Unlock screen", "retry-capture"
+                    ),
+                    DiagnosticResult(
+                        "Audio output", "error", "Connect speakers", "external-audio"
+                    ),
+                )
+                diagnostics.prepare_and_run = Mock(return_value=original)
+                diagnostics._check_capture_source = Mock(
+                    return_value=DiagnosticResult("Capture source", "ok", "Game")
+                )
+                wizard = OnboardingWizard(
+                    AppSettings(game_window_title="Game"),
+                    diagnostics=diagnostics,
+                    reading_setup=True,
+                )
+                self.addCleanup(wizard.deleteLater)
+                page = wizard.diagnostics_page
+                pool = ManualThreadPool()
+                page.runner.thread_pool = pool
+                wizard.show_page(1)
+                pool.run_next()
+                self.application.processEvents()
+                self.assertEqual(page.remediation_button.text(), "Retry capture")
+                if changed_settings:
+                    wizard.draft_settings = wizard.draft_settings.updated(
+                        game_window_title="Other"
+                    )
+                page.remediation_button.click()
+                self.assertEqual(wizard.current_page_index, 1)
+                self.assertFalse(page.isComplete())
+                self.assertTrue(page.remediation_button.isHidden())
+                pool.run_next()
+                self.application.processEvents()
+                if changed_settings:
+                    self.assertEqual(diagnostics.prepare_and_run.call_count, 2)
+                    diagnostics._check_capture_source.assert_not_called()
+                else:
+                    diagnostics.prepare_and_run.assert_called_once()
+                    self.assertEqual(
+                        diagnostics._check_capture_source.call_args.args[
+                            0
+                        ].game_window_title,
+                        "Game",
+                    )
+                    self.assertEqual(page.diagnostic_results[1].status, "ok")
+                    self.assertIs(page.diagnostic_results[2], original[2])
+                    self.assertFalse(page.isComplete())
 
     def test_runtime_preparation_has_progress_retry_and_cancellable_stale_results(self):
 

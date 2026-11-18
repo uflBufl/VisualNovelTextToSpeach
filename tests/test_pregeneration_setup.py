@@ -3851,7 +3851,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_story_index(root / "content"))
-            settings = AppSettings(last_main_section="stories")
+            settings = AppSettings()
             dialog = OfflineAudioPreparationDialog(
                 settings,
                 discovery=lambda: ContentDiscovery((content,)),
@@ -3872,7 +3872,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.selection_panel.hide()
             dialog.apply_narrator_settings(
                 settings.updated(
-                    last_main_section="voices",
                     onboarding_completed=True,
                     capture_mode="window",
                     game_window_title="Game",
@@ -3948,7 +3947,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             original = AppSettings(
                 game_pack=str(root / "active.json"),
                 audio_source_policy="prefer-game-audio",
-                last_main_section="stories",
             )
             preparation = OfflineAudioPreparationDialog(
                 original,
@@ -4011,7 +4009,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 )
                 preparation._voice_plan = plan
                 preparation._awaiting_voice_confirmation = True
-                tray.settings = preparation.settings.updated(last_main_section="voices")
+                tray.dashboard.show_voices()
                 tray._refresh_preparation_settings()
                 self.assertIs(preparation.voice_plan(), plan)
                 self.assertTrue(preparation._awaiting_voice_confirmation)

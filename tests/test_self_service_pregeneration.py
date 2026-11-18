@@ -1675,7 +1675,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(
                 tray._runtime_settings().game_pack, str(dialog.pack_result().manifest)
             )
-            self.assertTrue(saved_settings.is_file())
+            # Activating a pack persists playback separately from user preferences.
+            self.assertFalse(saved_settings.exists())
             self.assertTrue(playback.path.is_file())
             self.assertEqual("Prepared audio is active.", tray.dashboard.status.text())
             self.assertTrue(tray.dashboard.isVisible())

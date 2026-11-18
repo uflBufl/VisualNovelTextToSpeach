@@ -703,7 +703,7 @@ class LiveDialogReader:
         with self.state_lock:
             return self.capture_future is not None and not self.capture_future.done()
 
-    def runtime_control_snapshot(self) -> dict[str, bool]:
+    def runtime_control_snapshot(self) -> dict[str, bool | str]:
         """Return the lock-consistent playback facts used by all UI transports."""
         with self.state_lock:
             active_futures = any(not future.done() for future in self.speech_futures)
@@ -717,6 +717,9 @@ class LiveDialogReader:
             return {
                 "paused": self.paused,
                 "speaking": self.current_chunk is not None,
+                "speaking_character": self.current_chunk.character
+                if self.current_chunk
+                else "",
                 "queued": queued,
                 "replayable": replayable,
             }

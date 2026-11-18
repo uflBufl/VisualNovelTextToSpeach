@@ -14,6 +14,7 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.player_session import PlayerSessionOwner
 from vntts.settings import (
     AppSettings,
+    capture_target_identity,
     is_live_sequence_audio_mode,
     restart_required_setting_changes,
     user_preferences,
@@ -103,6 +104,7 @@ class ConfigurationApplyMixin:
         sequence_expected_action: QAction
         _controller_busy: bool
         _controller_ready: bool
+        _capture_setup_pending: bool
         _shutting_down: bool
         live_stop_runner: LatestTaskRunner
 
@@ -362,6 +364,22 @@ class ConfigurationApplyMixin:
             )
             return
         original_settings = self.settings
+        capture_changed = capture_target_identity(
+            updated_settings.capture_mode, updated_settings.game_window_title
+        ) != capture_target_identity(
+            original_settings.capture_mode, original_settings.game_window_title
+        )
+        if capture_changed:
+            updated_settings = updated_settings.updated(
+                onboarding_completed=False, active_profile_id=None
+            )
+        elif (
+            updated_settings.capture_mode == "window"
+            and updated_settings.game_window_title != original_settings.game_window_title
+        ):
+            updated_settings = updated_settings.updated(
+                game_window_title=original_settings.game_window_title
+            )
         path = self._save_settings_with_login_rollback(
             updated_settings,
             original_settings,
@@ -374,6 +392,8 @@ class ConfigurationApplyMixin:
             updated_settings,
         )
         self.settings = updated_settings
+        if capture_changed:
+            self._capture_setup_pending = True
         runtime_settings = self._runtime_settings()
         self.dashboard.set_configuration(runtime_settings)
         self.sequence_resync_action.setVisible(

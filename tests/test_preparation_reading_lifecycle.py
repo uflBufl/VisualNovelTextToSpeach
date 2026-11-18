@@ -120,7 +120,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         )
 
     def _tray(self):
-        saved = AppSettings(onboarding_completed=True, last_main_section="reading")
+        saved = AppSettings(onboarding_completed=True)
         controller = Mock(
             settings=saved,
             is_ready=True,
@@ -172,7 +172,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         self.assertFalse(isValid(panel))
         self.assertIsNone(tray.pregeneration_dialog)
 
-    def _setup_during_generation(self):
+    def _setup_during_generation(self, *, start_live=True):
         tray, controller, panel, saved = self._tray()
         saved = saved.updated(
             onboarding_completed=False,
@@ -189,7 +189,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
         controller.test_current_dialog.return_value = ("Narrator", "Ready dialogue.")
         controller.last_audio_source_description = "prepared"
         tray.dashboard.show_stories()
-        tray._read_prepared_story(True)
+        tray.prepare_reading(start_live=start_live, require_preparation=True)
         wizard = tray.onboarding_wizard
         self.assertIsNotNone(wizard)
         self.assertTrue(wizard.isVisible())
@@ -216,11 +216,17 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
     def test_setup_preserves_progress_source_without_saving_playback_overrides(self):
         tray, controller, panel, saved, wizard, pool = self._setup_during_generation()
         tray.initial_start_runner.thread_pool = pool
-        with patch.object(tray, "schedule_hotkeys"):
+        with (
+            patch.object(tray, "schedule_hotkeys"),
+            patch.object(
+                tray, "_start_live_with_available_scope", return_value=True
+            ) as start,
+        ):
             wizard.accept()
             self.application.processEvents()
             pool.run_next()
             self.application.processEvents()
+        start.assert_called_once_with()
         self.assertIsNone(tray.onboarding_wizard)
         self.assertTrue(panel.generating)
         self.assertTrue(panel.has_pending_work())
@@ -238,16 +244,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
             tray._runtime_settings().generated_audio_manifest,
             panel.current_settings.generated_audio_manifest,
         )
-        self.assertIn("Select Read", panel.reading_status.text())
         controller.toggle_live.assert_not_called()
-        with (
-            patch.object(tray, "schedule_hotkeys"),
-            patch.object(
-                tray, "_start_live_with_available_scope", return_value=True
-            ) as start,
-        ):
-            tray.toggle_live()
-        start.assert_called_once_with()
         self.assertEqual(
             controller.settings.generated_audio_manifest,
             panel.current_settings.generated_audio_manifest,
@@ -279,6 +276,23 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                 self.assertTrue(panel.generating)
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
+
+    def test_prepared_setup_without_start_intent_only_saves(self):
+        tray, controller, panel, _saved, wizard, pool = self._setup_during_generation(
+            start_live=False
+        )
+        with patch.object(tray, "prepare_reading") as prepare:
+            wizard.accept()
+            self.application.processEvents()
+        prepare.assert_not_called()
+        controller.start.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertEqual(pool.tasks, [])
+        self.assertTrue(panel.generating)
+        self.assertEqual(
+            tray._runtime_settings().generated_audio_manifest,
+            panel.current_settings.generated_audio_manifest,
+        )
 
     def test_setup_tracks_finished_story_order_and_keeps_the_same_generation_source(
         self,

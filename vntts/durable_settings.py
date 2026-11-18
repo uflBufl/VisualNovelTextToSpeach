@@ -23,6 +23,7 @@ from vntts.ocr import (
 from vntts.profiles import GameProfileStore, profiles_schema_version
 from vntts.settings import (
     AppSettings,
+    capture_target_identity,
     load_app_settings,
     preference_values,
     settings_schema_version,
@@ -149,6 +150,8 @@ def _capture_write(
 
 
 class _OnboardingWizard(Protocol):
+    start_live_after_save: bool
+
     @property
     def test_page(self) -> _OnboardingTestPage: ...
 
@@ -238,6 +241,7 @@ class DurableSettingsMixin:
                     if current[name] != saved_value and values[name] == current[name]:
                         values[name] = saved_value
             values = preference_values(values)
+            saved_settings = AppSettings.from_mapping(values)
             previous = self._last_saved_settings or self.settings
             try:
                 settings_before, settings_revision = _capture_snapshot(
@@ -253,9 +257,10 @@ class DurableSettingsMixin:
                 )
             rollback: list[_CaptureRollback] = []
             try:
-                if (values["capture_mode"], values["game_window_title"]) != (
-                    previous.capture_mode,
-                    previous.game_window_title,
+                if capture_target_identity(
+                    saved_settings.capture_mode, saved_settings.game_window_title
+                ) != capture_target_identity(
+                    previous.capture_mode, previous.game_window_title
                 ):
                     _capture_write(
                         get_dialog_region_file(),
@@ -289,7 +294,7 @@ class DurableSettingsMixin:
             except OSError, ValueError:
                 self._rollback_setup_writes(rollback, settings_before)
                 raise
-            self._last_saved_settings = AppSettings.from_mapping(values)
+            self._last_saved_settings = saved_settings
             return self._settings_path
 
     def _rollback_setup_writes(
@@ -439,9 +444,7 @@ class DurableSettingsMixin:
             self._restore_onboarding_runtime()
             return
 
-        candidate = user_preferences(
-            wizard.settings().updated(last_main_section=self.settings.last_main_section)
-        )
+        candidate = user_preferences(wizard.settings())
         try:
             dialog_region, story_region = wizard.capture_regions()
             path = (
@@ -481,11 +484,15 @@ class DurableSettingsMixin:
         self.dashboard.show_reading()
         self.dashboard.live_button.setFocus()
         self._set_reading_status(
-            "Reading setup saved. Click Start reading when ready. "
+            "Reading setup saved. Starting narration..."
+            if start_live
+            else "Reading setup saved. Click Start reading when ready. "
             f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
-        if reading_settings is not None or start_live:
+        if start_live or (
+            reading_settings is not None and wizard.start_live_after_save
+        ):
             self.prepare_reading(
                 reading_settings=reading_settings, start_live=start_live
             )
@@ -514,17 +521,6 @@ class DurableSettingsMixin:
             self._save_settings_candidate(candidate)
         except OSError as error:
             self.show_error(f"Unable to save compact-controls preference: {error}")
-            return
-        self.settings = candidate
-
-    def _save_main_section(self, section: str) -> None:
-        if self.settings.last_main_section == section:
-            return
-        candidate = self.settings.updated(last_main_section=section)
-        try:
-            self._save_settings_candidate(candidate)
-        except OSError as error:
-            self.show_error(f"Unable to save the selected main section: {error}")
             return
         self.settings = candidate
 

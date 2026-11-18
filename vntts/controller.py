@@ -179,7 +179,9 @@ from vntts.voices import (
 from vntts.window_capture import (
     DisplayCaptureTarget,
     WindowCaptureTarget,
+    WindowCaptureUnavailableError,
     WindowGeometry,
+    WindowInfo,
 )
 
 
@@ -642,6 +644,8 @@ class AppController:
         self.automatic_prepared_reading = False
         self._prepared_audio_checked_at = 0.0
         self.capture_target_factory = capture_target_factory
+        self.selected_game_window: WindowInfo | None = None
+        self._selected_capture_target: WindowCaptureTarget | None = None
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
         self.moss_backend_factory = moss_backend_factory
@@ -795,7 +799,7 @@ class AppController:
         schedule = self.schedule_dialog_read
         return schedule is not None and schedule.is_running is True
 
-    def runtime_control_snapshot(self) -> dict[str, bool]:
+    def runtime_control_snapshot(self) -> dict[str, bool | str]:
         reader = self.live_reader
         snapshot = reader.runtime_control_snapshot() if reader is not None else {}
         if not isinstance(snapshot, dict):
@@ -1436,8 +1440,40 @@ class AppController:
 
     def _create_capture_target(self) -> _CaptureTarget | None:
         if self.settings.capture_mode != "window":
+            self.selected_game_window = None
+            self._selected_capture_target = None
             return DisplayCaptureTarget()
+        selected = self.selected_game_window
+        if selected is not None:
+            if (
+                selected.title.strip().casefold()
+                == (self.settings.game_window_title or "").strip().casefold()
+            ):
+                return self.window_capture_target(self.settings.game_window_title)
+            self.selected_game_window = None
+            self._selected_capture_target = None
         return self.capture_target_factory(self.settings.game_window_title)
+
+    def window_capture_target(self, title: str | None) -> WindowCaptureTarget:
+        selected = self.selected_game_window
+        if (
+            selected is None
+            or selected.title.strip().casefold() != (title or "").strip().casefold()
+        ):
+            return WindowCaptureTarget(title)
+        if self._selected_capture_target is None:
+            target = self.capture_target_factory(title)
+            if not isinstance(target, WindowCaptureTarget):
+                raise WindowCaptureUnavailableError(
+                    "This capture backend cannot bind the selected game window"
+                )
+            target.bind_window(selected)
+            self._selected_capture_target = target
+        return self._selected_capture_target
+
+    def select_game_window(self, window: WindowInfo) -> None:
+        self.selected_game_window = window
+        self._selected_capture_target = None
 
     def _close_capture_source(self) -> None:
         if isinstance(self.capture_target, DisplayCaptureTarget):

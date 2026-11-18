@@ -2199,6 +2199,7 @@ class LiveDialogReaderTest(unittest.TestCase):
             {
                 "paused": True,
                 "speaking": True,
+                "speaking_character": "Alice",
                 "queued": True,
                 "replayable": True,
             },
