@@ -315,13 +315,6 @@ Recheck archived findings against current main before implementation.
 
 ## Reading setup blockers found during persistent-OCR preflight
 
-- [ ] Verify Stories-page scrolling and action reachability in compact-height windows.
-      At860x560 the story list and preparation actions extend below the visible
-      scroll area; MCP wheel events on both the scroll area and viewport leave its
-      scrollbar at0 despite maximum285. Determine whether this is an app wheel/
-      layout issue or MCP event routing before changing behavior. Gate: a user and
-      MCP can reach story selection and Prepare without resizing or targeting
-      clipped widgets; preserve ordinary keyboard navigation.
 - [ ] Validate calibration visibility with the actual game. Exercise tray
       and wizard with a game parked outside the active screens, then show the
       same game and retry without reselecting it. Gate: reject partial/off-screen

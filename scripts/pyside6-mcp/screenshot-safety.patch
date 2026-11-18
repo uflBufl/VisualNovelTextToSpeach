@@ -37,7 +37,7 @@ index e8f0329..315e755 100644
  ]
  
 diff --git a/pyside6_mcp/bridge.py b/pyside6_mcp/bridge.py
-index 99d7503..0762a2e 100644
+index 99d7503..5e15db0 100644
 --- a/pyside6_mcp/bridge.py
 +++ b/pyside6_mcp/bridge.py
 @@ -11,20 +11,27 @@ import logging
@@ -56,9 +56,10 @@ index 99d7503..0762a2e 100644
  
 -from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QPointF, Qt
 -from PySide6.QtGui import QWheelEvent
+-from PySide6.QtWidgets import QApplication, QWidget
 +from PySide6.QtCore import QBuffer, QEvent, QIODevice, QMetaObject, QObject, QPoint, QPointF, Qt
 +from PySide6.QtGui import QInputMethodEvent, QKeySequence, QWheelEvent
- from PySide6.QtWidgets import QApplication, QWidget
++from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QWidget
  
  logger = logging.getLogger("pyside6_mcp.bridge")
  
@@ -238,12 +239,12 @@ index 99d7503..0762a2e 100644
 +        "scope": None,
 +        "status": "failure",
 +    }
++
  
 -    buf = QBuffer()
 -    buf.open(QIODevice.OpenMode.ReadWrite)
 -    pixmap.save(buf, "PNG")
 -    return base64.b64encode(bytes(buf.data())).decode()
-+
 +def _capture_failure(capture: dict, code: str, message: str) -> dict:
 +    capture["status"] = "failure"
 +    capture["error_code"] = code
@@ -378,7 +379,43 @@ index 99d7503..0762a2e 100644
      if w is None:
          app = QApplication.instance()
          w = next((ww for ww in app.topLevelWidgets() if ww.isVisible()), None)
-@@ -583,21 +726,13 @@ def _qt_app_info() -> dict:
+@@ -438,18 +581,24 @@ def _qt_scroll(body: dict) -> dict:
+ 
+     dx = int(body.get("dx", 0))
+     dy = int(body.get("dy", 0))
+-    pos = QPoint(w.width() // 2, w.height() // 2)
++    if isinstance(w, QAbstractScrollArea):
++        w = w.viewport()
++    pos = w.rect().center()
+     global_pos = w.mapToGlobal(pos)
+-    event = QWheelEvent(
+-        QPointF(pos), QPointF(global_pos),
+-        QPoint(dx, dy),
+-        QPoint(dx * 120, dy * 120),
+-        Qt.MouseButton.NoButton,
+-        Qt.KeyboardModifier.NoModifier,
+-        Qt.ScrollPhase.NoScrollPhase,
+-        False,
+-    )
+-    QApplication.sendEvent(w, event)
++    if not wid or w.isWindow():
++        w = w.childAt(pos) or w
++    # A synthetic wheel sent directly to a widget does not bubble like native input.
++    while w is not None:
++        event = QWheelEvent(
++            QPointF(w.mapFromGlobal(global_pos)), QPointF(global_pos),
++            QPoint(), QPoint(-dx * 120, -dy * 120),
++            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
++            Qt.ScrollPhase.NoScrollPhase, False,
++        )
++        QApplication.sendEvent(w, event)
++        if event.isAccepted() or w.isWindow():
++            break
++        w = w.parentWidget()
+     return {"ok": True}
+ 
+ 
+@@ -583,21 +732,13 @@ def _qt_app_info() -> dict:
      }
  
  
@@ -996,16 +1033,16 @@ index 9f3d9d8..63aebef 100644
      finally:
 diff --git a/tests/test_interactions.py b/tests/test_interactions.py
 new file mode 100644
-index 0000000..6fcae26
+index 0000000..87edf87
 --- /dev/null
 +++ b/tests/test_interactions.py
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,278 @@
 +"""Qt ownership and input regressions for the developer bridge."""
 +import gc
 +from unittest.mock import Mock
 +
 +import pytest
-+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPlainTextEdit
++from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
 +from shiboken6 import delete, getCppPointer
 +
 +from pyside6_mcp import bridge, server
@@ -1138,6 +1175,28 @@ index 0000000..6fcae26
 +    editor = QLineEdit()
 +    editor.show()
 +    assert "error" in bridge._qt_scroll({"widget_id": "stale", "dy": 1})
++
++
++@pytest.mark.parametrize("target", ["area", "viewport", "content", "window", "implicit"])
++def test_scroll_moves_in_requested_direction_and_returns_to_start(app, target):
++    window = QWidget()
++    layout = QVBoxLayout(window)
++    area = QScrollArea()
++    layout.addWidget(area)
++    content = QWidget()
++    content.setFixedSize(1000, 1000)
++    area.setWidget(content)
++    window.resize(320, 240)
++    window.show()
++    app.processEvents()
++    widgets = {"area": area, "viewport": area.viewport(), "content": content, "window": window}
++    body = {} if target == "implicit" else {"widget_id": bridge._widget_id(widgets[target])}
++    for axis, bar in [("dy", area.verticalScrollBar()), ("dx", area.horizontalScrollBar())]:
++        assert bar.value() == 0 and bar.maximum() > 0
++        assert bridge._qt_scroll({**body, axis: 1}) == {"ok": True}
++        assert bar.value() > 0
++        assert bridge._qt_scroll({**body, axis: -1}) == {"ok": True}
++        assert bar.value() == 0
 +
 +
 +def test_click_dispatches_once_and_preserves_bridge_response(monkeypatch):
