@@ -319,7 +319,6 @@ Recheck archived findings against current main before implementation.
       desktop or global-audio fallback. Investigate ScreenCaptureKit -3805 lifetime
       interference only if serialized ownership reproduces it. See R12 for the
       remaining source/output discontinuities; positive capture is not gap removal.
-- [ ] Check that playback recovers after the default output device changes.
 
 ## Reading setup blockers found during persistent-OCR preflight
 
