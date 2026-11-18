@@ -685,35 +685,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
         self.assertEqual(panel.a_play.property("playbackState"), "idle")
         self.assertIn("owner unavailable", panel.status.toPlainText())
 
-    def test_reference_selection_then_play_uses_ready_audio_without_saving(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            plan, group = with_second_candidate(plan, group)
-            service, player, decisions = Mock(), Mock(), Mock()
-            service.supports_prefetch = True
-            service.peek.return_value = generated_preview(root)
-            panel = VoiceAuditionPanel(
-                decisions, preview_service=service, player=player
-            )
-            self.addCleanup(panel.deleteLater)
-            self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            select_reference(panel, 1)
-            player.play_bytes.assert_not_called()
-            panel.a_play.click()
-            player.play_bytes.assert_called_once()
-            select_reference(panel, 0)
-            self.assertEqual(player.play_bytes.call_count, 1)
-            panel.a_play.click()
-            self.assertEqual(player.play_bytes.call_count, 2)
-            panel.stop_playback()
-            self.assertEqual(panel.a_play.text(), "Preview")
-            service.generate.assert_not_called()
-            decisions.remember_many.assert_not_called()
-            panel._set_decision_actions(False)
-            self.assertFalse(panel.a_play.isEnabled())
-
     def test_preview_actions_fit_compact_width_with_larger_font(self):
         with TemporaryDirectory() as directory:
             plan, group, _manifest = ambiguous_fixture(Path(directory))
@@ -734,31 +705,63 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel.game_phrase_button.geometry().left(),
             )
 
-    def test_browsing_during_render_cancels_request_without_stale_playback(self):
+    def test_switching_reference_cancels_render_and_plays_only_the_selected_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
-            service, player, pool = Mock(), Mock(), ManualThreadPool()
-            service.generate.return_value = generated_preview(root)
+            first = generated_preview(root)
+            second_path = root / "second.wav"
+            second_path.write_bytes(clean_wav_bytes(amplitude=0.2))
+            second = Mock(path=second_path, audio_sha256=sha256_file(second_path))
+            service = Mock(supports_prefetch=True)
+            service.peek.return_value = None
+            service.generate.return_value = first
+            player, decisions, pool = Mock(), Mock(), ManualThreadPool()
             panel = VoiceAuditionPanel(
-                Mock(), preview_service=service, player=player, thread_pool=pool
+                decisions, preview_service=service, player=player, thread_pool=pool
             )
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            panel.play_a()
-            request = panel._preview_request
+            panel.start(plan, group_id=group.group_id)
+            panel.a_play.click()
+            cancellation = panel._preview_request.cancellation
             self.assertTrue(panel.reference_table.isEnabled())
             select_reference(panel, 1)
-            self.assertTrue(request.cancellation.is_set())
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            self.assertIs(
-                service.generate.call_args.kwargs["cancel_event"], request.cancellation
-            )
+            self.assertTrue(cancellation.is_set())
+            while pool.tasks:
+                self.finish_task(pool.tasks.pop(0))
             player.play_bytes.assert_not_called()
             self.assertFalse(panel.a_use.isEnabled())
+
+            ready = {
+                group.candidates[0].source_id: first,
+                group.candidates[1].source_id: second,
+            }
+            service.peek.side_effect = lambda _plan, _group, source, *, text: ready.get(
+                source
+            )
+            for index, recording in ((1, second), (0, first)):
+                select_reference(panel, index)
+                player.play_bytes.assert_not_called()
+                panel.a_play.click()
+                player.play_bytes.assert_called_once_with(
+                    recording.path.read_bytes(), source=str(recording.path)
+                )
+                self.assertTrue(panel.a_use.isEnabled())
+                player.play_bytes.reset_mock()
+            panel.stop_playback()
+            self.assertEqual(panel.a_play.text(), "Preview")
+            service.generate.assert_called_once_with(
+                plan,
+                group,
+                group.candidates[0].source_id,
+                text=group.sample_text,
+                cancel_event=cancellation,
+            )
+            decisions.remember_many.assert_not_called()
+            panel._set_decision_actions(False)
+            self.assertFalse(panel.a_play.isEnabled())
 
     def test_prefetched_sample_is_playable_during_render_but_needs_audition(self):
         with TemporaryDirectory() as directory:
