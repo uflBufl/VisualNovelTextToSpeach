@@ -506,27 +506,6 @@ class CharacterVoicePanelTest(unittest.TestCase):
             audio + audio,
         )
 
-    def test_failed_custom_preview_keeps_custom_text_for_retry(self):
-        group = replace(self.group, alternate_sample_text="Another story phrase.")
-        plan = replace(self.plan, groups=(group,))
-        self.service.generate.side_effect = RuntimeError("model unavailable")
-        self.panel.start(plan, group_id=group.group_id)
-        self.assertGreater(len(self.panel._game_phrases), 1)
-        text = "Only this custom phrase should be spoken."
-        self.panel.preview_text.setPlainText(text)
-        self.panel.a_play.click()
-        self.run_tasks()
-        self.assertIn("Preview failed", self.panel.status.toPlainText())
-        self.assertTrue(self.panel.preview_text.isEnabled())
-        self.assertEqual(self.panel.preview_text.toPlainText(), text)
-        self.assertTrue(self.panel.a_play.isEnabled())
-        self.assertEqual(self.panel._sample_text, text)
-        self.panel.a_play.click()
-        self.run_tasks()
-        self.assertEqual(self.service.generate.call_count, 2)
-        self.assertEqual(self.service.generate.call_args.kwargs["text"], text)
-        self.decisions.remember_many.assert_not_called()
-
     def test_unicode_input_preserves_full_text_and_cursor(self):
         self.panel.start(self.plan, group_id=self.group.group_id)
         self.panel.preview_text.selectAll()

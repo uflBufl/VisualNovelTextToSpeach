@@ -2140,54 +2140,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn("failed", panel.status.toPlainText())
             decisions.remember_many.assert_not_called()
 
-    def test_failed_narrator_can_be_retried_and_explicitly_accepted(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            narrator = replace(
-                group.candidates[0], source_id="preset:alba", reference_sha256s=()
-            )
-            group = replace(group, narrator_candidate=narrator)
-            plan = replace(plan, groups=(group,))
-            previews = Mock()
-            previews.generate.side_effect = [
-                RuntimeError("narrator preview failed"),
-                generated_preview(root),
-            ]
-            decisions = Mock()
-            pool = ManualThreadPool()
-            panel = VoiceAuditionPanel(
-                decisions, preview_service=previews, thread_pool=pool, player=Mock()
-            )
-            self.addCleanup(panel.deleteLater)
-            self.addCleanup(panel.shutdown)
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            select_reference(panel, 1)
-            self.assertEqual(panel.a_use.toolTip(), "Play Preview to enable Save.")
-            sample_text = panel.preview_text.toPlainText()
-            panel.preview_text.clear()
-            self.assertFalse(panel.a_original.isEnabled())
-            self.assertFalse(panel.a_play.isEnabled())
-            self.assertEqual(panel.a_use.toolTip(), "")
-            panel.preview_text.setPlainText(sample_text)
-            self.assertEqual(panel.a_use.toolTip(), "Play Preview to enable Save.")
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            self.assertFalse(panel.a_use.isEnabled())
-            decisions.remember_many.assert_not_called()
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            self.assertTrue(panel.a_use.isEnabled())
-            self.assertEqual(panel.a_use.toolTip(), "")
-            panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            decisions.remember_many.assert_called_once_with(
-                ((group, default_voice_choice_id),)
-            )
-
     def test_save_failure_keeps_the_same_decision_available(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2322,62 +2274,83 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 ((group, group.candidates[1].source_id),)
             )
 
-    def test_voice_selector_previews_and_selects_configured_narrator(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_retry_plays_the_custom_phrase_with_the_configured_narrator_before_save(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            plan, group = with_second_candidate(plan, group)
             narrator = VoiceCandidate(
-                "preset:alba",
-                "alba",
-                "alba",
-                (),
-                120,
-                "Configured narrator voice",
+                "preset:alba", "Alba", "alba", (), 120, "Configured narrator"
             )
-            group = replace(group, narrator_candidate=narrator)
+            group = replace(
+                group,
+                narrator_candidate=narrator,
+                alternate_sample_text="Another story phrase.",
+            )
             plan = replace(
                 plan,
+                groups=(group,),
                 synthesis_backend="pocket-tts",
                 synthesis_profile="default",
-                groups=tuple(
-                    group if value.group_id == group.group_id else value
-                    for value in plan.groups
-                ),
             )
             decisions = VoiceDecisionStore(root / "decisions.json")
-            preview_service = Mock()
-            preview_service.generate.return_value = generated_preview(root)
-            pool = ManualThreadPool()
+            previews, player, pool = Mock(), Mock(), ManualThreadPool()
+            recording = generated_preview(root)
+            previews.generate.side_effect = [
+                RuntimeError("engine unavailable"),
+                recording,
+            ]
             panel = VoiceAuditionPanel(
-                decisions,
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
+                decisions, preview_service=previews, thread_pool=pool, player=player
             )
-
-            panel.start(plan, group_id=plan.groups[0].group_id)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan, group_id=group.group_id)
             select_reference(panel, panel.reference_model.rowCount() - 1)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-
             self.assertTrue(reference_text(panel).startswith("Narrator fallback"))
-            self.assertFalse(panel.a_box.inherits("QGroupBox"))
-            self.assertTrue(panel.a_use.isEnabled())
             self.assertFalse(panel.a_original.isEnabled())
-            panel.a_use.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            panel.preview_text.clear()
+            self.assertFalse(panel.a_play.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
 
+            phrase = "Only this custom phrase should be spoken."
+            panel.preview_text.setPlainText(phrase)
+            self.assertEqual(panel.a_use.toolTip(), "Play Preview to enable Save.")
+            panel.a_play.click()
+            self.finish_task(pool.tasks.pop())
+            self.assertIn("engine unavailable", panel.status.toPlainText())
+            self.assertEqual(panel.preview_text.toPlainText(), phrase)
+            self.assertTrue(panel.preview_text.isEnabled())
+            self.assertFalse(panel.a_use.isEnabled())
+            player.play_bytes.assert_not_called()
+
+            panel.a_play.click()
+            self.assertFalse(panel.a_use.isEnabled())
+            self.finish_task(pool.tasks.pop())
             self.assertEqual(
-                decisions.choice_for(group.group_id, group.decision_context_sha256),
+                [
+                    (call.args[2], call.kwargs["text"])
+                    for call in previews.generate.call_args_list
+                ],
+                [("preset:alba", phrase), ("preset:alba", phrase)],
+            )
+            player.play_bytes.assert_called_once_with(
+                recording.path.read_bytes(), source=str(recording.path)
+            )
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(panel.a_use.toolTip(), "")
+            self.assertIsNone(
+                decisions.choice_for(group.group_id, group.decision_context_sha256)
+            )
+            panel.a_use.click()
+            self.finish_task(pool.tasks.pop())
+            self.assertEqual(
+                VoiceDecisionStore(decisions.path).choice_for(
+                    group.group_id, group.decision_context_sha256
+                ),
                 default_voice_choice_id,
             )
-            panel.deleteLater()
 
     def test_cancel_waits_for_preview_worker_terminal_result(self):
         with TemporaryDirectory() as temporary_directory:
