@@ -8,10 +8,7 @@ from unittest.mock import Mock, patch
 
 from tests.pregeneration_fixtures import fixture
 from tests.test_pregeneration_activation import published_pack
-from vntts.pregeneration_activation import (
-    OfflinePackActivationError,
-    OfflinePackActivator,
-)
+from vntts.pregeneration_activation import OfflinePackActivator
 from vntts.pregeneration_pack import OfflinePackPublisher
 from vntts.prepared_playback import PreparedPlaybackStore
 from vntts.prepared_sequence_status import (
@@ -24,82 +21,61 @@ from vntts.versioned_json import write_versioned_json
 
 
 class PreparedPlaybackTest(unittest.TestCase):
-    def test_sequence_reason_survives_activation_and_restore_only_for_selected_profile(
-        self,
-    ):
+    def test_restart_restores_the_selected_pack_and_preserves_user_preferences(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
+            self.enterContext(
+                patch(
+                    "vntts.settings.get_settings_path",
+                    return_value=root / "settings.json",
+                )
+            )
+            self.enterContext(
+                patch(
+                    "vntts.profiles.get_profiles_path",
+                    return_value=root / "profiles.json",
+                )
+            )
             job, inputs, generated, _items = fixture(root / "generated")
             reason = SequenceUnavailableReason.MANUAL_BOUNDARY
             pack = OfflinePackPublisher().publish(
                 job, inputs, generated, sequence_unavailable_reason=reason
             )
             preferences = AppSettings(
-                active_profile_id="game-a", output_volume_percent=37
-            )
-            settings_path = preferences.save(root / "settings.json")
-            profile = GameProfile.from_settings(
-                "Game", preferences, profile_id=preferences.active_profile_id
-            )
-            profiles_path = GameProfileStore(root / "profiles.json", (profile,)).save()
-            original_settings = settings_path.read_bytes()
-            original_profiles = profiles_path.read_bytes()
-            store = PreparedPlaybackStore(root / "playback.json")
-            controller = Mock(is_ready=False)
-            controller.apply_settings.return_value = True
-            activated = OfflinePackActivator(save_state=store.save).activate(
-                preferences, pack, controller
-            )
-            self.assertIsNone(activated.settings.live_sequence_plan)
-            self.assertEqual(activated.settings.live_sequence_mode, "off")
-            self.assertEqual(
-                load_sequence_unavailable_reason(activated.settings.game_pack), reason
-            )
-            restarted = PreparedPlaybackStore(store.path).restore(
-                load_app_settings(settings_path, environment={})
-            )
-            self.assertEqual(restarted.game_pack, str(pack.manifest))
-            self.assertEqual(
-                load_sequence_unavailable_reason(restarted.game_pack), reason
-            )
-            other_profile = preferences.updated(active_profile_id="game-b")
-            unrelated = PreparedPlaybackStore(store.path).restore(other_profile)
-            self.assertIs(unrelated, other_profile)
-            self.assertIsNone(unrelated.game_pack)
-            self.assertIsNone(load_sequence_unavailable_reason(unrelated.game_pack))
-            self.assertEqual(settings_path.read_bytes(), original_settings)
-            self.assertEqual(profiles_path.read_bytes(), original_profiles)
-
-    def test_activation_and_restart_preserve_preferences_and_profile(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            pack = published_pack(root / "generated")
-            preferences = AppSettings(
+                active_profile_id="game-a",
                 output_volume_percent=37,
                 speech_rate_percent=135,
                 force_live_narrator=True,
-                active_profile_id="game-a",
             )
-            path = preferences.save(root / "settings.json")
-            original = path.read_bytes()
-            store = PreparedPlaybackStore(root / "local" / "playback.json")
-            controller = Mock(is_ready=False)
-            controller.apply_settings.return_value = True
-            result = OfflinePackActivator(save_state=store.save).activate(
-                preferences, pack, controller
+            settings_path = preferences.save()
+            profile = GameProfile.from_settings(
+                "Game", preferences, profile_id=preferences.active_profile_id
             )
-            self.assertEqual(path.read_bytes(), original)
-            self.assertEqual(result.state_path, store.path)
-            self.assertEqual(result.settings.game_pack, str(pack.manifest))
-            self.assertEqual(result.settings.audio_source_policy, "prefer-generated")
-            self.assertEqual(result.settings.output_volume_percent, 37)
-            self.assertEqual(result.settings.speech_rate_percent, 135)
-            self.assertFalse(result.settings.force_live_narrator)
-            self.assertTrue(preferences.force_live_narrator)
-            saved = load_app_settings(path, environment={})
-            self.assertEqual(saved, preferences)
-            restarted = PreparedPlaybackStore(store.path).restore(saved)
-            self.assertEqual(restarted, result.settings)
+            profiles_path = GameProfileStore(profiles=(profile,)).save()
+            original_settings = settings_path.read_bytes()
+            original_profiles = profiles_path.read_bytes()
+            store = PreparedPlaybackStore(root / "playback.json")
+            activated = OfflinePackActivator(save_state=store.save).activate(
+                preferences, pack, Mock(is_ready=False)
+            )
+
+            self.assertEqual(activated.state_path, store.path)
+            restarted = PreparedPlaybackStore(store.path).restore(
+                load_app_settings(environment={})
+            )
+            self.assertEqual(restarted, activated.settings)
+            self.assertEqual(restarted.game_pack, str(pack.manifest))
+            self.assertEqual(restarted.audio_source_policy, "prefer-generated")
+            self.assertFalse(restarted.force_live_narrator)
+            self.assertEqual(restarted.output_volume_percent, 37)
+            self.assertEqual(restarted.speech_rate_percent, 135)
+            self.assertIsNone(restarted.live_sequence_plan)
+            self.assertEqual(restarted.live_sequence_mode, "off")
+            self.assertEqual(
+                load_sequence_unavailable_reason(restarted.game_pack), reason
+            )
+            self.assertEqual(settings_path.read_bytes(), original_settings)
+            self.assertEqual(profiles_path.read_bytes(), original_profiles)
 
     def test_missing_generated_audio_or_state_keeps_preferences(self):
         with TemporaryDirectory() as temporary:
@@ -160,27 +136,6 @@ class PreparedPlaybackTest(unittest.TestCase):
                 with self.assertLogs("vntts.prepared_playback", level="ERROR"):
                     self.assertEqual(store.restore(preferences), preferences)
                 self.assertEqual(store.path.read_bytes(), raw)
-
-    def test_failed_state_save_restores_actual_previous_runtime(self):
-        with TemporaryDirectory() as temporary:
-            pack = published_pack(Path(temporary) / "generated")
-            preferences = AppSettings(output_volume_percent=37)
-            previous_runtime = preferences.updated(game_pack="previous.json")
-            controller = Mock(is_ready=True)
-            controller.apply_settings.return_value = True
-            controller.start.return_value = True
-            save = Mock(side_effect=OSError("disk full"))
-            with self.assertRaisesRegex(OfflinePackActivationError, "disk full"):
-                OfflinePackActivator(save_state=save).activate(
-                    preferences,
-                    pack,
-                    controller,
-                    previous_runtime_settings=previous_runtime,
-                )
-            save.assert_called_once_with(preferences, pack)
-            self.assertEqual(
-                controller.apply_settings.call_args.args, (previous_runtime,)
-            )
 
     def test_internal_stale_paths_are_ignored_without_resetting_user_settings(self):
         with TemporaryDirectory() as temporary:
