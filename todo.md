@@ -630,16 +630,9 @@ Other remaining defects and native checks:
 
 ## P0 - Make capture setup trustworthy and operable
 
-- [ ] **U1 - Validate unobscured setup capture on the native Mac.** Exercise
-      wizard and tray calibration with Dashboard, compact controls and a pending
-      diagnostics refresh over the game; inspect actual test/calibration pixels.
-      Delete/close the wizard while capture is pending: surviving controls must
-      return without reopening the wizard or activating diagnostics. Confirm setup
-      windows disappear only while pixels are acquired, return before OCR/playback,
-      and Cancel remains usable during model preparation/playback. Exercise capture
-      failure, cancellation, close and retry; restoration must not steal game focus,
-      reopen a closed wizard or start continuous Reading. Inspect/copy the complete
-      recognized text/speaker and retain the saved auto-advance opt-out.
+- [ ] **U1 - Check a live dialogue line in Mac Reading setup.** With a fully
+      displayed multiline game dialogue, compare the calibration preview and
+      copied speaker and text with the same line on screen.
 
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 
