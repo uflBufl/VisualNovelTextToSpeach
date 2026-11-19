@@ -370,14 +370,7 @@ Recheck archived findings against current main before implementation.
       define page-advance behavior separately from per-dialogue auto-advance.
       Add explicit page presence/text-only semantics instead of the ordinary
       bright-dialogue gate; order detected lines geometrically before grouping.
-      Independent source improvement, not a prerequisite for generic live OCR:
-      in the extractor, expand known
-      hero-story links through localized json_hero_story_introduce titles before
-      classification/hash. In Bkornblume’s line `302001007`, replace the source
-      reference `[3020901]` with its English title, `Abendmuse Radio`.
-      Preserve unknown literals such as [1920]; test known, repeated/multiple and
-      unknown references, stable line IDs/order, then reimport and regenerate
-      affected prepared text. Preserve the location Narrator record: scrolling
+      Preserve the location Narrator record: scrolling
       reveals it inside the right page as well as the left metadata. Exclude
       duplicate side-panel text by content bounds, not by deleting source rows.
       A backward viewport update must not reanchor automatic reading to an older

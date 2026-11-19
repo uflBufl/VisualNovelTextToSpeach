@@ -3143,8 +3143,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._automatic_import = automatic
         if automatic:
             self.discovery_message.setText(
-                "Game files changed. Updating the story list; previous recordings "
-                "remain saved. You can cancel this update."
+                "Updating the story list. Previous recordings remain saved. "
+                "You can cancel this update."
             )
             self._set_discovery_loading(True)
             self.discovery_import_button.setEnabled(False)

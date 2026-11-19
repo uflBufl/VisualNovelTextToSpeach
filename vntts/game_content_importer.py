@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Protocol, TypeAlias
 
 from durable_file import atomic_write_json
+from r1999extractor import STORY_TEXT_POLICY
 from r1999extractor.source_audio_policy import (
     SOURCE_AUDIO_COMPLETENESS_POLICY,
     apply_main_story_source_audio_policy,
@@ -321,6 +322,16 @@ class Reverse1999GameImporter:
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         if not story_index.is_file():
             return False
+        try:
+            metadata = _read_story_metadata(story_index)
+        except OSError, ValueError:
+            metadata = {}
+        if (
+            metadata.get("game") == "Reverse: 1999"
+            and metadata.get("story_text_policy") != STORY_TEXT_POLICY
+        ):
+            self._record("story-update-check", changed=True, index=story_index)
+            return True
         state_path = story_index.parent / "source-inputs.json"
         try:
             saved = decode_json(read_regular_text(state_path, encoding="utf-8"))

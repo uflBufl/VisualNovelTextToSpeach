@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Timer
 from unittest.mock import Mock, patch
 
+from r1999extractor import STORY_TEXT_POLICY
 from r1999extractor.source_audio_policy import SOURCE_AUDIO_COMPLETENESS_POLICY
 from vntts_artifacts import load_story_index_document, write_story_index_document
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -150,6 +151,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             lines = story.read_text().splitlines()
             metadata = json.loads(lines[0])
             metadata["source_bundle"] = str(bundle.resolve())
+            metadata["story_text_policy"] = STORY_TEXT_POLICY
             lines[0] = json.dumps(metadata)
             story.write_text("\n".join(lines) + "\n")
             importer = Reverse1999GameImporter(output_root=root / "import")
@@ -170,6 +172,22 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 importer._remember_story_inputs(story, roots)
             with patch.object(importer, "_bank_index_is_stale", return_value=True):
                 self.assertTrue(importer.installed_story_changed())
+
+    def test_story_text_policy_refreshes_managed_catalog_without_source_changes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_content(root / "reverse1999")
+            lines = story.read_text().splitlines()
+            metadata = json.loads(lines[0])
+            importer = Reverse1999GameImporter(output_root=root)
+            with patch.object(importer, "_previous_installation", return_value=None):
+                self.assertTrue(importer.installed_story_changed())
+                for policy, changed in (("old-policy", True), (STORY_TEXT_POLICY, False)):
+                    with self.subTest(policy=policy):
+                        metadata["story_text_policy"] = policy
+                        lines[0] = json.dumps(metadata)
+                        story.write_text("\n".join(lines) + "\n")
+                        self.assertEqual(importer.installed_story_changed(), changed)
 
     def test_story_change_check_handles_nonobject_source_metadata(self):
         with TemporaryDirectory() as directory:
