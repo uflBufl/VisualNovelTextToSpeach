@@ -1,15 +1,11 @@
 # TODO
 
-## Active - Windows startup recovery and latest Reading evidence
+## Active - Windows Reading Stop/Start hold
 
 Evidence: November18 `vntts-support.zip` and recording exports
 `10deae4c809c4a178139b2e0dac9acc3.zip` and
 `7591ea58a7bb415e8822666b2f2be626.zip`, clean build `02571ac0`.
 
-- [ ] On Windows, qualify Reading recovery from a closed or ambiguous game
-      window. Confirm the window error appears before model loading, the button
-      and notification open window selection, and saving resumes the selected
-      story. Check a window that disappears during startup and cancellation.
 - [ ] If the Stop/Start hold recurs, retain a recording beginning before it and
       the current occurrence's completion/navigation events. The second export
       shows Elma's line315601:55 at Stop/Start, but the preceding playback and
@@ -25,27 +21,11 @@ Evidence: November18 `vntts-support.zip` and recording exports
       an explicitly prepared chapter. Verify keyboard access
       to the window picker and Stop at enlarged text size.
 
-## Active - Support 111 application crash and Reading holds
+## Active - Support 111 Reading holds
 
-Evidence: `111.7z`, including Windows `crush.evtx`/MTA and the nested support
-bundle exported after restart, build `579f9a70`, 2026-11-17. The crash session
-is the nested bundle's `previous-session.json`; the separately supplied previous
-session and November8 pregeneration report are older evidence. This run predates
-the trust-after-admission changes.
+Evidence: `111.7z`, nested support bundle, build `579f9a70`, 2026-11-17.
+This run predates the trust-after-admission changes.
 
-- [ ] Localize and repair the Python-process access violation at17:40:54 MSK:
-      Windows reports `python314.dll`, `0xc0000005`, offset `0xb6616`, PID17800.
-      Last activity is prepared line `reverse1999:315601:82`, with PCM already
-      flowing. Obtain a native stack/dump or bounded reproducer before choosing
-      the repair; the supplied EVTX/MTA has no stack and no `.dmp` is included.
-      Do not attribute the fault to Rust, MOSS or CPython from the module alone.
-      Gate: identified faulting boundary, focused regression and Windows playback
-      through the failing scene with normal stop/teardown.
-      On Windows, qualify automatic fatal-stack recording on the actual access
-      violation: restart normally and export support, then correlate retained
-      Python locations with the failed Reading scene. Check normal teardown too.
-      `fatal-crashes.json` is bounded stack evidence without per-run attribution;
-      it does not replace a native Windows dump or establish the crash cause.
 - [ ] Qualify completed-dialogue navigation on Windows when uncertain OCR blocks
       an unsent transition. Gate: fresh confirmation
       of the current dialogue resumes the unsent transition after audio finishes;
@@ -507,18 +487,6 @@ Other remaining defects and native checks:
      reproduces at native display scales; keep calibration on ambiguous layouts
      and do not relax divider safeguards from synthetic evidence alone.
      Evidence: `native-trial-20261029/line66-wait/frame-001.png`.
-   - **Remaining serialized OCR correctness (RUN-29-02):** verify moving
-     particles and brightness changes no longer invalidate an in-flight capture.
-     After speech, require a newly captured recognized frame; unknown text keeps
-     recognizing, a new occurrence cancels the old key. Check accepted A/B/C
-     speech FIFO, empty-name Narrator, actual speaker changes, prefix/full-text,
-     punctuation-only replies and automatic transitions. Exercise Stop/Pause/
-     Restart and settings/owner changes during OCR and before key dispatch.
-     Rare identical consecutive or one-edit-different lines remain an accepted
-     matching limit. Do not reinstate pixel identity or lower confidence.
-     Retain existing capture IDs, route/attempt timing and lossless frames if a
-     refusal remains. Evidence: `native-trial-20261031/stall100-before-route.png`,
-     `frame-equivalence-20261101` and retained visual-waits100/101.
    - **Prepared matching remaining edges:** after the approved3-character
      edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line
@@ -553,37 +521,6 @@ Other remaining defects and native checks:
      while fixing116, retaining Stop/focus/uncertainty guards. Do not add dictionary
      autocorrection for dust-obscured words.
 ## P0 - Repair Reading ownership, OCR and continuation
-
-- [ ] **R1 - Investigate the capture-only stall using independent OCR-worker health.**
-      After accepted frame2676 at monotonic148117.451, OCR/gate events stop for
-      over 100s while capture continues. Use recorded OCR future state/error type
-      and stage-progress age, then capture thread stacks before Stop; identify the
-      blocked callback or exit before implementing recovery. Gate: a dead/stalled
-      OCR worker cannot present healthy Reading indefinitely, failure/retry is
-      actionable, Stop remains bounded,
-      and recovery cannot create a second worker or replay a claimed occurrence.
-      Use queued/running health, callback stage and consumed/latest frame versions
-      to locate the actual native stall. A blocked comparison must leave health and
-      Stop responsive; revalidate frame/epoch/owner before admitting its late result.
-      Offline regressions do not establish the cause of the historical capture-only
-      stall or justify automatic recovery/new timeouts.
-- [ ] **R2 - Validate serialized OCR freshness on Mac.** Use completed left-edge
-      `Ouch!`, absent names, brightness/particles, animated cues and 1-2px auto-ROI
-      translation/size changes during OCR. Require each held capture to finish
-      recognition without cancellation by newer pixels; accepted distinct A/B/C
-      occurrences must play once in order. A fresh recognized changed name/text/
-      punctuation or incomplete typewriter line must prevent an old key. Verify
-      focus/owner/run changes and Pause/Stop/Restart still reject stale work.
-      R1's historical capture-only stall remains a separate unknown cause.
-
-- [ ] **R3 - Validate owned early prepared-successor playback on Mac.** Use a
-      fully admitted per-character recording and an authorized deterministic key
-      transition, including an uncertain old narrator frame before the first valid
-      prefix. Require one correct WAV start during typing and no new synthesis;
-      reserve/prebuffer before onset. Check wrong names/text, common or ambiguous
-      prefixes, missing audio, manual input, focus loss, Stop/pause, branches and
-      manual boundaries. Uncertain frames cannot authorize speech; ordinary
-      non-sequence prefixes still need unique sufficient evidence.
 
 - [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
       unique indexed line outside the expected graph, use Read indexed current line
@@ -633,12 +570,6 @@ Other remaining defects and native checks:
 Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
 
 - [ ] **S20.4 - Investigate on Windows: account for remaining voice-plan wall time before choosing a broader fix.** The historical `_create_voice_plan` took 408.915 s: candidate preparation 40.576 s and `voice-plan-store` 368.334 s; about 308.962 s of the latter was not attributed by the retained spans. Capture fresh cold and warm runs with the actual Windows/model workload using correlated `operation_id` timings for settings context, grouping, routing, reference qualification, applying choices, persistence, audition cache admission, queue wait, model startup, render, preview quality and ASR advice. Compare disjoint phases with the inclusive total; do not add inclusive parent and child durations. Inspect cache hit/miss, registry-build, reference-read and reference-preflight counters, and retain any unexplained gap explicitly. Identify the measured dominant work before choosing further reuse/deferment; preserve quality, admitted bytes, explicit choices and responsiveness. Fixture improvements do not diagnose the historical 309 s or qualify deferred Windows acceptance, large-pack finalization or GPU headroom.
-
-- [ ] **S20.6 - Validate selected-window disappearance/recovery on Windows.** Close,
-      minimize and reopen the selected game window during Reading. Require a
-      recoverable capture/window-unavailable status with debounce and normal recovery;
-      unexpected exceptions must remain distinguishable. Use the new run/playback
-      evidence before inferring any audible output after window closure.
 
 ## Qualify Settings on native Windows and macOS
 
