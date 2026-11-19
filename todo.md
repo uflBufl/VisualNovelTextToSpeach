@@ -640,8 +640,6 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] Verify compact opening without game-focus activation using owner-only
-      focus evidence.
 
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 

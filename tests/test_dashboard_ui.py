@@ -316,6 +316,23 @@ class ControlDashboardTest(unittest.TestCase):
             self.application.processEvents()
         exception_hook.assert_not_called()
 
+    def test_compact_open_and_reopen_on_cocoa_do_not_raise_the_floating_panel(self):
+        compact = CompactController(platform="darwin")
+        with (
+            patch.object(QApplication, "platformName", return_value="cocoa"),
+            patch("vntts.dashboard_ui.configure_floating_window") as configure,
+            patch.object(compact, "raise_") as raise_panel,
+        ):
+            for _ in range(2):
+                compact.show_for_game()
+                self.application.processEvents()
+                self.assertTrue(compact.isVisible())
+                configure.assert_called_once_with(compact)
+                configure.reset_mock()
+                raise_panel.assert_not_called()
+                compact.hide()
+        compact.close()
+
     def test_auto_advance_control_shows_key_and_capture_policy(self):
         dashboard = ControlDashboard(
             AppSettings(

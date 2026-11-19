@@ -1811,7 +1811,9 @@ class CompactController(QWidget):
         x = max(available.left(), right - self.width() - 12)
         y = min(max(available.top(), top + 12), available.bottom() - self.height())
         self.move(x, y)
-        self.raise_()
+        # Cocoa already floats the panel above the game. Raising it takes keyboard focus.
+        if QApplication.platformName() != "cocoa":
+            self.raise_()
 
     def set_status(self, message: str, *, details: str | None = None) -> None:
         self.status.setPlainText(playback_status_label(message))
