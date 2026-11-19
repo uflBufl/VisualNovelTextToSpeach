@@ -113,14 +113,6 @@ Recheck archived findings against current main before implementation.
 - [ ] Verify explicit display capture on Windows. The supplied recording and
       support snapshots all identify selected-window capture.
 
-## Active - Source build and native component readiness
-
-- [ ] On Windows, run `uv run --no-project python scripts/build.py` from a fresh
-      source checkout with the documented tools installed. Confirm both workers
-      are discovered by the app and Check readiness verifies capture startup and
-      protocol independently from actual window capture. Keep package/installer
-      work outside this source workflow.
-
 ## Active - Remaining dialogue recognition and original-speech qualification
 
 - [ ] Qualify unknown-symbol waiting separately from recognized punctuation.
@@ -136,8 +128,7 @@ Recheck archived findings against current main before implementation.
 - [ ] On Windows, resume the affected new-story preparation and verify source
       audio analysis, voice planning and synthesis complete. Verify live progress
       and cancellation through stdout pipes for duration, semantics, references
-      and portraits, including the windowed packaged worker's inherited stdout
-      and stderr. Local Whisper inference and pipe regressions do not replace
+      and portraits. Local Whisper inference and pipe regressions do not replace
       this platform gate.
       During automatic reference qualification, verify model startup, preview
       rendering and ASR show the current character/reference counters and elapsed
@@ -159,16 +150,12 @@ Recheck archived findings against current main before implementation.
       ORT1.29's Windows telemetry provider differs from the POSIX provider.
 
 - [ ] Qualify the refactored capture, cancellation, voice and reading paths on
-      hosted Windows/Linux and packaged GPU runtimes after local gates pass.
+      hosted Windows/Linux and GPU runtimes after local gates pass.
       Verify playback buttons distinguish preparation from actual device onset,
       including cancellation during synthesis and rejected playback ownership.
 
 ## Native capture - remaining macOS qualification
 
-- [ ] Qualify the final macOS release distribution without developer tools:
-      installation, capture permission denial/revocation, helper crash/hang and
-      bounded cleanup. The frozen capture harness verifies bundled discovery and
-      selected-window pixels, but does not qualify the complete distribution.
 - [ ] On suitable macOS hardware, check monitor/Retina changes, mixed DPI,
       multiple monitors, SDR/HDR and other fullscreen implementations. Check
       minimize/restore and explicit display capture independently; unsupported
@@ -218,14 +205,6 @@ Recheck archived findings against current main before implementation.
       пакет. Доступный реальный пример:315612:93, Gardener,
       `Lady Hedone? Lady Hedone?`, internal pause / live fallback.
       Новые действия повтора, смены референса/движка и ручного принятия не добавлять.
-- [ ] **GEN-25-02: проверить лимит реплики314501:85 в общем прогоне.**
-      MOSS вернул `Typed render completed as limited`, max_audio_seconds=5.1667,
-      max_tokens=517; WAV корректно не опубликован. Фраза Everecho:
-      `Uhm, I'm not exactly ...`. Оба CLI-задания использовали seed0 и retries0.
-      В общем прогоне проверить её с актуальным референсом и штатными тремя
-      попытками; достаточность5.1667с для этой фразы пока не подтверждена.
-      Не увеличивать общий бюджет без доказанного обрезания нормальной речи.
-      Новых ручных сценариев исправления реплики не добавлять.
 - [ ] **RUN-25-04: проверить полный текст реплики в общем прогоне.**
       На line34 (`I'm afraid I won't...` / OCR `I'm afraid J] won't...`)
       подтвердить канонический текст при надёжном совпадении с историей.
@@ -235,7 +214,8 @@ Recheck archived findings against current main before implementation.
       и позицию прокрутки; новая реплика должна показываться с начала.
 - [ ] **UX-25-02: оставшиеся взаимодействия Stories в общем прогоне.**
       При обычном и крупном шрифте проверить доступность Prepare again после
-      возврата из подготовки, доступ к импорту при пустом каталоге, видимость
+      возврата из подготовки и переход к проверке перед повторной генерацией,
+      доступ к импорту при пустом каталоге в изолированных настройках, видимость
       длинных ошибок, копирование и клавиатуру после возврата из подготовки.
       Реальное колесо/трекпад проверить отдельно от MCP-событий.
 - [ ] **UX-26-01: проверить устройство генерации в общем живом прогоне.**
@@ -253,8 +233,7 @@ Recheck archived findings against current main before implementation.
       они должны открывать Check readiness на Audio output с полной инструкцией
       и копированием. После исправления установки повторная проверка убирает
       предупреждение; Stories и просмотр голосов остаются доступны. Проверить
-      узкое окно и крупный шрифт. Cargo остаётся отдельным шагом установки;
-      portable-сборки требуют самостоятельной проверки.
+      узкое окно и крупный шрифт.
 - [ ] **UX-25-09: проверить Voices в общем живом прогоне.**
       Проверить генерацию и независимое воспроизведение текущего/нового голоса,
       смену записей, сохранение/отмену и возврат в Stories; готовые записи историй
@@ -307,15 +286,14 @@ Recheck archived findings against current main before implementation.
 
 ## Persistent OCR remaining qualification
 
-- [ ] Separately verify native library/model loading on Windows and a clean
-      packaged Mac; offline process parity and mocked DLL layouts do not qualify
-      these platforms. These checks do not block the current Mac trial.
+- [ ] Separately verify native library/model loading on Windows; offline process parity
+      and mocked DLL layouts do not qualify native loading.
 - [ ] Choose multilingual model sets using labelled genuine game captures with
       Russian within English lines, French/German accents, partial text and moving
       names. Keep current configured languages until quality is qualified.
 - [ ] Retain the command-line OCR path only as an explicit benchmark/parity
-      reference while native platform qualification is unfinished. After Windows
-      and packaged-Mac parity pass, remove the CLI reference backend/helpers and
+      reference while native platform qualification is unfinished. After native
+      Windows parity passes, remove the CLI reference backend/helpers and
       replace their comparison tests with the qualified fixed fixtures.
 
 ## Remaining Reading and deferred layout work
@@ -324,7 +302,7 @@ Recheck archived findings against current main before implementation.
       During the next actual content update, verify visible progress for rebuilding
       an already imported catalog on its existing background path. Initial index
       construction belongs to admission/update and must not repeat on Read.
-      On Windows10, exercise packaged FTS5/RapidFuzz and indexed query/cancellation;
+      On Windows10, exercise FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
 - [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
@@ -376,12 +354,6 @@ Recheck archived findings against current main before implementation.
       A backward viewport update must not reanchor automatic reading to an older
       source occurrence; keep ordinary dialogue navigation behavior unchanged.
       Agree further feature slices separately.
-- [ ] Finish the unexercised Stories actions (Prepare again/review, empty-catalog
-      import in isolated settings, long errors/copy/keyboard) and native physical
-      scrolling. With intentionally different generation preferences and active
-      Reading packs, reopen Stories and verify active coverage and the correct
-      Read / Prepare again actions without changing generation preferences.
-      Keep ordinary/large-font layout evidence already obtained.
 - [ ] **OCR-03-01 - Remaining native matching checks.** Verify punctuation-split names and final-letter OCR errors choose ready
       generated audio without transient live synthesis or repeated playback. Verify
       typewriter prefixes still wait for full text except the deliberately owned
@@ -415,9 +387,6 @@ Other remaining defects and native checks:
       do not add minimum-length/dictionary filters or timeout skips.
 
 - [ ] **REC-02-01 - Native Windows recorder qualification.**
-      Complete the MSVC link/portable packaging build on Windows and run the
-      bundled helper preflight/selfcheck. Local cross-target checks and COFF
-      emission validate code generation but do not substitute for a linked EXE.
       On Windows10 2004/build19041+, record distinct selected-game and unrelated
       audio signals and prove only the selected process tree is present. Check
       speech-worker arming before PCM, late/retired workers, Stop/deadline,
@@ -485,8 +454,8 @@ Other remaining defects and native checks:
      explicit application cancellation stop stale work. Include speaker
      announcements, original-audio lead and pending preparation; late completion
      must not finish the next occurrence's cursor.
-   - **Generation budget (GEN-25-02):** qualify314501:85 with the selected
-     reference and normal automatic retries; retain actual limits and outcomes.
+   - **Generation budget:** exercise a synthesis limit with normal automatic
+     retries and retain the actual limit and outcome.
      Require complete speech or a clear terminal failure, no truncated WAV in
      the ready pack, responsive cancellation and preserved ready work on resume.
    - **Preparation problems (GEN-25-01):** verify character, full phrase and
@@ -564,10 +533,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] With verified background workspace isolation or an explicitly approved native session, review a captured uncertain line on macOS and Windows at enlarged system text. Check Tab/arrow access to every footer action, literal-text copying and tooltips near screen edges. Save a scoped correction, reopen after an external rule edit, then Read Once on a real game and confirm the updated correction is used. Retain native focus and capture evidence; offscreen tests do not qualify OS routing.
 
-## Qualify dialogue history on native audio and keyboard navigation
-
-- [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text. Retain native screenshots, audio and focus evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or native focus behavior.
-
 ## Investigate reported slow-sounding voice playback
 
 - [ ] Identify and retain an actually slowed audible sample from the original/preview/reading paths, then compare its native DAC duration with its PCM frame count and rate before changing playback or synthesis speed. The current Mac reproduction plays Centurion original 12.51 s and MOSS preview 3.84 s at matching DAC durations, with 100% configured speed and no underflow; this does not explain the user's earlier report.
@@ -576,7 +541,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] **Validate general automatic reference suitability:** build reproducible positive/negative acoustic controls from authorized installed sources and qualify any new output rule against independently accepted examples; preserve variable repeat outcomes as uncertain. Store the fixture recipe and expected decisions in Git; private historical ratings are not a required input. Require evidence on known natural defect types, balanced shared texts/seeds and independent character/source groups before assigning reference-ranking weights; retain an uncertain outcome and verify sample-rate/gain sensitivity. Do not fit thresholds or invert failed metrics from these development labels; injected controls are not natural-defect precision. Further human listening must answer a concrete unresolved question using a few targeted cases and a stated stopping decision, not another exhaustive batch. Keep named references/ratings research-only and ordinary users free of per-character A/B review.
 - [ ] **Finish hardware qualification of audition latency/resources:** measure physical audible start and peak/model memory; qualify rapid navigation, close/cancel, explicit unload/reload and switching distinct model weights on Windows/native MOSS and additional supported backends. Record a fresh reproducible Mac/Windows baseline with the chosen model and hardware; historical Mac experiments do not establish hardware-wide certification. The Mac replacement check used two identifiers for identical weights; native model/language restoration and canceled replacement retry still need real hardware checks. Qualify the 300 ms first-ready target across devices, separating remaining native output initialization from cache lookup; retain device-change/error/cleanup checks before considering stream warmup. Do not broaden the speculative window beyond three requests.
-- [ ] **Finish reference-selection baseline:** compare the current trio with eligible outside references at the same three-generation budget using complete inventories regenerated from the same installed sources with recorded versions/checksums; keep Sonetto's routed-only counterfactual separate from successful imports. Test source/length diversity as a hypothesis against the current four-second ordering, with shared texts/seeds and all failures retained; do not infer synthesis quality from catalog size or equal technical scores. Create a small reproducible, human-accepted control set for false defect warnings, preserving ordinary intonation/stress variation; record source identity, text/seed and expected judgment in a tracked fixture recipe instead of requiring private WAVs. Qualify independent characters/performers and ownership of unlinked media separately from synthesis quality; the Mrs. Owen preference cannot bypass the identity gate. Check held-out phrases; keep variable repeats, render-block dependence and complete-intersection exclusions explicit. Historical sweeps with different text/runtime are not before/after evidence, and any new listening must resolve a concrete uncertainty with a few targeted cases.
+- [ ] **Finish reference-selection baseline:** compare the current trio with eligible outside references at the same three-generation budget using complete inventories regenerated from the same installed sources with recorded versions/checksums; keep Sonetto's routed-only counterfactual separate from successful imports. Test source/length diversity as a hypothesis against the current four-second ordering, with shared texts/seeds and all failures retained; do not infer synthesis quality from catalog size or equal technical scores. Create a small reproducible, human-accepted control set for false defect warnings, preserving ordinary intonation/stress variation; record source identity, text/seed and expected judgment in a tracked fixture recipe instead of requiring private WAVs. Qualify independent characters/performers and ownership of unlinked media separately from synthesis quality. Check held-out phrases; keep variable repeats, render-block dependence and complete-intersection exclusions explicit. Historical sweeps with different text/runtime are not before/after evidence, and any new listening must resolve a concrete uncertainty with a few targeted cases.
 - [ ] **Calibrate useful synthesis-defect recommendations:** optimize assistance for the user's final choice, with visible uncertainty and tolerated errors, rather than requiring an infallible detector. Build tracked normalization/control fixtures that separate writing/boundary variations, ambiguous recognition and possible added/missing content; keep weak ASR evidence from imposing hard reference rejection. Verify practical usefulness independently before assigning calibrated confidence or reference-ranking weights; the user's illustrative 90% is not a measured result. Keep automatic replacement/retry qualification separate from advisory recommendations: preserve the original and establish net audible benefit before enabling replacement. Record cohort limits and do not fit exception lists or thresholds to those same examples. A historical single-seed reproduction found an ASR-exact seed+1 replacement; reproduce from recorded model/text/seed inputs before using that result, and require human acceptance independently of ASR. Padding changes conditioning content/length and is not a qualified preparation fix. Retain content, silence, clipping and perceptual checks as separate signals. Preserve ties and neither, count every attempted render, and do not infer absolute scores from comparative labels or globally blacklist a reference from one bad seed.
 - [ ] **Qualify improved ranking:** separate character ownership from backend/conditioning-specific suitability; unsupported speech/music/noise/multiple-speaker/transcript signals remain unknown. Keep ASR and speaker similarity diagnostic until calibrated on independent anchors and held-out characters/performers; do not promote an arbitrary replacement for the four-second heuristic or require expensive qualification for every ordinary preparation.
 - [ ] **Refresh older automatic suggestions when policy changes:** distinguish unreviewed legacy automatic bindings from explicit user choices and conditionally migrate only unchanged algorithm-created suggestions for the same character. Preserve concurrent user changes and immutable running/prepared job snapshots; current advisory recommendations intentionally retain existing bindings. Qualify migrations independently of fresh unbound suggestions.
@@ -601,7 +566,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] On Windows, qualify complete and streaming admitted text reads: UTF-8/BOM/ASCII/default locale, regular aliases, source closure and JSONL first-line/iteration behavior. Verify the dependency-audit script starts before project installation. Mac FIFO/descriptor proof does not qualify Windows filesystem behavior or non-UTF-8 locale execution.
 
-- [ ] On Windows, qualify admitted ZIP intake for MOSS runtime, managed game decoder and packaged licences, plus native-probe archive member sources. Verify valid/invalid archives, source closure, member bytes/metadata, refusal before publication and retry. Mac FIFO/byte-parity tests do not establish Windows filesystem or DLL behavior.
+- [ ] On Windows, qualify admitted ZIP intake for MOSS runtime and managed game decoder, plus native-probe archive member sources. Verify valid/invalid archives, source closure, member bytes/metadata, refusal before publication and retry. Mac FIFO/byte-parity tests do not establish Windows filesystem or DLL behavior.
 
 ## Qualify remaining model dependency risks
 
@@ -617,9 +582,9 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       unproven ignore. Retain loaded-module provenance and actual model
       generation/voice checks for any upgrade, backport or replacement.
 - [ ] Qualify Coqui 0.28 with real pinned model weights and generated audio on
-      CPU/CUDA and packaged Windows. Check persisted voice reuse across upgrade;
+      CPU/CUDA. Check persisted voice reuse across upgrade;
       tiny GPT generation and constructor/config checks do not qualify audio
-      quality, full checkpoint loading or packaged accelerator behavior.
+      quality, full checkpoint loading or accelerator behavior.
 - [ ] Qualify the fixed candidate against MOSS Delay's trusted remote processor
       and model loading, including AutoModel's injected GenerationMixin and
       automatic custom-generation lookup. The captured default model snapshot
@@ -641,7 +606,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       choosing it as the default offline engine. The speaker-only conditioning
       path is functional but may preserve expression less well than a reference
       with verified spoken words.
-- [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the packaged Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
+- [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
 - [ ] Resolve the Qwen dependency audit findings or explicitly accept their release risk. After the Windows quality check, make Qwen the preferred offline engine on supported installations and verify narrator setup and story preparation; keep MOSS available as an alternative.
 
 ## Active - Finish repeated UI scanability rollout
@@ -656,9 +621,9 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Validate game voice provenance on Windows
 
 - [ ] In Stories, choose a different reference through `Use this voice` and confirm the voice plan returns promptly without checking all saved audio. Then start generation and confirm the deferred audio check succeeds; attach a support archive if either step still takes over a second before generation starts.
-- [ ] Reopen A Fledgling's Brave Fall on Windows. Confirm Everecho receives a game voice automatically when equally ranked story recordings are available, and genuinely unresolved roles show the review action prominently before generation.
+- [ ] On Windows, confirm a character receives a game voice automatically when equally ranked story recordings are available, and genuinely unresolved roles show the review action prominently before generation.
 - [ ] Validate the repaired mid-preparation game-index refresh on Windows without deleting the import or choosing Centurion again. After voice discovery updates `story-index.jsonl`, confirm Step 2 resumes with the same story selection and saved narrator. If a selected story disappears, confirm the saved voice remains and Stories asks for a new selection; Cancel during refresh must close the dialog.
-- [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text, unlinked bank clips are explicitly labelled and available only for manual choice, and the saved reviewed Mrs. Owen clip remains selected after reopening. Old candidate catalogs should refresh without deleting the game import.
+- [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text, unlinked bank clips are explicitly labelled and available only for manual choice, and a manually selected reference stays selected after reopening. Old candidate catalogs should refresh without deleting the game import.
 - [ ] On Windows, refresh an existing Centurion candidate catalog from the installed game. Confirm Voices and Story inspection show all usable character references (not just the three automatic recommendations), each original transcript contains spoken words once without labels such as `Greeting` or `Night`, and distinct in-game line IDs still resolve to the shared audio. No game-import deletion should be needed.
 
 ## P0 - Validate automatic game-update refresh on Windows
@@ -801,14 +766,10 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       prepared-story misses, classify each rejection, then fix only the proven
       boundary. Gate: every captured miss has a reason, valid candidates use the
       prepared WAV, and only proven out-of-pack lines reach live TTS.
-- [ ] **Validate on Windows:** resume the supplied 682-line story with the recovery
-      fix and confirm that the two short `I ...` lines are repaired while the two
-      exhausted MOSS lines become live fallbacks without aborting pack publication. The latest
-      state has 580 generated and four failed items: the two Aderyn failures share
-      a two-character transformed input and were rejected only for 0.64 seconds of
-      trailing silence in a 1.12-second WAV; Poacher I hit the 8.5-second limit and
-      Poacher II hit the 3-second limit. Trim or tolerate safe edge silence for the
-      short utterances and publish explicit live fallbacks for exhausted limits.
+- [ ] On Windows, resume preparation after a short phrase was rejected for
+      trailing silence. Check that retry can recover the phrase and that clips
+      which exhaust the synthesis duration limit fall back to live speech
+      without aborting publication of the remaining recordings.
 
 ## P0 - Validate the non-blocking Voice plan
 
@@ -816,21 +777,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       story disappears after a game update, the saved Centurion choice must remain
       while Stories requests a new selection. Cancel during content refresh must
       close the dialog. The normal same-story refresh already passed player review.
-- [ ] **Validate Mrs. Owen on fresh Windows state:** after updating the extractor,
-      open her voice from both Voices and Stories. Both must expose the same
-      checksum-bound 3.17-second media `562400954` and 1.95-second media
-      `599773947`, without duplicate quoted role labels. Play the original,
-      generate a preview, save the 3.17-second candidate, reopen, and prepare a
-      story. Gate: the saved choice remains selected and offline generation uses
-      that exact reference; no automatic choice silently replaces it.
-- [ ] **Validate Rhiannon's playable references on Windows:** with extractor
-      commit `2be370e` installed, run a fresh voice import. Confirm her main-bank
-      9.0-second line appears among the three Voice plan options alongside story
-      lines, while Greeting (15.3 s) and Chitchat I (14.9 s) remain visible only
-      for manual choice in Voices and Story inspection. Play the correct originals,
-      generate previews, and verify a manual choice survives save/reopen. The
-      previous schema-v2 report cache must refresh; reject clips with other
-      technical defects. Keep the 45.8-second Chitchat II optional, not a default.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
@@ -901,8 +847,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       complete usable reference list or weakening voice-quality ranking. If
       routing dominates, use the per-candidate library/manifest counters in S20.2-S20.4
       to isolate its remaining cost. Verify both cold and warm timings and identical voice choices.
-- [ ] **Validate combined PSM 6 OCR on Windows:** with an installed or bundled
-      Tesseract, run the two sample-image parity/process-count tests and one live
+- [ ] **Validate combined PSM 6 OCR on Windows:** with Tesseract, run the two sample-image parity/process-count tests and one live
       story. Require unchanged speaker/text/confidence/profile/attempts, working
       output-file cleanup and OMP limit, fewer process launches and lower median
       latency than the separate TXT/TSV path. The macOS 11-frame check passed
@@ -921,19 +866,9 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       interrupted download, retry and restart on clean macOS and Windows. Users
       must not choose Python or CUDA wheels manually.
 
-## P1 - Complete distributable packages
+## Deferred
 
-- [ ] **Validate on clean machines:** make the macOS and Windows portable packages
-      start and render with their recommended backend without uv, a checkout,
-      environment variables or an existing model cache. Keep model/license consent
-      separate from dependency setup and verify every downloaded runtime artifact by checksum.
-- [ ] **External credentials and validation:** complete a Developer ID
-      signed/notarized macOS package and signed Windows executable. The Windows
-      build must complete from an ordinary account without Developer Mode. Retain
-      checksum-bound startup/render reports for both platforms. Add a release-
-      promotion gate that accepts only the signed archive after every required
-      Windows hardware profile passes the existing
-      matrix validator without `--allow-unsigned`.
+- [ ] Prepare the application for distribution.
 
 ## P2 - Qualify the real desktop experience
 
@@ -1009,12 +944,11 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       a long clipped value, cancel an uncommitted cell edit, inspect first-error
       tab navigation, and retry after a denied write. Keep screenshots of compact,
       validation and discard-confirmation states plus the persisted rule file.
-- [ ] **Validate dialogue history on real macOS and Windows hosts:** use the keyboard
-      to search, select, speak and stop a line; verify that
-      current voice assignments are used, the full
-      session exports even under a filter, and the compact layout works at 200%
-      text scaling. Confirm a backend without Stop keeps the window open until
-      speech finishes.
+- [ ] **Dialogue history on Windows:** start a captured line with its assigned
+      voice, select or filter to another line, then stop and confirm the audio
+      and named status agree. Restore an unavailable engine and retry from the
+      same window. At 200% text size, check keyboard access to playback controls,
+      closing with Escape, and scrolling and copying the complete error.
 - [ ] **Validate diagnostics and support on real macOS and Windows hosts:** at
       200% text scaling, inspect the capture summary, expand separate speaker and
       dialogue OCR images/confidence, and enlarge each image with both scroll
@@ -1124,12 +1058,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       Change to an imported
       narrator and listen before Apply voice changes; require the current narrator's
       original recording. Apply the changes before opening character audition. Retain native screenshots and an audio trace.
-- [ ] Diagnose the Windows Mrs. Owen original-reference silence. Record the
-      selected reference checksum and authoring playback queued/started/finished/
-      failed states in support bundles without recording audio or dialogue. The
-      reported failure was a mismatch between the candidate's source display name
-      and its manifest name; verify original playback and preview on Windows after
-      the identity-check fix, then remove this item.
 - [ ] On supported macOS and Windows builds, traverse
       target, source, game-reference, consent, preview and action controls;
       enter the same editor from live character recovery with that character selected.
@@ -1188,16 +1116,11 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 
 - [ ] Verify on the reported Windows/GPU setup that a frame-limited phrase reaches its bounded retry result and Cancel finishes. Incomplete audio must remain unpublished. Local Python 3.14.2 HTTP-fixture and retained-frame regressions pass; actual model EOS quality remains a separate hardware gate.
 
-## Qualify packaged preview ASR isolation
-
-- [ ] Before shipping frozen macOS/Windows builds, smoke-test preview ASR spawn from the packaged entrypoint: start checking during playback, play ready audio during checking, cancel/close and reopen. Confirm no second desktop window, no surviving ASR worker and continued prefetch. Source-mode Mac qualification and early-dispatch unit tests do not establish bundled behavior; record entrypoint/build, worker PID lifecycle and timing for this packaged run.
-
 ## Remaining - Shared audio storage
 
-- [ ] Qualify shared WAV hard links on the supported Windows filesystem and in
-      packaged builds. Keep explicit same-filesystem/link errors and existing audio
-      intact; do not add a silent copy fallback. Controlled Mac UI runs and unit
-      tests do not qualify these platforms or neural-model/hardware behavior.
+- [ ] Qualify shared WAV hard links on the supported Windows filesystem.
+      Keep explicit same-filesystem/link errors and existing audio intact; do
+      not add a silent copy fallback.
 
 ## Deferred - Restore pre-existing repository quality gates
 
@@ -1211,7 +1134,7 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
 ## Qualify SQLite-only storage
 
 - [ ] Qualify the SQLite-only publication, interrupted publication/retry, hard links
-      and catalog-loss refusal in Windows and packaged builds. Keep current
+      and catalog-loss refusal on Windows. Keep current
       immutable authoring proof files and portable manifests intact; those are
       supported contracts, not working-state fallbacks.
 
