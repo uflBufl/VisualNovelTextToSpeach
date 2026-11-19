@@ -24,6 +24,61 @@ from vntts.ocr import (
 
 
 class AdaptiveOCRTest(unittest.TestCase):
+    def test_only_strokes_at_the_recognized_word_can_confirm_a_short_name(self):
+        image = Image.new("RGB", (200, 80), "#111111")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 10, 21, 20), fill="#303030")
+        draw.point((70, 12), fill="white")
+        regions = OCRRegions(DialogRegion(0, 0, 1, 0.5), DialogRegion(0, 0.5, 1, 0.5))
+        # Tesseract boxes refer to the doubled image with a ten-pixel border.
+        for x, y, w, h, expected in (
+            (50, 30, 4, 22, "I"),
+            (150, 34, 4, 4, "Narrator"),
+            (150, 30, 4, 22, "Narrator"),
+        ):
+            with self.subTest(x=x, h=h):
+                name_data = dict(
+                    text=["I"], conf=[92], left=[x], top=[y], width=[w], height=[h]
+                )
+                result = recognize_dialog_image_result(
+                    image,
+                    ocr_regions=regions,
+                    recognize_text=Mock(return_value="Yes."),
+                    recognize_data=Mock(
+                        side_effect=[name_data, {"text": ["Yes."], "conf": [96]}]
+                    ),
+                )
+                self.assertEqual((result.character, result.text), (expected, "Yes."))
+                self.assertEqual(result.confidence, 92 if expected == "I" else 96)
+
+    def test_name_confidence_uses_words_between_the_first_and_last_visible_ink(self):
+        image = Image.new("RGB", (200, 80), "black")
+        draw = ImageDraw.Draw(image)
+        for x in (20, 60):
+            draw.rectangle((x, 10, x + 1, 20), fill="white")
+        result = recognize_dialog_image_result(
+            image,
+            ocr_regions=OCRRegions(
+                DialogRegion(0, 0, 1, 0.5), DialogRegion(0, 0.5, 1, 0.5)
+            ),
+            recognize_text=Mock(return_value="Yes."),
+            recognize_data=Mock(
+                side_effect=[
+                    dict(
+                        text=["fog", "I", "-", "I", "fog"],
+                        conf=[15, 90, 90, 90, 15],
+                        left=[10, 50, 90, 130, 160],
+                        top=[30] * 5,
+                        width=[4] * 5,
+                        height=[22] * 5,
+                    ),
+                    {"text": ["Yes."], "conf": [96]},
+                ]
+            ),
+        )
+        self.assertEqual(result.character, "I - I")
+        self.assertEqual(result.speaker_confidence, 90)
+
     @staticmethod
     def frame(lines=1, name="X", text="?", inverted=False):
         background, foreground = ("white", "black") if inverted else ("black", "white")

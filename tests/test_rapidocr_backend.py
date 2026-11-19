@@ -27,9 +27,12 @@ class RapidOCRBackendTest(unittest.TestCase):
         outputs = iter(
             (
                 SimpleNamespace(
-                    boxes=[[[0, 0], [20, 0], [20, 20], [0, 20]]],
-                    txts=["X"],
-                    scores=[0.96],
+                    boxes=[
+                        [[0, 0], [20, 0], [20, 20], [0, 20]],
+                        [[50, 0], [70, 0], [70, 20], [50, 20]],
+                    ],
+                    txts=["X", "noise"],
+                    scores=[0.96, 0.25],
                 ),
                 SimpleNamespace(
                     boxes=[[[0, 0], [20, 0], [20, 20], [0, 20]]],

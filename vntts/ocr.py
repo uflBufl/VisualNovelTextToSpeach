@@ -1,6 +1,6 @@
 import math
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -380,7 +380,7 @@ def _nameplate_bounds(
                 g[1].stop - g[1].start <= (g[0].stop - g[0].start) * 3 for g in glyphs
             )
             and int(pixels.max()) - int(pixels.min()) >= 32
-            and not _isolated_speaker_strokes(pixels)
+            and next(_isolated_speaker_strokes(pixels), None) is None
         ):
             # A wide empty band can contain scenery edges far from the name's
             # anchor. Preserve unanchored glyphs and uniformly faint labels.
@@ -429,7 +429,11 @@ def _speaker_stroke_background(patch: np.ndarray, y: slice, x: slice) -> np.ndar
     return background
 
 
-def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
+# Bounds in the original crop, component pixels, and minimum supported ink height.
+_SpeakerStroke = tuple[slice, slice, np.ndarray, int]
+
+
+def _isolated_speaker_strokes(pixels: np.ndarray) -> Iterator[_SpeakerStroke]:
     """Retain faint ink over smooth local background despite distant scenery."""
     height, width = pixels.shape
     for dark, contrast in enumerate(
@@ -471,8 +475,7 @@ def _isolated_speaker_strokes(pixels: np.ndarray) -> bool:
                 else (-residual if dark else residual)[components[bounds] == index]
             )
             if ink.max() >= 16:
-                return True
-    return False
+                yield y, x, components[bounds] == index, 4
 
 
 def combine_ocr_regions(
@@ -964,12 +967,14 @@ def _recognize_isolated_region(
     recognize_combined: OcrCombinedRecognizer | None,
     recognize_sparse: OcrSparseRecognizer | None = None,
 ) -> OCRResult:
-    has_speaker_glyphs = not speaker or speaker_glyphs_visible(image)
     remaining_timeout()
     processed = preprocess_dialog_image(image)
     if speaker:
         # Preprocessing already normalizes the background to light polarity.
-        processed = ImageOps.expand(processed, border=10, fill=255)
+        border = 10
+        scale_x = processed.width / image.width
+        scale_y = processed.height / image.height
+        processed = ImageOps.expand(processed, border=border, fill=255)
         data = _call_ocr(
             recognize_data,
             processed,
@@ -978,11 +983,8 @@ def _recognize_isolated_region(
             output_type=pytesseract.Output.DICT,
             lang=language,
         )
-        text = (
-            " ".join(word for word, _confidence in _recognized_words(data))
-            if has_speaker_glyphs
-            else ""
-        )
+        data = _visible_speaker_data(data, image, scale_x, scale_y, border)
+        text = " ".join(word for word, _confidence in _recognized_words(data))
     else:
         if recognize_combined is not None:
             text, data = recognize_combined(processed, language, remaining_timeout)
@@ -1304,10 +1306,81 @@ def _normalize_unknown_nameplate(text: str) -> str:
     return value
 
 
+def _visible_speaker_data(
+    data: OcrData, image: Image.Image, scale_x: float, scale_y: float, border: int
+) -> OcrData:
+    if not all(key in data for key in ("left", "top", "width", "height")):
+        return data if speaker_glyphs_visible(image) else {}
+    boxes = []
+    words = []
+    confidences = []
+    for word, conf, x, y, w, h in zip(
+        *(
+            data.get(key, ())
+            for key in ("text", "conf", "left", "top", "width", "height")
+        ),
+        strict=False,
+    ):
+        if not isinstance(word, str) or not word.strip():
+            continue
+        if not (
+            isinstance(x, int)
+            and isinstance(y, int)
+            and isinstance(w, int)
+            and isinstance(h, int)
+            and w > 0
+            and h > 0
+        ):
+            continue
+        boxes.append(
+            (
+                (x - border) / scale_x,
+                (y - border) / scale_y,
+                (x + w - border) / scale_x,
+                (y + h - border) / scale_y,
+            )
+        )
+        words.append(word)
+        confidences.append(conf)
+    span = visible_speaker_span(image, boxes)
+    return {"text": words[span], "conf": confidences[span]}
+
+
+def visible_speaker_span(
+    image: Image.Image, boxes: Sequence[tuple[float, float, float, float]]
+) -> slice:
+    """Trim unsupported outer tokens, keeping punctuation within a real name."""
+    if not boxes:
+        return slice(0, 0)
+    first, last = len(boxes), -1
+    bounds = [
+        (math.floor(left), math.floor(top), math.ceil(right), math.ceil(bottom))
+        for left, top, right, bottom in boxes
+    ]
+    for y, x, ink, minimum_height in _speaker_strokes(image):
+        for i, (left, top, right, bottom) in enumerate(bounds):
+            if first <= i <= last:
+                continue
+            x0, x1 = max(left, x.start), min(right, x.stop)
+            y0, y1 = max(top, y.start), min(bottom, y.stop)
+            if x0 >= x1 or y1 - y0 < minimum_height:
+                continue
+            overlap = ink[y0 - y.start : y1 - y.start, x0 - x.start : x1 - x.start]
+            if np.count_nonzero(overlap.any(axis=1)) >= minimum_height:
+                first, last = min(first, i), max(last, i)
+        if first == 0 and last == len(boxes) - 1:
+            break
+    return slice(first, last + 1)
+
+
 def speaker_glyphs_visible(image: Image.Image) -> bool:
+    return next(_speaker_strokes(image), None) is not None
+
+
+def _speaker_strokes(image: Image.Image) -> Iterator[_SpeakerStroke]:
     pixels = np.asarray(image.convert("L"), dtype=np.int16)
     if np.ptp(pixels) < 16:
-        return False
+        return
     # Ink has background on both sides; a broad surface supplies only one edge.
     # shortcut: qualify fonts below 4px or 16 levels of contrast before widening this gate.
     stroke_width = 2
@@ -1324,8 +1397,9 @@ def speaker_glyphs_visible(image: Image.Image) -> bool:
                 height = bounds[0].stop - bounds[0].start
                 width = bounds[1].stop - bounds[1].start
                 clipped = bounds[0].start == 0 or bounds[0].stop == pixels.shape[0]
+                minimum_height = max(4, stroke_width) - int(clipped)
                 if (
-                    height < max(4, stroke_width) - int(clipped)
+                    height < minimum_height
                     or (
                         height < 2 * stroke_width - int(clipped)
                         and width > stroke_width
@@ -1339,9 +1413,9 @@ def speaker_glyphs_visible(image: Image.Image) -> bool:
                     # Shallow straight ridges can come from shelves and book edges.
                     if np.std(ys - slope * xs) < 1:
                         continue
-                return True
+                yield bounds[0], bounds[1], components[bounds] == index, minimum_height
         stroke_width *= 2
-    return _isolated_speaker_strokes(pixels)
+    yield from _isolated_speaker_strokes(pixels)
 
 
 def is_speaker_ocr_noise(

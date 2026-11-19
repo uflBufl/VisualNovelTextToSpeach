@@ -16,7 +16,7 @@ from vntts.ocr import (
     normalize_recognized_speaker,
     parse_recognized_dialog,
     recognize_dialog_image_result,
-    speaker_glyphs_visible,
+    visible_speaker_span,
 )
 
 RapidOCRBox: TypeAlias = Iterable[Sequence[float]]
@@ -114,17 +114,20 @@ class RapidOCRBackend:
         if language.casefold() not in {"eng", "en"}:
             raise ValueError("The RapidOCR prototype currently supports English only")
         if ocr_regions is not None:
-            speaker_image, speaker_lines, speaker_confidence = self._recognize_image(
+            speaker_image, speaker_lines = self._recognize_image(
                 ocr_regions.speaker.crop(image)
             )
-            dialogue_image, dialogue_lines, dialogue_confidence = self._recognize_image(
+            dialogue_image, dialogue_lines = self._recognize_image(
                 ocr_regions.dialogue.crop(image)
             )
-            speaker_text = (
-                " ".join(text for _box, text, _score in speaker_lines)
-                if speaker_glyphs_visible(speaker_image)
-                else ""
-            )
+            dialogue_confidence = self._confidence(dialogue_lines)
+            boxes = []
+            for box, _text, _score in speaker_lines:
+                xs, ys = zip(*box, strict=True)
+                boxes.append((min(xs), min(ys), max(xs), max(ys)))
+            speaker_lines = speaker_lines[visible_speaker_span(speaker_image, boxes)]
+            speaker_text = " ".join(text for _box, text, _score in speaker_lines)
+            speaker_confidence = self._confidence(speaker_lines)
             speaker_noise = is_speaker_ocr_noise(
                 speaker_text, speaker_confidence, minimum_confidence
             )
@@ -146,21 +149,30 @@ class RapidOCRBackend:
                     f"Name OCR noise ignored: {speaker_text}" if speaker_noise else ""
                 ),
             )
-        processed_image, lines, confidence = self._recognize_image(image)
+        processed_image, lines = self._recognize_image(image)
         recognized = "\n".join(text for _box, text, _score in lines)
         character, text = parse_recognized_dialog(recognized, voice_registry)
         return OCRResult(
-            character, text, confidence, self.name, 1, processed_image=processed_image
+            character,
+            text,
+            self._confidence(lines),
+            self.name,
+            1,
+            processed_image=processed_image,
         )
 
     def _recognize_image(
         self, image: Image.Image
-    ) -> tuple[Image.Image, list[RapidOCRLine], float]:
+    ) -> tuple[Image.Image, list[RapidOCRLine]]:
         processed_image = image.convert("RGB")
         # RapidOCR treats NumPy input as BGR; diagnostics retain the RGB image.
         pixels = np.ascontiguousarray(np.asarray(processed_image)[:, :, ::-1])
         output = self.engine(pixels, use_cls=False)
         lines = self._ordered_lines(output)
+        return processed_image, lines
+
+    @staticmethod
+    def _confidence(lines: list[RapidOCRLine]) -> float:
         total_characters = sum(max(1, len(text)) for _box, text, _score in lines)
         confidence = (
             sum(max(1, len(text)) * score for _box, text, score in lines)
@@ -171,7 +183,7 @@ class RapidOCRBackend:
         )
         if not math.isfinite(confidence):
             raise ValueError("RapidOCR confidence aggregate is non-finite")
-        return processed_image, lines, confidence
+        return confidence
 
     @staticmethod
     def _ordered_lines(output: object) -> list[RapidOCRLine]:
