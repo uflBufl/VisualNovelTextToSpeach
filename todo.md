@@ -56,8 +56,7 @@ Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
 changes were not part of this run. Recording media is empty, so sword/costume
 identity remains a user observation rather than a verified image.
 
-Priority: fix Reading correctness first, then recognition latency/progress and
-generation throughput. Repair diagnostic recording last; missing media must
+Priority: fix Reading correctness first, then recognition latency and progress. Repair diagnostic recording last; missing media must
 not block fixes supported by existing evidence and deterministic regressions.
 Recheck archived findings against current main before implementation.
 
@@ -97,12 +96,8 @@ Recheck archived findings against current main before implementation.
       fragment must remain distinct from the complete line selected for reading,
       including uncertain/empty observations; verify copying, Stop/restart and
       enlarged fonts while generation runs. Preserve early prepared playback.
-- [ ] Qualify generation throughput on Windows using the same chapter and voice
-      settings under background Reading. Successful per-line results must avoid
-      re-auditing completed WAVs and reloading full result evidence; generation
-      steps must not rehash admitted controls or re-read state at finalization.
-      Verify cancellation, resume, priority changes and publication still retain
-      completed audio. The synthetic comparison does not qualify native speed.
+- [ ] On Windows, verify that cancellation, resume, priority changes and publication
+      retain completed audio during background Reading.
 
 ## Active - Remaining Windows Reading qualification
 
@@ -378,7 +373,8 @@ Recheck archived findings against current main before implementation.
       Independent source improvement, not a prerequisite for generic live OCR:
       in the extractor, expand known
       hero-story links through localized json_hero_story_introduce titles before
-      classification/hash. Real example: [3020901] must display Abendmuse Radio.
+      classification/hash. In Bkornblume’s line `302001007`, replace the source
+      reference `[3020901]` with its English title, `Abendmuse Radio`.
       Preserve unknown literals such as [1920]; test known, repeated/multiple and
       unknown references, stable line IDs/order, then reimport and regenerate
       affected prepared text. Preserve the location Narrator record: scrolling
@@ -520,36 +516,8 @@ Other remaining defects and native checks:
    - **Continuation regression:** keep the passing34/35/85/86/97 behavior
      while fixing116, retaining Stop/focus/uncertainty guards. Do not add dictionary
      autocorrection for dust-obscured words.
-## P0 - Repair Reading ownership, OCR and continuation
+## Investigate reported audio interruptions
 
-- [ ] **R5 - Validate explicit indexed-current recovery on Mac.** For an exact,
-      unique indexed line outside the expected graph, use Read indexed current line
-      from Reading, compact controls and keyboard/tray without advanced settings.
-      Confirm configured original -> prepared -> live priority, one explicit
-      re-anchor, manual continuation, and no guessed edge, silent skip, duplicate
-      speech, stale/blank-frame recovery or restart after Stop/cancel. Distinguish
-      this action from unrecognized text and an explicit position-picker choice.
-
-- [ ] **R8 - Validate transition/typing status with fresh Mac run IDs.** For
-      long successor typing, require ongoing typing or recognition wait instead of
-      an ignored-key error. An unchanged new frame with unavailable OCR must reach
-      an actionable unavailable status; harmless old-frame jitter must not prove
-      a transition. Confirmation must resume without duplicate audio or another
-      key after a timeout. Keep historical Windows stalls as separate deferred
-      platform qualification.
-
-- [ ] **R9 - Qualify uncertainty recovery and control ownership on Mac.**
-      Verify line16 ->17 advances once after fresh uncertain OCR, without manual
-      Space or replay. Exercise uncertainty before/during/after speech, stale
-      run/owner/epoch/focus and Pause between visual admission and key dispatch.
-      Pause/Resume must continue once; Clear/Stop must stay suppressed after exact
-      OCR/focus return. Preserve occurrence and WAV/source identity; unowned legacy
-      speech must still cancel on uncertainty.
-- [ ] **R11 - Qualify retained-backend speaker announcements on Mac.**
-      Bob must use his standard Narrator recording while the configured name
-      announcement succeeds. Require one announcement and one unchanged dialogue,
-      bounded interruption and no orphan worker. A genuine announcement error
-      must still preserve dialogue playback.
 - [ ] **R12 - Investigate if audible interruptions recur.**
       On Mac build fee2f818, prepared stage314001 with concurrent MOSS generation,
       exact approved-source correlation found line 8 +192 output frames (4.354ms
@@ -915,36 +883,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       acceleration from configuration.
 
 - [ ] Investigate the two current authoring underflows from archive (20), at 21:23:54.642 (`VoiceAuditionPanel`) and 21:24:27.176 (`StoryVoicePreview`), using the player/attempt IDs and terminal outcomes in authoring telemetry. Both attempts reported failed playback rather than natural completion, and subsequent playback also completed; the archive does not establish whether physical output starvation, cancellation or another host condition caused them. Retain output-buffer/owner timing in a bounded reproduction before changing PCM buffering or completion rules.
-
-## P1 - Link character identities across story names
-
-- [ ] **Validate linked names on Windows:** in a story showing only Aderyn, type
-      Rhiannon as the canonical name in Voice plan. Inspect the shared reference
-      choices and selected voice, prepare a story, restart and read both names
-      with the same voice. A saved short Aderyn clip must remain available for
-      inspection but not become the active choice. With only that clip available,
-      require preview rather than selecting it automatically. Unlink and verify
-      prior choices can be recovered without a fresh game import.
-- [ ] **Validate game-evidence name suggestions in the real Voice plan:** select
-      The You That's Meant To Be and inspect Aderyn. The only proposed match
-      should be Rhiannon, based on five shared portrait IDs and the same voiced
-      source bank; unrelated names must not be suggested. Cancel the link dialog
-      and confirm no voice changes, then confirm the link, restart and unlink it.
-      Gate: no automatic identity or voice change before confirmation, generation
-      never waits for a decision, and the prior separate choices remain recoverable.
-
-## P1 - Reduce preparation and post-generation saving latency
-
-- [ ] **Validate finalization on Windows:** repeat the 1,071-file story that took
-      73.8 seconds after recovery (acceptance 33.14, publication 38.09,
-      activation 2.29). Inspect the new `pregeneration-acceptance-*` and existing
-      `pregeneration-publication-*` phases from the last generated line to usable
-      audio. The local 1,090-WAV copy took 7.65 seconds cold and 0.65 seconds on
-      unchanged reuse; its longest phases were terminal validation (3.48 seconds),
-      staged validation (1.92 seconds) and audio copy (1.47 seconds). Require the
-      Windows result to preserve published bytes and corruption failures; if a
-      phase remains materially slower, collect its file counts and bytes before
-      changing its validation boundary.
 
 ## P1 - Measure remaining player latency
 
