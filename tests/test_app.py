@@ -25,7 +25,7 @@ from PySide6.QtCore import (  # noqa: E402
     QThreadPool,
     QTimer,
 )
-from PySide6.QtGui import QAction, QFont  # noqa: E402
+from PySide6.QtGui import QAccessible, QAction, QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -63,6 +63,7 @@ from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.dialog_capture import ScreenCaptureError  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
+from vntts.hotkeys import macos_hotkey_limitation  # noqa: E402
 from vntts.live import LiveDialogReader, ScreenObservation  # noqa: E402
 from vntts.live_tracking import SpeechChunk  # noqa: E402
 from vntts.ocr import (  # noqa: E402
@@ -6690,6 +6691,12 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertIn("macOS controls", dialog.macos_hotkey_notice.text())
         self.assertIn("compact controls", dialog.macos_hotkey_notice.text())
+        notice = QAccessible.queryAccessibleInterface(dialog.macos_hotkey_notice)
+        self.assertIsNotNone(notice)
+        self.assertEqual(
+            " ".join(notice.text(QAccessible.Text.Name).split()),
+            f"macOS controls {macos_hotkey_limitation}",
+        )
         self.assertIs(
             dialog.settings_regions[0].layout().itemAt(0).widget(),
             dialog.macos_hotkey_notice,

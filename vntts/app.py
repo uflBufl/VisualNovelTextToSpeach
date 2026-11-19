@@ -476,7 +476,6 @@ class SettingsDialog(QDialog):
             f"<b>macOS controls</b><br>{macos_hotkey_limitation}"
         )
         self.macos_hotkey_notice.setWordWrap(True)
-        self.macos_hotkey_notice.setAccessibleName("macOS controls")
         self.macos_hotkey_notice.setVisible(sys.platform == "darwin")
         if sys.platform == "darwin":
             for recorder in self.hotkey_recorders:
