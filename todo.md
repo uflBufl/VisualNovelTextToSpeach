@@ -640,11 +640,7 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] **U2 - Qualify four-line dialogue and difficult nameplates on Mac.**
-      Check a complete four-line lower-dialogue capture against the source text;
-      candidates include Dr. Schwartz in Razor in Green (`100601:81`) and Writer
-      of the Report in Soaked Science (`100532:19`). Verify the rendered line count
-      and that the maximum-height calibration retains the nameplate, text and cue.
+- [ ] **U2 - Qualify difficult nameplates on Mac.**
       Capture real off-center, partially clipped and selectively faint names,
       including a short name. Check the speaker and dialogue at the existing
       confidence threshold, with the fading Marcus and empty street nameplates as controls.
