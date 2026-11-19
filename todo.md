@@ -195,28 +195,12 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
-- [ ] **GEN-25-01: проверить объяснения и звук неудачной генерации в общем прогоне.**
-      MOSS/stable/seed0, retries0, отдельная очередь314501: один WAV получил
-      speech_silence / sentence_boundary_pause_candidate, пауза3.44..5.04с.
-      Проверка качества сработала, это не сбой воспроизведения главы314001.
-      В Stories проверить остановку активного чтения перед диагностическим
-      прослушиванием и диагностического звука при закрытии; проверить отмену
-      автоматического повтора. Диагностическое аудио не должно попадать в готовый
-      пакет. Доступный реальный пример:315612:93, Gardener,
-      `Lady Hedone? Lady Hedone?`, internal pause / live fallback.
-      Новые действия повтора, смены референса/движка и ручного принятия не добавлять.
 - [ ] **UX-25-02: оставшиеся взаимодействия Stories в общем прогоне.**
       При обычном и крупном шрифте проверить доступность Prepare again после
       возврата из подготовки и переход к проверке перед повторной генерацией,
       доступ к импорту при пустом каталоге в изолированных настройках, видимость
       длинных ошибок, копирование и клавиатуру после возврата из подготовки.
       Реальное колесо/трекпад проверить отдельно от MCP-событий.
-- [ ] **UX-26-01: проверить устройство генерации в общем живом прогоне.**
-      В Stories / Show generation details сверить устройство и доступное имя
-      чипа с health работающего MLX-воркера. После перезапуска воркера подпись
-      устройства и PID должны относиться к одному процессу; после завершения/нового запуска не
-      показывать старые сведения как текущие. Отсутствие optional-метаданных
-      не должно прерывать генерацию; не делать выводов о CPU/GPU по имени модели.
 - [ ] **UX-25-03: проверить Audio setup в общем живом прогоне.**
       Проверить краткую причину недоступности аудио, кнопку и уведомление:
       они должны открывать Check readiness на Audio output с полной инструкцией
@@ -447,10 +431,6 @@ Other remaining defects and native checks:
      retries and retain the actual limit and outcome.
      Require complete speech or a clear terminal failure, no truncated WAV in
      the ready pack, responsive cancellation and preserved ready work on resume.
-   - **Preparation problems (GEN-25-01):** verify character, full phrase and
-     measured reason, retained/unavailable/not-created audio states, stopping
-     reading before diagnostic playback, cancellation and the final live-fallback
-     screen. Check ordinary/large fonts; no diagnostic WAV enters a ready pack.
    - **OCR warning presentation:** low-confidence startup/live observations must
      preserve the last real speaker and dialogue in dashboard and Compact.
      Confidence/reason belongs to status; raw OCR must not enter status logs.
