@@ -1,5 +1,7 @@
 # TODO
 
+Screen-reader checks in this list apply only to Windows.
+
 ## Active - Windows startup recovery and latest Reading evidence
 
 Evidence: November18 `vntts-support.zip` and recording exports
@@ -644,19 +646,19 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] Confirm the Settings opening fix on the reported Windows setup: archive (20) measured two pre-fix Settings pack checks at 3.487 s and 3.120 s, each scanning 1,513 files. After `1f4caa46`, measure click-to-first-frame while idle and while Reading is active; distinguish initial rendering, intentional speech draining and Save preflight. Preserve Save errors and Cancel behavior.
 
-- [ ] With verified background workspace isolation or an explicitly approved native session, edit Settings across sections, open the file and engine selectors, save and cancel nested voice choices, and confirm keyboard focus/VoiceOver or NVDA announcements at enlarged system text. On Windows, verify native shortcut symbols and that shortcut changes take effect after Save. Reset a saved non-100% speed on Windows and cancel to verify the original speed remains. Then reset again, save, reopen Settings, and play an existing prepared line at 100%. Retain native focus, popup placement and audible playback evidence. Offscreen Qt checks cover persistence, rollback, literal text, navigation and layout, not OS integration or physical output.
+- [ ] With verified background workspace isolation or an explicitly approved native session, edit Settings across sections, open the file and engine selectors, save and cancel nested voice choices, and confirm keyboard focus and NVDA announcements at enlarged system text. On Windows, verify native shortcut symbols and that shortcut changes take effect after Save. Reset a saved non-100% speed on Windows and cancel to verify the original speed remains. Then reset again, save, reopen Settings, and play an existing prepared line at 100%. Retain native focus, popup placement and audible playback evidence. Offscreen Qt checks cover persistence, rollback, literal text, navigation and layout, not OS integration or physical output.
 
 ## Qualify Reading setup with native capture and audio
 
-- [ ] With verified background workspace isolation or an explicitly approved native session, run Reading setup on macOS and Windows: choose a real game, recover from a missing audio device, calibrate, test/cancel/retry, change the region after success, then save. Confirm actual audio stops, a new area requires a new successful test, cancellation restores saved runtime settings, and Save leaves Reading visible without starting playback. Check full errors and keyboard focus with enlarged text and VoiceOver/NVDA; retain focus, audio and timing evidence. Offscreen tests cover transitions, persistence, clipboard and delayed window handoff, not physical capture/audio or assistive technology.
+- [ ] With verified background workspace isolation or an explicitly approved native session, run Reading setup on macOS and Windows: choose a real game, recover from a missing audio device, calibrate, test/cancel/retry, change the region after success, then save. Confirm actual audio stops, a new area requires a new successful test, cancellation restores saved runtime settings, and Save leaves Reading visible without starting playback. Check full errors and keyboard focus with enlarged text and NVDA; retain focus, audio and timing evidence. Offscreen tests cover transitions, persistence, clipboard and delayed window handoff, not physical capture/audio or assistive technology.
 
 ## Qualify compact controls over a real game
 
-- [ ] With verified background workspace isolation, or an explicitly approved native session, exercise compact controls on macOS and Windows over a fullscreen game: Start, Stop, Cancel start, Read once, pause/focus loss and expected-line recovery. Confirm capture/audio stop, no focus theft, screen-edge placement, and keyboard access to the complete last speaker, latest message and unavailable reason at enlarged text with VoiceOver/NVDA. Retain native focus, screenshot and audible-stop evidence. Offscreen tests qualify state, dispatch, layout, scrolling/copy and focus indicators, not fullscreen or assistive-technology integration.
+- [ ] With verified background workspace isolation, or an explicitly approved native session, exercise compact controls on macOS and Windows over a fullscreen game: Start, Stop, Cancel start, Read once, pause/focus loss and expected-line recovery. Confirm capture/audio stop, no focus theft, screen-edge placement, and keyboard access to the complete last speaker, latest message and unavailable reason at enlarged text with NVDA. Retain native focus, screenshot and audible-stop evidence. Offscreen tests qualify state, dispatch, layout, scrolling/copy and focus indicators, not fullscreen or assistive-technology integration.
 
 ## Qualify native local voice import
 
-- [ ] With verified background workspace isolation, or an explicitly approved native session, open the audio file picker by keyboard on macOS and Windows; choose and cancel multiple local recordings, then retry after a file becomes unavailable. Verify focus restoration, enlarged system text and VoiceOver/NVDA announcements for invalid names and replacement confirmation. Enter/Escape must keep the old voice; explicit Replace voice must update only the intended custom character. Use a disposable library and retain native focus/announcement evidence. Offscreen Qt tests and renders qualify draft, keyboard dispatch, scrolling and guarded publication, not native picker placement or screen-reader output.
+- [ ] With verified background workspace isolation, or an explicitly approved native session, open the audio file picker by keyboard on macOS and Windows; choose and cancel multiple local recordings, then retry after a file becomes unavailable. Verify focus restoration, enlarged system text and NVDA announcements for invalid names and replacement confirmation. Enter/Escape must keep the old voice; explicit Replace voice must update only the intended custom character. Use a disposable library and retain native focus/announcement evidence. Offscreen Qt tests and renders qualify draft, keyboard dispatch, scrolling and guarded publication, not native picker placement or screen-reader output.
 
 ## Keep full regression shards within their watchdogs
 
@@ -664,17 +666,17 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Qualify native macOS permission recovery
 
-- [ ] In an explicitly approved native macOS session (OS prompts and System Settings may interrupt the desktop), test Screen Recording and Accessibility separately: Request, deny/grant/retry, and Open/Manage Settings. Confirm each opens the corresponding system control; change access and return to VNTTS, then verify automatic status refresh and manual Refresh status. Check pending-request Close/Escape, keyboard focus and VoiceOver names/descriptions at enlarged text; preserve screenshots and focus/announcement evidence. Offscreen tests verify dispatch, state, keyboard, scroll/copy and exact target URLs, not native OS routing, prompts or accessibility announcements.
+- [ ] In an explicitly approved native macOS session (OS prompts and System Settings may interrupt the desktop), test Screen Recording and Accessibility separately: Request, deny/grant/retry, and Open/Manage Settings. Confirm each opens the corresponding system control; change access and return to VNTTS, then verify automatic status refresh and manual Refresh status. Check pending-request Close/Escape, keyboard focus at enlarged text; preserve screenshots and focus evidence. Offscreen tests verify dispatch, state, keyboard, scroll/copy and exact target URLs, not native OS routing or prompts.
 
 ## Qualify native OCR review and editor accessibility
 
 - [ ] Once native UI can be launched without interrupting the desktop, check saved OCR corrections on macOS and Windows at enlarged system text: put the narrow editor near screen edges, hover both long source/replacement cells and inspect each with F2/Escape. Confirm full values remain readable, hover stays usable, native tooltips remain on screen, and exiting inspection leaves Save disabled. Retain full-window/tooltip captures and keyboard evidence. Offscreen tests and cropped tooltips verify content, not native placement or focus.
 
-- [ ] With verified background workspace isolation or an explicitly approved native session, review a captured uncertain line on macOS and Windows at enlarged system text. Check VoiceOver/NVDA names and status announcements, Tab/arrow access to every footer action, literal-text copying and tooltips near screen edges. Save a scoped correction, reopen after an external rule edit, then Read Once on a real game and confirm the updated correction is used. Retain native focus, capture and accessibility evidence; offscreen tests do not qualify OS routing or assistive technology.
+- [ ] With verified background workspace isolation or an explicitly approved native session, review a captured uncertain line on macOS and Windows at enlarged system text. Check NVDA names and status announcements, Tab/arrow access to every footer action, literal-text copying and tooltips near screen edges. Save a scoped correction, reopen after an external rule edit, then Read Once on a real game and confirm the updated correction is used. Retain native focus, capture and accessibility evidence; offscreen tests do not qualify OS routing or assistive technology.
 
 ## Qualify dialogue history on native audio and accessibility setups
 
-- [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text with VoiceOver/NVDA. Retain native screenshots, audio and focus/announcement evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or screen-reader/native focus behavior.
+- [ ] On macOS and Windows with a real speech engine, capture two lines, open Dialogue history, start one line and select/search for another, then stop and retry after restoring an unavailable engine. Confirm the assigned voice, actual audible stop and named status agree; verify Tab/Enter/Escape and full error scrolling/copying at 200% text with NVDA. Retain native screenshots, audio and focus/announcement evidence. Automated Qt state/keyboard/export tests and Mac window renders do not qualify hardware output or screen-reader/native focus behavior.
 
 ## Investigate reported slow-sounding voice playback
 
@@ -1080,8 +1082,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       and save it, restart, then verify that live fallback and offline preparation
       both retain the choice.
 - [ ] **Validate manually:** exercise the main player journeys on real displays:
-      fullscreen and multi-monitor use, 100%/150%/200% scaling, VoiceOver/Windows
-      Narrator, focus loss, rapid advancement and shutdown during each pipeline stage.
+      fullscreen and multi-monitor use, 100%/150%/200% scaling, Windows Narrator, focus loss, rapid advancement and shutdown during each pipeline stage.
       Check Stories, Voices, Reading, setup and Settings for visible primary
       actions at small sizes, exact clipboard copying, keyboard navigation and
       contrast when switching system light/dark themes while the app is open.
@@ -1090,7 +1091,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       visible. Confirm Cancel discards a cross-section draft and Save persists it.
 - [ ] **Validate story-match recovery on macOS and Windows:** with an unmatched
       visible line and the smallest supported display at 200% text scaling, use
-      VoiceOver/Narrator and keyboard only. Require the mismatch to be announced,
+      Windows Narrator and keyboard only. Require the mismatch to be announced,
       all three actions and their focus to remain visible and distinguishable,
       Enter to start live OCR reading where supported or retry matching in sequence
       modes, Stories to open with reading stopped, and Escape to leave reading
@@ -1098,7 +1099,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       invalidates the old choice. Retain an active-window/full-display recording
       or accessibility trace, including visible primary-button focus.
 - [ ] **Validate Readiness on macOS and Windows:** at 200% text scaling, use
-      VoiceOver/Narrator and keyboard only through loading, an OCR error, a voice
+      Windows Narrator and keyboard only through loading, an OCR error, a voice
       warning and success. Require the first error and its remedy to be announced,
       Full check details and its text area to have visible keyboard focus,
       the full long error to scroll to its end, the install guide to open the
@@ -1110,9 +1111,9 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       pane, and verify automatic status refresh. Check the unknown-status and
       request-failure paths, restart after a newly granted permission, then
       confirm Reading can capture text. At 200% text scaling, both paths and
-      Refresh/Close must remain keyboard and VoiceOver accessible.
+      Refresh/Close must remain keyboard accessible.
 - [ ] **Validate the asset manager on real macOS and Windows hosts:** at 200% text
-      scaling in light and dark themes, use keyboard and VoiceOver/Narrator to
+      scaling in light and dark themes, use keyboard and Windows Narrator to
       choose, checksum-validate and save an existing voice manifest; import a
       manifest and one character voice; verify, download, cancel and retry an
       XTTS model. Confirm changed model selections never inherit another
@@ -1129,11 +1130,11 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       rollback of saved profile edits. Simulate a read-only region file and full
       settings volume to verify activation leaves the previous profile usable.
 - [ ] **Validate manual voice import on real macOS and Windows hosts:** use keyboard
-      and VoiceOver/Narrator to enter required character/optional aliases, select
+      and Windows Narrator to enter required character/optional aliases, select
       and replace audio files, inspect a long scrollable file list, cancel without
       import, and confirm an import error preserves the entered selection for retry.
 - [ ] **Validate calibration on real macOS and Windows hosts:** at 200% text
-      scaling with VoiceOver/Narrator, select one complete dialogue box (name,
+      scaling with Windows Narrator, select one complete dialogue box (name,
       multiline text and continue indicator), move/resize it, review and enlarge
       the capture, scroll to its edges, and cancel without changing prior settings.
       Include near-fullscreen/top-positioned dialogue and real game fonts. Deny
@@ -1193,7 +1194,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       confirm no delayed sound or false heard mark. Close during loading/saving
       and verify completion, then force a listening-progress write failure and
       retry or explicitly discard. Retain native audio-stop, focus and
-      VoiceOver/NVDA evidence; offscreen callbacks do not qualify physical output.
+      NVDA evidence; offscreen callbacks do not qualify physical output.
 - [ ] **Validate blind missing-voice review on real macOS and Windows hosts:**
       at 200% text scaling, compare two playable A/B candidates, stop each
       before the end and confirm Neither/Choose remain blocked, then hear both
@@ -1203,7 +1204,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       import. Confirm a mixed multi-family session counts manual and automatic
       outcomes separately after reopen.
 - [ ] **Validate failed-reference audit on real macOS and Windows hosts:**
-      at 200% text scaling, use keyboard and VoiceOver/NVDA to switch groups,
+      at 200% text scaling, use keyboard and NVDA to switch groups,
       candidates and affected lines in both directions; confirm the full line
       remains readable and focus scrolls into view. Interrupt original playback,
       switch selection during playback, fail source preparation and generate or
@@ -1212,7 +1213,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       reopen to confirm the selected reference and progress persist.
 - [ ] **Validate source-reference quality review on real macOS and Windows hosts:**
       at 200% text scaling, inspect the source identity/portrait, switch generated
-      samples, copy their full text and use keyboard plus VoiceOver/NVDA to reach
+      samples, copy their full text and use keyboard plus NVDA to reach
       playback and decisions. Stop original and generated audio early and switch
       samples mid-playback; neither action may count as complete listening. After
       the original alone, Reject and Need another should enable while Accept
@@ -1221,7 +1222,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       visible at enlarged text.
 - [ ] **Validate blind A/B listening on real macOS and Windows hosts:** at
       200% text scaling, read and scroll a long dialogue, use keyboard and
-      VoiceOver/NVDA to reach A, B, Review context and all four decisions.
+      NVDA to reach A, B, Review context and all four decisions.
       Confirm a pause/resume preserves only natural full-playback credit, seeking
       or stopping does not grant credit, and automatic playback starts B only
       after A finishes. Save A/B/tie/neither outcomes; verify no model is called
@@ -1229,7 +1230,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       and the saved report opens in the default application.
 - [ ] **Validate terminal-conflict review on real macOS and Windows hosts:**
       at 200% text scaling, read a multiline affected line, move by keyboard and
-      VoiceOver/NVDA through Play A/B, Review context, and all three outcomes.
+      NVDA through Play A/B, Review context, and all three outcomes.
       Stop playback early and verify no listening credit; natural completion of
       both recordings alone must unlock Keep A/B and Neither. Save a decision,
       reopen, and verify progress and unchanged source workspaces. A dangling
@@ -1237,7 +1238,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 - [ ] **Validate rejected-recording reassessment on real macOS and Windows hosts:**
       at 200% text scaling, hear two recordings to their natural ends, stop one
       early, choose multiple defects and then acceptable, navigate both ways,
-      and publish. Check VoiceOver/NVDA announces the evidence, choices, save
+      and publish. Check NVDA announces the evidence, choices, save
       status and errors; confirm focus follows the scrolled final defect.
       Repeat after read-only progress and publication folders, then reopen to
       verify only saved choices persisted and earlier decisions remain intact.
@@ -1259,7 +1260,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Active - Voice-picker accessibility verification
 
 - [ ] On supported macOS and Windows desktops, exercise the selected-story voice
-      overview at minimum width and 200% text with keyboard and VoiceOver/NVDA.
+      overview at minimum width and 200% text with keyboard and NVDA.
       Traverse the table, selected reference details, More actions and Preparation
       details; require full values/actions to be reachable, the selected group to
       remain announced, and Copy to preserve complete details. Choose a voice through
@@ -1275,8 +1276,8 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       reported failure was a mismatch between the candidate's source display name
       and its manifest name; verify original playback and preview on Windows after
       the identity-check fix, then remove this item.
-- [ ] On supported macOS and Windows builds, use VoiceOver and NVDA to traverse
-      target, source, game-reference, consent, preview and action controls;
+- [ ] On supported macOS and Windows builds, traverse
+      target, source, game-reference, consent, preview and action controls (with NVDA on Windows);
       enter the same editor from live character recovery with that character selected.
       Confirm an unknown character in live and Read once uses the narrator without
       opening a blocking choice. After a live voice edit, exercise Save, Back,
