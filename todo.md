@@ -640,13 +640,6 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] **U2 - Qualify difficult nameplates on Mac.**
-      With the full name inside the user-selected capture area, check that the
-      adaptive crop retains a name displaced from the divider and that Reading
-      recognizes a name that fades while the dialogue stays clear.
-      Compare each with a fully readable neighboring frame and check the speaker
-      and dialogue at the saved threshold. Use Z, the fading Marcus and the empty
-      street nameplate as controls.
 - [ ] **U7 - Complete model-asset evidence and native offline reuse.**
       Qualify normal GUI/preflight with network unavailable and no experiment-only
       environment: offline-first and Reading-first must reuse the same managed
