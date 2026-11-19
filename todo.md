@@ -628,12 +628,6 @@ Other remaining defects and native checks:
       Disambiguate repeated identical WAV occurrences before treating an NCC peak
       as an authoritative onset; a matching source alone does not identify playback.
 
-## P0 - Make capture setup trustworthy and operable
-
-- [ ] **U1 - Check a live dialogue line in Mac Reading setup.** With a fully
-      displayed multiline game dialogue, compare the calibration preview and
-      copied speaker and text with the same line on screen.
-
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 
 Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
