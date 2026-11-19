@@ -641,13 +641,12 @@ Other remaining defects and native checks:
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
 - [ ] **U2 - Qualify difficult nameplates on Mac.**
-      Find a game-rendered name displaced from the divider, one partially clipped
-      under the saved calibration, and one that fades while the dialogue stays clear.
+      With the full name inside the user-selected capture area, check that the
+      adaptive crop retains a name displaced from the divider and that Reading
+      recognizes a name that fades while the dialogue stays clear.
       Compare each with a fully readable neighboring frame and check the speaker
       and dialogue at the saved threshold. Use Z, the fading Marcus and the empty
-      street nameplate as controls. In the controlled crop of `100113:8`, removing
-      the top eight pixels of Z makes raw OCR accept `4`. Check how to handle
-      that ambiguity without suppressing a genuine numeric name.
+      street nameplate as controls.
 - [ ] **U7 - Complete model-asset evidence and native offline reuse.**
       Qualify normal GUI/preflight with network unavailable and no experiment-only
       environment: offline-first and Reading-first must reuse the same managed
