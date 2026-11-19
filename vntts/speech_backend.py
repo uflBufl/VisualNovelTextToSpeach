@@ -157,7 +157,7 @@ class _MossTTSModel(Protocol):
 
     def encode_reference_audio(self, source: str) -> object: ...
 
-    def _ensure_audio_tokenizer(self) -> None: ...
+    def _ensure_audio_tokenizer(self, *, source: str | None = None) -> None: ...
 
     def generate(
         self,
@@ -1804,6 +1804,7 @@ class MossTTSVoiceRouterBackend:
         model_name: object = None,
         volume: int | float = 1.0,
         model_factory: _MossTTSModelFactory | None = None,
+        asset_progress: Callable[[str], None] | None = None,
         audio_output: AudioOutput | None = None,
         clock: Clock = monotonic,
         audio_cache_size: int = 32,
@@ -1845,7 +1846,9 @@ class MossTTSVoiceRouterBackend:
             or default_moss_tts_model
         )
         self._mlx: object | None = None
-        self.model = self._load_moss_model(model_factory, runtime_directory)
+        self.model = self._load_moss_model(
+            model_factory, runtime_directory, asset_progress
+        )
         self.registry = registry
         self.narrator_speaker = "MOSS reference voice"
         self.narrator_reference = narrator_reference
@@ -1910,39 +1913,51 @@ class MossTTSVoiceRouterBackend:
         self,
         model_factory: _MossTTSModelFactory | None,
         runtime_directory: str | Path | None,
+        asset_progress: Callable[[str], None] | None = None,
     ) -> _MossTTSModel:
-        load_codec = model_factory is None
-        if model_factory is None:
-            runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
+        if model_factory is not None:
             try:
-                import mlx.core as mx
-                from mlx_audio.tts import load
-            except ImportError as error:
+                return model_factory(self.model_name, lazy=False)
+            except Exception as error:
                 raise TTSConfigurationError(
-                    "MOSS-TTS could not be imported from "
-                    f"{runtime_site_packages}: {error}"
+                    f"MOSS-TTS could not load {self.model_name!r}: {error}"
                 ) from error
-            from vntts.moss_compat import install_moss_quantized_codec_compat
 
-            install_moss_quantized_codec_compat()
-            self._mlx = mx
-            model_factory = load
+        runtime_site_packages = activate_moss_tts_runtime(runtime_directory)
         try:
-            # VNTTS constructs the backend on its startup worker and performs
-            # live generation on a playback worker. MLX lazy parameters retain
-            # the thread-local stream that created their graph, then fail on
-            # first use in the other worker with "There is no Stream(...) in
-            # current thread". Materialize the model before it crosses that
-            # boundary; streamed audio generation remains lazy and incremental.
-            model = model_factory(self.model_name, lazy=False)
-            if load_codec:
-                # Offline startup must also admit the codec before reusing this worker.
-                model._ensure_audio_tokenizer()
-            return model
-        except Exception as error:
+            import mlx.core as mx
+            from mlx_audio.tts import load
+            from mlx_audio.utils import DEFAULT_ALLOW_PATTERNS, get_model_name_parts
+
+            from vntts.moss_mlx_assets import codec_source, open_asset
+        except ImportError as error:
             raise TTSConfigurationError(
-                f"MOSS-TTS could not load {self.model_name!r}: {error}"
+                f"MOSS-TTS could not be imported from {runtime_site_packages}: {error}"
             ) from error
+        from vntts.moss_compat import install_moss_quantized_codec_compat
+
+        install_moss_quantized_codec_compat()
+        self._mlx = mx
+        report = asset_progress or (lambda _message: None)
+        with open_asset(
+            "model", self.model_name, DEFAULT_ALLOW_PATTERNS, report
+        ) as model_dir:
+            # Materialize on the startup thread before another MLX stream uses the weights.
+            model: _MossTTSModel = load(
+                model_dir,
+                lazy=False,
+                model_name_parts=get_model_name_parts(self.model_name),
+            )
+            config = getattr(model, "config", None)
+            source = codec_source(
+                model_dir,
+                getattr(config, "audio_tokenizer_pretrained_name_or_path", None),
+            )
+        with open_asset(
+            "codec", source, ["*.json", "*.safetensors", "*.index.json", "*.md"], report
+        ) as codec_dir:
+            model._ensure_audio_tokenizer(source=str(codec_dir))
+        return model
 
     def prepare(self, character: str, text: str) -> object:
         prepared = self.prepare_playback(character, text)

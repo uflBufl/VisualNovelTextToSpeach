@@ -640,11 +640,6 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] **U7 - Identify the MOSS asset being loaded or downloaded.**
-      Reading and offline preparation report the cache directory during startup.
-      Expose the resolved model and codec and distinguish a download from a local
-      load. Check that a missing or corrupt asset is identified and that a
-      cancelled download stops promptly and can be retried.
 - [ ] Verify compact opening without game-focus activation using owner-only
       focus evidence.
 

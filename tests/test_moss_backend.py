@@ -175,36 +175,114 @@ class FailingAudioOutput(FakeAudioOutput):
 
 class MossTTSBackendTest(unittest.TestCase):
     def test_real_loader_requires_codec_before_model_is_ready(self):
-        for codec_error in (None, OSError("codec is not cached")):
-            with self.subTest(codec_error=codec_error):
-                model = Mock(sample_rate=48000)
-                model._ensure_audio_tokenizer.side_effect = codec_error
-                loader = Mock(return_value=model)
-                mx = SimpleNamespace()
-                backend = object.__new__(MossTTSVoiceRouterBackend)
-                backend.model_name = "installed-moss"
-                with (
-                    patch("vntts.speech_backend.activate_moss_tts_runtime"),
-                    patch("vntts.moss_compat.install_moss_quantized_codec_compat"),
-                    patch.dict(
-                        sys.modules,
-                        {
-                            "mlx": SimpleNamespace(core=mx),
-                            "mlx.core": mx,
-                            "mlx_audio": SimpleNamespace(),
-                            "mlx_audio.tts": SimpleNamespace(load=loader),
-                        },
-                    ),
+        with TemporaryDirectory() as root:
+            model_dir = Path(root).resolve()
+            codec_dir = model_dir / "audio_tokenizer"
+            codec_dir.mkdir()
+            model = Mock(sample_rate=48000)
+            loader = Mock(return_value=model)
+            backend = object.__new__(MossTTSVoiceRouterBackend)
+            backend.model_name = str(model_dir)
+            mx = SimpleNamespace()
+            utils = SimpleNamespace(
+                DEFAULT_ALLOW_PATTERNS=[],
+                get_model_name_parts=lambda name: [name],
+                _is_local_path=lambda source: Path(source).is_absolute(),
+            )
+            modules = {
+                "mlx": SimpleNamespace(core=mx),
+                "mlx.core": mx,
+                "mlx_audio.tts": SimpleNamespace(load=loader),
+                "mlx_audio.utils": utils,
+                "mlx_audio.codec.models.moss_audio_tokenizer.moss_audio_tokenizer": SimpleNamespace(
+                    _is_audio_tokenizer_dir=lambda path: path == codec_dir
+                ),
+                "mlx_audio.tts.models.moss_tts.config": SimpleNamespace(
+                    DEFAULT_AUDIO_TOKENIZER_REPO="fallback/codec"
+                ),
+            }
+            with (
+                patch("vntts.speech_backend.activate_moss_tts_runtime"),
+                patch("vntts.moss_compat.install_moss_quantized_codec_compat"),
+                patch.dict(sys.modules, modules),
+            ):
+                progress = []
+                self.assertIs(
+                    backend._load_moss_model(None, None, progress.append), model
+                )
+                self.assertEqual(
+                    progress,
+                    [
+                        f"Loading MOSS model {model_dir}",
+                        f"Loading MOSS codec {codec_dir}",
+                    ],
+                )
+                loader.assert_called_once_with(
+                    model_dir, lazy=False, model_name_parts=[str(model_dir)]
+                )
+                model._ensure_audio_tokenizer.assert_called_once_with(
+                    source=str(codec_dir)
+                )
+                model._ensure_audio_tokenizer.side_effect = OSError("invalid weights")
+                with self.assertRaisesRegex(
+                    TTSConfigurationError, "MOSS codec .*invalid weights"
                 ):
-                    if codec_error is None:
-                        self.assertIs(backend._load_moss_model(None, None), model)
-                    else:
-                        with self.assertRaisesRegex(
-                            TTSConfigurationError, "codec is not cached"
-                        ):
-                            backend._load_moss_model(None, None)
-                model._ensure_audio_tokenizer.assert_called_once_with()
-                loader.assert_called_once_with("installed-moss", lazy=False)
+                    backend._load_moss_model(None, None)
+                loader.side_effect = ValueError("bad model config")
+                with self.assertRaisesRegex(
+                    TTSConfigurationError, "MOSS model .*bad model config"
+                ):
+                    backend._load_moss_model(None, None)
+
+    def test_hub_file_scan_only_reports_download_for_uncached_bytes(self):
+        from vntts.moss_mlx_assets import open_asset
+
+        class Progress:
+            def __init__(self, *, unit, total):
+                self.total = total
+
+            def refresh(self):
+                pass
+
+        with TemporaryDirectory() as root:
+            for required_bytes in (0, 128):
+                with self.subTest(required_bytes=required_bytes):
+
+                    def snapshot(repo, *, allow_patterns, tqdm_class):
+                        tqdm_class(unit="files", total=1).refresh()
+                        transfer = tqdm_class(unit="B", total=required_bytes)
+                        transfer.refresh()
+                        transfer.refresh()
+                        return root
+
+                    progress = []
+                    with (
+                        patch.dict(
+                            sys.modules,
+                            {
+                                "mlx_audio.utils": SimpleNamespace(
+                                    _is_local_path=lambda _: False
+                                ),
+                                "huggingface_hub": SimpleNamespace(
+                                    snapshot_download=snapshot
+                                ),
+                                "huggingface_hub.utils.tqdm": SimpleNamespace(
+                                    tqdm=Progress
+                                ),
+                            },
+                        ),
+                        open_asset(
+                            "codec", "example/codec", ["*.json"], progress.append
+                        ) as snapshot_dir,
+                    ):
+                        self.assertEqual(snapshot_dir, Path(root).resolve())
+                    expected = ["Resolving MOSS codec example/codec..."]
+                    if required_bytes:
+                        expected.append("Downloading MOSS codec example/codec...")
+                    expected.append(
+                        f"Loading MOSS codec example/codec from {snapshot_dir}"
+                    )
+                    self.assertEqual(progress, expected)
 
     def test_constructor_keeps_subclass_profiles_and_late_volume_setter(self):
         class CheckedBackend(MossTTSVoiceRouterBackend):

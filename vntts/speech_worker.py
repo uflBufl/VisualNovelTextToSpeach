@@ -823,6 +823,14 @@ def worker_main(
                         f"Speech worker option {key} must be a path"
                     )
                 options[key] = Path(value).expanduser().resolve()
+        if backend_name == "moss-tts" and document.get("asset_progress") is True:
+
+            def report_asset(message: str) -> None:
+                _write_frame(
+                    protocol_out, {"type": "asset_progress", "message": message}
+                )
+
+            options["asset_progress"] = report_asset
         with redirect_stdout(sys.stderr):
             candidate = _backend_factory(backend_classes[backend_name])(
                 registry, **options
@@ -1304,6 +1312,8 @@ class IsolatedSpeechBackend:
                 "runtime_site": str(self.runtime_site),
                 "registry": _serialize_registry(self.registry),
                 "options": self._json_worker_options(),
+                "asset_progress": self.name == "moss-tts"
+                and self.startup_progress is not None,
             },
         )
         deadline = monotonic() + self.startup_timeout
@@ -1326,6 +1336,10 @@ class IsolatedSpeechBackend:
                     process, timeout=min(0.1, remaining)
                 )
             except queue.Empty:
+                continue
+            if message.get("type") == "asset_progress":
+                if self.startup_progress is not None:
+                    self.startup_progress(_required_text(message, "message"))
                 continue
             break
         if message.get("type") != "health":
