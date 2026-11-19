@@ -640,14 +640,11 @@ Other remaining defects and native checks:
       failure, cancellation, close and retry; restoration must not steal game focus,
       reopen a closed wizard or start continuous Reading. Inspect/copy the complete
       recognized text/speaker and retain the saved auto-advance opt-out.
-- [ ] **U7 - Complete model-asset evidence and native offline reuse.**
-      Qualify normal GUI/preflight with network unavailable and no experiment-only
-      environment: offline-first and Reading-first must reuse the same managed
-      model/codec/cache. Preserve explicit cache overrides and Pocket bundle/token
-      isolation. Inspect resolved model/codec and download/load phase reporting;
-      add owner-level evidence if only generic loading status remains. Missing/
-      corrupt assets and bounded download cancellation/retry must stay actionable;
-      do not globally disable Xet.
+- [ ] **U7 - Identify the MOSS asset being loaded or downloaded.**
+      Reading and offline preparation report the cache directory during startup.
+      Expose the resolved model and codec and distinguish a download from a local
+      load. Check that a missing or corrupt asset is identified and that a
+      cancelled download stops promptly and can be retried.
 - [ ] Verify compact opening without game-focus activation using owner-only
       focus evidence.
 
