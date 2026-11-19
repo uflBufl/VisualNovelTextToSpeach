@@ -210,6 +210,39 @@ class AdaptiveOCRTest(unittest.TestCase):
                 self.assertLess(regions.speaker._pixel_box(*image.size)[3], divider)
                 self.assertEqual(resolve_ocr_regions(image, regions), regions)
 
+    def test_shortening_crop_keeps_a_long_thin_divider_at_the_same_pixel(self):
+        image = Image.new("L", (1600, 324), 17)
+        draw = ImageDraw.Draw(image)
+        for y, value in enumerate((12, 43, 52, 45, 12), start=162):
+            draw.line((55, y, 1380, y), fill=value)
+        # Separate tall strokes and lower dots, as in a punctuation-only label.
+        for x in (65, 88, 111):
+            draw.rectangle((x, 111, x + 16, 136), outline=200, width=3)
+            draw.rectangle((x + 3, 140, x + 9, 146), fill=200)
+        full = resolve_ocr_regions(image)
+        top = 112
+        crop = image.crop((0, top, image.width, image.height))
+        compact = resolve_ocr_regions(crop)
+        self.assertIsNotNone(full)
+        self.assertIsNotNone(compact)
+        self.assertEqual(
+            full.dialogue._pixel_box(*image.size)[1],
+            top + compact.dialogue._pixel_box(*crop.size)[1],
+        )
+        left, upper, right, lower = compact.speaker._pixel_box(*crop.size)
+        self.assertLessEqual(left, 68)
+        self.assertEqual(upper, 0)
+        self.assertGreaterEqual(right, 121)
+        self.assertGreater(lower + top, 146)
+
+    def test_short_crop_keeps_competing_long_ridges_ambiguous(self):
+        image = Image.new("L", (1600, 213), 17)
+        draw = ImageDraw.Draw(image)
+        for y, value in enumerate((80, 110, 80, 110, 80), start=50):
+            draw.line((55, y, 1510, y), fill=value)
+        self.assertIsNone(resolve_ocr_regions(image))
+        self.assertIsNone(resolve_ocr_regions(ImageOps.invert(image)))
+
     def test_ambiguous_missing_thick_or_outside_divider_retains_calibration(self):
         configured = OCRRegions(
             DialogRegion(0.1, 0.1, 0.3, 0.2), DialogRegion(0.1, 0.4, 0.7, 0.5)

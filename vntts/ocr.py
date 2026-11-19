@@ -328,8 +328,6 @@ def _dialogue_divider(
         band_top -= 1
     while band_bottom < height - 1 and counts[band_bottom - 1] >= counts[row] * 0.8:
         band_bottom += 1
-    if band_bottom - band_top > max(5, round(height * 0.02)):
-        return None
     # Nearby antialiasing rows may have gaps; reject only separate rules.
     if any(
         abs(int(other) - row) > 3
@@ -341,8 +339,29 @@ def _dialogue_divider(
     runs, _ = label(support[row])
     spans = [bounds[0] for bounds in find_objects(runs) if bounds is not None]
     longest = max(spans, key=lambda span: span.stop - span.start)
-    if longest.stop - longest.start < (right - left) * 0.35:
+    length = longest.stop - longest.start
+    if length < (right - left) * 0.35:
         return None
+    thickness = band_bottom - band_top
+    if thickness > max(5, round(height * 0.02)):
+        # A tighter vertical crop can still contain one long, thin rule.
+        if thickness > round(length * 0.005):
+            return None
+        profile = np.median(
+            pixels[
+                band_top - 1 : band_bottom + 1,
+                left + longest.start : left + longest.stop,
+            ],
+            axis=1,
+        )
+        profile = profile - np.linspace(profile[0], profile[-1], len(profile))
+        if -profile.min() > profile.max():
+            profile = -profile
+        slopes = np.diff(np.maximum(profile, 0))
+        slopes = slopes[np.abs(slopes) > 2]
+        # A second rise after the peak indicates competing rules.
+        if np.any((slopes[:-1] < 0) & (slopes[1:] > 0)):
+            return None
     spans = [span for span in spans if span.stop - span.start >= (right - left) * 0.02]
     line_left = left + min(span.start for span in spans)
     line_right = left + max(span.stop for span in spans)
@@ -389,27 +408,37 @@ def _nameplate_bounds(
         return box
     anchor = max(anchors, key=lambda g: g[0].stop)
     baseline = anchor[0].stop
-    aligned = [
-        g for g in glyphs if abs(g[0].stop - baseline) <= max(3, (bottom - top) * 0.15)
-    ]
+    tolerance = max(3.0, (bottom - top) * 0.15)
+    # A detached lower mark can establish the baseline (for example in "?!").
+    # Include the body directly above it and its neighbors on the same line.
+    ay, ax = anchor
+    mark_height = ay.stop - ay.start
+    for gy, gx in anchors:
+        if (
+            gy.stop - gy.start > mark_height
+            and 0 <= ay.start - gy.stop <= mark_height
+            and max(ax.start, gx.start) < min(ax.stop, gx.stop)
+        ):
+            tolerance = max(tolerance, baseline - gy.stop)
+    aligned = [g for g in glyphs if abs(g[0].stop - baseline) <= tolerance]
     aligned.sort(key=lambda g: g[1].start)
-    start = end = aligned.index(anchor)
     gap = max(12, anchor[0].stop - anchor[0].start)
-    while start > 0 and aligned[start][1].start - aligned[start - 1][1].stop <= gap:
-        start -= 1
-    while (
-        end + 1 < len(aligned)
-        and aligned[end + 1][1].start - aligned[end][1].stop <= gap
-    ):
-        end += 1
-    aligned = aligned[start : end + 1]
+    group = [aligned[0]]
+    group_right = aligned[0][1].stop
+    for glyph in aligned[1:]:
+        if glyph[1].start > group_right + gap:
+            if anchor in group:
+                break
+            group.clear()
+        group.append(glyph)
+        group_right = max(group_right, glyph[1].stop)
     # Include detached dots/accents by padding the aligned glyph line vertically.
     padding = max(3, round((bottom - top) * 0.1))
     return (
-        max(left, left + min(g[1].start for g in aligned) - padding),
-        max(top, top + min(g[0].start for g in aligned) - padding),
-        min(right, left + max(g[1].stop for g in aligned) + padding),
-        min(bottom, top + max(g[0].stop for g in aligned) + padding),
+        max(left, left + min(g[1].start for g in group) - padding),
+        max(top, top + min(g[0].start for g in group) - padding),
+        min(right, left + group_right + padding),
+        min(bottom, top + max(g[0].stop for g in group) + padding),
     )
 
 
