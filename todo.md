@@ -374,7 +374,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Keep full regression shards within their watchdogs
 
-- [ ] Measure and repartition the broad `remainder` inventory in `scripts/run_ci_unittests.py`, including a separate bounded group for catalog renders, while preserving every discovered test and the existing watchdogs. In the macOS permissions UI cycle the 900-second aggregate timed out during catalog renders; excluding the catalog still completed 4,460 of 4,475 remainder tests before the deadline, without an assertion failure. Use exact test-ID union checks and investigate slow cases rather than raising limits or dropping coverage. Validate the normal full-suite entry point on supported CI platforms; locally split retries qualify the tests, not the current aggregate scheduling.
+- [ ] Measure the `remainder` shard in full GitHub Actions runs on macOS and Windows. If it approaches the 900-second watchdog, time the slow tests on that runner before changing the grouping. Preserve exact test coverage and the existing timeouts.
 
 ## Qualify native macOS permission recovery
 
