@@ -528,6 +528,31 @@ def create_dialog_read_scheduler(
     return _ScheduledDialogRead(submit, deliver, live_reader, shutdown_requested)
 
 
+class _MaterializeAudio(Protocol):
+    def __call__(
+        self, prepared: PreparedPlayback, /, *, cancellation: Callable[[], bool]
+    ) -> PreparedPlayback: ...
+
+
+def _live_materializer(backend: object) -> _MaterializeAudio | None:
+    if isinstance(backend, GeneratedAudioFallbackBackend):
+        backend = backend.live_backend
+    materialize = getattr(backend, "materialize_prepared", None)
+    return materialize if callable(materialize) else None
+
+
+def _materialize_live_audio(
+    prepared: PreparedPlayback,
+    materialize: _MaterializeAudio | None,
+    cancellation: Callable[[], bool],
+) -> PreparedPlayback | None:
+    if isinstance(prepared.payload, SilentPlayback):
+        return prepared
+    if materialize is None:
+        return None
+    return materialize(prepared, cancellation=cancellation)
+
+
 @dataclass(frozen=True)
 class PreparedLiveChunkRoutes:
     dialogue: object
@@ -3902,12 +3927,7 @@ class AppController:
     ) -> bool:
         backend = self.speech_backend
         executor = self.speech_executor
-        live_backend = (
-            backend.live_backend
-            if isinstance(backend, GeneratedAudioFallbackBackend)
-            else backend
-        )
-        can_generate = callable(getattr(live_backend, "materialize_prepared", None))
+        can_generate = _live_materializer(backend) is not None
         can_reserve = bool(
             isinstance(backend, GeneratedAudioFallbackBackend)
             and backend.library is not None
@@ -3961,45 +3981,7 @@ class AppController:
             outcome = "stale"
         else:
             try:
-                outcome = "unavailable"
-                if isinstance(backend, GeneratedAudioFallbackBackend):
-                    if backend.reserve_generated_line_for_early_playback(line):
-                        outcome = "reserved"
-                    else:
-                        route = backend.prepare_route(
-                            line.speaker, line.text, line_id=line.line_id
-                        )
-                        materialize = getattr(
-                            backend.live_backend, "materialize_prepared", None
-                        )
-                        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
-                            if isinstance(route.prepared.payload, SilentPlayback):
-                                outcome = "prepared"
-                            elif callable(materialize):
-                                materialized = materialize(
-                                    route.prepared,
-                                    cancellation=lambda: not self.game_focused,
-                                )
-                                outcome = (
-                                    "prepared"
-                                    if materialized.generation_completed
-                                    else "stale"
-                                )
-                else:
-                    materialized = prepare_silent_playback(line.text)
-                    if materialized is None:
-                        materialize = getattr(backend, "materialize_prepared", None)
-                        if not callable(materialize):
-                            raise TypeError(
-                                "Live backend cannot materialize prepared audio"
-                            )
-                        materialized = materialize(
-                            backend.prepare_playback(line.speaker, line.text),
-                            cancellation=lambda: not self.game_focused,
-                        )
-                    outcome = (
-                        "prepared" if materialized.generation_completed else "stale"
-                    )
+                outcome = self._prepare_sequence_successor_audio(backend, line)
             except Exception as error:
                 outcome = "failed"
                 self.error_handler(error)
@@ -4039,43 +4021,62 @@ class AppController:
             self.sequence_prefetch_keys.discard(key)
         return outcome
 
+    def _prepare_sequence_successor_audio(
+        self,
+        backend: SpeechBackend | GeneratedAudioFallbackBackend,
+        line: ChapterDialogue,
+    ) -> str:
+        prepared: PreparedPlayback | None
+        if isinstance(backend, GeneratedAudioFallbackBackend):
+            if backend.reserve_generated_line_for_early_playback(line):
+                return "reserved"
+            route = backend.prepare_route(line.speaker, line.text, line_id=line.line_id)
+            if not isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
+                return "unavailable"
+            prepared = route.prepared
+            materialize = _live_materializer(backend)
+        else:
+            prepared = prepare_silent_playback(line.text)
+            materialize = _live_materializer(backend)
+            if prepared is None:
+                if materialize is None:
+                    raise TypeError("Live backend cannot materialize prepared audio")
+                prepared = backend.prepare_playback(line.speaker, line.text)
+        audio = _materialize_live_audio(
+            prepared, materialize, lambda: not self.game_focused
+        )
+        if audio is None:
+            return "unavailable"
+        return "prepared" if audio.generation_completed else "stale"
+
     def _materialize_live_route(self, route: object, chunk: SpeechChunk) -> object:
         if not self._live_sequence_audio_active():
             return route
-        if isinstance(route, LiveFallbackRoute):
-            backend = self.speech_backend
-            if isinstance(backend, GeneratedAudioFallbackBackend):
-                backend = backend.live_backend
-            prepared = route.prepared
-        elif isinstance(route, LiveTTSRoute):
-            backend = self.speech_backend
+        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
             prepared = route.prepared
         elif isinstance(route, PreparedPlayback):
-            backend = self.speech_backend
             prepared = route
         else:
             return route
-        if isinstance(prepared.payload, SilentPlayback):
-            return route
-        materialize = getattr(backend, "materialize_prepared", None)
-        if not callable(materialize):
-            return route
-        prepared = materialize(
+        audio = _materialize_live_audio(
             prepared,
-            cancellation=lambda: (
+            _live_materializer(self.speech_backend),
+            lambda: (
                 self.live_reader is not None
                 and not self.live_reader.is_playback_current(chunk)
             ),
         )
+        if audio is None or isinstance(prepared.payload, SilentPlayback):
+            return route
         if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
             return replace(
                 route,
-                prepared=prepared,
-                synthesis_ms=prepared.synthesis_ms,
-                first_audio_ms=prepared.first_audio_ms,
-                cache_source=prepared.cache_source,
+                prepared=audio,
+                synthesis_ms=audio.synthesis_ms,
+                first_audio_ms=audio.first_audio_ms,
+                cache_source=audio.cache_source,
             )
-        return prepared
+        return audio
 
     def _finish_sequence_playback(
         self,

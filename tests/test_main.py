@@ -5220,6 +5220,86 @@ class MainTest(unittest.TestCase):
             pending, cancellation=ANY
         )
 
+        def lose_focus(prepared, *, cancellation):
+            self.assertFalse(cancellation())
+            controller.game_focused = False
+            self.assertTrue(cancellation())
+            return replace(prepared, generation_completed=False)
+
+        live_backend.materialize_prepared.side_effect = lose_focus
+        self.assertEqual(
+            controller._prefetch_sequence_successor(
+                ("native",), backend, event_id, preloader.dialogue[1]
+            ),
+            "stale",
+        )
+
+    def test_wrapped_live_route_materializes_with_chunk_cancellation_and_metadata(self):
+        controller, lines, _pipeline = self._sequence_controller()
+        controller.settings = controller.settings.updated(
+            speaker_announcement_mode="off"
+        )
+        pending = PreparedPlayback(object(), None, None, "fresh", "moss-tts:fresh")
+        materialized = replace(
+            pending,
+            payload=object(),
+            synthesis_ms=12.0,
+            first_audio_ms=3.0,
+            cache_source="memory-cache",
+        )
+        line = replace(
+            lines[0],
+            source_audio_status="available",
+            source_audio_authoritative=True,
+            source_audio_completeness="partial",
+            source_audio_duration_seconds=0.4,
+        )
+        live_backend = Mock()
+        live_backend.prepare_playback.return_value = pending
+        backend = GeneratedAudioFallbackBackend(
+            live_backend,
+            None,
+            ChapterVoicePreloader((line,)),
+            audio_source_policy="prefer-game-audio",
+            audio_output=Mock(),
+        )
+        controller.speech_backend = backend
+        reader = Mock()
+        reader.is_playback_current.return_value = True
+        controller.live_reader = reader
+        chunk = SpeechChunk(
+            1, line.speaker, line.text, line_id=line.line_id, first_observed_at=10.0
+        )
+
+        def materialize(prepared, *, cancellation):
+            self.assertIs(prepared, pending)
+            self.assertFalse(cancellation())
+            reader.is_playback_current.return_value = False
+            self.assertTrue(cancellation())
+            return materialized
+
+        live_backend.materialize_prepared.side_effect = materialize
+
+        prepared = controller._prepare_live_chunk(chunk)
+
+        live_backend.materialize_prepared.assert_called_once_with(
+            pending, cancellation=ANY
+        )
+        reader.is_playback_current.assert_called_with(chunk)
+        self.assertIsInstance(prepared, LiveTTSRoute)
+        self.assertIs(prepared.prepared, materialized)
+        self.assertEqual(prepared.synthesis_ms, materialized.synthesis_ms)
+        self.assertEqual(prepared.first_audio_ms, materialized.first_audio_ms)
+        self.assertEqual(prepared.cache_source, materialized.cache_source)
+        self.assertEqual(prepared.trace.line_id, line.line_id)
+        self.assertGreaterEqual(
+            prepared.source_audio_lead_seconds, line.source_audio_duration_seconds
+        )
+        self.assertEqual(
+            prepared.source_audio_lead_deadline,
+            chunk.first_observed_at + prepared.source_audio_lead_seconds,
+        )
+
     def test_owned_auto_transition_routes_reserved_generated_successor_from_one_letter(
         self,
     ):
