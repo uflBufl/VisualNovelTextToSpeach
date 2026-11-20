@@ -192,21 +192,40 @@ class PregenerationInputStore:
         effective = _effective_voice_routes(plan, registry)
         identity = _generation_input_identity(job, plan)
         _record_input_phase("identity", phase_started, cpu_started)
-        destination = self.job_store.directory_for(job.job_id) / (
-            f"generation-input-{identity[:16]}"
-        )
-        try:
-            if self.job_store.catalog.input_staging(destination) is not None:
-                load_generation_input_metadata(destination)
-        except (AtomicPublicationError, OSError, ValueError) as error:
-            raise PregenerationQueueError(
-                f"Saved offline generation inputs are invalid: {error}"
-            ) from error
-        if destination.is_dir():
+        transcripts = {
+            character: voice.reference_transcript if voice else None
+            for character, (voice, _hashes, _speaker) in effective["routes"].items()
+        }
+        for isolated_transcripts in (False, True):
+            destination = self.job_store.directory_for(job.job_id) / (
+                f"generation-input-{identity[:16]}"
+            )
+            try:
+                if self.job_store.catalog.input_staging(destination) is not None:
+                    load_generation_input_metadata(destination)
+            except (AtomicPublicationError, OSError, ValueError) as error:
+                raise PregenerationQueueError(
+                    f"Saved offline generation inputs are invalid: {error}"
+                ) from error
+            if not destination.is_dir():
+                break
             result = self._reused_input(destination, identity, effective)
-            _reuse_completed_audio(result, plan, self.job_store)
-            initialize_audio_event_omissions(result, decided_at=job.created_at)
-            return result
+            saved_voices = CharacterVoiceRegistry.from_file(result.voice_manifest)
+            if transcripts == {
+                voice.character: voice.reference_transcript
+                for voice in saved_voices.unique_voices()
+            }:
+                _reuse_completed_audio(result, plan, self.job_store)
+                initialize_audio_event_omissions(result, decided_at=job.created_at)
+                return result
+            if isolated_transcripts:
+                raise PregenerationQueueError(
+                    "Saved offline generation input voice transcripts changed"
+                )
+            # Old inputs omitted transcripts from their identity; keep them immutable.
+            identity = canonical_document_sha256(
+                {"legacy_identity": identity, "reference_transcripts": transcripts}
+            )
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -1043,14 +1062,22 @@ def _collect_effective_routes(
     routes: dict[str, VoiceChoice] = {}
     line_voice_characters: dict[str, str] = {}
     for target, values in choices_by_target.items():
-        distinct = {(choice[2], choice[1]) for _group, choice in values}
+        identities = [
+            (
+                choice[2],
+                choice[1],
+                choice[0].reference_transcript if choice[0] else None,
+            )
+            for _group, choice in values
+        ]
+        distinct = set(identities)
         if target == "Narrator" and len(distinct) > 1:
             raise PregenerationQueueError("Choose one narrator voice before generation")
-        canonical = (values[0][1][2], values[0][1][1])
-        for group, choice in values:
+        canonical = identities[0]
+        for (group, choice), identity in zip(values, identities, strict=True):
             effective_target = (
                 target
-                if len(distinct) == 1 or (choice[2], choice[1]) == canonical
+                if len(distinct) == 1 or identity == canonical
                 else f"{target}__vntts_{group.group_id[:12]}"
             )
             routes[effective_target] = choice

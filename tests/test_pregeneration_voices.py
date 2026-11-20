@@ -1378,6 +1378,37 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(selected.source_id, voice_binding_source_id(binding))
             self.assertEqual(selected.reference_sha256s, binding.source_sha256s)
 
+    def test_manual_transcript_survives_replanning_with_original_game_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            document = json.loads(manifest.read_bytes())
+            document["voices"][0]["vntts.reference_transcript"] = "Catalog text."
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            registry = CharacterVoiceRegistry.from_file(manifest)
+            library = VoiceLibrary(root / "library")
+            planner = VoicePlanStore(jobs, voice_library=library)
+            for transcript in ("Edited text.", "", "Catalog text."):
+                with self.subTest(transcript=transcript):
+                    remember_voice_binding(
+                        library,
+                        registry,
+                        "Rhiannon",
+                        "character:rhiannon",
+                        reference_transcript=transcript,
+                    )
+                    plan = planner.create(
+                        job,
+                        AppSettings(speech_backend="qwen-tts"),
+                        manifest_path=manifest,
+                    )
+                    group = next(g for g in plan.groups if g.character == "Rhiannon")
+                    selected = CharacterVoiceRegistry.from_file(
+                        plan.voice_manifest
+                    ).resolve_source(group.source_id)
+                    self.assertEqual(selected.reference_transcript, transcript or None)
+
     def test_old_player_catalog_requires_refresh_before_planning(self):
         for version in (3, 4, 5, 6):
             with self.subTest(version=version):
@@ -1976,7 +2007,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             decisions = VoiceDecisionStore(
                 root / "decisions.json", voice_library=library
             )
-            for transcript in (None, ""):
+            for transcript in (None, "", "The selected reference transcript."):
                 for excerpts in (("The original spoken phrase.",), ()):
                     with self.subTest(transcript=transcript, excerpts=excerpts):
                         candidate = replace(
@@ -1998,7 +2029,12 @@ class VoicePlanStoreTest(unittest.TestCase):
                             )
                         else:
                             self.assertNotIn("source_excerpts", evidence)
-                        self.assertNotIn("reference_transcript", evidence)
+                        if transcript is None:
+                            self.assertNotIn("reference_transcript", evidence)
+                        else:
+                            self.assertEqual(
+                                evidence["reference_transcript"], transcript
+                            )
                         self.assertEqual(candidate.reference_transcript, transcript)
 
     @pocket_model_readiness(True)

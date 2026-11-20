@@ -321,9 +321,6 @@ Other remaining defects and native checks:
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **Preparation resume (UX-29-02), remaining edges:** changed
-     voices/settings/content and explicit `Prepare again` must require review.
-     Check truthful phase labels for these changed-input paths.
    - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
      and aligned Play buttons in the actual chapter at compact size and enlarged
      font, including `Narrator (Centurion)` substitutions and preview messages.

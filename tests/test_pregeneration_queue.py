@@ -44,13 +44,14 @@ from vntts.pregeneration_pack import (
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueError,
+    _collect_effective_routes,
     _may_have_saved_recordings,
     _queue_item_reuse_identities,
     _voice_content_identity,
     load_generation_input_metadata,
 )
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
-from vntts.pregeneration_voices import VoicePlanStore
+from vntts.pregeneration_voices import VoicePlanStore, _candidate_identity
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
@@ -808,6 +809,76 @@ class PregenerationInputStoreTest(unittest.TestCase):
             )
             self.assertTrue(store.was_confirmed(relocated))
 
+    def test_selected_reference_transcript_changes_require_fresh_confirmation(self):
+        def candidate_identity(candidate, *, legacy):
+            identity = _candidate_identity(candidate)
+            if legacy and identity is not None:
+                identity.pop("reference_transcript", None)
+            return identity
+
+        for original, updated, legacy in (
+            (None, "The first reference transcript.", False),
+            (
+                "The first reference transcript.",
+                "A corrected reference transcript.",
+                False,
+            ),
+            ("The first reference transcript.", None, False),
+            ("The first reference transcript.", None, True),
+            (None, None, True),
+        ):
+            with (
+                self.subTest(original=original, updated=updated, legacy=legacy),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                job, jobs, _, manifest = self.fixture(root, backend="qwen-tts")
+                document = json.loads(manifest.read_bytes())
+                document["voices"][0]["vntts.reference_transcript"] = original
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                library = VoiceLibrary(root / "library")
+                remember_voice_binding(
+                    library,
+                    CharacterVoiceRegistry.from_file(manifest),
+                    "Rhiannon",
+                    "character:rhiannon",
+                )
+                planner = VoicePlanStore(jobs, voice_library=library)
+                settings = AppSettings(speech_backend="qwen-tts")
+                with patch(
+                    "vntts.pregeneration_voices._candidate_identity",
+                    side_effect=lambda candidate: candidate_identity(
+                        candidate, legacy=legacy
+                    ),
+                ):
+                    plan = planner.create(job, settings, manifest_path=manifest)
+                store = PregenerationInputStore(jobs)
+                prepared = store.materialize(job, plan)
+                store.confirm(prepared)
+
+                document["voices"][0]["vntts.reference_transcript"] = updated
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                changed_plan = planner.create(job, settings, manifest_path=manifest)
+                changed = store.materialize(job, changed_plan)
+
+                if original == updated:
+                    self.assertEqual(changed, prepared)
+                    self.assertTrue(store.was_confirmed(changed))
+                else:
+                    self.assertNotEqual(changed.identity, prepared.identity)
+                    self.assertFalse(store.was_confirmed(changed))
+                self.assertTrue(store.was_confirmed(prepared))
+                self.assertEqual(store.materialize(job, changed_plan), changed)
+                for snapshot, expected in ((prepared, original), (changed, updated)):
+                    voice = CharacterVoiceRegistry.from_file(
+                        snapshot.voice_manifest
+                    ).resolve("Rhiannon")
+                    self.assertEqual(voice.reference_transcript, expected)
+                if legacy and original != updated:
+                    prepared.voice_manifest.write_bytes(b"damaged legacy input")
+                    with self.assertRaisesRegex(PregenerationQueueError, "invalid"):
+                        store.materialize(job, changed_plan)
+
     def test_damaged_voice_confirmation_requires_explicit_confirmation(self):
         with TemporaryDirectory() as directory:
             job, jobs, plan, _ = self.fixture(Path(directory))
@@ -1149,6 +1220,42 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 renderer = PocketRenderer()
                 generate_prepared(current, renderer)
                 self.assertEqual(renderer.requests, [])
+
+    def test_effective_routes_keep_reference_transcripts_distinct(self):
+        with TemporaryDirectory() as directory:
+            _, _, plan, manifest = self.fixture(Path(directory), backend="qwen-tts")
+            group = next(
+                value for value in plan.groups if value.character == "Rhiannon"
+            )
+            voice = CharacterVoiceRegistry.from_file(manifest).resolve("Rhiannon")
+            selections = [
+                (
+                    replace(group, group_id=key * 64, line_ids=(line_id,)),
+                    "Rhiannon",
+                    (
+                        replace(voice, reference_transcript=transcript),
+                        group.reference_sha256s,
+                        voice.speaker,
+                    ),
+                )
+                for key, line_id, transcript in (
+                    ("a", "original", None),
+                    ("b", "rhiannon", "Reference transcript."),
+                )
+            ]
+            routes, overrides = _collect_effective_routes(selections)
+            self.assertIsNone(routes["Rhiannon"][0].reference_transcript)
+            self.assertEqual(
+                routes[overrides["rhiannon"]][0].reference_transcript,
+                "Reference transcript.",
+            )
+            self.assertNotIn("original", overrides)
+            narrator_selections = [
+                (replace(group, route="narrator"), "Narrator", choice)
+                for group, _, choice in selections
+            ]
+            with self.assertRaisesRegex(PregenerationQueueError, "one narrator"):
+                _collect_effective_routes(narrator_selections)
 
     def test_materializes_selected_story_effective_voices_and_queue(self):
         with TemporaryDirectory() as temporary_directory:

@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
-from typing import NamedTuple, Protocol, TypeAlias, TypedDict
+from typing import NamedTuple, NotRequired, Protocol, TypeAlias, TypedDict
 from uuid import uuid4
 
 from vntts_artifacts.story_index import (
@@ -125,6 +125,7 @@ class CandidateIdentity(TypedDict):
     character: str
     speaker: str
     references: list[str]
+    reference_transcript: NotRequired[str]
 
 
 class Cancellation(Protocol):
@@ -503,6 +504,8 @@ def _voice_library_selection(
         )
         if selected.source_excerpts:
             evidence["source_excerpts"] = list(selected.source_excerpts)
+        if selected.reference_sha256s and selected.reference_transcript is not None:
+            evidence["reference_transcript"] = selected.reference_transcript.strip()
     references = selected.reference_sha256s if selected is not None else ()
     return VoiceSelection(
         role=group.character,
@@ -1793,17 +1796,25 @@ def _effective_assignment_source(
 def _saved_original_source(
     binding: VoiceBinding, registry: CharacterVoiceRegistry
 ) -> str | None:
-    """Prefer the stable game source while it still has the saved WAV bytes."""
+    """Prefer the original source when it preserves the saved voice choice."""
     if binding.route != "voice" or binding.provenance.get("method") != "manual":
         return None
     evidence = binding.provenance.get("evidence")
-    source_id = evidence.get("source_id") if isinstance(evidence, dict) else None
+    if not isinstance(evidence, dict):
+        return None
+    source_id = evidence.get("source_id")
     if not isinstance(source_id, str) or not source_id:
         return None
     try:
         voice = _candidate_from_source(source_id, registry)
         if (
             voice is not None
+            and (
+                "reference_transcript" not in evidence
+                or evidence.get("reference_transcript_from_source") is True
+                or voice.reference_transcript
+                == (evidence["reference_transcript"] or None)
+            )
             and tuple(
                 hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
                 for path in voice.references
@@ -2426,12 +2437,15 @@ def _candidate_identity(
     if candidate is None:
         return None
     source_id, voice = candidate
-    return {
+    identity: CandidateIdentity = {
         "source_id": source_id,
         "character": voice.character,
         "speaker": voice.speaker,
         "references": [sha256_file(path) for path in voice.references],
     }
+    if voice.reference_transcript:
+        identity["reference_transcript"] = voice.reference_transcript
+    return identity
 
 
 def _variant_evidence(record: StoryIndexRecord) -> VariantEvidence:

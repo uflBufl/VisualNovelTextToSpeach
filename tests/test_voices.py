@@ -143,9 +143,20 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                 "character:centurion",
                 reference_transcript="The exact original line.",
             )
+            remember_voice_binding(
+                library,
+                registry,
+                "Gardener",
+                "character:centurion",
+                reference_transcript="A different transcription.",
+            )
             projected = registry_with_voice_library(registry, library)
 
             narrator = projected.resolve("Narrator")
+            self.assertEqual(
+                projected.resolve("Gardener").reference_transcript,
+                "A different transcription.",
+            )
             self.assertEqual(narrator.source_character, "Centurion")
             self.assertEqual(narrator.reference_transcript, "The exact original line.")
             self.assertEqual(

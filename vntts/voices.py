@@ -294,6 +294,12 @@ def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     return voice_source_label(binding.role) if isinstance(binding.role, str) else None
 
 
+def _binding_reference_transcript(binding: VoiceBinding) -> str | None:
+    evidence = binding.provenance.get("evidence")
+    text = evidence.get("reference_transcript") if isinstance(evidence, dict) else None
+    return (text.strip() or None) if isinstance(text, str) else None
+
+
 def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
     if binding is None:
         return None
@@ -302,10 +308,11 @@ def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
     source_id = binding.source_id
     if isinstance(source_id, str):
         return source_id
-    identity = hashlib.sha256(
-        "\0".join(binding.source_sha256s).encode("ascii")
-    ).hexdigest()
-    return f"character:voicelibrary{identity[:16]}"
+    identity = hashlib.sha256("\0".join(binding.source_sha256s).encode("ascii"))
+    transcript = _binding_reference_transcript(binding)
+    if transcript:
+        identity.update(b"\0reference_transcript\0" + transcript.encode("utf-8"))
+    return f"character:voicelibrary{identity.hexdigest()[:16]}"
 
 
 def discover_voice_source(
@@ -448,6 +455,7 @@ def remember_voice_binding(
         source_evidence["reference_transcript"] = reference_transcript.strip()
     elif voice.reference_transcript:
         source_evidence["reference_transcript"] = voice.reference_transcript
+        source_evidence["reference_transcript_from_source"] = True
     return library.select(
         role,
         variant_key=variant_key,
@@ -572,12 +580,7 @@ def _project_library_voices(
                 references=references,
                 reference_root=library.root,
                 source_character=str(metadata.get("source_character") or binding.role),
-                reference_transcript=(
-                    str(metadata["reference_transcript"]).strip()
-                    if isinstance(metadata.get("reference_transcript"), str)
-                    and metadata["reference_transcript"].strip()
-                    else None
-                ),
+                reference_transcript=_binding_reference_transcript(binding),
             )
         )
         sources[key] = source_id
