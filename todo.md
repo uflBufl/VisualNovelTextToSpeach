@@ -275,8 +275,8 @@ Recheck archived findings against current main before implementation.
       Preserve the actual confidence; prefixes, other text and retired ownership
       after Stop/Read or configuration changes must not authorize continuation.
 
-- [ ] Complete only unexercised controls: announcement Pause/Resume,
-      failed/not-ready policy, and manual/other punctuation. Prepared Pause/Resume,
+- [ ] Complete only unexercised controls: failed/not-ready policy and
+      manual/other punctuation. Prepared Pause/Resume,
       fullscreen/window continuation and volume HUD have been exercised. Keep
       controls separate from autonomous chapter metrics; diagnostic video's bounds
       guard still intentionally ends a recording when fullscreen changes its size.
@@ -305,15 +305,12 @@ Other remaining defects and native checks:
       actual playback evidence for these unexercised paths.
 
 1. **Other deferred native checks.**
-   Preserve the separate announcement, manual-mode and generation-failure cases.
+   Preserve the separate manual-mode and generation-failure cases.
    - **Audio query recovery (AUDIO-29-01):** if a native query fails again,
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **True Pause/Resume (RUN-29-01), remaining paths:** pause a speaker
-     announcement mid-audio. Verify unchanged playback
-     position during Pause, only remaining audio after Resume, one load/synthesis
-     and one automatic transition after completion. Include an already paused
+   - **True Pause/Resume (RUN-29-01), remaining paths:** check an already paused
      start, ready pending audio, Stop and device/focus changes while paused.
      Original game audio continues independently; its completion wait must not
      restart or advance the game while Reading remains paused. Keep one native
