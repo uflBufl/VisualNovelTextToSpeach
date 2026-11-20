@@ -2048,7 +2048,9 @@ class OfflinePackPublisherTest(unittest.TestCase):
     def test_published_and_reopened_readiness_tracks_each_playable_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            job, inputs, result, items = fixture(root / "prepared", include_omission=True)
+            job, inputs, result, items = fixture(
+                root / "prepared", include_omission=True
+            )
             story = load_story_index_document(inputs.story_index)
             source = load_story_index_document(write_content(root / "source"))
             original = source.records[0].to_record()

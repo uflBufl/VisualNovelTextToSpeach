@@ -64,7 +64,9 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                 CapturedDialogFrame(Image.new("RGB", (300, 100)), 0)
             )
 
-    def test_full_observation_allows_short_original_while_previous_audio_is_pending(self):
+    def test_full_observation_allows_short_original_while_previous_audio_is_pending(
+        self,
+    ):
         previous = replace(
             authority.story_line(
                 "I know this is what you want. Now, I can finally make your dream "
@@ -80,7 +82,10 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
             source_audio_authoritative=True,
         )
         short = replace(
-            previous, line_id="short", sequence=109, text="I ...",
+            previous,
+            line_id="short",
+            sequence=109,
+            text="I ...",
             text_sha256=authority.story_line("I ...").text_sha256,
             source_audio_id="original-short",
         )
@@ -106,24 +111,34 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                 harness.start()
                 try:
                     harness.push("Isolde", previous.text, background="previous")
-                    self.assertEqual(controller._fully_observed_line_id(), previous.line_id)
+                    self.assertEqual(
+                        controller._fully_observed_line_id(), previous.line_id
+                    )
                     self.assertEqual(harness.played, [])
                     resolution = controller._resolve_story_ocr_result(
                         authority.observed("I", speaker, 95)
                     )
                     self.assertIsNone(resolution.line)
                     harness.push(
-                        speaker, short.text, background="next",
+                        speaker,
+                        short.text,
+                        background="next",
                         expected=("Isolde", short.text),
                     )
-                    self.assertEqual(controller._fully_observed_line_id(), short.line_id)
-                    self.assertTrue(any(
-                        chunk.line_id == short.line_id
-                        for chunk in harness.reader.accepted_chunks.values()
-                    ))
+                    self.assertEqual(
+                        controller._fully_observed_line_id(), short.line_id
+                    )
+                    self.assertTrue(
+                        any(
+                            chunk.line_id == short.line_id
+                            for chunk in harness.reader.accepted_chunks.values()
+                        )
+                    )
                     self.assertIsInstance(
                         controller.speech_backend.prepare_route(
-                            short.speaker, short.text, line_id=short.line_id,
+                            short.speaker,
+                            short.text,
+                            line_id=short.line_id,
                             resolve_unidentified=False,
                         ),
                         SourceAudioRoute,

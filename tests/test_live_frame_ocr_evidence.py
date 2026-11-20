@@ -108,7 +108,9 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
             self.recognize(frame, replace(result, confidence=95))
         self.assertTrue(comparison(before, after))
 
-    def test_visual_ellipsis_with_zero_ocr_confidence_advances_once_after_fresh_ocr(self):
+    def test_visual_ellipsis_with_zero_ocr_confidence_advances_once_after_fresh_ocr(
+        self,
+    ):
         fixture = (
             test_controller_transition_observation.ControllerTransitionObservationTest()
         )
@@ -138,9 +140,7 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
         cursor.finish_playback()
         cursor.dispatch_advance()
         before, after = self.ellipsis_frame(), self.ellipsis_frame(offset=1)
-        result = OCRResult(
-            "Cornerstone", "", 0, "balanced", 1, speaker_confidence=95
-        )
+        result = OCRResult("Cornerstone", "", 0, "balanced", 1, speaker_confidence=95)
         tracker = IncrementalDialogTracker()
         reader.tracker_factory = lambda **_options: tracker
         reader.adaptive_policy_factory = lambda **_options: Mock(
@@ -422,12 +422,18 @@ class LiveFrameOCREvidenceTest(unittest.TestCase):
     def test_unrecognized_latest_replacing_source_during_ocr_stays_stale(self):
         anchor, source, latest = self.frame(), self.frame(), self.frame()
         result = OCRResult("Ada", "Visible dialogue.", 95, "balanced", 1)
-        self.controller.chapter_voice_preloader = ChapterVoicePreloader((
-            ChapterDialogue(
-                "line", "chapter", 1, result.character, result.text,
-                text_sha256(result.text),
-            ),
-        ))
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "line",
+                    "chapter",
+                    1,
+                    result.character,
+                    result.text,
+                    text_sha256(result.text),
+                ),
+            )
+        )
         self.recognize(anchor, result)
         self.reader.routed_frame = anchor
         self.reader.latest_frame = source

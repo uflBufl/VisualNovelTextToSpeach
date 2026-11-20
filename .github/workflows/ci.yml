@@ -136,7 +136,13 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
           uv run --frozen python scripts/run_ci_unittests.py discover -s tests *> $testLog
-          exit $LASTEXITCODE
+          $testStatus = $LASTEXITCODE
+          if ($testStatus -eq 0) {
+            Get-Content -LiteralPath $testLog | Where-Object {
+              $_ -cmatch '^::notice title=Unittest timing::Windows remainder completed in [0-9]+ seconds$'
+            } | Write-Output
+          }
+          exit $testStatus
 
       - name: Report Windows unit test failure
         if: failure()
@@ -162,37 +168,45 @@ jobs:
               'IndexError|KeyError|MemoryError|ModuleNotFoundError|OSError|OverflowError|' +
               'PermissionError|RecursionError|RuntimeError|TimeoutError|TypeError|' +
               'UnicodeDecodeError|UnicodeEncodeError|ValueError|ZeroDivisionError)(:|$)'
-            $context = [Collections.Generic.List[string]]::new()
-            foreach ($line in ($testOutput -split '\r?\n')) {
-              if ($line -match $framePattern) {
-                $repoPath = $Matches[1].Replace('\', '/')
-                $lineNumber = 0
-                if (($repoPythonFiles -contains $repoPath) -and [int]::TryParse($Matches[2], [ref]$lineNumber)) {
-                  $stage = 'read-source'
-                  $sourceLines = @(Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $repoPath)).Count
-                  $stage = 'collect-context'
-                  if ($lineNumber -ge 1 -and $lineNumber -le $sourceLines) {
-                    $context.Add("${repoPath}:${lineNumber}")
-                  }
-                }
-              } elseif ($line -match $exceptionPattern) {
-                $context.Add($Matches[1])
-              } elseif ($line -match '^(?:Fatal Python error|Windows fatal exception): (Aborted|Segmentation fault|Access violation)$') {
-                $context.Add($Matches[1])
-              } elseif ($line -match ('^Running Windows unittest shard ' + $shardPattern + ': [0-9]+ tests$')) {
-                $context.Add("shard=$($Matches[1])")
-              } elseif ($line -match ('^Windows unittest shard ' + $shardPattern + ' exceeded [0-9]+ seconds$')) {
-                $context.Add("timeout=$($Matches[1])")
-              }
-            }
-            $summary = if ($context.Count) {
-              ($context | Select-Object -Unique) -join '; '
+            $failureSections = [regex]::Matches($testOutput, '(?ms)^={70}\r?\n(?:FAIL|ERROR): .*?(?=^={70}\r?$|^-{70}\r?\nRan [0-9]+ tests?\b|\z)')
+            $contextOutputs = if ($failureSections.Count) {
+              @($failureSections | ForEach-Object { $_.Value })
             } else {
-              'no structured failure context'
+              @($testOutput)
             }
-            $summary = $summary.Substring(0, [Math]::Min(3500, $summary.Length))
-            $stage = 'report'
-            Write-Output "::error title=Windows unit tests failed::${summary}"
+            foreach ($contextOutput in $contextOutputs) {
+              $context = [Collections.Generic.List[string]]::new()
+              foreach ($line in ($contextOutput -split '\r?\n')) {
+                if ($line -match $framePattern) {
+                  $repoPath = $Matches[1].Replace('\', '/')
+                  $lineNumber = 0
+                  if (($repoPythonFiles -contains $repoPath) -and [int]::TryParse($Matches[2], [ref]$lineNumber)) {
+                    $stage = 'read-source'
+                    $sourceLines = @(Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $repoPath)).Count
+                    $stage = 'collect-context'
+                    if ($lineNumber -ge 1 -and $lineNumber -le $sourceLines) {
+                      $context.Add("${repoPath}:${lineNumber}")
+                    }
+                  }
+                } elseif ($line -match $exceptionPattern) {
+                  $context.Add($Matches[1])
+                } elseif ($line -match '^(?:Fatal Python error|Windows fatal exception): (Aborted|Segmentation fault|Access violation)$') {
+                  $context.Add($Matches[1])
+                } elseif ($line -match ('^Running Windows unittest shard ' + $shardPattern + ': [0-9]+ tests$')) {
+                  $context.Add("shard=$($Matches[1])")
+                } elseif ($line -match ('^Windows unittest shard ' + $shardPattern + ' exceeded [0-9]+ seconds$')) {
+                  $context.Add("timeout=$($Matches[1])")
+                }
+              }
+              $summary = if ($context.Count) {
+                ($context | Select-Object -Unique) -join '; '
+              } else {
+                'no structured failure context'
+              }
+              $summary = $summary.Substring(0, [Math]::Min(3500, $summary.Length))
+              $stage = 'report'
+              Write-Output "::error title=Windows unit tests failed::${summary}"
+            }
           } catch {
             $category = 'Other'
             if ($_.CategoryInfo.Category -in @('ObjectNotFound', 'PermissionDenied', 'ReadError', 'InvalidData', 'InvalidOperation', 'OperationStopped')) {
@@ -223,7 +237,12 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y espeak-ng libegl1 libpipewire-0.3-0 libportaudio2 tesseract-ocr xvfb
+          sudo apt-get install -y espeak-ng libegl1 libpipewire-0.3-0 libportaudio2 pulseaudio pulseaudio-utils tesseract-ocr xvfb
+
+      - name: Start headless audio server
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl info
 
       - name: Install locked dependencies
         run: uv sync --group dev --frozen

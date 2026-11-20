@@ -182,7 +182,10 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             importer = Reverse1999GameImporter(output_root=root)
             with patch.object(importer, "_previous_installation", return_value=None):
                 self.assertTrue(importer.installed_story_changed())
-                for policy, changed in (("old-policy", True), (STORY_TEXT_POLICY, False)):
+                for policy, changed in (
+                    ("old-policy", True),
+                    (STORY_TEXT_POLICY, False),
+                ):
                     with self.subTest(policy=policy):
                         metadata["story_text_policy"] = policy
                         lines[0] = json.dumps(metadata)

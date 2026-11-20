@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
@@ -270,9 +271,15 @@ def _run_discovered_shards(
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running {system} unittest shard {name}: {len(ids)} tests")
+            started = time.monotonic()
             status = _run_shard(system, name, inventory)
             if status:
                 return status
+            if name == "remainder" and os.environ.get("GITHUB_ACTIONS"):
+                elapsed = round(time.monotonic() - started)
+                print(
+                    f"::notice title=Unittest timing::{system} remainder completed in {elapsed} seconds"
+                )
     count = sum(len(ids) for _, ids in shards)
     print(f"Ran {count} exact discovered tests once in {len(shards)} shards")
     return 0

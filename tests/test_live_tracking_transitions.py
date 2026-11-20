@@ -127,10 +127,14 @@ class IdentifiedDialogTransitionsTest(unittest.TestCase):
         tracker.observe_identified("Bea", "A new reply.", "B", exact=True)
 
         for _ in range(4):
-            self.assertEqual(tracker.observe("Ada", "These old accounts contradict"), [])
+            self.assertEqual(
+                tracker.observe("Ada", "These old accounts contradict"), []
+            )
         now[0] = 1.0
         for _ in range(2):
-            self.assertEqual(tracker.observe("Ada", "These old accounts contradict"), [])
+            self.assertEqual(
+                tracker.observe("Ada", "These old accounts contradict"), []
+            )
         self.assertEqual(tracker.admission_reason, "canonical-held")
         next_chunks = tracker.observe_identified(
             "Bea", "Another new reply.", "C", exact=True
@@ -150,9 +154,7 @@ class IdentifiedDialogTransitionsTest(unittest.TestCase):
         now[0] = 1.0
         chunks = tracker.observe("Ada", "These old accounts contradict")
         self.assertEqual([(c.text, c.line_id) for c in chunks], [(text, "A")])
-        self.assertEqual(
-            tracker.observe_identified("Ada", text, "A", exact=True), []
-        )
+        self.assertEqual(tracker.observe_identified("Ada", text, "A", exact=True), [])
 
     def test_early_identity_does_not_hide_a_new_shorter_speaker_reply(self):
         line = ChapterDialogue("A", "chapter", 1, "Ada", "Please come inside.", None)

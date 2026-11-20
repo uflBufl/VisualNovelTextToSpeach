@@ -424,11 +424,15 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
         for reject_empty in (False, True):
             with self.subTest(reject_empty=reject_empty):
                 harness = AutoAdvanceFakeFrameHarness(
-                    dialog_observed=lambda _speaker, text: bool(text) or not reject_empty,
+                    dialog_observed=lambda _speaker, text: (
+                        bool(text) or not reject_empty
+                    ),
                     tracker_options={"complete_dialogue_only": True},
                 )
                 text = "I ..."
-                with patch("vntts.live.Timer", side_effect=harness.timer_scheduler.create):
+                with patch(
+                    "vntts.live.Timer", side_effect=harness.timer_scheduler.create
+                ):
                     harness.start()
                     try:
                         for _ in range(3):
@@ -450,7 +454,9 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
                             harness.clock.advance(0.2)
                             harness.push("Narrator", text, background="same-dialogue")
                         self.assertEqual(harness.speech_executor.jobs, [])
-                        self.assertEqual([chunk.text for chunk, _ in harness.played], [text, text])
+                        self.assertEqual(
+                            [chunk.text for chunk, _ in harness.played], [text, text]
+                        )
                         harness.fire_advance()
                         self.assertEqual(harness.advance_calls, [generation])
                         self.assertEqual(harness.errors, [])

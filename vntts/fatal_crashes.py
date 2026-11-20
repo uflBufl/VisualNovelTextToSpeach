@@ -22,7 +22,7 @@ _FAULT = re.compile(
     r"^(?:Fatal Python error:|Windows fatal exception:)[^\r\n]{0,512}\r?$", re.M
 )
 _THREAD = re.compile(
-    r"^(Current thread 0x[0-9a-f]+|Thread 0x[0-9a-f]+|Stack)"
+    r"^((?:Current thread|Thread) 0x[0-9a-f]+(?: \[[^\r\n]*\])?|Stack)"
     r" \(most recent call first\):[^\r\n]*\r?$",
     re.M | re.I,
 )

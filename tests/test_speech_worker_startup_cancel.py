@@ -73,7 +73,9 @@ class ModelDownloadCancellationTests(unittest.TestCase):
                 try:
                     with (
                         patch.object(backend, "_prepare_runtime"),
-                        patch("vntts.runtime_ownership.claim_runtime", return_value=None),
+                        patch(
+                            "vntts.runtime_ownership.claim_runtime", return_value=None
+                        ),
                     ):
                         startup = backend.load_in_background()
                         self.assertTrue(entered.wait(5), "download did not start")

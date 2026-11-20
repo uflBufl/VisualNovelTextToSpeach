@@ -110,7 +110,7 @@ class FatalCrashesTest(unittest.TestCase):
         raw = "\r\n".join(
             (
                 "Windows fatal exception: access violation",
-                "Current thread 0xabc (most recent call first):",
+                "Current thread 0xabc [private-thread-name] (most recent call first):",
                 '  File "C:\\Users\\private-player\\project\\vntts\\playback.py", line 42 in play',
                 '  File "/Volumes/private-player/source/scripts/probe.py", line 7 in <module>',
                 '  File "/private/private-player/secret.py", line 9 in external_call',
@@ -140,6 +140,7 @@ class FatalCrashesTest(unittest.TestCase):
         serialized = json.dumps(report)
         for private in (
             "private-player",
+            "private-thread-name",
             "PRIVATE DIALOGUE",
             "secret_local_value",
             "native_secret",

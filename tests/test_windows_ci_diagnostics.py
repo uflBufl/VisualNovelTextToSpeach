@@ -92,7 +92,7 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         return result
 
-    def _active_annotation(self, output, *, replayed=True):
+    def _active_annotations(self, output, *, replayed=True):
         active, stops, resumes = [], [], []
         token = None
         for line in output.splitlines():
@@ -114,8 +114,13 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
             self.assertIn(CANARY, output)
         self.assertEqual(resumes, stops)
         self.assertIsNone(token)
+        for annotation in active:
+            self.assertNotIn(CANARY, annotation)
+        return active
+
+    def _active_annotation(self, output, *, replayed=True):
+        active = self._active_annotations(output, replayed=replayed)
         self.assertEqual(len(active), 1)
-        self.assertNotIn(CANARY, active[0])
         return active[0]
 
     def test_primary_preserves_native_status_and_both_streams(self):
@@ -133,6 +138,54 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
                     report = self._run(self.collector)
                     self.assertEqual(report.returncode, 0)
                     self.assertEqual(self._active_annotation(report.stdout), CONTEXT)
+
+    def test_primary_only_replays_fixed_success_timing_notice(self):
+        notice = (
+            "::notice title=Unittest timing::Windows remainder completed in 46 seconds"
+        )
+        self.env["CI_DIAGNOSTIC_FIXTURE"] = "\n".join(
+            (notice, f"{notice} {CANARY}", f"::notice::{CANARY}")
+        )
+        invocation = "& " + " ".join(
+            "'" + str(value).replace("'", "''") + "'"
+            for value in (sys.executable, self.helper, 0)
+        )
+        result = self._run(self.primary.replace(self.command, invocation))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), notice)
+
+    def test_each_failure_excludes_expected_logs_and_buffered_stdout(self):
+        public = ROOT / "scripts/run_ci_unittests.py"
+        delimiter = "=" * 70
+        self.log.write_text(
+            f'  File "{public}", line 3, in expected_error\n'
+            "OSError: expected fixture failure\n"
+            f"{delimiter}\n"
+            f"FAIL: test_{CANARY} (tests.{CANARY}.Case.test_{CANARY})\n"
+            f'  File "{public}", line 1, in {CANARY}\n'
+            f"AssertionError: {CANARY}\n"
+            f"{delimiter}\n"
+            f"ERROR: test_{CANARY} (tests.{CANARY}.Case.test_{CANARY})\n"
+            f'  File "{public}", line 2, in {CANARY}\n'
+            f"ValueError: {CANARY}\n"
+            + "-"
+            * 70
+            + "\nRan 2 tests in 0.1s\n\nFAILED (failures=1, errors=1)\n"
+            f'  File "{public}", line 4, in buffered_output\n'
+            "RuntimeError: buffered fixture output\n",
+            encoding="utf-8",
+        )
+        report = self._run(self.collector)
+        self.assertEqual(report.returncode, 0)
+        self.assertEqual(
+            self._active_annotations(report.stdout),
+            [
+                "::error title=Windows unit tests failed::"
+                "scripts/run_ci_unittests.py:1; AssertionError",
+                "::error title=Windows unit tests failed::"
+                "scripts/run_ci_unittests.py:2; ValueError",
+            ],
+        )
 
     def test_independent_collector_preserves_private_failure_context(self):
         self.log.write_text(self.payload, encoding="utf-8")

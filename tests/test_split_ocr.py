@@ -46,7 +46,8 @@ class SplitOCRTest(unittest.TestCase):
 
     def test_light_gray_name_background_does_not_gain_a_dark_frame(self):
         fixture = (
-            Path(__file__).parent / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
+            Path(__file__).parent
+            / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
         )
         with Image.open(fixture) as source:
             image = source.convert("RGB")
@@ -76,7 +77,8 @@ class SplitOCRTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_native_ocr_keeps_isolde_on_light_gray_name_background(self):
         fixture = (
-            Path(__file__).parent / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
+            Path(__file__).parent
+            / "fixtures/ocr-sparse-dialogue/one-letter-ellipsis.png"
         )
         with Image.open(fixture) as source:
             image = source.convert("RGB")
@@ -93,8 +95,8 @@ class SplitOCRTest(unittest.TestCase):
                     result = recognize_dialog_image_result(
                         ImageOps.invert(image) if inverted else image,
                         recognize_data=recognize_data,
-                        recognize_combined=lambda processed, language, remaining: engine.recognize(
-                            processed, 6, text=True, data=True
+                        recognize_combined=lambda processed, language, remaining: (
+                            engine.recognize(processed, 6, text=True, data=True)
                         ),
                     )
                     self.assertEqual(result.character, "Isolde")

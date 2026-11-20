@@ -124,7 +124,9 @@ class PlayerSessionOwner:
     def start(self, generation: int, *, settings: AppSettings | None = None) -> bool:
         return self.run(
             generation,
-            lambda cancellation: self._start_runtime(generation, cancellation, settings),
+            lambda cancellation: self._start_runtime(
+                generation, cancellation, settings
+            ),
             False,
         )
 

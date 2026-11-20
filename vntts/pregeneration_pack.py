@@ -2002,7 +2002,9 @@ def _load_existing(
     ):
         if type(declared) is not int or declared != actual:
             raise OfflinePackError("Existing offline pack route counts changed")
-    source_audio_line_ids = _validated_source_audio_line_ids(imported.story_index, story)
+    source_audio_line_ids = _validated_source_audio_line_ids(
+        imported.story_index, story
+    )
     pack = _StoryAudioPack(
         imported.pack.manifest_path,
         True,
