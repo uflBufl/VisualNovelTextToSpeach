@@ -965,15 +965,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       Keep explicit same-filesystem/link errors and existing audio intact; do
       not add a silent copy fallback.
 
-## Deferred - Restore pre-existing repository quality gates
-
-- [ ] Bring the existing Reading, recording, generation and saved-audio complexity findings back within `tests/fixtures/ruff-complexity-v2.json`. Run `scripts/check_ruff_complexity.py` for the current scope inventory; refactor coherent responsibilities without increasing allowances, preserve lifecycle/error handling and run affected tests. Gate: the full complexity ratchet passes, with obsolete allowances removed or reduced.
-- [ ] Reconcile the complexity ratchet with the unchanged live-replay seal,
-      missing-voice fallback, publication-contention and authoring-workbench code.
-      It reports new/increased findings and stale metric allowances on these
-      files at `3bee3b79`; source-progress changes introduce no new findings.
-      Inspect actual complexity before updating the baseline.
-
 ## Qualify SQLite-only storage
 
 - [ ] Qualify the SQLite-only publication, interrupted publication/retry, hard links
