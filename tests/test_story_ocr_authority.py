@@ -250,13 +250,10 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 short = story_line("Eurus.", raw.character, "short")
                 long = story_line("Eurus ... Eurus ...", "Elma", "long")
                 controller = self.controller((short, long))
-                resolution = {}
-                self.assertIs(
-                    controller._resolve_story_ocr_result(raw, resolution=resolution),
-                    raw,
-                )
-                self.assertEqual(resolution["match_result"], "expected-incomplete")
-                self.assertIsNone(resolution["line"])
+                resolution = controller._resolve_story_ocr_result(raw)
+                self.assertIs(resolution.ocr_result, raw)
+                self.assertEqual(resolution.match_result, "expected-incomplete")
+                self.assertIsNone(resolution.line)
 
     def controller(self, rows):
         controller = AppController(
@@ -330,10 +327,8 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     raw = observed(
                         "Ｅｕｒｕｓ  ...\nEurus ...", dialogue_confidence=52.5
                     )
-                    resolution = {}
-                    resolved = controller._resolve_story_ocr_result(
-                        raw, resolution=resolution
-                    )
+                    resolution = controller._resolve_story_ocr_result(raw)
+                    resolved = resolution.ocr_result
                     self.assertEqual(
                         (resolved.character, resolved.text), (line.speaker, line.text)
                     )
@@ -345,7 +340,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     self.assertFalse(resolved.is_confident())
                     self.assertTrue(resolved.is_readable())
                     self.assertTrue(resolved.source_text_confirmed)
-                    self.assertEqual(resolution["match_result"], "expected-text-only")
+                    self.assertEqual(resolution.match_result, "expected-text-only")
                     self.assertIsNone(controller.chapter_voice_preloader.current_match)
                     with patch(
                         "vntts.dialog_capture.recognize_dialog_image_result",
@@ -414,7 +409,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 controller = self.controller(rows)
                 self.anchor(controller, current, successors, state)
                 raw = observed(text, dialogue_confidence=52.5)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 self.assertFalse(raw.source_text_confirmed)
                 with patch(
                     "vntts.dialog_capture.recognize_dialog_image_result",
@@ -514,7 +509,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             self.assertNotIn(chunk.playback_id, harness.reader.cancelled_chunk_ids)
             self.assertIsNone(harness.reader.current_chunk)
             raw = observed(line.text, dialogue_confidence=52.5)
-            resolved = controller._resolve_story_ocr_result(raw)
+            resolved = controller._resolve_story_ocr_result(raw).ocr_result
             self.assertTrue(resolved.source_text_confirmed)
             self.assertEqual(resolved.confidence, 52.5)
             self.assertEqual(resolved.dialogue_confidence, 52.5)
@@ -560,7 +555,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 raw = observed(text, dialogue_confidence=52.5)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 with patch(
                     "vntts.dialog_capture.recognize_dialog_image_result",
                     return_value=raw,
@@ -604,9 +599,8 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                         reader.enqueue(line.speaker, line.text, line_id=line.line_id)
                     )
                     chunk = next(iter(reader.accepted_chunks.values()))
-                    self.assertTrue(
-                        controller._resolve_story_ocr_result(raw).source_text_confirmed
-                    )
+                    resolved = controller._resolve_story_ocr_result(raw).ocr_result
+                    self.assertTrue(resolved.source_text_confirmed)
                 if state == "stopped":
                     reader.capture_future = Future()
                     self.assertTrue(reader.stop())
@@ -664,7 +658,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     self.anchor(controller, line, state=StoryCursorState.UNSYNCHRONIZED)
                 if state == "no-owner":
                     controller.chapter_voice_preloader.select_line_id(line.line_id)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
 
     def test_all_reading_consumers_use_source_authority_and_keep_diagnostics(self):
         line = story_line("Eurus ... Eurus ...", "Elma")
@@ -681,7 +675,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             ),
         ):
             kwargs = dict(
-                result_resolver=controller._resolve_story_ocr_result,
+                result_resolver=controller._resolve_story_ocr_text,
                 diagnostic_handler=snapshots.append,
             )
             read_dialog(controller.voice_router, ".", speech_handler=speech, **kwargs)
@@ -758,7 +752,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 line = story_line(text, speaker)
                 controller = self.controller((line,))
                 raw = observed(text.upper(), noise)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual((resolved.character, resolved.text), (speaker, text))
                 self.assertEqual(resolved.confidence, 94.9)
                 self.assertEqual(resolved.speaker_confidence, 26)
@@ -902,7 +896,9 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 controller._expected_sequence_prefix_line_locked = Mock(
                     return_value=line
                 )
-                self.assertIs(controller._resolve_story_ocr_result(result), result)
+                self.assertIs(
+                    controller._resolve_story_ocr_result(result).ocr_result, result
+                )
 
     def test_owned_symbol_successor_uses_complete_source_match(self):
         line = story_line("...", "Duvalle")
@@ -913,11 +909,11 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             confidence=0,
             speaker_confidence=0,
         )
-        resolution = {}
-        resolved = controller._resolve_story_ocr_result(raw, resolution=resolution)
+        resolution = controller._resolve_story_ocr_result(raw)
+        resolved = resolution.ocr_result
         self.assertEqual((resolved.character, resolved.text), (line.speaker, line.text))
         self.assertEqual(resolved.confidence, 96)
-        self.assertEqual(resolution["match_result"], "expected-text-only")
+        self.assertEqual(resolution.match_result, "expected-text-only")
 
     @unittest.skipUnless(shutil.which("tesseract"), "Tesseract is not installed")
     def test_retained_frames_reach_the_canonical_generated_recording(self):
@@ -939,7 +935,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             ):
                 raw = recognize_dialog_image_result(image)
                 controller = self.controller(rows)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual((resolved.character, resolved.text), (speaker, text))
                 self.assertEqual(resolved.confidence, raw.dialogue_confidence)
                 self.assertIsNone(controller.chapter_voice_preloader.current_match)
@@ -959,7 +955,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 line = story_line(text, "Cornerstone")
                 controller = self.controller((line,))
                 raw = observed(ocr_text)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual(
                     (resolved.character, resolved.text), (line.speaker, line.text)
                 )
@@ -995,7 +991,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             with self.subTest(text=text):
                 controller = self.controller((line,))
                 raw = observed(text)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual(
                     (resolved.character, resolved.text), (line.speaker, line.text)
                 )
@@ -1018,7 +1014,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             with self.subTest(text=text):
                 controller = self.controller((line,))
                 raw = observed(text, line.speaker)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 initial, _ = self.resolve_initial(controller, raw.character, raw.text)
                 self.assertIsNone(initial)
                 self.assertIsNone(controller.chapter_voice_preloader.current_match)
@@ -1032,7 +1028,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 line = story_line(text, "Cornerstone")
                 controller = self.controller((line,))
                 raw = observed(ocr_text)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual(
                     (resolved.character, resolved.text), (line.speaker, line.text)
                 )
@@ -1058,7 +1054,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 line = story_line(canonical, "Cornerstone")
                 controller = self.controller((line,))
                 raw = observed(text, line.speaker)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 if accepted:
                     self.assertEqual(
                         (resolved.character, resolved.text), (line.speaker, canonical)
@@ -1130,7 +1126,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
         ):
             with self.subTest(rows=rows, text=raw.text):
                 controller = self.controller(rows)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 with patch(
                     "vntts.dialog_capture.recognize_dialog_image_result",
                     return_value=raw,
@@ -1159,7 +1155,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
             with self.subTest(text=text):
                 controller = self.controller((story_line(text),))
                 raw = observed(raw_text, noise)
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual(
                     (resolved.character, resolved.text), ("Narrator", text)
                 )
@@ -1198,7 +1194,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 def recognize(frame):
                     result = controller._resolve_story_ocr_result(
                         observed(frame["text"], frame["character"])
-                    )
+                    ).ocr_result
                     return result.character, result.text
 
                 harness.reader.recognize_frame = recognize
@@ -1298,7 +1294,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                     bounded_visible_successors=Mock(return_value=()),
                 )
                 raw = observed(ocr_text, "Wrong branch")
-                resolved = controller._resolve_story_ocr_result(raw)
+                resolved = controller._resolve_story_ocr_result(raw).ocr_result
                 self.assertEqual(
                     (resolved.character, resolved.text), (first.speaker, text)
                 )
@@ -1335,7 +1331,7 @@ class StoryOCRAuthorityTest(unittest.TestCase):
                 ):
                     _, _, result = analyze_dialog_snapshot(
                         "captures",
-                        result_resolver=controller._resolve_story_ocr_result,
+                        result_resolver=controller._resolve_story_ocr_text,
                         diagnostic_handler=snapshots.append,
                     )
                 self.assertEqual((result.character, result.text), (line.speaker, text))

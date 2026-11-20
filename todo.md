@@ -971,9 +971,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       cohort reviews, failure audits, fallback plans, and carry-forward inputs.
       Check paths that re-read the live file for its digest as well. Preserve
       each caller's error contract and verify behavior during a concurrent commit.
-- [ ] Return the matched story line, equivalent speech and match kind explicitly
-      from the story OCR resolver. Derive diagnostics from that result and keep
-      the stale-owner check before updating the cursor.
 - [ ] Share live audio materialization between successor prefetch and playback.
       Preserve focus cancellation for prefetch, chunk cancellation for playback,
       and the occurrence check after prefetch completes.

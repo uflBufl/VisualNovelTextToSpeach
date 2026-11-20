@@ -22,6 +22,7 @@ from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.caption_layout import select_caption
 from vntts.chapter_voice_preload import (
+    EXACT_STORY_MATCHES,
     ChapterDialogue,
     ChapterVoicePreloader,
     StoryMatchingCancelled,
@@ -538,6 +539,14 @@ class PreparedLiveChunkRoutes:
 class SequenceEventLease:
     event_id: str
     occurrence_id: int
+
+
+@dataclass(frozen=True)
+class _StoryOCRResolution:
+    ocr_result: OCRResult
+    match_result: str
+    line: ChapterDialogue | None = None
+    equivalent_speech: ChapterDialogue | None = None
 
 
 @dataclass
@@ -1789,9 +1798,7 @@ class AppController:
             identity = {}
 
         raw_result: OCRResult | None = None
-        canonical_line: ChapterDialogue | None = None
-        equivalent_speech: ChapterDialogue | None = None
-        canonical_exact = False
+        resolution: _StoryOCRResolution | None = None
         reader = self.live_reader
         comparison = (
             reader.frame_equivalent if isinstance(reader, LiveDialogReader) else None
@@ -1803,28 +1810,13 @@ class AppController:
             raw_result = result
 
         def resolve_result(result: OCRResult) -> OCRResult:
-            nonlocal canonical_line, canonical_exact, equivalent_speech
+            nonlocal resolution
             started = monotonic()
             outcome = "success"
             error_type: str | None = None
-            resolution: dict[str, object] = {}
             try:
-                resolved = self._resolve_story_ocr_result(
-                    result, resolution=resolution, lease=lease
-                )
-                line = resolution.get("line")
-                canonical_line = line if isinstance(line, ChapterDialogue) else None
-                equivalent = resolution.get("equivalent_speech")
-                equivalent_speech = (
-                    equivalent if isinstance(equivalent, ChapterDialogue) else None
-                )
-                canonical_exact = resolution.get("match_result") in {
-                    "expected-exact",
-                    "expected-normalized-exact",
-                    "expected-text-only",
-                    "expected-normalized-text-only",
-                }
-                return resolved
+                resolution = self._resolve_story_ocr_result(result, lease=lease)
+                return resolution.ocr_result
             except BaseException as error:
                 outcome = "error"
                 error_type = type(error).__name__
@@ -1832,7 +1824,13 @@ class AppController:
             finally:
                 try:
                     retain_ocr_resolution(
-                        frame, raw_result or result, resolution, **identity
+                        frame,
+                        raw_result or result,
+                        match_result=resolution.match_result
+                        if resolution
+                        else "resolver-error",
+                        line=resolution.line if resolution else None,
+                        **identity,
                     )
                     record_diagnostic_event(
                         "ocr",
@@ -1868,6 +1866,9 @@ class AppController:
             and evidence_context is not None
         ):
             comparison.record_admitted(frame, character, text, evidence_context)
+        if resolution is None:
+            return character, text
+        canonical_line = resolution.line
         if (
             canonical_line is not None
             and canonical_line.line_id is not None
@@ -1884,10 +1885,11 @@ class AppController:
                 character,
                 text,
                 canonical_line.line_id,
-                exact_match=canonical_exact,
+                exact_match=resolution.match_result in EXACT_STORY_MATCHES,
                 allow_unheard_replacement=replacement,
                 observed_text=raw_result.text if raw_result is not None else text,
             )
+        equivalent_speech = resolution.equivalent_speech
         if equivalent_speech is not None:
             return RecognizedDialog(
                 equivalent_speech.speaker,
@@ -1938,22 +1940,21 @@ class AppController:
             else None
         )
 
-    def _resolve_story_ocr_result(
-        self,
-        result: OCRResult,
-        *,
-        resolution: dict[str, object] | None = None,
-        lease: _StoryObservationLease | None = None,
+    def _resolve_story_ocr_text(
+        self, result: OCRResult, *, lease: _StoryObservationLease | None = None
     ) -> OCRResult:
+        return self._resolve_story_ocr_result(result, lease=lease).ocr_result
+
+    def _resolve_story_ocr_result(
+        self, result: OCRResult, *, lease: _StoryObservationLease | None = None
+    ) -> _StoryOCRResolution:
         confidence = (
             result.confidence
             if result.dialogue_confidence is None
             else result.dialogue_confidence
         )
         if not result.text.strip():
-            if resolution is not None:
-                resolution["match_result"] = "empty"
-            return result
+            return _StoryOCRResolution(result, "empty")
         confident = confidence >= self.settings.ocr_minimum_confidence
         speaker_confidence = (
             result.confidence
@@ -1973,9 +1974,7 @@ class AppController:
         with self.story_cursor_lock:
             lease = self._story_observation_lease_locked(lease)
             if lease.stale:
-                if resolution is not None:
-                    resolution["match_result"] = "stale-observation"
-                return result
+                return _StoryOCRResolution(result, "stale-observation")
             owner_preloader = self.chapter_voice_preloader
             preloader = owner_preloader
             settings = self.settings
@@ -2014,9 +2013,7 @@ class AppController:
                     or (chunk.character, chunk.text)
                     != (current_line.speaker, current_line.text)
                 ):
-                    if resolution is not None:
-                        resolution["match_result"] = "ocr-uncertain"
-                    return result
+                    return _StoryOCRResolution(result, "ocr-uncertain")
                 confirmation_line_id = current_line.line_id
                 if (
                     automatic_prepared_reading
@@ -2097,9 +2094,7 @@ class AppController:
                     limit=0,
                 )
                 if not evidence.complete and evidence.prefix_distance == 0:
-                    if resolution is not None:
-                        resolution["match_result"] = "owned-prefix"
-                    return result
+                    return _StoryOCRResolution(result, "owned-prefix")
             line, match = preloader.resolve_complete_among(
                 speaker,
                 result.text,
@@ -2170,38 +2165,30 @@ class AppController:
                 )
         except StoryMatchingCancelled:
             lease.stale = True
-            if resolution is not None:
-                resolution["match_result"] = "stale-observation"
-            return result
+            return _StoryOCRResolution(result, "stale-observation")
         with self.story_cursor_lock:
             if self._story_matching_owner_locked() != owner:
                 lease.stale = True
-                if resolution is not None:
-                    resolution["match_result"] = "stale-observation"
-                return result
+                return _StoryOCRResolution(result, "stale-observation")
             owner_preloader.last_resolution_diagnostics = (
                 preloader.last_resolution_diagnostics
             )
-            if resolution is not None:
-                resolution.update(
-                    match_result=match, line=line, equivalent_speech=equivalent_speech
-                )
             if line is not None and automatic_prepared_reading:
                 owner_preloader.select_line_id(line.line_id)
             lease.owner = self._story_matching_owner_locked()
-        if line is None:
-            return result
-        self._request_original_speech(line)
-        return replace(
-            result,
-            character=line.speaker,
-            text=line.text,
-            confidence=confidence,
-            source_text_confirmed=not confident,
-            speaker_note=(
-                f"Speaker from the prepared story; OCR name ignored: {result.character}"
-            ),
-        )
+        if line is not None:
+            self._request_original_speech(line)
+            result = replace(
+                result,
+                character=line.speaker,
+                text=line.text,
+                confidence=confidence,
+                source_text_confirmed=not confident,
+                speaker_note=(
+                    f"Speaker from the prepared story; OCR name ignored: {result.character}"
+                ),
+            )
+        return _StoryOCRResolution(result, match, line, equivalent_speech)
 
     def _preview_voice(self, character: str, text: str) -> tuple[str, str]:
         try:
@@ -2803,12 +2790,7 @@ class AppController:
             update_context=False,
             fully_observed_line_id=fully_observed_line_id,
         )
-        if match not in {
-            "expected-exact",
-            "expected-normalized-exact",
-            "expected-text-only",
-            "expected-normalized-text-only",
-        }:
+        if match not in EXACT_STORY_MATCHES:
             return None, match
         return line, match
 

@@ -202,11 +202,10 @@ class SourceAudioReadingEligibilityTests(unittest.TestCase):
         return controller, live
 
     def resolve(self, controller, text="Huh?", speaker="Ada"):
-        resolution = {}
-        admitted = controller._resolve_story_ocr_result(
-            OCRResult(speaker, text, 95, "fixture", 1), resolution=resolution
+        resolution = controller._resolve_story_ocr_result(
+            OCRResult(speaker, text, 95, "fixture", 1)
         )
-        return admitted, resolution.get("line")
+        return resolution.ocr_result, resolution.line
 
     def route(self, controller, admitted, line):
         accepted = controller._accept_live_chunk(

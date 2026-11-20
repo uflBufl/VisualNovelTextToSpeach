@@ -32,6 +32,7 @@ from vntts.window_capture import WindowCaptureTarget
 if TYPE_CHECKING:
     from PIL.Image import Image
 
+    from vntts.chapter_voice_preload import ChapterDialogue
     from vntts.support import GenerationTimelineLog
 
 _active: "ReadingDiagnosticSession | None" = None
@@ -58,8 +59,9 @@ def record_diagnostic_event(category: str, operation: str, **details: object) ->
 def retain_ocr_resolution(
     frame: object,
     raw: object,
-    resolution: dict[str, object],
     *,
+    match_result: str,
+    line: "ChapterDialogue | None" = None,
     run_id: object = None,
     capture_id: object = None,
 ) -> None:
@@ -101,10 +103,6 @@ def retain_ocr_resolution(
             <= session.started_monotonic + session.seconds
         ):
             return
-        line = resolution.get("line")
-        from vntts.chapter_voice_preload import ChapterDialogue
-
-        canonical = line if isinstance(line, ChapterDialogue) else None
         session.runtime.record_ocr_resolution(
             {
                 "category": "ocr",
@@ -116,8 +114,8 @@ def retain_ocr_resolution(
                 "started_monotonic": provenance.started_monotonic,
                 "completed_monotonic": provenance.completed_monotonic,
                 "occurred_at": now,
-                "match_result": resolution.get("match_result", "resolver-error"),
-                "line_id": canonical.line_id if canonical else None,
+                "match_result": match_result,
+                "line_id": line.line_id if line else None,
                 "ocr_confidence": raw.confidence,
                 "ocr_speaker_confidence": raw.speaker_confidence,
                 "ocr_dialogue_confidence": raw.dialogue_confidence,
@@ -126,10 +124,10 @@ def retain_ocr_resolution(
             raw_text=raw.text,
             **(
                 {
-                    "canonical_character": canonical.speaker,
-                    "canonical_text": canonical.text,
+                    "canonical_character": line.speaker,
+                    "canonical_text": line.text,
                 }
-                if canonical
+                if line
                 else {}
             ),
         )

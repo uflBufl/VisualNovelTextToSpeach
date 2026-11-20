@@ -215,11 +215,10 @@ class ReadingCatalogTests(unittest.TestCase):
         harness.reader.capture_future = Future()
         controller.live_reader = harness.reader
         with patch.object(controller.reading_content, "request_originals") as request:
-            resolution = {}
-            admitted = controller._resolve_story_ocr_result(
-                OCRResult("Narrator", self.unvoiced, 95, "test", 1),
-                resolution=resolution,
+            resolution = controller._resolve_story_ocr_result(
+                OCRResult("Narrator", self.unvoiced, 95, "test", 1)
             )
+            admitted = resolution.ocr_result
             request.assert_called_once_with(
                 self.snapshot.catalogs[0],
                 "100630",
@@ -228,7 +227,7 @@ class ReadingCatalogTests(unittest.TestCase):
             )
             live.prepare_playback.assert_not_called()
             route = backend.prepare_route(
-                admitted.character, admitted.text, line_id=resolution["line"].line_id
+                admitted.character, admitted.text, line_id=resolution.line.line_id
             )
         self.assertIsInstance(route, LiveTTSRoute)
 
@@ -260,11 +259,11 @@ class ReadingCatalogTests(unittest.TestCase):
                 ),
                 1,
             ):
-                resolution = {}
-                admitted = controller._resolve_story_ocr_result(
-                    OCRResult("Narrator", text, 95, "test", 1), resolution=resolution
+                resolution = controller._resolve_story_ocr_result(
+                    OCRResult("Narrator", text, 95, "test", 1)
                 )
-                line = resolution["line"]
+                admitted = resolution.ocr_result
+                line = resolution.line
                 chunk = controller._accept_live_chunk(
                     SpeechChunk(
                         ordinal,

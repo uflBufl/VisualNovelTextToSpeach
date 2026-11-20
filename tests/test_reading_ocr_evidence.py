@@ -74,7 +74,8 @@ class ReadingOCREvidenceTest(unittest.TestCase):
         retain_ocr_resolution(
             kwargs.get("frame", self.frame),
             self.raw,
-            {"match_result": "expected-exact", "line": story_line()},
+            match_result="expected-exact",
+            line=story_line(),
             run_id=kwargs.get("run_id", "run-id"),
             capture_id=kwargs.get("capture_id", "capture-id"),
         )
@@ -220,16 +221,14 @@ class ReadingOCREvidenceTest(unittest.TestCase):
         for rows, raw, reason in cases:
             with self.subTest(reason=reason):
                 controller = self.controller(rows)
-                resolution = {}
-                self.assertIs(
-                    controller._resolve_story_ocr_result(raw, resolution=resolution),
-                    raw,
-                )
-                self.assertEqual(resolution["match_result"], reason)
+                resolution = controller._resolve_story_ocr_result(raw)
+                self.assertIs(resolution.ocr_result, raw)
+                self.assertEqual(resolution.match_result, reason)
                 retain_ocr_resolution(
                     self.frame,
                     raw,
-                    resolution,
+                    match_result=resolution.match_result,
+                    line=resolution.line,
                     run_id="run-id",
                     capture_id="capture-id",
                 )
@@ -242,22 +241,31 @@ class ReadingOCREvidenceTest(unittest.TestCase):
             self.assertNotIn("line_id", event)
 
     def test_owned_prefix_gate_is_preserved_and_observability_failure_is_soft(self):
-        controller = self.controller((story_line(),))
-        controller._expected_sequence_prefix_line_locked = Mock(
-            return_value=story_line()
-        )
-        resolution = {}
+        line = story_line()
+        controller = self.controller((line,))
+        controller._expected_sequence_prefix_line_locked = Mock(return_value=line)
         prefix = replace(self.raw, text="Hello from the")
-        self.assertIs(
-            controller._resolve_story_ocr_result(prefix, resolution=resolution),
-            prefix,
-        )
-        self.assertEqual(resolution, {"match_result": "owned-prefix"})
+        resolution = controller._resolve_story_ocr_result(prefix)
+        self.assertIs(resolution.ocr_result, prefix)
+        self.assertEqual(resolution.match_result, "owned-prefix")
+        self.assertIsNone(resolution.line)
         with patch.object(
             self.runtime, "record_ocr_resolution", side_effect=OSError("failed")
-        ):
-            self.retain()
-        self.assertEqual(self.events(), [])
+        ) as record:
+            frame = replace(
+                self.frame, recognized_result=replace(self.raw, text=line.text)
+            )
+            recognized = controller._recognize_live_frame(frame)
+        record.assert_called_once()
+        self.assertEqual(
+            recognized,
+            RecognizedDialog(
+                line.speaker, line.text, line.line_id, allow_unheard_replacement=False
+            ),
+        )
+        self.assertNotIn(
+            "story-ocr-evidence", [event["operation"] for event in self.events()]
+        )
 
     def test_failed_raw_observer_preserves_recognition_and_corrections(self):
         with patch(

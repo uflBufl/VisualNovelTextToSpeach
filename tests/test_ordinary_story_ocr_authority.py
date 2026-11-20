@@ -108,11 +108,10 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                     harness.push("Isolde", previous.text, background="previous")
                     self.assertEqual(controller._fully_observed_line_id(), previous.line_id)
                     self.assertEqual(harness.played, [])
-                    resolution = {}
-                    controller._resolve_story_ocr_result(
-                        authority.observed("I", speaker, 95), resolution=resolution
+                    resolution = controller._resolve_story_ocr_result(
+                        authority.observed("I", speaker, 95)
                     )
-                    self.assertIsNone(resolution.get("line"))
+                    self.assertIsNone(resolution.line)
                     harness.push(
                         speaker, short.text, background="next",
                         expected=("Isolde", short.text),
@@ -144,11 +143,10 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
         controller.chapter_voice_preloader.select_line_id(previous.line_id)
         self.assertIsNotNone(harness.reader.current_canonical_chunk())
         self.assertIsNone(controller._fully_observed_line_id())
-        resolution = {}
-        controller._resolve_story_ocr_result(
-            authority.observed(short.text, "Narrator", 95), resolution=resolution
+        resolution = controller._resolve_story_ocr_result(
+            authority.observed(short.text, "Narrator", 95)
         )
-        self.assertIsNone(resolution.get("line"))
+        self.assertIsNone(resolution.line)
 
     def test_first_low_confidence_named_line_uses_metadata_before_preparation(self):
         previous = authority.story_line(
@@ -157,7 +155,7 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
         line = authority.story_line("Eurus ... Eurus ...", "Elma")
         controller, _, library = self.ordinary((previous, line), owner=previous)
         raw = replace(self.raw(line), text="Ｅｕｒｕｓ  ...\nEurus ...")
-        resolved = controller._resolve_story_ocr_result(raw)
+        resolved = controller._resolve_story_ocr_result(raw).ocr_result
         self.assertEqual((resolved.character, resolved.text), (line.speaker, line.text))
         self.assertTrue(resolved.source_text_confirmed)
         self.assertEqual(resolved.confidence, 52.5)
@@ -295,7 +293,9 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
         ):
             with self.subTest(raw=rejected):
                 controller, _, library = self.ordinary((previous, line), owner=previous)
-                self.assertIs(controller._resolve_story_ocr_result(rejected), rejected)
+                self.assertIs(
+                    controller._resolve_story_ocr_result(rejected).ocr_result, rejected
+                )
                 self.assertFalse(rejected.source_text_confirmed)
                 with self.assertRaises(OCRUncertainError):
                     self.recognize(controller, rejected)
@@ -308,12 +308,10 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
         line = authority.story_line("Eurus ... Eurus ...", "Elma")
         controller, _, library = self.ordinary((previous, line), owner=previous)
         raw = replace(self.raw(line), confidence=95, speaker_confidence=None)
-        resolution = {}
-        self.assertIs(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertIs(resolution.ocr_result, raw)
         self.assertFalse(raw.source_text_confirmed)
-        self.assertIsNone(resolution.get("line"))
+        self.assertIsNone(resolution.line)
         library.has_entry.assert_not_called()
         library.find_with_preflight.assert_not_called()
 
@@ -334,16 +332,11 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                     (previous, line), owner=previous, prepared=prepared
                 )
                 raw = replace(self.raw(line), character=speaker)
-                resolution = {}
-                self.assertIs(
-                    controller._resolve_story_ocr_result(raw, resolution=resolution),
-                    raw,
-                )
+                resolution = controller._resolve_story_ocr_result(raw)
+                self.assertIs(resolution.ocr_result, raw)
                 self.assertFalse(raw.source_text_confirmed)
-                self.assertIsNone(resolution.get("line"))
-                self.assertNotEqual(
-                    resolution.get("match_result"), "expected-text-only"
-                )
+                self.assertIsNone(resolution.line)
+                self.assertNotEqual(resolution.match_result, "expected-text-only")
                 with self.assertRaises(OCRUncertainError):
                     self.recognize(controller, raw)
                 library.find_with_preflight.assert_not_called()
@@ -362,7 +355,7 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                     (previous, line, competitor), owner=previous, prepared=(line,)
                 )
                 raw = self.raw(line)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 library.find_with_preflight.assert_not_called()
 
     def test_owner_chapter_overrides_guessed_match_but_never_allows_cross_chapter(self):
@@ -378,7 +371,7 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
         controller, _, _ = self.ordinary((previous, foreign), owner=previous)
         controller.chapter_voice_preloader.select_line_id(foreign.line_id)
         raw = self.raw(foreign)
-        self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+        self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
 
     def test_new_line_requires_current_owner_matching_unchanged_source(self):
         previous = authority.story_line(
@@ -431,7 +424,7 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                         controller.chapter_voice_preloader
                     )
                 raw = self.raw(line)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 library.find_with_preflight.assert_not_called()
 
     def test_new_line_requires_automatic_reading_and_prepared_backend_membership(self):
@@ -473,5 +466,5 @@ class OrdinaryStoryOCRAuthorityTest(unittest.TestCase):
                 elif state == "altered-speed":
                     controller.speech_backend.speed = 1.2
                 raw = self.raw(line)
-                self.assertIs(controller._resolve_story_ocr_result(raw), raw)
+                self.assertIs(controller._resolve_story_ocr_result(raw).ocr_result, raw)
                 library.find_with_preflight.assert_not_called()

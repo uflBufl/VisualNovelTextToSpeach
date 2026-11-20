@@ -804,7 +804,7 @@ class RuntimeLifecycleComponent:
             region_provider=controller._capture_region,
             ocr_regions_provider=controller._capture_ocr_regions,
             frame_selector=controller._select_text_layout,
-            result_resolver=controller._resolve_story_ocr_result,
+            result_resolver=controller._resolve_story_ocr_text,
         )
         return True
 
@@ -1206,7 +1206,7 @@ class LiveSessionComponent:
             controller.correction_dictionary,
             controller._capture_region(),
             controller._capture_ocr_regions(),
-            partial(controller._resolve_story_ocr_result, lease=lease),
+            partial(controller._resolve_story_ocr_text, lease=lease),
             controller._select_text_layout,
         )
         return character, text, uncertain
@@ -1882,7 +1882,7 @@ class DiagnosticsComponent:
             correction_dictionary=controller.correction_dictionary,
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
-            result_resolver=controller._resolve_story_ocr_result,
+            result_resolver=controller._resolve_story_ocr_text,
             frame_selector=controller._select_text_layout,
         )
         snapshot = snapshots[-1]
@@ -1913,7 +1913,7 @@ class DiagnosticsComponent:
             correction_dictionary=controller.correction_dictionary,
             region=controller._capture_region(),
             ocr_regions=controller._capture_ocr_regions(),
-            result_resolver=controller._resolve_story_ocr_result,
+            result_resolver=controller._resolve_story_ocr_text,
             capture_context=capture_context,
             frame_selector=controller._select_text_layout,
         )

@@ -199,35 +199,27 @@ class StoryRecognitionConcurrencyTests(unittest.TestCase):
         with patch.object(ChapterVoicePreloader, "resolve_complete_among", resolve):
             for text in ("Ahh! To", "Ahh! Tosca", "Ahh! Tosca ...! You're turning"):
                 with self.subTest(text=text):
-                    resolution = {}
                     raw = self.raw(text)
-                    self.assertIs(
-                        controller._resolve_story_ocr_result(
-                            raw, resolution=resolution
-                        ),
-                        raw,
-                    )
-                    self.assertEqual(resolution["match_result"], "expected-incomplete")
-                    self.assertIsNone(resolution["line"])
+                    resolution = controller._resolve_story_ocr_result(raw)
+                    self.assertIs(resolution.ocr_result, raw)
+                    self.assertEqual(resolution.match_result, "expected-incomplete")
+                    self.assertIsNone(resolution.line)
                     self.assertEqual(preloader.current_match.sequence, 11)
-            resolution = {}
-            controller._resolve_story_ocr_result(self.raw(), resolution=resolution)
+            resolution = controller._resolve_story_ocr_result(self.raw())
 
         self.assertTrue(scopes)
         self.assertTrue(all(self.foreign.line_id not in scope for scope in scopes))
-        self.assertIs(resolution["line"], self.target)
-        self.assertTrue(resolution["line"].has_full_source_audio)
+        self.assertIs(resolution.line, self.target)
+        self.assertTrue(resolution.line.has_full_source_audio)
         self.assertEqual(preloader.current_match.sequence, self.target.sequence)
         controller._request_original_speech.assert_called_once_with(self.target)
 
     def test_genuine_chapter_miss_still_discovers_another_chapter(self):
         controller = self.controller()
-        resolution = {}
-        controller._resolve_story_ocr_result(
+        resolution = controller._resolve_story_ocr_result(
             OCRResult("Other", self.foreign.text, 95, "fixture", 1),
-            resolution=resolution,
         )
-        self.assertIs(resolution["line"], self.foreign)
+        self.assertIs(resolution.line, self.foreign)
         self.assertEqual(
             controller.chapter_voice_preloader.current_match.chapter, "other"
         )
@@ -236,14 +228,11 @@ class StoryRecognitionConcurrencyTests(unittest.TestCase):
         for path in ("ordinary", "sequence"):
             with self.subTest(path=path):
                 controller = self.controller(sequence=path == "sequence")
-                resolution = {}
                 if path == "ordinary":
                     method = "resolve_complete_among"
 
                     def operation():
-                        return controller._resolve_story_ocr_result(
-                            self.raw(), resolution=resolution
-                        )
+                        return controller._resolve_story_ocr_result(self.raw())
                 else:
                     method = "resolve_observation_among"
 
@@ -264,8 +253,8 @@ class StoryRecognitionConcurrencyTests(unittest.TestCase):
                 )
                 controller._request_original_speech.assert_not_called()
                 if path == "ordinary":
-                    self.assertEqual(resolution["match_result"], "stale-observation")
-                    self.assertIsNone(resolution.get("line"))
+                    self.assertEqual(results[0].match_result, "stale-observation")
+                    self.assertIsNone(results[0].line)
                 else:
                     self.assertFalse(results[0])
                     self.assertEqual(
@@ -280,13 +269,10 @@ class StoryRecognitionConcurrencyTests(unittest.TestCase):
                 controller = self.controller(sequence=change == "resync")
                 owner = controller.chapter_voice_preloader
                 owner.last_resolution_diagnostics = {"owner": "before"}
-                resolution = {}
                 with self.held_matching(
                     "resolve_complete_among",
-                    lambda: controller._resolve_story_ocr_result(
-                        self.raw(), resolution=resolution
-                    ),
-                ):
+                    lambda: controller._resolve_story_ocr_result(self.raw()),
+                ) as results:
 
                     def change_owner():
                         with controller.story_cursor_lock:
@@ -318,8 +304,8 @@ class StoryRecognitionConcurrencyTests(unittest.TestCase):
                     self.assertEqual(
                         owner.last_resolution_diagnostics, {"owner": "before"}
                     )
-                self.assertEqual(resolution["match_result"], "stale-observation")
-                self.assertIsNone(resolution.get("line"))
+                self.assertEqual(results[0].match_result, "stale-observation")
+                self.assertIsNone(results[0].line)
                 self.assertEqual(
                     controller.chapter_voice_preloader.current_match, selected
                 )

@@ -207,7 +207,7 @@ class CaptionSourceAuthorityTest(unittest.TestCase):
         with patch.object(self.controller, "_refresh_prepared_audio"):
             self.assertEqual(
                 recognize_live_frame(
-                    selected, result_resolver=self.controller._resolve_story_ocr_result
+                    selected, result_resolver=self.controller._resolve_story_ocr_text
                 ),
                 ("Narrator", caption.text),
             )
@@ -218,7 +218,7 @@ class CaptionSourceAuthorityTest(unittest.TestCase):
             self.assertIsNone(preloader.current_match)
             self.assertEqual(
                 recognize_live_frame(
-                    following, result_resolver=self.controller._resolve_story_ocr_result
+                    following, result_resolver=self.controller._resolve_story_ocr_text
                 ),
                 ("Narrator", successor.text),
             )

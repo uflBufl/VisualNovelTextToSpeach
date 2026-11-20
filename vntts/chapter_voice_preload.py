@@ -49,6 +49,14 @@ from vntts.story_text_matching import (
 if TYPE_CHECKING:
     from vntts.dialogue_search import DialogueStore
 
+EXACT_STORY_MATCHES = frozenset(
+    {
+        "expected-exact",
+        "expected-normalized-exact",
+        "expected-text-only",
+        "expected-normalized-text-only",
+    }
+)
 VERIFIED_SOURCE_AUDIO_COMPLETION = "verified-media-duration-seconds"
 SourceAudioExtension: TypeAlias = tuple[str, str | None, float | None, str, bool]
 ResolutionDiagnostics: TypeAlias = dict[str, int | float | str]
@@ -724,17 +732,7 @@ class ChapterVoicePreloader:
             prefer_synthesis=prefer_synthesis,
             fully_observed_line_id=fully_observed_line_id,
         )
-        if (
-            line is None
-            or line not in indexed
-            or method
-            not in {
-                "expected-exact",
-                "expected-text-only",
-                "expected-normalized-exact",
-                "expected-normalized-text-only",
-            }
-        ):
+        if line is None or line not in indexed or method not in EXACT_STORY_MATCHES:
             return None, method
         return self._finish_exact_resolution(line, method, update_context)
 

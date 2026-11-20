@@ -247,11 +247,9 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         preloader = controller.chapter_voice_preloader
         preloader.dialogue = NoCatalogScan(preloader.dialogue)
         raw = fixture.raw("Abh! Tosca ...! You're turnlng")
-        resolution = {}
-        self.assertIs(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
-        self.assertIsNone(resolution["line"])
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertIs(resolution.ocr_result, raw)
+        self.assertIsNone(resolution.line)
         self.assertEqual(preloader.current_match.sequence, fixture.previous.sequence)
         controller._request_original_speech.assert_not_called()
 
@@ -259,12 +257,10 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         fixture, controller = self.controller()
         preloader = controller.chapter_voice_preloader
         preloader.dialogue = NoCatalogScan(preloader.dialogue)
-        resolution = {}
-        controller._resolve_story_ocr_result(
-            OCRResult("Other", fixture.foreign.text, 95, "fixture", 1),
-            resolution=resolution,
+        resolution = controller._resolve_story_ocr_result(
+            OCRResult("Other", fixture.foreign.text, 95, "fixture", 1)
         )
-        self.assertIs(resolution["line"], fixture.foreign)
+        self.assertIs(resolution.line, fixture.foreign)
         self.assertEqual(preloader.current_match.chapter, fixture.foreign.chapter)
 
     def test_current_chapter_continuation_vetoes_exact_foreign_short_line(self):
@@ -280,30 +276,26 @@ class IndexedStoryDiscoveryTests(unittest.TestCase):
         preloader.dialogue = NoCatalogScan(preloader.dialogue)
         controller.chapter_voice_preloader = preloader
         raw = OCRResult(short.speaker, short.text, 95, "fixture", 1)
-        resolution = {}
-        self.assertIs(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
-        self.assertIsNone(resolution["line"])
-        self.assertEqual(resolution["match_result"], "expected-incomplete")
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertIs(resolution.ocr_result, raw)
+        self.assertIsNone(resolution.line)
+        self.assertEqual(resolution.match_result, "expected-incomplete")
         self.assertEqual(preloader.current_match.chapter, fixture.previous.chapter)
 
     def test_typo_only_foreign_line_waits_for_exact_text_but_startup_stays_fuzzy(self):
         fixture, controller = self.controller()
         observed = fixture.foreign.text.replace("other", "otber")
         raw = OCRResult("Other", observed, 95, "fixture", 1)
-        resolution = {}
-        self.assertIs(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
-        self.assertIsNone(resolution["line"])
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertIs(resolution.ocr_result, raw)
+        self.assertIsNone(resolution.line)
         self.assertEqual(
             controller.chapter_voice_preloader.current_match.chapter,
             fixture.previous.chapter,
         )
         controller.chapter_voice_preloader.current_match = None
-        controller._resolve_story_ocr_result(raw, resolution=resolution)
-        self.assertIs(resolution["line"], fixture.foreign)
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertIs(resolution.line, fixture.foreign)
 
 
 if __name__ == "__main__":

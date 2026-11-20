@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 from PIL import Image
 
 from vntts import ocr_worker
-from vntts.controller import AppController
+from vntts.controller import AppController, _StoryOCRResolution
 from vntts.ocr import OCRPreviewCancelled, OCRResult
 from vntts.settings import AppSettings
 from vntts.voices import CharacterVoiceRegistry
@@ -161,7 +161,7 @@ class StoryResultResolutionDiagnosticsTest(unittest.TestCase):
 
         def resolve(_result, **_kwargs):
             self.image.info["capture_provenance"] = {"run_id": "later-run"}
-            return resolved
+            return _StoryOCRResolution(resolved, "expected-exact")
 
         self.controller._resolve_story_ocr_result = Mock(side_effect=resolve)
         with (
@@ -193,7 +193,8 @@ class StoryResultResolutionDiagnosticsTest(unittest.TestCase):
         for failure in (None, RuntimeError("resolver failed")):
             with self.subTest(failure=failure):
                 self.controller._resolve_story_ocr_result = Mock(
-                    return_value=self.result, side_effect=failure
+                    return_value=_StoryOCRResolution(self.result, "expected-no-match"),
+                    side_effect=failure,
                 )
                 with (
                     patch(
@@ -223,7 +224,8 @@ class StoryResultResolutionDiagnosticsTest(unittest.TestCase):
         for failure in (None, RuntimeError("resolver failed"), KeyboardInterrupt()):
             with self.subTest(failure=failure):
                 self.controller._resolve_story_ocr_result = Mock(
-                    return_value=self.result, side_effect=failure
+                    return_value=_StoryOCRResolution(self.result, "expected-no-match"),
+                    side_effect=failure,
                 )
                 with (
                     patch(

@@ -62,11 +62,10 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         self.backend.set_live_mode_active(True)
 
     def resolve(self, text):
-        resolution = {}
-        result = self.controller._resolve_story_ocr_result(
-            OCRResult("Ada", text, 95, "fixture", 1), resolution=resolution
+        resolution = self.controller._resolve_story_ocr_result(
+            OCRResult("Ada", text, 95, "fixture", 1)
         )
-        return result, resolution.get("line")
+        return resolution.ocr_result, resolution.line
 
     def test_explicit_reload_readmits_sources_while_availability_refresh_reuses_them(
         self,

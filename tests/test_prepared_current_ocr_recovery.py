@@ -218,23 +218,20 @@ class PreparedCurrentOCRRecoveryTest(unittest.TestCase):
         fixture.accept(controller, lines[0])
         controller._fully_observed_line_id = Mock(return_value=lines[0].line_id)
         raw = OCRResult("Ada", self.text[:-2] + ".", 41, "fixture", 1)
-        resolution = {}
-        self.assertEqual(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
-        self.assertEqual(resolution["match_result"], "ocr-uncertain")
-        self.assertIsNone(resolution["line"])
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertEqual(resolution.ocr_result, raw)
+        self.assertEqual(resolution.match_result, "ocr-uncertain")
+        self.assertIsNone(resolution.line)
 
     def test_owned_prefix_does_not_supply_fully_observed_evidence(self):
         fixture = transitions.ControllerTransitionObservationTest()
         controller, lines = fixture.controller((self.text, "Birds fill the garden."))
         controller._expected_sequence_prefix_line_locked = Mock(return_value=lines[0])
         raw = OCRResult("Ada", "The supplies are stored", 95, "fixture", 1)
-        resolution = {}
-        self.assertEqual(
-            controller._resolve_story_ocr_result(raw, resolution=resolution), raw
-        )
-        self.assertEqual(resolution, {"match_result": "owned-prefix"})
+        resolution = controller._resolve_story_ocr_result(raw)
+        self.assertEqual(resolution.ocr_result, raw)
+        self.assertEqual(resolution.match_result, "owned-prefix")
+        self.assertIsNone(resolution.line)
         self.assertIsNone(controller._fully_observed_line_id())
 
 
