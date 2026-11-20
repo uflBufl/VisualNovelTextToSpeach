@@ -139,9 +139,7 @@ class CaptureComponentProbeTest(unittest.TestCase):
             self.outputs.extend((kwargs["stdout"], kwargs["stderr"]))
             return process
 
-        self.enterContext(
-            patch("vntts.native_capture.subprocess.Popen", side_effect=popen)
-        )
+        self.enterContext(patch("vntts.native_capture.Popen", side_effect=popen))
 
     def tearDown(self):
         self.shared_memory.assert_not_called()
@@ -268,7 +266,7 @@ class NativeCaptureTest(unittest.TestCase):
                 self.subTest(stage=stage),
                 patch("vntts.native_capture.SharedMemory", side_effect=allocate),
                 patch(
-                    "vntts.native_capture.subprocess.Popen",
+                    "vntts.native_capture.Popen",
                     side_effect=OSError("spawn failed") if stage == "spawn" else popen,
                 ),
                 patch(
@@ -434,7 +432,7 @@ class NativeCaptureTest(unittest.TestCase):
         for mode in ("hang-open", "wrong-session-open"):
             with (
                 self.subTest(mode=mode),
-                patch("vntts.native_capture.subprocess.Popen", side_effect=popen),
+                patch("vntts.native_capture.Popen", side_effect=popen),
             ):
                 with self.assertRaises(CaptureError):
                     session(mode, startup_timeout=0.05)
@@ -442,7 +440,7 @@ class NativeCaptureTest(unittest.TestCase):
                 self.assertTrue(children[-1].stdout.closed)
 
     def test_invalid_target_never_starts_process(self):
-        with patch("vntts.native_capture.subprocess.Popen") as popen:
+        with patch("vntts.native_capture.Popen") as popen:
             for target in (
                 {"kind": "window", "window_id": 1},
                 {"kind": "window", "window_id": True, "pid": 2},
@@ -478,7 +476,7 @@ class WorkerResolverTest(unittest.TestCase):
                 {"XDG_SESSION_TYPE": "wayland", "WAYLAND_DISPLAY": "wayland-0"},
                 clear=True,
             ),
-            patch("vntts.native_capture.subprocess.Popen", side_effect=peer) as launch,
+            patch("vntts.native_capture.Popen", side_effect=peer) as launch,
         ):
             with self.assertRaisesRegex(
                 WindowCaptureUnavailableError, "native Wayland"

@@ -275,7 +275,12 @@ def _run_discovered_shards(
             status = _run_shard(system, name, inventory)
             if status:
                 return status
-            if name == "remainder" and os.environ.get("GITHUB_ACTIONS"):
+            if (
+                name == "remainder"
+                and require_all
+                and selected_modules is None
+                and os.environ.get("GITHUB_ACTIONS")
+            ):
                 elapsed = round(time.monotonic() - started)
                 print(
                     f"::notice title=Unittest timing::{system} remainder completed in {elapsed} seconds"

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from math import isfinite
 from multiprocessing.shared_memory import SharedMemory
 from pathlib import Path
+from subprocess import Popen
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
 from typing import Any, TypeGuard
@@ -114,7 +115,7 @@ def probe_capture_worker(
     )
     input_bytes: bytes | None = request
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(
+        process = Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=output,
@@ -303,7 +304,7 @@ class NativeCaptureSession:
             resources.callback(self._frame_buffer.unlink)
             resources.callback(self._frame_buffer.close)
             self._stderr = resources.enter_context(tempfile.TemporaryFile())
-            self.process = subprocess.Popen(
+            self.process = Popen(
                 command or worker_command(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
