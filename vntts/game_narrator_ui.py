@@ -259,7 +259,10 @@ class GameNarratorDialog(QDialog):
             combo.setMinimumContentsLength(10)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         make_text_copyable(self)
-        QTimer.singleShot(0, self, self._role_changed)
+        self._initial_role_timer = QTimer(self)
+        self._initial_role_timer.setSingleShot(True)
+        self._initial_role_timer.timeout.connect(self._role_changed)
+        self._initial_role_timer.start(0)
 
     def _initialize_state(
         self,
@@ -739,6 +742,7 @@ class GameNarratorDialog(QDialog):
     def _role_changed(self) -> None:
         if self._initializing or self._closing or self._closed:
             return
+        self._initial_role_timer.stop()
         role = self.selected_role.strip()
         if role == "???":
             self.select_role("Narrator")
@@ -1450,6 +1454,11 @@ class GameNarratorDialog(QDialog):
         if self.runner.active:
             return
         self._operation = operation
+        self._operation_context = (
+            self.selected_role,
+            self.source.currentData(),
+            self.characters.currentText(),
+        )
         self.cancellation.clear()
         self._set_status(message)
         self.runner.start(function, *arguments)
@@ -1461,6 +1470,13 @@ class GameNarratorDialog(QDialog):
             return
         operation = self._operation
         self._operation = None
+        if self._operation_context != (
+            self.selected_role,
+            self.source.currentData(),
+            self.characters.currentText(),
+        ):
+            self._source_changed()
+            return
         if error is not None:
             self._operation_failed(operation, error)
             return

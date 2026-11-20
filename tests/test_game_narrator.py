@@ -94,7 +94,7 @@ class GameNarratorTest(unittest.TestCase):
             self.pool.run_next()
         self.fail("Voice editor did not become idle")
 
-    def editor(self, *, settings=None, rollback=None):
+    def editor(self, *, settings=None, rollback=None, wait_for_initial_role=True):
         self.backend.name = (settings or self.settings).speech_backend
         dialog = GameNarratorDialog(
             settings or self.settings,
@@ -107,8 +107,9 @@ class GameNarratorTest(unittest.TestCase):
             use_offline_engine=False,
         )
         self.addCleanup(self.close_editor, dialog)
-        self.application.processEvents()
-        self.drain()
+        if wait_for_initial_role:
+            self.application.processEvents()
+            self.drain()
         return dialog
 
     def close_editor(self, dialog):
@@ -602,6 +603,67 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.source_controls.isHidden())
         self.assertFalse(dialog.source_toggle.isHidden())
         self.assertEqual(self.library.binding("Shopkeeper"), None)
+
+    def test_role_change_discards_pending_narrator_reference(self):
+        self.bind_narrator()
+        self.library.select("Bob", route="narrator")
+        bind_voice_library_selection(
+            self.settings,
+            self.manifest,
+            "character:centurion",
+            "Centurion",
+            root=self.library.root,
+            target_character="Centurion",
+        )
+        before = self.library.bindings()
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                dialog = self.editor()
+                with patch.object(
+                    dialog,
+                    "_narrator_plan",
+                    wraps=dialog._narrator_plan,
+                    side_effect=ValueError("Old narrator is unavailable")
+                    if fails
+                    else None,
+                ):
+                    dialog.select_role("Bob")
+                    self.assertTrue(dialog.runner.active)
+                    dialog.select_role("Centurion")
+                    self.drain()
+                self.assertEqual(dialog.source.currentData(), "catalog")
+                self.assertEqual(
+                    dialog.voice_panel.current_selection[2], "character:centurion"
+                )
+                self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+                self.assertTrue(dialog.status.isHidden())
+                self.assertEqual(self.library.bindings(), before)
+
+    def test_pending_saved_reference_reloads_for_the_latest_role(self):
+        for role, filename in (
+            ("Old role", "rhiannon.wav"),
+            ("New role", "centurion.wav"),
+        ):
+            self.library.discover(
+                role,
+                self.manifest.parent / "references" / filename,
+                bind_if_missing=True,
+            )
+        before = self.library.bindings()
+        dialog = self.editor()
+        dialog.select_role("Old role")
+        self.assertTrue(dialog.runner.active)
+        dialog.select_role("New role")
+        self.drain()
+        self.assertEqual(dialog.source.currentData(), "saved")
+        group = dialog.voice_panel.current_selection[1]
+        self.assertEqual(group.character, "New role")
+        self.assertEqual(
+            group.candidates[0].reference_sha256s,
+            self.library.binding("New role").source_sha256s,
+        )
+        self.assertFalse(dialog.voice_panel.a_use.isEnabled())
+        self.assertEqual(self.library.bindings(), before)
 
     def test_same_character_replacement_shows_both_reference_texts_and_keeps_saved_audio(
         self,
@@ -1385,9 +1447,11 @@ class GameNarratorTest(unittest.TestCase):
         )
 
     def test_recovery_context_and_quoted_role_identity_are_preserved(self):
-        dialog = self.editor()
+        dialog = self.editor(wait_for_initial_role=False)
         dialog.set_voice_context(roles=('"Aderyn"', "Aderyn"), character="Aderyn")
         dialog.set_recovery_context("Aderyn", resume_live=True)
+        self.drain()
+        self.assertEqual(dialog.source.currentData(), "game")
         self.assertEqual(
             sum(
                 dialog.role.item(index).text() == "Aderyn"
