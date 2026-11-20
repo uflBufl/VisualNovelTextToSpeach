@@ -115,17 +115,6 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
-- [ ] Prevent a visually ambiguous `•••` from being promoted to `...` by the
-      image fallback in Reading and replay recovery. Render Georgia or Courier
-      New at 28 px: zero-confidence bullets can consume a silent story event and
-      trigger automatic advance. Use evidence beyond the three bright shapes:
-      Courier New bullets at 12 px and Trebuchet MS periods at 20 px can have
-      identical thresholded shapes and spacing. Preserve genuine ellipsis
-      recovery with empty or incorrect OCR, speaker hints and replay evidence.
-- [ ] Check short OCR guesses against captured dialogue before changing
-      recognition of single letters. On rendered Arial at 28 px, the replacement
-      glyph is read as `O` and three hollow squares as `OO0`. Qualify any
-      correction against genuine short spoken lines as well as unreadable glyphs.
 - [ ] Verify genuinely partial originals separately in anecdotes/character
       stories, which retain ASR.
 
