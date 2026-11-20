@@ -2331,6 +2331,39 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.prepared.line_id, "game:2")
         self.assertEqual(route.trace.line_id, "game:2")
 
+        mismatch = backend.prepare_route("Ada", "Different words.", line_id="game:2")
+        self.assertIsInstance(mismatch, LiveTTSRoute)
+        self.assertEqual(mismatch.trace.match_result, "line-id-mismatch")
+        self.assertIsNone(mismatch.trace.line_id)
+
+    def test_main_story_original_requires_verified_duration_despite_override(self):
+        line = replace(
+            self.create_resolver(source_audio_status="available").dialogue[0],
+            source_audio_main_story=True,
+        )
+        live = self.create_live_backend()
+        backend = GeneratedAudioFallbackBackend(
+            live, None, ChapterVoicePreloader([line]), audio_output=FakeAudioOutput()
+        )
+        backend.set_live_mode_active(True)
+        backend.voice_override = lambda _character: True
+
+        with self.assertRaisesRegex(RuntimeError, "duration has not been prepared"):
+            backend.prepare_route("Ada", "Hello.")
+        backend.source_audio_resolver = Mock(return_value=line)
+        with self.assertRaisesRegex(RuntimeError, "duration could not be verified"):
+            backend.prepare_route("Ada", "Hello.")
+
+        backend.source_audio_resolver = Mock(
+            return_value=replace(
+                line, source_audio_authoritative=True, source_audio_duration_seconds=1.0
+            )
+        )
+        route = backend.prepare_route("Ada", "Hello.")
+        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertEqual(route.trace.line_id, line.line_id)
+        live.prepare_playback.assert_not_called()
+
     def test_story_audio_with_explicit_completion_waits_before_finishing(self):
         live = self.create_live_backend()
         backend = GeneratedAudioFallbackBackend(

@@ -748,7 +748,7 @@
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
       "count": 1,
-      "maximum": 25
+      "maximum": 23
     },
     {
       "code": "PLR0912",
@@ -1161,7 +1161,7 @@
       "path": "vntts/generated_audio.py",
       "scope": "GeneratedAudioFallbackBackend.prepare_route",
       "count": 1,
-      "maximum": 70
+      "maximum": 64
     },
     {
       "code": "PLR0915",

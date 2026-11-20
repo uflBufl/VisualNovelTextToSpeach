@@ -1014,36 +1014,9 @@ class GeneratedAudioFallbackBackend:
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
         )
-        if not resolve_unidentified and line_id is None:
-            # Admission owns identity: later discoveries cannot reclassify queued OCR.
-            line, match_result = None, "unresolved-at-admission"
-        elif line_id is not None:
-            line = self.line_resolver.line_for_id(line_id)
-            if line is not None and (line.speaker, line.text) == (character, text):
-                match_result = "exact"
-            else:
-                line, match_result = None, "line-id-mismatch"
-        else:
-            line, match_result = self._resolve_line(
-                character, text, voice_overridden and not self.live_mode_active
-            )
-        if (
-            self.live_mode_active
-            and line is not None
-            and line.has_original_speech
-            and not line.has_full_source_audio
-        ):
-            if self.source_audio_resolver is None:
-                raise RuntimeError("Original speech duration has not been prepared")
-            line = self.source_audio_resolver(line)
-            if not line.has_full_source_audio:
-                raise RuntimeError("Original speech duration could not be verified")
-        if (
-            voice_overridden
-            and line is not None
-            and not (self.live_mode_active and line.has_full_source_audio)
-        ):
-            line, match_result = None, "manual-voice-override"
+        line, match_result = self._resolve_route_line(
+            character, text, line_id, resolve_unidentified, voice_overridden
+        )
         if (
             line is not None
             and line.line_id
@@ -1078,24 +1051,20 @@ class GeneratedAudioFallbackBackend:
             if first_observed_at is not None and source_audio_wait is not None
             else None
         )
-        source_audio_completeness = (
-            line.source_audio_completeness if line is not None else "unknown"
-        )
         source_audio_partial = bool(
             line is not None
             and self.audio_source_policy == "prefer-game-audio"
             and line.source_audio_status == "available"
             and line.source_audio_authoritative
             and source_audio_completion is not None
-            and source_audio_completeness == "partial"
+            and line.source_audio_completeness == "partial"
         )
-        source_audio_full = line is not None and line.has_full_source_audio
         if (
             line is not None
             and line.line_id
             and line.text_sha256
             and self.live_mode_active
-            and source_audio_full
+            and line.has_full_source_audio
         ):
             trace = AudioRouteTrace(
                 None,
@@ -1119,17 +1088,16 @@ class GeneratedAudioFallbackBackend:
                 ),
                 trace,
             )
+        lead_seconds = (source_audio_wait or 0.0) if source_audio_partial else 0.0
+        lead_deadline = source_audio_deadline if source_audio_partial else None
         if self.audio_source_policy == "prefer-game-audio" and line is not None:
             if source_audio_partial:
-                fallback_reasons.append("source-audio-partial-cue")
                 artifact_preflight_state = "source-audio-partial-cue"
             elif line.source_audio_status == "available":
-                fallback_reasons.append("source-audio-authority-unavailable")
                 artifact_preflight_state = "source-audio-authority-unavailable"
             else:
-                source_status = line.source_audio_status
-                fallback_reasons.append(f"source-audio-{source_status}")
-                artifact_preflight_state = f"source-audio-{source_status}"
+                artifact_preflight_state = f"source-audio-{line.source_audio_status}"
+            fallback_reasons.append(artifact_preflight_state)
         omission = (
             None
             if (
@@ -1173,12 +1141,8 @@ class GeneratedAudioFallbackBackend:
                         artifact_preflight_state,
                         audio_line_id=reserved.line_id,
                     ),
-                    source_audio_lead_seconds=(
-                        source_audio_wait or 0.0 if source_audio_partial else 0.0
-                    ),
-                    source_audio_lead_deadline=(
-                        source_audio_deadline if source_audio_partial else None
-                    ),
+                    source_audio_lead_seconds=lead_seconds,
+                    source_audio_lead_deadline=lead_deadline,
                 )
             fallback_reasons.append(artifact_preflight_state)
         if (
@@ -1212,15 +1176,11 @@ class GeneratedAudioFallbackBackend:
                     artifact_preflight_state,
                     audio_line_id=prepared.line_id,
                 )
-                generated_route = GeneratedAudioRoute(prepared, trace)
-                return (
-                    replace(
-                        generated_route,
-                        source_audio_lead_seconds=source_audio_wait or 0.0,
-                        source_audio_lead_deadline=source_audio_deadline,
-                    )
-                    if source_audio_partial
-                    else generated_route
+                return GeneratedAudioRoute(
+                    prepared,
+                    trace,
+                    source_audio_lead_seconds=lead_seconds,
+                    source_audio_lead_deadline=lead_deadline,
                 )
             fallback_reasons.append(artifact_preflight_state)
         elif line is not None and self.audio_source_policy in {
@@ -1272,13 +1232,9 @@ class GeneratedAudioFallbackBackend:
                     "generation-in-progress",
                 ),
                 source_audio_lead_deadline=(
-                    (
-                        source_audio_deadline
-                        if source_audio_deadline is not None
-                        else self.clock() + (source_audio_wait or 0.0)
-                    )
-                    if source_audio_partial
-                    else None
+                    self.clock() + lead_seconds
+                    if source_audio_partial and lead_deadline is None
+                    else lead_deadline
                 ),
             )
         line_id = line.line_id if line is not None else None
@@ -1295,12 +1251,8 @@ class GeneratedAudioFallbackBackend:
                     line_id,
                     artifact_preflight_state,
                 ),
-                source_audio_lead_seconds=(
-                    source_audio_wait or 0.0 if source_audio_partial else 0.0
-                ),
-                source_audio_lead_deadline=(
-                    source_audio_deadline if source_audio_partial else None
-                ),
+                source_audio_lead_seconds=lead_seconds,
+                source_audio_lead_deadline=lead_deadline,
             )
         return self._live_tts_route(
             synthesis_character(character),
@@ -1314,12 +1266,8 @@ class GeneratedAudioFallbackBackend:
                 line_id,
                 artifact_preflight_state,
             ),
-            source_audio_lead_seconds=(
-                source_audio_wait or 0.0 if source_audio_partial else 0.0
-            ),
-            source_audio_lead_deadline=(
-                source_audio_deadline if source_audio_partial else None
-            ),
+            source_audio_lead_seconds=lead_seconds,
+            source_audio_lead_deadline=lead_deadline,
         )
 
     def _live_tts_route(
@@ -1392,6 +1340,45 @@ class GeneratedAudioFallbackBackend:
             source_audio_lead_seconds,
             source_audio_lead_deadline,
         )
+
+    def _resolve_route_line(
+        self,
+        character: str,
+        text: str,
+        line_id: str | None,
+        resolve_unidentified: bool,
+        voice_overridden: bool,
+    ) -> tuple[ChapterDialogue | None, str]:
+        if not resolve_unidentified and line_id is None:
+            # Admission owns identity: later discoveries cannot reclassify queued OCR.
+            return None, "unresolved-at-admission"
+        if line_id is not None:
+            line = self.line_resolver.line_for_id(line_id)
+            if line is None or (line.speaker, line.text) != (character, text):
+                return None, "line-id-mismatch"
+            match_result = "exact"
+        else:
+            line, match_result = self._resolve_line(
+                character, text, voice_overridden and not self.live_mode_active
+            )
+        if (
+            self.live_mode_active
+            and line is not None
+            and line.has_original_speech
+            and not line.has_full_source_audio
+        ):
+            if self.source_audio_resolver is None:
+                raise RuntimeError("Original speech duration has not been prepared")
+            line = self.source_audio_resolver(line)
+            if not line.has_full_source_audio:
+                raise RuntimeError("Original speech duration could not be verified")
+        if (
+            voice_overridden
+            and line is not None
+            and not (self.live_mode_active and line.has_full_source_audio)
+        ):
+            return None, "manual-voice-override"
+        return line, match_result
 
     def _resolve_line(
         self, character: str, text: str, voice_overridden: bool
