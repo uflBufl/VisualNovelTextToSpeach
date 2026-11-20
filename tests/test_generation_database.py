@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts import generation_database as database
+from vntts.document_identity import sha256_file
 from vntts.support import PerformanceLog, performance_operation_id
 
 
@@ -832,6 +834,37 @@ class GenerationDatabaseTest(unittest.TestCase):
             self.assertEqual(errors, [])
             self.assertEqual(database.read_snapshot(payload), original)
             self.assertEqual(database.read_state(path), changed)
+
+    def test_snapshot_checksum_ignores_pages_spilled_before_rollback(self):
+        with (
+            TemporaryDirectory() as directory,
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            path = Path(directory) / "generation-state.sqlite3"
+            original = state()
+            original["game"] = "x" * 131072
+            database.write_state(path, original)
+            committed = sha256_file(path)
+            started = threading.Event()
+
+            def read_checksum():
+                started.set()
+                return database.snapshot_sha256(path)
+
+            with closing(sqlite3.connect(path)) as writer:
+                writer.execute("PRAGMA cache_size=4")
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute(
+                    "UPDATE run SET metadata=replace(metadata, ?, ?)",
+                    ("x" * 256, "y" * 256),
+                )
+                self.assertNotEqual(sha256_file(path), committed)
+                reader = pool.submit(read_checksum)
+                self.assertTrue(started.wait(10))
+                with self.assertRaises(TimeoutError):
+                    reader.result(timeout=0.1)
+                writer.rollback()
+            self.assertEqual(reader.result(timeout=10), committed)
 
     def test_another_queue_cannot_replace_saved_state(self):
         with TemporaryDirectory() as directory:

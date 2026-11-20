@@ -56,6 +56,7 @@ from vntts.authoring.generation_review import ReviewAuthority
 from vntts.authoring.generation_state import (
     completed_generation_attempts,
     generation_item_status,
+    generation_state_sha256,
     load_generation_state_from_snapshot,
     load_generation_state_object_snapshot,
 )
@@ -672,7 +673,10 @@ def load_review_items_snapshot(
         read.output,
         selected_queue_ids=selected_queue_ids,
     )
-    if sha256_file(read.state_path) != read.state_sha256:
+    if (
+        generation_state_sha256(read.state_path, error_type=AuthoringWorkbenchError)
+        != read.state_sha256
+    ):
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
         )
@@ -1247,7 +1251,10 @@ def _load_workbench_projection_read_scoped(
                 )
             except BulkGenerationError as error:
                 raise AuthoringWorkbenchError(str(error)) from error
-        if sha256_file(state_path) != state_sha256:
+        if (
+            generation_state_sha256(state_path, error_type=AuthoringWorkbenchError)
+            != state_sha256
+        ):
             raise AuthoringWorkbenchError(
                 "Generation state changed while review rows were being projected"
             )

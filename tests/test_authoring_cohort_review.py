@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 import unittest
 from contextlib import redirect_stdout
 from copy import deepcopy
@@ -39,6 +40,64 @@ from vntts.authoring.generation_manifest import approved_manifest_entries
 class AuthoringCohortReviewTest(unittest.TestCase):
     def create_pending_workspace(self, root):
         return create_pending_cohort_workspace(root)
+
+    def test_projection_captures_committed_controls_before_a_concurrent_commit(self):
+        with TemporaryDirectory() as directory:
+            workspace, path, queue_id = self.create_pending_workspace(Path(directory))
+            original = generation_database.read_state(path)
+            changed = deepcopy(original)
+            changed["items"][queue_id]["attempts"] += 1
+            updated, finished = threading.Event(), threading.Event()
+            errors = []
+            write = generation_database._write
+            read = generation_database.read_regular_bytes
+
+            def notified(*args, **kwargs):
+                write(*args, **kwargs)
+                updated.set()
+
+            def writer():
+                try:
+                    generation_database.write_state(
+                        path, changed, changed_items=(queue_id,)
+                    )
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    finished.set()
+
+            thread = threading.Thread(target=writer)
+
+            def capture(candidate):
+                if candidate == path:
+                    thread.start()
+                    self.assertTrue(updated.wait(10))
+                    self.assertFalse(finished.wait(0.1))
+                return read(candidate)
+
+            try:
+                with (
+                    patch.object(generation_database, "_write", side_effect=notified),
+                    patch.object(
+                        generation_database, "read_regular_bytes", side_effect=capture
+                    ),
+                    patch.object(
+                        cohort_review_module, "read_regular_bytes", side_effect=capture
+                    ),
+                ):
+                    _queue, payload, state = (
+                        cohort_review_module._bound_workspace_controls(
+                            workspace / "queue.jsonl", path
+                        )
+                    )
+            finally:
+                thread.join(10)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(state, original)
+            self.assertEqual(generation_database.read_snapshot(payload), original)
+            self.assertEqual(generation_database.read_state(path), changed)
 
     def test_second_state_projection_cannot_hide_pending_items(self):
         with TemporaryDirectory() as directory:

@@ -301,6 +301,7 @@ def authorize_missing_voice_live_fallback(
                     f"Missing-voice fallback decision was saved, but lease ownership changed: {error}"
                 ) from error
             lease.mark_committed()
+            committed_state_sha256 = _file_sha256(state_path)
     except BulkGenerationError as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
     return MissingVoiceLiveFallbackResult(
@@ -312,7 +313,7 @@ def authorize_missing_voice_live_fallback(
         batch_id,
         authority_decision_id,
         state_sha256,
-        _file_sha256(state_path),
+        committed_state_sha256,
         applied=True,
         created=True,
     )

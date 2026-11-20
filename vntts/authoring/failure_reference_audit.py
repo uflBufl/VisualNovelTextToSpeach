@@ -50,6 +50,7 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import file_sha256, is_lowercase_sha256
+from vntts.generation_database import snapshot_file
 from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.path_safety import copy_regular_file, read_regular_bytes, read_regular_text
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
@@ -316,7 +317,9 @@ def _load_audit_publication_source(workspace: Path) -> _AuditPublicationSource:
         ("state", state_path),
         ("voice_manifest", manifest_path),
     ):
-        snapshots[label] = read_regular_bytes(path)
+        snapshots[label] = (
+            _read_state_bytes(path) if label == "state" else read_regular_bytes(path)
+        )
     try:
         queue = VoiceGenerationQueue.load(queue_path)
         _manifest, voices = load_voice_manifest(manifest_path, allow_legacy=False)
@@ -657,7 +660,9 @@ def _assert_audit_publication_sources_unchanged(
         ("state", source.state_path),
         ("voice_manifest", source.manifest_path),
     ):
-        payload = read_regular_bytes(path)
+        payload = (
+            _read_state_bytes(path) if label == "state" else read_regular_bytes(path)
+        )
         if payload != source.snapshots[label]:
             raise FailureReferenceAuditError(
                 f"Reference audit {label} changed during publication"
@@ -667,6 +672,13 @@ def _assert_audit_publication_sources_unchanged(
             raise FailureReferenceAuditError(
                 f"Reference changed during publication: {path}"
             )
+
+
+def _read_state_bytes(path: Path) -> bytes:
+    try:
+        return snapshot_file(path)
+    except (OSError, ValueError) as error:
+        raise FailureReferenceAuditError(str(error)) from error
 
 
 def load_failure_reference_audit(directory: str | Path) -> FailureReferenceAudit:

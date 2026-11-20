@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import importlib
 import re
 from collections import Counter
@@ -45,8 +44,9 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicyError,
 )
 from vntts.authoring.generation_state import (
-    decode_generation_state_snapshot,
+    generation_state_sha256,
     load_generation_state_from_snapshot,
+    load_generation_state_object_snapshot,
 )
 from vntts.authoring.offline_fallback_authority import (
     OfflineFallbackAuthority,
@@ -83,7 +83,6 @@ from vntts.authoring.workspace_foundation import (
     contained_path,
     load_json_object,
     load_json_object_snapshot,
-    read_regular_file,
     require_sha256,
     safe_relative_path,
 )
@@ -170,7 +169,10 @@ def _load_workspace_scoped(workspace_directory: str | Path) -> WorkspaceLoad:
     )
     if (
         state_sha256 is not None
-        and sha256_file(directory / "generated-audio/generation-state.sqlite3")
+        and generation_state_sha256(
+            directory / "generated-audio/generation-state.sqlite3",
+            error_type=AuthoringWorkbenchError,
+        )
         != state_sha256
     ):
         raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
@@ -352,24 +354,23 @@ def _load_workspace_validation_state(
         and carry.get("schema_version") in {2, 3, 4}
     ):
         state_path = directory / "generated-audio/generation-state.sqlite3"
-        payload = read_regular_file(
+        state_document, state_sha256, payload = load_generation_state_object_snapshot(
             state_path,
             "workspace generation state",
             error_type=AuthoringWorkbenchError,
         )
-        state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             queue = _load_bound_workspace_queue(directory, workspace)
-            state_document = decode_generation_state_snapshot(payload)
-            if not isinstance(state_document, dict):
-                raise BulkGenerationError("Generation state must be a JSON object")
             state = load_generation_state_from_snapshot(
                 state_path,
                 queue,
                 workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError),
                 state_document=state_document,
             )
-            if sha256_file(state_path) != state_sha256:
+            if (
+                generation_state_sha256(state_path, error_type=AuthoringWorkbenchError)
+                != state_sha256
+            ):
                 raise BulkGenerationError(
                     "Workspace generation state changed while it was loaded"
                 )

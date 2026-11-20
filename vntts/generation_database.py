@@ -17,6 +17,7 @@ from time import perf_counter, process_time
 from uuid import uuid4
 
 from vntts.audio_store import _sync_directory, _sync_regular_file
+from vntts.document_identity import sha256_file
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_bytes
 
@@ -487,6 +488,18 @@ def snapshot_file(path: Path) -> bytes:
     path = _path(path)
     with _connection(path):
         return read_regular_bytes(path)
+
+
+def snapshot_sha256(path: Path) -> str:
+    """Stream committed file bytes under the same read lock as snapshot_file."""
+    path = _path(path)
+    try:
+        with _connection(path):
+            return sha256_file(path)
+    except ValueError:
+        # SQLite reports a missing file as CANTOPEN. Keep the checksum I/O error.
+        path.stat()
+        raise
 
 
 def _encode(value: object) -> str:

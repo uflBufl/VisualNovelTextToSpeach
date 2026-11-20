@@ -1170,7 +1170,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    review_module, "sha256_file", side_effect=unreadable_state
+                    generation_database, "sha256_file", side_effect=unreadable_state
                 ),
                 self.assertRaises(BulkGenerationError) as caught,
             ):
@@ -1212,8 +1212,17 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                         return checksum(path)
 
                     def fail_final_check(*args, **kwargs):
-                        with patch.object(
-                            review_module, "sha256_file", side_effect=unreadable_state
+                        with (
+                            patch.object(
+                                generation_database,
+                                "sha256_file",
+                                side_effect=unreadable_state,
+                            ),
+                            patch.object(
+                                review_module,
+                                "sha256_file",
+                                side_effect=unreadable_state,
+                            ),
                         ):
                             return check(*args, **kwargs)
 

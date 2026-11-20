@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests.authoring_fixtures import create_specialist_failure_workspace
 from tests.generation_state_fixtures import replace_generation_state
@@ -20,6 +21,24 @@ from vntts.authoring.specialist_failure_plan import (
 
 
 class SpecialistFailurePlanTest(unittest.TestCase):
+    def test_snapshot_failures_keep_the_specialist_domain_error(self):
+        with TemporaryDirectory() as directory:
+            workspace = create_specialist_failure_workspace(
+                Path(directory), "sentence_boundary_segmentation", "a"
+            )
+            for reader in ("snapshot_file", "snapshot_sha256"):
+                for failure in (
+                    PermissionError("unreadable state"),
+                    ValueError("unsafe state"),
+                ):
+                    with (
+                        self.subTest(reader=reader, failure=type(failure)),
+                        patch.object(generation_database, reader, side_effect=failure),
+                        self.assertRaises(CohortReviewError) as caught,
+                    ):
+                        build_specialist_failure_plan((workspace,))
+                    self.assertIn(str(failure), str(caught.exception))
+
     def test_plan_assigns_only_bounded_evidence_backed_actions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

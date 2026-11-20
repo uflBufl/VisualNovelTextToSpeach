@@ -25,10 +25,10 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 from vntts.authoring.authority import collect_authority_paths
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
-    decode_generation_state_snapshot,
+    generation_state_sha256,
+    generation_state_snapshot,
     load_generation_state,
     load_generation_state_from_snapshot,
-    load_generation_state_object_snapshot,
     load_stable_generation_queue,
 )
 from vntts.authoring.publication import (
@@ -298,27 +298,16 @@ def _capture_failure_corpus_inputs(
     state_path = Path(state_path).expanduser().resolve()
     try:
         queue, queue_sha256 = load_stable_generation_queue(queue_path)
+        state_snapshot, state_sha256, _payload = generation_state_snapshot(state_path)
     except BulkGenerationError as error:
         raise ModelBenchmarkError(
             f"Unable to capture comparison inputs: {error}"
         ) from error
     if state_loader is load_generation_state:
-        state, state_sha256, _payload = load_generation_state_object_snapshot(
-            state_path, "comparison generation state", error_type=ModelBenchmarkError
-        )
         state = load_generation_state_from_snapshot(
-            state_path, queue, queue_sha256, state_document=state
+            state_path, queue, queue_sha256, state_document=state_snapshot
         )
     else:
-        # Custom loaders retain their path-based and byte-decoder contracts.
-        try:
-            state_payload = read_regular_bytes(state_path)
-            state_snapshot = decode_generation_state_snapshot(state_payload)
-        except (OSError, UnicodeError, ValueError) as error:
-            raise ModelBenchmarkError(
-                f"Unable to capture comparison inputs: {error}"
-            ) from error
-        state_sha256 = hashlib.sha256(state_payload).hexdigest()
         state = state_loader(state_path, queue_path)
         if state != state_snapshot:
             raise ModelBenchmarkError(
@@ -501,7 +490,8 @@ def _verify_failure_corpus_sources(
 ) -> None:
     if (
         sha256_file(capture.queue_path) != capture.queue_sha256
-        or sha256_file(capture.state_path) != capture.state_sha256
+        or generation_state_sha256(capture.state_path, error_type=ModelBenchmarkError)
+        != capture.state_sha256
         or (
             voice_context is not None
             and sha256_file(voice_context.path) != voice_context.sha256

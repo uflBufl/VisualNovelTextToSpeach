@@ -41,7 +41,10 @@ from vntts.authoring.cohort_review import (
     _validated_plan_document as _validate_plan_document,
 )
 from vntts.authoring.generation_review import ReviewAuthority
-from vntts.authoring.generation_state import decode_generation_state_snapshot
+from vntts.authoring.generation_state import (
+    generation_state_sha256,
+    load_generation_state_object_snapshot,
+)
 from vntts.authoring.workbench import ReviewItem
 from vntts.json_types import decode_json, has_schema_version, is_json_object
 from vntts.numeric_values import optional_finite_number
@@ -1100,10 +1103,9 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
     queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
     if queue_sha256 != source["plan"]["queue_sha256"]:
         raise CohortReviewError("Bundle source queue changed")
-    state_payload = _read_bytes(paths.state_path, "bundle state")
-    state = decode_generation_state_snapshot(state_payload)
-    if not isinstance(state, dict):
-        raise CohortReviewError("Bundle source state identity changed")
+    state, state_sha256, _payload = load_generation_state_object_snapshot(
+        paths.state_path, "bundle state", error_type=CohortReviewError
+    )
     state_items = state.get("items")
     if state.get("queue_sha256") != queue_sha256 or not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state identity changed")
@@ -1116,7 +1118,7 @@ def _current_source_snapshot(source: _SourceDocument) -> _CurrentSourceSnapshot:
         "state_path": paths.state_path,
         "queue": _decode_queue_records(queue_payload),
         "items": state_items,
-        "state_sha256": hashlib.sha256(state_payload).hexdigest(),
+        "state_sha256": state_sha256,
         "artifacts": [],
     }
 
@@ -1385,9 +1387,7 @@ def _assert_current_source_snapshot(current: _CurrentSourceSnapshot) -> None:
             _read_bytes(current["queue_path"], "bundle queue")
         ).hexdigest()
         != current["queue_sha256"]
-        or hashlib.sha256(
-            _read_bytes(current["state_path"], "bundle state")
-        ).hexdigest()
+        or generation_state_sha256(current["state_path"], error_type=CohortReviewError)
         != current["state_sha256"]
     ):
         raise CohortReviewError("Bundle source changed during progress recovery")
@@ -1556,16 +1556,14 @@ def _load_source_sample_records(
 def _load_sample_source(source: _SourceDocument) -> _LoadedSampleSource:
     paths = _sample_source_paths(source)
     queue_payload = _read_bytes(paths.queue_path, "bundle queue")
-    state_payload = _read_bytes(paths.state_path, "bundle state")
+    state, state_sha256, _payload = load_generation_state_object_snapshot(
+        paths.state_path, "bundle state", error_type=CohortReviewError
+    )
     queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
     if queue_sha256 != source["plan"]["queue_sha256"]:
         raise CohortReviewError("Bundle source queue changed")
     if state_sha256 != source["plan"]["state_sha256"]:
         raise CohortReviewError("Bundle source state changed")
-    state = decode_generation_state_snapshot(state_payload)
-    if not isinstance(state, dict):
-        raise CohortReviewError("Bundle source state items are invalid")
     state_items = state.get("items")
     if not _is_json_object(state_items):
         raise CohortReviewError("Bundle source state items are invalid")
@@ -1734,7 +1732,12 @@ def _assert_sample_source_unchanged(loaded: _LoadedSampleSource) -> None:
         (loaded.paths.queue_path, loaded.queue_sha256, "queue"),
         (loaded.paths.state_path, loaded.state_sha256, "state"),
     ):
-        if hashlib.sha256(_read_bytes(path, f"bundle {label}")).hexdigest() != expected:
+        actual = (
+            generation_state_sha256(path, error_type=CohortReviewError)
+            if path == loaded.paths.state_path
+            else hashlib.sha256(_read_bytes(path, f"bundle {label}")).hexdigest()
+        )
+        if actual != expected:
             raise CohortReviewError(f"Bundle {label} changed while loading samples")
 
 

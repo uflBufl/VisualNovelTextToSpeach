@@ -83,7 +83,9 @@ from vntts.authoring.generation_manifest import (
     inspect_generated_wav_with_samples,
 )
 from vntts.authoring.generation_state import (
-    decode_generation_state_snapshot,
+    generation_state_sha256,
+    generation_state_snapshot,
+    load_generation_state_from_snapshot,
     read_generation_state_document,
     write_generation_state,
 )
@@ -1701,27 +1703,29 @@ def _load_carry_forward_source(
     )
     source_output = source_directory / "generated-audio"
     source_state_path = source_output / "generation-state.sqlite3"
-    source_state_payload = _read_file_bytes(
-        source_state_path, "source generation state"
-    )
-    source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
-        state = _json_document(
-            decode_generation_state_snapshot(source_state_payload),
-            "Carry-forward source state",
+        state, source_state_sha256, _payload = generation_state_snapshot(
+            source_state_path
         )
-        validated_state = load_generation_state(source_state_path, source_queue_path)
-    except (UnicodeDecodeError, ValueError, BulkGenerationError) as error:
+        load_generation_state_from_snapshot(
+            source_state_path,
+            source_queue,
+            source_queue_sha256,
+            state_document=state,
+        )
+        if (
+            generation_state_sha256(
+                source_state_path, error_type=AuthoringWorkbenchError
+            )
+            != source_state_sha256
+        ):
+            raise AuthoringWorkbenchError(
+                "Carry-forward source state changed while it was loaded"
+            )
+    except (OSError, UnicodeDecodeError, ValueError, BulkGenerationError) as error:
         raise AuthoringWorkbenchError(
             f"Carry-forward source state is invalid: {error}"
         ) from error
-    if (
-        state != validated_state
-        or sha256_file(source_state_path) != source_state_sha256
-    ):
-        raise AuthoringWorkbenchError(
-            "Carry-forward source state changed while it was loaded"
-        )
     if state.get("active") is not None:
         raise AuthoringWorkbenchError(
             "Carry-forward source has an active generation attempt"
@@ -2216,7 +2220,10 @@ def _publish_carry_forward_staging(
         validate_generation_output(target_state_path)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    if file_sha256(source.state_path, error_type=OSError) != source.state_sha256:
+    if (
+        generation_state_sha256(source.state_path, error_type=AuthoringWorkbenchError)
+        != source.state_sha256
+    ):
         raise AuthoringWorkbenchError(
             "Carry-forward source state changed before workspace publication"
         )

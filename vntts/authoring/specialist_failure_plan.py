@@ -22,7 +22,10 @@ from vntts.authoring.failure_repair import (
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
-from vntts.authoring.generation_state import decode_generation_state_snapshot
+from vntts.authoring.generation_state import (
+    generation_state_sha256,
+    load_generation_state_object_snapshot,
+)
 from vntts.document_identity import file_sha256, is_lowercase_sha256
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes
@@ -64,11 +67,16 @@ def build_specialist_failure_plan(
     body = _build_plan_body(sources, items)
     for path, digest in snapshots:
         try:
-            if file_sha256(path, error_type=OSError) != digest:
+            actual = (
+                generation_state_sha256(path, error_type=CohortReviewError)
+                if path.name == "generation-state.sqlite3"
+                else file_sha256(path, error_type=OSError)
+            )
+            if actual != digest:
                 raise CohortReviewError(
                     f"Specialist source changed during planning: {path}"
                 )
-        except OSError as error:
+        except (OSError, ValueError) as error:
             raise CohortReviewError(str(error)) from error
     plan_id = canonical_document_sha256(body)
     return SpecialistFailurePlan(plan_id, _validated({**body, "plan_id": plan_id}))
@@ -81,10 +89,11 @@ def _capture_workspace(
     state_path = workspace / "generated-audio/generation-state.sqlite3"
     queue_path = workspace / "queue.jsonl"
     configuration_payload = _read(configuration_path, "workspace configuration")
-    state_payload = _read(state_path, "generation state")
+    state, state_sha256, state_payload = load_generation_state_object_snapshot(
+        state_path, "specialist generation state", error_type=CohortReviewError
+    )
     queue_payload = _read(queue_path, "generation queue")
     configuration = _decode(configuration_payload, "workspace configuration")
-    state = decode_generation_state_snapshot(state_payload)
     queue = _queue_records(queue_payload)
     selected = _selected_failure_ids(configuration)
     state_items = _object_field(state, "items", "generation state items")
@@ -110,7 +119,7 @@ def _capture_workspace(
         "workspace": str(workspace),
         "workspace_id": configuration.get("workspace_id"),
         "config_fingerprint": configuration.get("config_fingerprint"),
-        "state_sha256": hashlib.sha256(state_payload).hexdigest(),
+        "state_sha256": state_sha256,
         "queue_sha256": hashlib.sha256(queue_payload).hexdigest(),
         "failed_item_count": len(items),
     }
@@ -120,9 +129,20 @@ def _capture_workspace(
         (state_path, state_payload, "generation state"),
         (queue_path, queue_payload, "generation queue"),
     ):
-        if _read(path, label) != payload:
+        digest = (
+            state_sha256 if path == state_path else hashlib.sha256(payload).hexdigest()
+        )
+        try:
+            unchanged = (
+                generation_state_sha256(path, error_type=CohortReviewError) == digest
+                if path == state_path
+                else _read(path, label) == payload
+            )
+        except (OSError, ValueError) as error:
+            raise CohortReviewError(str(error)) from error
+        if not unchanged:
             raise CohortReviewError(f"Specialist {label} changed during planning")
-        snapshots.append((path, hashlib.sha256(payload).hexdigest()))
+        snapshots.append((path, digest))
     return source, items, snapshots
 
 

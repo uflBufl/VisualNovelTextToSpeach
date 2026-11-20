@@ -11,13 +11,12 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
+    generation_state_sha256,
     load_generation_state_object_snapshot,
     load_stable_generation_queue,
     validate_generation_state_document,
 )
-from vntts.authoring.publication import publication_errors
 from vntts.authoring.workspace_config import workspace_queue_sha256
-from vntts.document_identity import sha256_file
 
 WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]
 WorkspaceStateCache = dict[tuple[str, object], WorkspaceState]
@@ -111,9 +110,11 @@ def _load_stable_workspace_generation_state(
         )
     except (UnicodeDecodeError, ValueError, BulkGenerationError) as error:
         raise error_type(f"Outcome merge {label} state is invalid: {error}") from error
-    with publication_errors(error_type):
-        if parsed != validated or sha256_file(state_path) != digest:
-            raise error_type(f"Outcome merge {label} state changed while it was loaded")
+    if (
+        parsed != validated
+        or generation_state_sha256(state_path, error_type=error_type) != digest
+    ):
+        raise error_type(f"Outcome merge {label} state changed while it was loaded")
     if parsed.get("active") is not None:
         raise error_type(f"Outcome merge {label} has an active generation attempt")
     if (output / ".generation-lease.json").exists():

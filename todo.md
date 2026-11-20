@@ -965,13 +965,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       Keep explicit same-filesystem/link errors and existing audio intact; do
       not add a silent copy fallback.
 
-## Refactoring follow-up
-
-- [ ] Read live SQLite state under the shared snapshot lock when building
-      cohort reviews, failure audits, fallback plans, and carry-forward inputs.
-      Check paths that re-read the live file for its digest as well. Preserve
-      each caller's error contract and verify behavior during a concurrent commit.
-
 ## Qualify SQLite-only storage
 
 - [ ] Qualify the SQLite-only publication, interrupted publication/retry, hard links

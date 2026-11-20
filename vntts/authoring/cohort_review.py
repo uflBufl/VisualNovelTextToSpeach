@@ -28,6 +28,7 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_config import workspace_successor_config_fingerprint
 from vntts.authoring.workspace_inspection import load_review_items_snapshot
 from vntts.document_identity import is_lowercase_sha256
+from vntts.generation_database import snapshot_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.path_safety import read_regular_bytes, read_regular_text
 
@@ -797,7 +798,7 @@ def _bound_workspace_controls(
 ) -> tuple[bytes, bytes, object]:
     try:
         queue_payload = read_regular_bytes(queue_path)
-        state_payload = read_regular_bytes(state_path)
+        state_payload = snapshot_file(state_path)
         state = decode_generation_state_snapshot(state_payload)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise CohortReviewError(

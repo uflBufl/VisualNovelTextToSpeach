@@ -48,6 +48,23 @@ class AuthoringCohortBundleTest(unittest.TestCase):
             (second, second_state, second_queue),
         )
 
+    def test_sample_capture_and_recheck_keep_domain_errors_for_database_failures(self):
+        with TemporaryDirectory() as directory:
+            sources = self.create_sources(Path(directory))
+            bundle = build_cohort_review_bundle([value[0] for value in sources])
+            for reader in ("snapshot_file", "snapshot_sha256"):
+                for failure in (
+                    PermissionError("unreadable state"),
+                    ValueError("unsafe state"),
+                ):
+                    with (
+                        self.subTest(reader=reader, failure=type(failure)),
+                        patch.object(generation_database, reader, side_effect=failure),
+                        self.assertRaises(CohortReviewError) as caught,
+                    ):
+                        load_cohort_review_bundle_samples(bundle)
+                    self.assertIn(str(failure), str(caught.exception))
+
     def test_bundle_flattens_exact_source_samples_and_reasons(self):
         with TemporaryDirectory() as directory:
             sources = self.create_sources(Path(directory))

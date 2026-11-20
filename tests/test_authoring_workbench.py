@@ -231,7 +231,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ):
                 with self.subTest(read=read.__name__, target=target.name):
                     failure = PermissionError("Workspace authority recheck was blocked")
-                    checksum = module.sha256_file
+                    checksum_owner = (
+                        generation_database if target == state_path else module
+                    )
+                    checksum = checksum_owner.sha256_file
                     final_read = hook is None
                     original = getattr(module, hook) if hook is not None else None
 
@@ -247,7 +250,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                         return result
 
                     with (
-                        patch.object(module, "sha256_file", side_effect=unavailable),
+                        patch.object(
+                            checksum_owner, "sha256_file", side_effect=unavailable
+                        ),
                         patch.object(module, hook, side_effect=block_after_read)
                         if hook is not None
                         else nullcontext(),
@@ -257,6 +262,26 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
                     self.assertIs(caught.exception.__cause__, failure)
                     self.assertEqual(tree_hashes(root), before)
+
+    def test_workspace_final_state_validation_error_stays_a_workbench_error(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, workspace = create_test_workspace(root)
+            failure = ValueError("Workspace generation state became invalid")
+            with (
+                patch.object(
+                    workspace_authority_module,
+                    "_load_workspace_validation_state",
+                    return_value=({}, "a" * 64),
+                ),
+                patch.object(
+                    generation_database, "snapshot_sha256", side_effect=failure
+                ),
+                self.assertRaises(AuthoringWorkbenchError) as caught,
+            ):
+                workspace_authority_module.load_workspace_authority(workspace.directory)
+
+            self.assertIs(caught.exception.__cause__, failure)
 
     def test_stable_workspace_final_read_error_uses_the_callers_error_type(self):
         with TemporaryDirectory() as directory:
@@ -271,7 +296,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 with (
                     self.subTest(error_type=error_type.__name__),
                     patch.object(
-                        workspace_state_module, "sha256_file", side_effect=failure
+                        generation_database, "sha256_file", side_effect=failure
                     ),
                     self.assertRaises(error_type) as caught,
                 ):
@@ -3025,6 +3050,49 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
         self.assertEqual(remaining, [source.directory.resolve()])
 
+    def test_carry_forward_rejects_source_commit_during_captured_state_validation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            state_path = source.directory / "generated-audio/generation-state.sqlite3"
+            validate = workspace_creation_module.load_generation_state_from_snapshot
+
+            def commit_after_capture(path, *args, state_document, **kwargs):
+                state = generation_database.read_state(path)
+                state["external_change"] = True
+                replace_generation_state(path, state)
+                self.assertNotIn("external_change", state_document)
+                return validate(path, *args, state_document=state_document, **kwargs)
+
+            with (
+                patch.object(
+                    workspace_creation_module,
+                    "load_generation_state_from_snapshot",
+                    side_effect=commit_after_capture,
+                ),
+                self.assertRaisesRegex(
+                    AuthoringWorkbenchError, "source state changed while it was loaded"
+                ),
+            ):
+                create_resume_workspace(
+                    imported,
+                    root / "successors",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=write_carry_target_manifest(root),
+                    backend="moss-tts",
+                    model="model with spaces",
+                    generation_profile="stable",
+                    narrator_character="Paper Heron",
+                    carry_forward_from=source.directory,
+                    carry_forward_characters=("Rhiannon",),
+                )
+
+            self.assertTrue(
+                generation_database.read_state(state_path)["external_change"]
+            )
+            self.assertEqual(list((root / "successors").iterdir()), [])
+
     def test_idempotent_reopen_rejects_changed_voice_snapshot_bytes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3106,8 +3174,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 self.assertEqual(list((root / "successors").iterdir()), [])
                 self.assertFalse(list(root.rglob(".generation-lease.json")))
 
-    def test_carry_forward_final_rechecks_translate_io_errors_and_clean_up(self):
-        for authority in ("state", "wav"):
+    def test_carry_forward_final_rechecks_translate_source_errors_and_clean_up(self):
+        for authority, failure in (
+            ("state", PermissionError("carry-forward authority is unreadable")),
+            ("state", ValueError("carry-forward authority is unreadable")),
+            ("wav", PermissionError("carry-forward authority is unreadable")),
+        ):
             with self.subTest(authority=authority), TemporaryDirectory() as directory:
                 root = Path(directory)
                 fixture, imported, source = create_carry_source_workspace(root)
@@ -3115,8 +3187,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 target_manifest = write_carry_target_manifest(root)
                 before = tree_hashes(root)
                 publisher = workspace_creation_module._publish_carry_forward_staging
-                original_hash = workspace_creation_module.file_sha256
-                failure = PermissionError("carry-forward authority is unreadable")
+                hash_module = (
+                    generation_database
+                    if authority == "state"
+                    else workspace_creation_module
+                )
+                hash_name = "snapshot_sha256" if authority == "state" else "file_sha256"
+                original_hash = getattr(hash_module, hash_name)
 
                 def fail_final_hash(target_state_path, target_state, source, snapshots):
                     snapshots = tuple(snapshots)
@@ -3129,9 +3206,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                             raise failure
                         return original_hash(path, **kwargs)
 
-                    with patch.object(
-                        workspace_creation_module, "file_sha256", side_effect=fail_hash
-                    ):
+                    with patch.object(hash_module, hash_name, side_effect=fail_hash):
                         return publisher(
                             target_state_path, target_state, source, snapshots
                         )

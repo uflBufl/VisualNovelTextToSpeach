@@ -67,6 +67,24 @@ class FailureReferenceAuditTest(unittest.TestCase):
     def create_failed_workspace(self, root):
         return create_failed_reference_workspace(root)
 
+    def test_snapshot_failure_keeps_audit_error_and_leaves_no_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id = self.create_failed_workspace(root)
+            output = root / "audit"
+            for failure in (
+                PermissionError("unreadable state"),
+                ValueError("unsafe state"),
+            ):
+                with (
+                    self.subTest(failure=type(failure)),
+                    patch.object(audit_module, "snapshot_file", side_effect=failure),
+                    self.assertRaises(FailureReferenceAuditError) as caught,
+                ):
+                    publish_failure_reference_audit(workspace, output)
+                self.assertIs(caught.exception.__cause__, failure)
+                self.assertFalse(output.exists())
+
     def test_invalid_reference_keeps_byte_identity_when_analysis_fails(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

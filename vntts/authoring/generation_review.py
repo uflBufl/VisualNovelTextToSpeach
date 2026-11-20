@@ -24,6 +24,7 @@ from vntts.authoring.generation_state import (
     StateItems,
     decode_generation_state_snapshot,
     generation_state_file,
+    generation_state_sha256,
     generation_state_snapshot,
     load_generation_state,
     read_generation_state_document,
@@ -128,7 +129,7 @@ def generation_review_authorities(
             item_sha256=_canonical_sha256(item),
             audio_sha256=sha256_file(audio),
         )
-    if sha256_file(state_path) != state_sha256:
+    if generation_state_sha256(state_path) != state_sha256:
         raise BulkGenerationSourceChangedError(
             "Generation state changed while review authorities were captured"
         )
@@ -293,7 +294,7 @@ def _assert_cohort_review_snapshot_stable(
     audio_paths: Mapping[str, Path],
 ) -> None:
     if (
-        sha256_file(state_path) != state_sha256
+        generation_state_sha256(state_path) != state_sha256
         or sha256_file(queue_path) != queue_sha256
     ):
         raise BulkGenerationError(

@@ -286,6 +286,17 @@ def read_generation_state_payload(state_path: Path) -> bytes:
         raise BulkGenerationError(str(error)) from error
 
 
+def generation_state_sha256(
+    path: Path, *, error_type: type[Exception] = BulkGenerationError
+) -> str:
+    try:
+        return generation_database.snapshot_sha256(path)
+    except (OSError, ValueError) as error:
+        raise error_type(
+            f"Unable to verify generation state {path}: {error}"
+        ) from error
+
+
 def load_generation_state_object_snapshot(
     path: str | Path,
     description: str,

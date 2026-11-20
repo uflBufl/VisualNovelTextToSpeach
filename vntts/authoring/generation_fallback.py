@@ -38,7 +38,6 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_VERSION,
     STATE_SCHEMA,
     STATE_VERSION,
-    decode_generation_state_snapshot,
     generation_state_file,
     generation_state_snapshot,
     write_generation_state,
@@ -73,6 +72,7 @@ from vntts.authoring.generation_state import (
 )
 from vntts.authoring.publication import publication_errors
 from vntts.document_identity import sha256_file
+from vntts.generation_database import snapshot_sha256
 from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
@@ -128,7 +128,7 @@ def authorize_live_fallback(
         queue_sha256,
         process_checker=process_is_alive,
     ) as lease:
-        state, state_sha256 = _live_fallback_state(state_path)
+        state, state_sha256, _payload = generation_state_snapshot(state_path)
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = _state_items(state).get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
@@ -221,18 +221,6 @@ def _live_fallback_backend(
             "Live fallback requires the exact Pocket TTS default model/profile"
         )
     return provider, model, profile
-
-
-def _live_fallback_state(path: Path) -> tuple[JsonDocument, str]:
-    try:
-        state, digest, _payload = generation_state_snapshot(path)
-    except (OSError, UnicodeDecodeError, ValueError) as error:
-        raise BulkGenerationError(
-            f"Unable to read generation state {path}: {error}"
-        ) from error
-    if not _is_json_document(state):
-        raise BulkGenerationError("Generation state must be a JSON object")
-    return state, digest
 
 
 def _live_fallback_evidence(
@@ -367,7 +355,16 @@ def _assert_live_fallback_commit_sources(
             "Generation state changed before live fallback commit"
         )
     for path, digest in evidence_sources:
-        if not path.is_file() or sha256_file(path) != digest:
+        checksum = (
+            snapshot_sha256 if path.name == "generation-state.sqlite3" else sha256_file
+        )
+        try:
+            unchanged = path.is_file() and checksum(path) == digest
+        except ValueError as error:
+            raise BulkGenerationSourceChangedError(
+                "Live fallback evidence changed before commit"
+            ) from error
+        if not unchanged:
             raise BulkGenerationSourceChangedError(
                 "Live fallback evidence changed before commit"
             )
@@ -615,11 +612,12 @@ def _live_fallback_workspace_hypothesis(
     source_state_path = directory / "generated-audio" / "generation-state.sqlite3"
     try:
         workspace_payload = read_regular_bytes(workspace_path)
-        source_queue_payload = read_regular_bytes(source_queue_path)
-        source_state_payload = read_regular_bytes(source_state_path)
         workspace = decode_json(workspace_payload.decode("utf-8"))
-        source_state = decode_generation_state_snapshot(source_state_payload)
-    except (OSError, UnicodeDecodeError, ValueError) as error:
+        source_queue, source_queue_sha256 = _load_stable_queue(source_queue_path)
+        source_state, state_sha256, _payload = generation_state_snapshot(
+            source_state_path
+        )
+    except (BulkGenerationError, OSError, ValueError) as error:
         raise BulkGenerationError(
             f"Unable to read live fallback evidence workspace {directory}: {error}"
         ) from error
@@ -628,18 +626,8 @@ def _live_fallback_workspace_hypothesis(
         raise BulkGenerationError(
             "Live fallback evidence immutable import differs from its base"
         )
-    source_queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
     if source_queue_sha256 != queue_sha256:
         raise BulkGenerationError("Live fallback evidence queue differs from its base")
-    source_queue, stable_queue_sha256 = _load_stable_queue(source_queue_path)
-    if stable_queue_sha256 != source_queue_sha256:
-        raise BulkGenerationSourceChangedError(
-            "Live fallback evidence queue changed while it was read"
-        )
-    if not _is_json_document(source_state):
-        raise BulkGenerationError(
-            "Live fallback evidence generation state is malformed"
-        )
     if (
         type(source_state.get("schema_version")) is not int
         or (source_state.get("schema"), source_state.get("schema_version"))
@@ -687,7 +675,6 @@ def _live_fallback_workspace_hypothesis(
             "repair carried from the exact current item"
         )
     workspace_sha256 = hashlib.sha256(workspace_payload).hexdigest()
-    state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     result_sha256 = _canonical_sha256(source_result)
     return {
         "workspace_id": workspace_id,
