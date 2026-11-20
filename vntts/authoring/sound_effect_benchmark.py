@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, TypedDict
+from typing import Protocol, TypedDict, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -185,13 +185,7 @@ def benchmark_sound_effects(
 
         torch_module = torch
     if pipeline_factory is None:
-        try:
-            from moss_soundeffect_v2 import MossSoundEffectPipeline
-        except ImportError as error:
-            raise SoundEffectBenchmarkError(
-                "MOSS-SoundEffect v2 is not installed in this runtime"
-            ) from error
-        pipeline_factory = MossSoundEffectPipeline.from_pretrained
+        pipeline_factory = _load_sound_effect_pipeline
     output_directory = no_replace_destination(output_directory)
     if output_directory.exists() or output_directory.is_symlink():
         raise SoundEffectBenchmarkError(
@@ -269,6 +263,49 @@ def benchmark_sound_effects(
                 f"Unable to publish sound-effect benchmark: {error}"
             ) from error
     return report
+
+
+def _load_sound_effect_pipeline(
+    model: str, *, revision: str, torch_dtype: object, device: str
+) -> SoundEffectPipeline:
+    try:
+        from moss_soundeffect_v2 import MossSoundEffectPipeline
+    except ImportError as error:
+        raise SoundEffectBenchmarkError(
+            "MOSS-SoundEffect v2 is not installed in this runtime"
+        ) from error
+    model_path = Path(model).expanduser()
+    if not model_path.is_dir():
+        from huggingface_hub import snapshot_download
+
+        model_path = Path(
+            snapshot_download(
+                repo_id=model,
+                revision=revision,
+                ignore_patterns=["text_encoder/custom_generate/**"],
+            )
+        )
+    model_path = model_path.resolve(strict=True)
+    # The pinned upstream always loads AutoModelForCausalLM from text_encoder;
+    # Transformers copies its custom generation code before checking consent.
+    custom_generate = model_path / "text_encoder" / "custom_generate"
+    try:
+        custom_generate.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise SoundEffectBenchmarkError(
+            "MOSS-SoundEffect custom generation code is not supported"
+        )
+    return cast(
+        SoundEffectPipeline,
+        MossSoundEffectPipeline.from_pretrained(
+            str(model_path),
+            torch_dtype=torch_dtype,
+            device=device,
+            local_files_only=True,
+        ),
+    )
 
 
 def _validate_controls(

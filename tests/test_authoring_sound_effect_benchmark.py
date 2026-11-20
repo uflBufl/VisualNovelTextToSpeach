@@ -5,7 +5,8 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -99,6 +100,126 @@ def write_corpus(path, *, samples=None):
 
 
 class SoundEffectBenchmarkTest(unittest.TestCase):
+    def test_production_loader_uses_the_checked_local_or_hub_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "model"
+            (snapshot / "text_encoder").mkdir(parents=True)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for remote in (False, True):
+                source = "fixture/remote-model" if remote else str(snapshot)
+                loader = Mock(return_value=FakePipeline())
+                module = SimpleNamespace(
+                    MossSoundEffectPipeline=SimpleNamespace(from_pretrained=loader)
+                )
+                with (
+                    self.subTest(source=source),
+                    patch.dict("sys.modules", {"moss_soundeffect_v2": module}),
+                    patch(
+                        "huggingface_hub.snapshot_download", return_value=str(snapshot)
+                    ) as download,
+                ):
+                    benchmark_sound_effects(
+                        corpus,
+                        root / ("remote" if remote else "local"),
+                        model=source,
+                        model_revision="a" * 40,
+                        seeds=(0,),
+                        torch_module=FakeTorch(),
+                    )
+                loader.assert_called_once_with(
+                    str(snapshot.resolve()),
+                    torch_dtype="bfloat16",
+                    device="cuda",
+                    local_files_only=True,
+                )
+                if remote:
+                    download.assert_called_once_with(
+                        repo_id=source,
+                        revision="a" * 40,
+                        ignore_patterns=["text_encoder/custom_generate/**"],
+                    )
+                else:
+                    download.assert_not_called()
+
+    def test_missing_backend_fails_before_download(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            with (
+                patch.dict("sys.modules", {"moss_soundeffect_v2": None}),
+                patch("huggingface_hub.snapshot_download") as download,
+                self.assertRaisesRegex(SoundEffectBenchmarkError, "not installed"),
+            ):
+                benchmark_sound_effects(
+                    corpus, root / "output", torch_module=FakeTorch()
+                )
+            download.assert_not_called()
+
+    def test_missing_resolved_snapshot_does_not_fall_back_to_upstream_download(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            loader = Mock(side_effect=AssertionError("Model must not load"))
+            module = SimpleNamespace(
+                MossSoundEffectPipeline=SimpleNamespace(from_pretrained=loader)
+            )
+            with (
+                patch.dict("sys.modules", {"moss_soundeffect_v2": module}),
+                patch(
+                    "huggingface_hub.snapshot_download",
+                    return_value=str(root / "removed-snapshot"),
+                ) as download,
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError, "Unable to load MOSS-SoundEffect"
+                ),
+            ):
+                benchmark_sound_effects(
+                    corpus, root / "output", torch_module=FakeTorch()
+                )
+            download.assert_called_once()
+            loader.assert_not_called()
+
+    def test_production_loader_rejects_custom_generation_before_model_loading(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            write_corpus(corpus)
+            for remote in (False, True):
+                snapshot = root / ("remote-model" if remote else "local-model")
+                custom = snapshot / "text_encoder" / "custom_generate"
+                custom.mkdir(parents=True)
+                (custom / "generate.py").write_text(
+                    "raise AssertionError('untrusted model code executed')"
+                )
+                loader = Mock(side_effect=AssertionError("Model must not load"))
+                module = SimpleNamespace(
+                    MossSoundEffectPipeline=SimpleNamespace(from_pretrained=loader)
+                )
+                output = root / ("remote-output" if remote else "local-output")
+                with (
+                    self.subTest(remote=remote),
+                    patch.dict("sys.modules", {"moss_soundeffect_v2": module}),
+                    patch(
+                        "huggingface_hub.snapshot_download", return_value=str(snapshot)
+                    ),
+                    self.assertRaisesRegex(
+                        SoundEffectBenchmarkError, "custom generation code"
+                    ),
+                ):
+                    benchmark_sound_effects(
+                        corpus,
+                        output,
+                        model="fixture/remote-model" if remote else str(snapshot),
+                        seeds=(0,),
+                        torch_module=FakeTorch(),
+                    )
+                loader.assert_not_called()
+                self.assertFalse(output.exists())
+
     def test_invalid_utf8_text_fails_before_cuda_or_pipeline(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
