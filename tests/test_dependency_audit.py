@@ -20,6 +20,31 @@ class _Response(BytesIO):
 
 
 class DependencyAuditTests(unittest.TestCase):
+    @patch("scripts.dependency_audit.query_osv", return_value={})
+    @patch("scripts.dependency_audit.subprocess.run")
+    def test_qwen_exceptions_do_not_hide_new_findings_or_other_projects(
+        self, run: MagicMock, _osv: MagicMock
+    ) -> None:
+        root = dependency_audit.ROOT
+        qwen = root / "backends/qwen-tts"
+        other = root / "backends/pocket-tts"
+        with patch("scripts.dependency_audit.projects", return_value=(qwen, other)):
+            # uv still fails for any finding outside its explicit --ignore IDs.
+            run.side_effect = [subprocess.CalledProcessError(1, "uv"), None]
+            with self.assertRaisesRegex(SystemExit, "backends/qwen-tts"):
+                dependency_audit.main()
+        qwen_command, other_command = (call.args[0] for call in run.call_args_list)
+        self.assertEqual(
+            qwen_command[7:],
+            [
+                value
+                for advisory in dependency_audit.IGNORES["backends/qwen-tts"]
+                for value in ("--ignore", advisory)
+            ],
+        )
+        self.assertNotIn("--ignore", other_command)
+        self.assertNotIn("--ignore-until-fixed", qwen_command)
+
     @patch("scripts.dependency_audit.query_osv")
     @patch("scripts.dependency_audit.locked_git_commits")
     @patch("scripts.dependency_audit.projects")

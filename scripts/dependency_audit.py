@@ -19,8 +19,8 @@ from vntts.path_safety import read_regular_text  # noqa: E402
 OSV_QUERY_BATCH = "https://api.osv.dev/v1/querybatch"
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 
-# These paths are absent from VNTTS runtime execution. The pinned model stacks
-# cannot yet take the published fixes without breaking their qualified runtimes.
+# Legacy exceptions concern paths absent from VNTTS runtime execution. The pinned
+# model stacks cannot yet take fixes without breaking their qualified runtimes.
 IGNORES = {
     ".": (
         "GHSA-h35f-9h28-mq5c",  # setuptools sdist creation
@@ -63,6 +63,21 @@ IGNORES = {
         "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
         "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
         "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
+    ),
+    # CI audit exceptions for the current pinned Qwen runtime: upstream pins
+    # Transformers 4.57.3 / Accelerate 1.12.0; CUDA pins torch 2.11.0 (<82
+    # setuptools). Remove these findings' exceptions on a qualified upgrade.
+    "backends/qwen-tts": (
+        "GHSA-4j2p-28q2-5m79",  # Accelerate checkpoint shard paths
+        "GHSA-h35f-9h28-mq5c",  # setuptools sdist creation
+        "GHSA-xmj3-9gf7-h52w",  # setuptools legacy wheel installation
+        "GHSA-rrmf-rvhw-rf47",  # torch.jit.script
+        "GHSA-69w3-r845-3855",  # Trainer checkpoint loading
+        "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
+        "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
+        "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
+        "GHSA-x9r9-c232-4q39",  # custom-generation code before trust consent
+        "PYSEC-2025-217",  # no fixed release in the feed
     ),
 }
 
