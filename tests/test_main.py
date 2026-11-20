@@ -7801,8 +7801,8 @@ class MainTest(unittest.TestCase):
             tts_factory=Mock(),
             status_handler=statuses.append,
         )
-        controller.live_reader = Mock()
-
+        reader = self._sequence_reader(controller)
+        reader.clear_queue = Mock()
         controller._capture_state_changed(False, 1.0)
         controller._capture_state_changed(False, 1.0)
         controller._capture_state_changed(True, 0.2)
@@ -7815,6 +7815,12 @@ class MainTest(unittest.TestCase):
                 "Game focus restored; live reading resumed",
             ],
         )
+
+        reader.toggle_pause()
+        controller._capture_state_changed(False, 1.0)
+        controller._capture_state_changed(True, 0.2)
+        self.assertEqual(statuses[-1], "Game focus restored; speech remains paused")
+        self.assertTrue(reader.playback_pause.is_paused())
 
     def test_auto_advance_status_distinguishes_dispatch_failure_and_confirmation(self):
         statuses = []

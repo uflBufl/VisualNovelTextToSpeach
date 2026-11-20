@@ -310,7 +310,7 @@ Other remaining defects and native checks:
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **True Pause/Resume (RUN-29-01), remaining paths:** check device/focus
+   - **True Pause/Resume (RUN-29-01), remaining paths:** check output device
      changes while paused.
      Original game audio continues independently; its completion wait must not
      restart or advance the game while Reading remains paused. Keep one native

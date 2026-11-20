@@ -4844,9 +4844,12 @@ class AppController:
                 + (f". {blocked_reason}" if blocked_reason else "")
             )
         elif regained_focus:
-            self.status_handler(
-                blocked_reason or "Game focus restored; live reading resumed"
+            focus_status = (
+                "Game focus restored; speech remains paused"
+                if reader is not None and reader.playback_pause.is_paused()
+                else "Game focus restored; live reading resumed"
             )
+            self.status_handler(blocked_reason or focus_status)
 
     def _publish_diagnostic(
         self,
