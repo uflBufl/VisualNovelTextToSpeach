@@ -167,13 +167,6 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **RUN-27-03: verify automatic dialogue changes.**
-      Exercise persistent49 ->116,
-      rapid A/B/C changes during speech and A/C with no captured B. Compare crops,
-      OCR identities and actual playback: accepted lines must drain once in order,
-      unseen lines must not be invented, and old completion must not advance a
-      newer visible line. Include one-frame exact and short lines, approximate/raw
-      OCR, repeated frames and distant exact recovery.
 - [ ] **REC-27-01: qualify history refresh during native recording.** Under
       Reading and real background generation, refresh history during recording:
       size must remain available without false missing-file errors. Keep this
@@ -197,9 +190,6 @@ Recheck archived findings against current main before implementation.
 
 - [ ] **UX-25-02: прокрутка в Stories.** Проверить прокрутку списка историй
       и области подробностей физическим колесом мыши или трекпадом.
-- [ ] **RUN-25-02: если чтение снова застрянет на предыдущей реплике,**
-      сравнить текущий кадр и состояние чтения. В исходном прогоне уже было
-      видно Duvalle / Madam?, пока приложение ещё ждало перехода со старой реплики.
 
 ## Active - Windows story import and persistence
 
@@ -420,9 +410,6 @@ Other remaining defects and native checks:
    - **Repeated routing (RUN-25-10):** preserve no-duplicate behavior for102.
      Recheck native22/23 and false character I; distinguish cancellation before
      PCM from repeated speech. A changed chunk ID alone is not OCR-change evidence.
-   - **Short dialogue (RUN-27-03):** verify automatic-transition admission
-     and ordered speech while retaining original-game-voice priority. No duplicate
-     game voice or arbitrary widening of the normal ROI.
    - **Continuation regression:** keep the passing34/35/85/86/97 behavior
      while fixing116, retaining Stop/focus/uncertainty guards. Do not add dictionary
      autocorrection for dust-obscured words.
