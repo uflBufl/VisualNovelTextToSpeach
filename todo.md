@@ -167,10 +167,6 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **REC-27-01: qualify history refresh during native recording.** Under
-      Reading and real background generation, refresh history during recording:
-      size must remain available without false missing-file errors. Keep this
-      interaction separate from recording continuity and finalization.
 - [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
       First route for314001:6 used live MOSS/no-match despite later exact canonical
       OCR; audio open then failed with output-stream-construction. No first PCM
