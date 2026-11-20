@@ -287,8 +287,7 @@ Recheck archived findings against current main before implementation.
       after Stop/Read or configuration changes must not authorize continuation.
 
 - [ ] Complete only unexercised controls: announcement Pause/Resume,
-      failed/not-ready policy, manual/other punctuation, and preparation Close
-      during speech. Prepared Pause/Resume,
+      failed/not-ready policy, and manual/other punctuation. Prepared Pause/Resume,
       fullscreen/window continuation and volume HUD have been exercised. Keep
       controls separate from autonomous chapter metrics; diagnostic video's bounds
       guard still intentionally ends a recording when fullscreen changes its size.
@@ -322,12 +321,6 @@ Other remaining defects and native checks:
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **Preparation Close (UX-31-01), native acceptance:** close completed/partial
-     preparation during speech and advance wait (paused prepared playback was
-     verified November2). Reading must keep its source, current speech position and continuation without a controller restart.
-     Reopen the same job and use Stop/Start; another preparation must not replace
-     the source implicitly. For stopped partial preparation, ready audio remains
-     usable and missing audio reports that preparation must be continued.
    - **Preparation resume (UX-29-02), remaining edges:** changed
      voices/settings/content and explicit `Prepare again` must require review.
      Check truthful phase labels for these changed-input paths.
