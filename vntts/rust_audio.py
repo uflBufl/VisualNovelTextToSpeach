@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes.util
 import importlib.util
+import io
 import json
 import os
 import queue
@@ -18,7 +19,7 @@ from math import isfinite
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 from weakref import WeakSet
 
@@ -196,9 +197,11 @@ class RustAudioWorker:
 
     def _read_events(self) -> None:
         assert self.process.stdout is not None
+        # Commands need unbuffered writes, but raw readline reads one byte per syscall.
+        stdout = io.BufferedReader(cast(io.RawIOBase, self.process.stdout))
         try:
             while not self.closed.is_set():
-                line = self.process.stdout.readline(MAX_EVENT_BYTES + 1)
+                line = stdout.readline(MAX_EVENT_BYTES + 1)
                 if not line:
                     raise RuntimeError("Rust audio worker exited before completion")
                 if len(line) > MAX_EVENT_BYTES or not line.endswith(b"\n"):
@@ -217,6 +220,8 @@ class RustAudioWorker:
                     pass
                 if self.process.poll() is None:
                     self.process.kill()
+        finally:
+            stdout.close()
 
     def receive(self, timeout: float) -> dict[str, Any]:
         try:

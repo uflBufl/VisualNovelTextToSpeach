@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 import queue
 import subprocess
@@ -192,6 +193,29 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
 
 
 class RustAudioProtocolTest(unittest.TestCase):
+    def test_queued_replies_are_read_in_blocks_and_delivered_in_order(self):
+        class Pipe(io.RawIOBase):
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                read_sizes.append(len(buffer))
+                return replies.readinto(buffer)
+
+        read_sizes = []
+        replies = io.BytesIO(b'{"event":"query_phase"}\n{"event":"format"}\n')
+        worker = Mock()
+        worker.process.stdout = Pipe()
+        worker.closed = threading.Event()
+        worker.events = queue.Queue()
+
+        RustAudioWorker._read_events(worker)
+
+        self.assertEqual(worker.events.get_nowait(), {"event": "query_phase"})
+        self.assertEqual(worker.events.get_nowait(), {"event": "format"})
+        self.assertIsInstance(worker.events.get_nowait(), RuntimeError)  # EOF
+        self.assertLessEqual(len(read_sizes), 3)
+
     def setUp(self):
         self.pcm = np.arange(80, dtype=np.float32).reshape(40, 2) / 100
         self.workers = []

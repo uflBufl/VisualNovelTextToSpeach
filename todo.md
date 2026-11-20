@@ -167,20 +167,13 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Native rerun observations (2026-10-27)
 
-- [ ] **RUN-27-01: first-line playback fails under ordinary background generation.**
-      First route for314001:6 used live MOSS/no-match despite later exact canonical
-      OCR; audio open then failed with output-stream-construction. No first PCM
-      or automatic transition. Diagnose raw initial OCR/routing and output error
-      separately. Initial121-character OCR committed before the exact132-character
-      result, which then hit committed-conflict. If playback fails again, use the
-      named query_device/check_format timeout and format details to identify
-      the failing native operation before choosing an audio repair; do not
-      assume a device switch or blame the recording tap. Its cause remains open.
-      Combined native OCR gate: confirm current canonical recognition replaces
-      an unheard live/no-match candidate with the prepared recording exactly
-      once. Correlate cancellation and actual PCM, including speaker announcements;
-      confirm no replacement after audio admission and no duplicate after
-      repeated OCR or Stop/Pause. Keep this gate separate from the audio timeout.
+- [ ] **RUN-27-01: late canonical OCR before first audio.** Reproduce the
+      initial 121-character live/no-match route for `314001:6` followed by the
+      exact 132-character recognition. Verify on macOS that Reading cancels the
+      unheard candidate and plays the prepared recording exactly once. Correlate
+      cancellation with native PCM, including speaker announcements. Check that
+      recognition after audio admission keeps the current clip and that repeated
+      OCR or Stop/Pause cannot play it twice.
 
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
@@ -341,15 +334,10 @@ Other remaining defects and native checks:
 
 1. **Other deferred native checks.**
    Preserve the separate announcement, manual-mode and generation-failure cases.
-   - **Audio query startup (AUDIO-29-01), remaining native acceptance:** cold-start
-     prepared 44.1 kHz mono playback under real generation and recording load.
-     Verify `query_trace` on the actual worker and reuse existing parent/native
-     phase records. If the historical `check_format` timeout recurs, retain
-     query/worker IDs and the last completed boundary before selecting a repair;
-     verify ordinary Stop/Start replaces the failed worker and the phrase then
-     completes once. A failed playback must not advance the game. Do not repeat
-     the existing recovery/tracing implementation, extend timeouts or infer a
-     native-stall fix from successful queries alone.
+   - **Audio query recovery (AUDIO-29-01):** if a native query fails again,
+     retain its query/worker IDs and last parent/native phase. Verify that
+     failed playback does not advance the game and that ordinary Stop/Start
+     replaces the failed worker and plays the prepared phrase once.
    - **Preparation Close (UX-31-01), native acceptance:** close completed/partial
      preparation during speech and advance wait (paused prepared playback was
      verified November2). Reading must keep its source, current speech position and continuation without a controller restart.
