@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -22,8 +21,8 @@ from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION,
     MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
-    decode_generation_state_snapshot,
     live_fallback_decision,
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
     validate_generation_state_document,
     write_generation_state,
@@ -41,7 +40,6 @@ from vntts.authoring.workbench import inspect_workspace
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.json_types import has_schema_version
-from vntts.path_safety import read_regular_bytes
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -106,9 +104,9 @@ def authorize_missing_voice_live_fallback(
     queue_by_id: dict[str, VoiceGenerationQueueItem] = {
         item.queue_id: item for item in queue.items
     }
-    state_payload = read_regular_bytes(state_path)
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    state = _decode_state(state_payload)
+    state, state_sha256, _ = load_generation_state_object_snapshot(
+        state_path, "generation state", error_type=MissingVoiceLiveFallbackError
+    )
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):
         raise MissingVoiceLiveFallbackError(
@@ -590,16 +588,6 @@ def _existing_batch_id(
             "Missing-voice fallback batch ID is invalid"
         )
     return batch_id
-
-
-def _decode_state(payload: bytes) -> dict[str, object]:
-    try:
-        value = decode_generation_state_snapshot(payload)
-    except (UnicodeDecodeError, ValueError) as error:
-        raise MissingVoiceLiveFallbackError(str(error)) from error
-    if not isinstance(value, dict):
-        raise MissingVoiceLiveFallbackError("Generation state must be a JSON object")
-    return value
 
 
 def _read_json(path: str | Path, label: str) -> dict[str, object]:

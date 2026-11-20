@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,7 +23,7 @@ from vntts.authoring.bulk_generation import (
     is_spoken_queue_item,
 )
 from vntts.authoring.generation_state import (
-    decode_generation_state_snapshot,
+    load_generation_state_object_snapshot,
     load_stable_generation_queue,
     validate_generation_state_document,
 )
@@ -63,7 +62,7 @@ from vntts.authoring.workspace_config import selected_voice_manifest_path
 from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import file_sha256
 from vntts.json_types import has_schema_version
-from vntts.path_safety import copy_regular_file, read_regular_bytes
+from vntts.path_safety import copy_regular_file
 from vntts.voices import load_voice_manifest, synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -254,8 +253,9 @@ def _load_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot:
     queue, queue_sha256 = load_stable_generation_queue(workspace / "queue.jsonl")
     queue_by_id = {item.queue_id: item for item in queue.items}
     state_path = workspace / "generated-audio/generation-state.sqlite3"
-    state_payload = read_regular_bytes(state_path)
-    state = _decode_state(state_payload)
+    state, state_sha256, _ = load_generation_state_object_snapshot(
+        state_path, "generation state", error_type=KnownRoleReuseError
+    )
     validate_generation_state_document(state, state_path.parent, queue, queue_sha256)
     if state.get("active") is not None or any(state_path.parent.rglob("*.partial.wav")):
         raise KnownRoleReuseError("Known-role reuse requires an inactive workspace")
@@ -267,7 +267,7 @@ def _load_workspace_snapshot(workspace: Path) -> WorkspaceSnapshot:
         queue_sha256,
         queue_by_id,
         state,
-        hashlib.sha256(state_payload).hexdigest(),
+        state_sha256,
     )
 
 
@@ -844,16 +844,6 @@ def _copy_tree(source: Path, destination: Path) -> None:
             path, error_type=OSError
         ):
             raise KnownRoleReuseError("Known-role authority changed while copied")
-
-
-def _decode_state(payload: bytes) -> dict[str, object]:
-    try:
-        value = decode_generation_state_snapshot(payload)
-    except (UnicodeDecodeError, ValueError) as error:
-        raise KnownRoleReuseError(str(error)) from error
-    if not isinstance(value, dict):
-        raise KnownRoleReuseError("Generation state must be a JSON object")
-    return value
 
 
 def _read_json(path: str | Path, label: str) -> dict[str, object]:

@@ -965,6 +965,22 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       Keep explicit same-filesystem/link errors and existing audio intact; do
       not add a silent copy fallback.
 
+## Refactoring follow-up
+
+- [ ] Read live SQLite state under the shared snapshot lock when building
+      cohort reviews, failure audits, fallback plans, and carry-forward inputs.
+      Check paths that re-read the live file for its digest as well. Preserve
+      each caller's error contract and verify behavior during a concurrent commit.
+- [ ] Return the matched story line, equivalent speech and match kind explicitly
+      from the story OCR resolver. Derive diagnostics from that result and keep
+      the stale-owner check before updating the cursor.
+- [ ] Share live audio materialization between successor prefetch and playback.
+      Preserve focus cancellation for prefetch, chunk cancellation for playback,
+      and the occurrence check after prefetch completes.
+- [ ] Separate selection of reusable audio in `_reuse_completed_audio` from its
+      SQLite publication. On restart, re-read current decisions under the
+      generation lease before merging the selected recordings.
+
 ## Qualify SQLite-only storage
 
 - [ ] Qualify the SQLite-only publication, interrupted publication/retry, hard links
