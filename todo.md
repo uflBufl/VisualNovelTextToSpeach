@@ -311,8 +311,7 @@ Other remaining defects and native checks:
       when optional Media Foundation components are absent. Native runtime and
       privacy acceptance are separate from the passing portable unit tests.
 
-- [ ] **OCR-29-01 remaining native edges:** line43 passed in
-      native-trial-20261031; retain only genuine typewriter-prefix and ambiguous
+- [ ] **OCR-29-01 remaining native edges:** verify genuine typewriter-prefix and ambiguous
       same-text speaker checks. Neither may gain full-line authority from an
       unreadable name. Preserve native crop, speaker/dialogue confidence and
       actual playback evidence for these unexercised paths.
@@ -344,18 +343,10 @@ Other remaining defects and native checks:
      restart or advance the game while Reading remains paused. Keep one native
      session/clip identity and compare retained audio with the source around the
      pause boundary for these remaining paths.
-   - **Punctuation-only dialogue (RUN-29-04), remaining paths:** Cornerstone's
-     `...` after314001:66 in manual mode must not dispatch a key. Include other encountered
-     punctuation-only boxes: preserve the shown signs, separate different signs
-     and speakers, suppress duplicate transitions and symbol-only TTS while
-     retaining original/prepared audio and approved spoken projections. Confirm
-     unreadable/uncertain OCR keeps waiting regardless of elapsed time; never
-     use a timeout or failed recognition to authorize a skip. Check window/fullscreen and
-     display scales with the resolved/calibrated dialogue region. Investigate
-     whether divider rejection in synthetic1.5x/2x Lanczos-upscaled full crops
-     reproduces at native display scales; keep calibration on ambiguous layouts
-     and do not relax divider safeguards from synthetic evidence alone.
-     Evidence: `native-trial-20261029/line66-wait/frame-001.png`.
+   - For punctuation-only dialogue encountered in game, preserve the shown
+     signs and speaker, suppress duplicate transitions and symbol-only TTS, and
+     retain original/prepared audio and approved spoken projections. Unreadable
+     OCR must keep waiting, including at different native display scales.
    - **Prepared matching remaining edges:** after the approved3-character
      edit threshold and Latin-diacritic folding, reject ambiguous/incomplete
      matches and preserve protected numbers/negation. Use neighbouring wrong-line
@@ -376,24 +367,12 @@ Other remaining defects and native checks:
      activation, profile changes, cancellation and restored-runtime rollback.
      Checks must wait for the current operation, discard obsolete results and
      probe the effective configuration once; no false OCR installation error.
-   - **Repeated routing (RUN-25-10):** preserve no-duplicate behavior for102.
-     Recheck native22/23 and false character I; distinguish cancellation before
-     PCM from repeated speech. A changed chunk ID alone is not OCR-change evidence.
-   - **Continuation regression:** keep the passing34/35/85/86/97 behavior
-     while fixing116, retaining Stop/focus/uncertainty guards. Do not add dictionary
-     autocorrection for dust-obscured words.
+
 ## Investigate reported audio interruptions
 
 - [ ] **R12 - Investigate if audible interruptions recur.**
-      On Mac build fee2f818, prepared stage314001 with concurrent MOSS generation,
-      exact approved-source correlation found line 8 +192 output frames (4.354ms
-      at 44100Hz) inside an existing quiet span, and line 54 +960 frames (21.769ms)
-      during speech, including a new 16.984ms exact-zero span. Rust reported no
-      underflow and both explicit-process tap streams had continuous timestamps
-      and no queue loss. Most other energetic windows retained alignment within
-      0.125ms. These observations do not yet identify Rust, CoreAudio/device or
-      capture as the source. If reported again, match the affected line to its
-      source WAV and recording to distinguish playback loss from a capture issue.
+      If reported again, match the affected line to its source WAV and recording
+      to distinguish playback loss from a capture issue.
       Compare historical Python evidence only with matched source/device/rate;
       no GIL-only attribution, launcher monkeypatch, WAV editing or buffer inflation.
       Disambiguate repeated identical WAV occurrences before treating an NCC peak
@@ -586,12 +565,11 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       audio; a genuinely changed line must still remain blocked.
 - [ ] **Complete remaining native acceptance after OCR-cancellation repair.**
       Repeat prepared reading with background MOSS and selected-window/process-audio
-      recording. Verify genuine incomplete phrases wait, and lines7/10/16 complete
+      recording. Verify genuine incomplete phrases wait and admitted phrases complete
       without unsolicited interruption. Inspect `observation-invalidated` and
       `queue-cancelled` with confidence/threshold and playback ownership to identify
       any remaining interruption; uncertain OCR must withhold auto-advance without
-      suppressing admitted speech. Retain the already passing short-line15
-      Narrator fallback, one-key-per-completion, mid-clip Pause/Resume and Stop/restart
+      suppressing admitted speech. Retain one-key-per-completion, mid-clip Pause/Resume and Stop/restart
       as regression gates. Run from a cold worker after the capture-arming repair
       so the first clip is qualified too, and verify a replacement worker arms its
       own process tap before PCM. Explicit recording failure must remain visible
