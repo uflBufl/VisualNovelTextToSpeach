@@ -165,16 +165,6 @@ Recheck archived findings against current main before implementation.
       request deadline and fresh epoch. The original interruption is not yet
       reproduced reliably; automated recovery tests do not establish its cause.
 
-## Active - Native rerun observations (2026-10-27)
-
-- [ ] **RUN-27-01: late canonical OCR before first audio.** Reproduce the
-      initial 121-character live/no-match route for `314001:6` followed by the
-      exact 132-character recognition. Verify on macOS that Reading cancels the
-      unheard candidate and plays the prepared recording exactly once. Correlate
-      cancellation with native PCM, including speaker announcements. Check that
-      recognition after audio admission keeps the current clip and that repeated
-      OCR or Stop/Pause cannot play it twice.
-
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
 - [ ] **UX-25-02: прокрутка в Stories.** Проверить прокрутку списка историй
