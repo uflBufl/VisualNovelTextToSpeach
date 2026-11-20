@@ -310,9 +310,6 @@ Other remaining defects and native checks:
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **Voice confirmation layout (UX-29-01):** confirm full character/voice labels
-     and aligned Play buttons in the actual chapter at compact size,
-     including `Narrator (Centurion)` substitutions and preview messages.
    - **True Pause/Resume (RUN-29-01), remaining paths:** pause a speaker
      announcement mid-audio. Verify unchanged playback
      position during Pause, only remaining audio after Resume, one load/synthesis
