@@ -24,7 +24,12 @@ from tests.bulk_generation_fixtures import SyntheticRenderer, audio_samples
 from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.story_fixtures import semantic_evidence_document, semantic_evidence_entry
 from vntts.authoring.audio_events import audio_event_plan_for_record
-from vntts.authoring.bulk_generation import BulkGenerationError, run_bulk_generation
+from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
+    review_generation_item,
+    run_bulk_generation,
+)
+from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import (
     validate_success_file_with_speech_quality,
 )
@@ -1748,21 +1753,56 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ),
                 include_characters=("Rhiannon",),
             )
-            before = load_generation_state(
-                generation_state_path(current.output_directory), current.queue
-            )
+            state_path = generation_state_path(current.output_directory)
+            before = load_generation_state(state_path, current.queue)
+            protected = dict(before["items"])
             generate_prepared(
                 original, PocketRenderer(), include_characters=("Narrator", "Hotelier")
             )
-            self.assertEqual(
-                PregenerationInputStore(jobs).materialize(job, revised), current
+            candidates = load_generation_state(
+                generation_state_path(original.output_directory), original.queue
+            )["items"]
+            reviewed_id = next(
+                queue_id
+                for queue_id, item in candidates.items()
+                if item["line_id"] == "hotelier"
             )
-            after = load_generation_state(
-                generation_state_path(current.output_directory), current.queue
-            )
-            self.assertEqual(len(after["items"]), 4)
-            for queue_id, result in before["items"].items():
-                self.assertEqual(after["items"][queue_id], result)
+
+            def review_before_reuse_lease(*args, **kwargs):
+                generate_prepared(
+                    current, PocketRenderer(), include_queue_ids=(reviewed_id,)
+                )
+                review_generation_item(state_path, reviewed_id, "rejected")
+                protected[reviewed_id] = load_generation_state(
+                    state_path, current.queue
+                )["items"][reviewed_id]
+                return GenerationLease(*args, **kwargs)
+
+            with patch(
+                "vntts.pregeneration_queue.GenerationLease",
+                side_effect=review_before_reuse_lease,
+            ):
+                restarted = PregenerationInputStore(jobs)
+                self.assertEqual(restarted.materialize(job, revised), current)
+
+            published = load_generation_state(state_path, current.queue)
+            for provenance, controls in before["synthesis_controls"].items():
+                self.assertEqual(published["synthesis_controls"][provenance], controls)
+            after = published["items"]
+            self.assertEqual(len(after), 4)
+            self.assertEqual(protected[reviewed_id]["review_status"], "rejected")
+            for queue_id, item in protected.items():
+                self.assertEqual(after[queue_id], item)
+            for queue_id, item in candidates.items():
+                if queue_id != reviewed_id:
+                    self.assertEqual(
+                        after[queue_id]["file_sha256"], item["file_sha256"]
+                    )
+                    self.assertTrue(
+                        (current.output_directory / after[queue_id]["path"]).samefile(
+                            original.output_directory / item["path"]
+                        )
+                    )
 
     def test_completed_recordings_are_linked_without_readmission(self):
         with TemporaryDirectory() as directory:

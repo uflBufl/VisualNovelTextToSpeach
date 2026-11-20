@@ -971,9 +971,6 @@ Archive (20) retains only historical October 14 lock-wait stacks for this incide
       cohort reviews, failure audits, fallback plans, and carry-forward inputs.
       Check paths that re-read the live file for its digest as well. Preserve
       each caller's error contract and verify behavior during a concurrent commit.
-- [ ] Separate selection of reusable audio in `_reuse_completed_audio` from its
-      SQLite publication. On restart, re-read current decisions under the
-      generation lease before merging the selected recordings.
 
 ## Qualify SQLite-only storage
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -104,6 +104,7 @@ generation_input_schema_version = 4
 VoiceChoice: TypeAlias = tuple[CharacterVoice | None, tuple[str, ...], str]
 StoryRecordDocument: TypeAlias = dict[str, object]
 QueueItemReuseIdentity: TypeAlias = tuple[dict[str, object], str | None]
+_ReusableRecordings: TypeAlias = dict[str, tuple[Path, dict[str, object]]]
 
 
 class EffectiveVoiceRoutes(TypedDict):
@@ -475,13 +476,33 @@ def _reuse_completed_audio(
     protected = {} if existing is None else generation_state_items(existing)
     if existing is not None and existing.get("active") is not None:
         return
+    recordings, controls = _select_reusable_recordings(
+        current, plan, job_store, queue, protected.keys()
+    )
+    if recordings:
+        _publish_reused_recordings(
+            current.output_directory,
+            queue,
+            queue_sha256,
+            recordings,
+            controls,
+            new_output=existing is None,
+        )
+
+
+def _select_reusable_recordings(
+    current: PregenerationInput,
+    plan: VoicePlan,
+    job_store: PregenerationJobStore,
+    queue: VoiceGenerationQueue,
+    protected: Collection[str],
+) -> tuple[_ReusableRecordings, dict[str, object]]:
     voices = CharacterVoiceRegistry.from_file(current.voice_manifest)
     current_items = {item.queue_id: item for item in queue.items}
     current_reuse: dict[str, QueueItemReuseIdentity] | None = None
     voice_identities: dict[str, object] = {}
-    saved: dict[str, dict[str, object]] = {}
+    recordings: _ReusableRecordings = {}
     controls: dict[str, object] = {}
-    sources: dict[str, Path] = {}
     try:
         previous_inputs = (
             ()
@@ -494,7 +515,7 @@ def _reuse_completed_audio(
         ) from error
     current_directory = current.directory.resolve()
     for previous in previous_inputs:
-        if len(protected) + len(saved) == len(current_items):
+        if len(protected) + len(recordings) == len(current_items):
             break
         if previous == current_directory or not previous.is_dir():
             continue
@@ -528,7 +549,7 @@ def _reuse_completed_audio(
                 for item in old_queue.items
                 if (
                     item.queue_id not in protected
-                    and item.queue_id not in saved
+                    and item.queue_id not in recordings
                     and item.queue_id in current_items
                 )
             }
@@ -621,8 +642,10 @@ def _reuse_completed_audio(
             )
             for queue_id in eligible:
                 result = old_items[queue_id]
-                saved[queue_id] = copy.deepcopy(result)
-                sources[queue_id] = previous_state.parent / str(result["path"])
+                recordings[queue_id] = (
+                    previous_state.parent / str(result["path"]),
+                    result,
+                )
             registry = state.get("synthesis_controls")
             if isinstance(registry, dict):
                 controls.update(registry)
@@ -637,62 +660,76 @@ def _reuse_completed_audio(
             raise PregenerationQueueError(
                 f"Unable to reuse saved offline audio: {error}"
             ) from error
+    return recordings, controls
+
+
+def _publish_reused_recordings(
+    output: Path,
+    queue: VoiceGenerationQueue,
+    queue_sha256: str,
+    recordings: _ReusableRecordings,
+    controls: dict[str, object],
+    *,
+    new_output: bool,
+) -> None:
     try:
-        if not saved:
-            return
-        with staged_directory(
-            current.directory.parent, prefix=".generation-reuse-"
-        ) as staging:
-            for queue_id, result in saved.items():
+        with staged_directory(output.parent, prefix=".generation-reuse-") as staging:
+            items = {}
+            for queue_id, (source, result) in recordings.items():
                 digest = str(result["file_sha256"])
-                source = sources[queue_id]
                 relative = f"audio/{digest}.wav"
                 link_shared_audio(source, staging / relative, expected_sha256=digest)
-                result["path"] = relative
+                items[queue_id] = {**result, "path": relative}
             state = {
                 "schema": STATE_SCHEMA,
                 "schema_version": STATE_VERSION,
                 "queue_sha256": queue_sha256,
                 "game": queue.metadata.get("game"),
                 "language": queue.metadata.get("language"),
-                "items": saved,
+                "items": items,
                 "active": None,
                 "synthesis_controls": controls,
             }
-            write_generation_state(staging / "generation-state.sqlite3", state)
+            staged_state = generation_state_path(staging)
+            write_generation_state(staged_state, state)
             load_generation_state_from_snapshot(
-                staging / "generation-state.sqlite3",
+                staged_state,
                 queue,
                 queue_sha256,
                 validate_files=False,
             )
-            if existing is None:
-                rename_directory_no_replace(staging, current.output_directory)
-            else:
-                with GenerationLease(
-                    current.output_directory,
-                    queue_sha256,
-                    process_checker=process_is_alive,
-                ):
-                    latest = load_generation_state_from_snapshot(
-                        state_path, queue, queue_sha256, validate_files=False
-                    )
-                    if latest.get("active") is not None:
-                        return
-                    latest_items = generation_state_items(latest)
-                    for queue_id, result in saved.items():
-                        if queue_id not in latest_items:
-                            relative = str(result["path"])
-                            link_shared_audio(
-                                staging / relative,
-                                current.output_directory / relative,
-                                expected_sha256=str(result["file_sha256"]),
-                            )
-                            latest_items[queue_id] = result
-                    latest_controls = latest.setdefault("synthesis_controls", {})
-                    if isinstance(latest_controls, dict):
-                        latest_controls.update(controls)
-                    write_generation_state(state_path, latest)
+            if new_output:
+                rename_directory_no_replace(staging, output)
+                return
+            with GenerationLease(
+                output,
+                queue_sha256,
+                process_checker=process_is_alive,
+            ):
+                state_path = generation_state_path(output)
+                latest = load_generation_state_from_snapshot(
+                    state_path, queue, queue_sha256, validate_files=False
+                )
+                if latest.get("active") is not None:
+                    return
+                latest_items = generation_state_items(latest)
+                for queue_id, result in items.items():
+                    if queue_id not in latest_items:
+                        relative = str(result["path"])
+                        link_shared_audio(
+                            staging / relative,
+                            output / relative,
+                            expected_sha256=str(result["file_sha256"]),
+                        )
+                        latest_items[queue_id] = result
+                # Identical synthesis inputs can have different paths in each job.
+                latest_controls = latest.get("synthesis_controls")
+                latest["synthesis_controls"] = (
+                    controls | latest_controls
+                    if isinstance(latest_controls, dict)
+                    else controls
+                )
+                write_generation_state(state_path, latest)
     except (AtomicPublicationError, BulkGenerationError, OSError, ValueError) as error:
         raise PregenerationQueueError(
             f"Unable to reuse saved offline audio: {error}"
