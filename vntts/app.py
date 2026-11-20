@@ -3709,7 +3709,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._cancel_live_scope()
         reader = self.controller.live_reader
         if reader is not None:
-            reader.stop()
+            reader.request_emergency_stop()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = None
         self._live_stop_wait_for_speech = True

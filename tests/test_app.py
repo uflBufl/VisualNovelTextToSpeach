@@ -4246,7 +4246,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray._request_stop_reading()
         self.application.processEvents()
 
-        controller.live_reader.stop.assert_called_once_with()
+        controller.live_reader.request_emergency_stop.assert_called_once_with()
         controller.emergency_stop.assert_not_called()
         self.assertFalse(tray.live_stop_runner.active)
         self.assertIsNone(tray._live_stop_generation)

@@ -1095,15 +1095,20 @@ class LiveDialogReader:
                 self.shutdown_started = True
                 self.stop_event.set()
 
+    def request_emergency_stop(self) -> bool:
+        """Revoke playback immediately and keep paused output silent until cleanup."""
+        with self.pause_condition:
+            was_running = (
+                self.capture_future is not None and not self.capture_future.done()
+            )
+            self.emergency_stopped = True
+            self.stop_event.set()
+            self.pause_condition.notify_all()
+            return was_running
+
     def emergency_stop(self) -> bool:
         with cleanup_on_exit(self.release_waiters, description="Reader waiter release"):
-            with self.pause_condition:
-                was_running = (
-                    self.capture_future is not None and not self.capture_future.done()
-                )
-                self.emergency_stopped = True
-                self.stop_event.set()
-                self.pause_condition.notify_all()
+            was_running = self.request_emergency_stop()
             cleared = self.clear_queue(reason="emergency-stop")
         self._report_pipeline_event(
             "reading-control", self.active_generation, action="emergency-stop"

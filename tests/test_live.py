@@ -3579,6 +3579,20 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertTrue(reader.paused)
         reader.release_waiters()
 
+    def test_stop_request_invalidates_playback_without_resuming_paused_audio(self):
+        reader = self.create_reader()
+        reader.active_generation = 1
+        chunk = reader._admit_chunk(SpeechChunk(1, "Alice", "Current dialogue."))
+        reader.toggle_pause()
+
+        reader.request_emergency_stop()
+
+        self.assertTrue(reader.stop_event.is_set())
+        self.assertFalse(reader.is_playback_current(chunk))
+        self.assertTrue(reader.playback_pause.is_paused())
+        reader.emergency_stop()
+        self.assertFalse(reader.playback_pause.is_paused())
+
     def test_emergency_stop_releases_paused_playback_completion(self):
         reader = self.create_reader()
         reader.active_generation = 1
