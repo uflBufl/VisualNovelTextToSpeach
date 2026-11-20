@@ -311,11 +311,8 @@ Other remaining defects and native checks:
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
    - **True Pause/Resume (RUN-29-01), remaining paths:** check output device
-     changes while paused.
-     Original game audio continues independently; its completion wait must not
-     restart or advance the game while Reading remains paused. Keep one native
-     session/clip identity and compare retained audio with the source around the
-     pause boundary for these remaining paths.
+     changes while paused. Keep one native session/clip identity and compare
+     retained audio with the source around the pause boundary.
    - For punctuation-only dialogue encountered in game, preserve the shown
      signs and speaker, suppress duplicate transitions and symbol-only TTS, and
      retain original/prepared audio and approved spoken projections. Unreadable
