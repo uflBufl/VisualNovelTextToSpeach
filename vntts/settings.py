@@ -103,6 +103,25 @@ def capture_target_identity(
     )
 
 
+def reconcile_capture_target(
+    original: "AppSettings", candidate: "AppSettings"
+) -> tuple["AppSettings", bool]:
+    """Keep setup bound to the same target and report when a new one needs setup."""
+    changed = capture_target_identity(
+        candidate.capture_mode, candidate.game_window_title
+    ) != capture_target_identity(original.capture_mode, original.game_window_title)
+    if changed:
+        candidate = candidate.updated(
+            onboarding_completed=False, active_profile_id=None
+        )
+    elif (
+        candidate.capture_mode == "window"
+        and candidate.game_window_title != original.game_window_title
+    ):
+        candidate = candidate.updated(game_window_title=original.game_window_title)
+    return candidate, changed
+
+
 audio_source_policies = {
     "live-tts-only",
     "prefer-generated",

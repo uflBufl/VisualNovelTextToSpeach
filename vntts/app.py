@@ -179,13 +179,13 @@ from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.rust_audio import AudioRuntimeUnavailable, check_audio_runtime
 from vntts.settings import (
     AppSettings,
-    capture_target_identity,
     content_path_import_errors,
     content_path_setting_names,
     get_local_data_directory,
     get_settings_path,
     is_live_sequence_audio_mode,
     load_app_settings,
+    reconcile_capture_target,
     restart_required_setting_changes,
     user_preferences,
 )
@@ -2504,18 +2504,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         candidate = self.settings.updated(
             capture_mode="window", game_window_title=title
         )
-        if capture_target_identity(
-            candidate.capture_mode, candidate.game_window_title
-        ) != capture_target_identity(
-            self.settings.capture_mode, self.settings.game_window_title
-        ):
-            candidate = candidate.updated(
-                onboarding_completed=False, active_profile_id=None
-            )
-        else:
-            candidate = candidate.updated(
-                game_window_title=self.settings.game_window_title
-            )
+        candidate, _ = reconcile_capture_target(self.settings, candidate)
         try:
             self._save_settings_candidate(candidate)
         except (OSError, ValueError) as error:
