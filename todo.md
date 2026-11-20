@@ -1,25 +1,15 @@
 # TODO
 
-## Active - Windows Reading Stop/Start hold
-
-Evidence: November18 `vntts-support.zip` and recording exports
-`10deae4c809c4a178139b2e0dac9acc3.zip` and
-`7591ea58a7bb415e8822666b2f2be626.zip`, clean build `02571ac0`.
-
-- [ ] If the Stop/Start hold recurs, retain a recording beginning before it and
-      the current occurrence's completion/navigation events. The second export
-      shows Elma's line315601:55 at Stop/Start, but the preceding playback and
-      navigation evidence was evicted. Establish the blocked transition before
-      changing reading ownership; do not infer the cause from a static frame.
-
 ## Reader-first desktop experience
 
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
       and returning players. Ask them to choose a window, hear a line, switch
       games, stop, and find the page-turn setting without guidance.
-- [ ] Exercise real game audio and focus changes on Windows and macOS, including
-      an explicitly prepared chapter. Verify keyboard access
-      to the window picker and Stop at enlarged text size.
+- [ ] On Windows, check that returning focus to the game resumes Reading and
+      that starting an explicitly selected chapter keeps that selection.
+      On macOS, exercise game audio and focus changes with a prepared chapter.
+      On both platforms, verify keyboard access to the window picker and Stop
+      at enlarged text size.
 
 ## Active - Support 111 Reading holds
 
