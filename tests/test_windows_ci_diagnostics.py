@@ -141,7 +141,7 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
 
     def test_primary_only_replays_fixed_success_timing_notice(self):
         notice = (
-            "::notice title=Unittest timing::Windows remainder completed in 46 seconds"
+            "::notice title=Unittest timing::Windows qt-catalog completed in 46 seconds"
         )
         self.env["CI_DIAGNOSTIC_FIXTURE"] = "\n".join(
             (notice, f"{notice} {CANARY}", f"::notice::{CANARY}")
@@ -187,6 +187,61 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
             ],
         )
 
+    def test_crlf_failure_section_retains_only_actual_traceback(self):
+        public = ROOT / "scripts/run_ci_unittests.py"
+        self.log.write_bytes(
+            (
+                f"OSError: {CANARY}\r\n" + "=" * 70 + "\r\n"
+                f"FAIL: test_{CANARY} (tests.{CANARY}.Case.test_{CANARY})\r\n"
+                f'  File "{public}", line 1, in {CANARY}\r\n'
+                f"AssertionError: {CANARY}\r\n" + "-" * 70 + "\r\n"
+                "Ran 1 test in 0.1s\r\n"
+            ).encode("utf-8")
+        )
+        report = self._run(self.collector)
+        self.assertEqual(report.returncode, 0)
+        self.assertEqual(
+            self._active_annotation(report.stdout),
+            "::error title=Windows unit tests failed::"
+            "scripts/run_ci_unittests.py:1; AssertionError",
+        )
+
+    def test_terminal_state_and_validated_last_test_precede_noisy_context(self):
+        method = "test_primary_preserves_native_status_and_both_streams"
+        module = "tests.test_windows_ci_diagnostics"
+        noise = "".join(
+            f'  File "{ROOT / "scripts/run_ci_unittests.py"}", line {line}, in noise\r\n'
+            for line in range(1, 150)
+        )
+        self.log.write_bytes(
+            (
+                "Running Windows unittest shard qt-catalog: 10 tests\r\n"
+                "Running Windows unittest shard remainder: 4000 tests\r\n"
+                f"{method} ({module}.WindowsCiDiagnosticsTest.{method}) ... \r\n"
+                f"test_{CANARY} ({module}.WindowsCiDiagnosticsTest.test_{CANARY}) ... \r\n"
+                + noise
+                + "Windows unittest shard remainder exceeded 900 seconds\r\n"
+                "Windows unittest shard remainder exited 124 after 900 seconds\r\n"
+                f"Windows unittest shard {CANARY} exited 1 after 1 seconds\r\n"
+            ).encode("utf-8")
+        )
+        report = self._run(self.collector)
+        self.assertEqual(report.returncode, 0)
+        annotation = self._active_annotation(report.stdout)
+        self.assertTrue(
+            annotation.startswith(
+                "::error title=Windows unit tests failed::"
+                "Running Windows unittest shard remainder: 4000 tests; "
+                "Windows unittest shard remainder exceeded 900 seconds; "
+                "Windows unittest shard remainder exited 124 after 900 seconds; "
+                f"last-test={module}.{method}; "
+            ),
+            annotation,
+        )
+        self.assertLessEqual(
+            len(annotation), 3500 + len("::error title=Windows unit tests failed::")
+        )
+
     def test_independent_collector_preserves_private_failure_context(self):
         self.log.write_text(self.payload, encoding="utf-8")
         primary = self.primary.replace(
@@ -223,7 +278,8 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
         self.assertEqual(
             self._active_annotation(report.stdout),
             "::error title=Windows unit tests failed::"
-            "shard=qt-app; shard=remainder; timeout=remainder",
+            "Running Windows unittest shard remainder: 4000 tests; "
+            "Windows unittest shard remainder exceeded 900 seconds",
         )
 
     def test_unreadable_source_reports_only_fixed_collector_failure(self):

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
     _flatten_suite,
-    _isolate_pregeneration_tests,
+    _isolate_module,
     _run_exact_test_file,
     _run_shard,
     _run_sharded_full_discovery,
@@ -43,17 +43,22 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(remainder, tuple(values[3:]))
         self.assertEqual(sorted((*app, *assets, *ocr, *remainder)), sorted(values))
 
-    def test_pregeneration_shard_preserves_every_exact_test_once(self):
+    def test_catalog_and_pregeneration_shards_preserve_every_exact_test_once(self):
         values = (
             "tests.test_settings.SettingsTest.test_value",
             "tests.test_self_service_pregeneration.JourneyTest.test_first",
             "tests.test_self_service_pregeneration.JourneyTest.test_last",
+            "tests.test_ui_catalog.CatalogTest.test_render",
+            "tests.test_ui_catalog_schema.SchemaTest.test_field",
         )
-        isolated, remaining = _isolate_pregeneration_tests(values)
-        self.assertEqual(isolated, values[1:])
-        self.assertEqual(remaining, values[:1])
-        self.assertEqual(sorted((*isolated, *remaining)), sorted(values))
-        self.assertEqual(len(set((*isolated, *remaining))), len(values))
+        prep, remaining = _isolate_module(
+            values, "tests.test_self_service_pregeneration"
+        )
+        catalog, remaining = _isolate_module(remaining, "tests.test_ui_catalog")
+        self.assertEqual(prep, values[1:3])
+        self.assertEqual(catalog, values[3:4])
+        self.assertEqual(remaining, (values[0], values[4]))
+        self.assertCountEqual((*prep, *catalog, *remaining), values)
 
     def test_selected_pregeneration_runs_only_its_isolated_shard(self):
         test_ids = (

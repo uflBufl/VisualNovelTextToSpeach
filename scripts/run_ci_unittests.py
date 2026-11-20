@@ -23,6 +23,7 @@ SHARD_TIMEOUTS = {
         "qt-assets": 60,
         "qt-ocr": 60,
         "qt-pregeneration": 180,
+        "qt-catalog": 300,
         "remainder": 900,
     },
     "Windows": {
@@ -31,6 +32,7 @@ SHARD_TIMEOUTS = {
         "qt-assets": 60,
         "qt-ocr": 60,
         "qt-pregeneration": 300,
+        "qt-catalog": 300,
         "remainder": 900,
     },
 }
@@ -96,12 +98,8 @@ def partition_ui_test_ids(
     return app, assets, ocr, remainder
 
 
-def _isolate_pregeneration_tests(test_ids: Sequence[str]) -> tuple[_TestIds, _TestIds]:
-    isolated = tuple(
-        value
-        for value in test_ids
-        if value.startswith("tests.test_self_service_pregeneration.")
-    )
+def _isolate_module(test_ids: Sequence[str], module: str) -> tuple[_TestIds, _TestIds]:
+    isolated = tuple(value for value in test_ids if value.startswith(module + "."))
     isolated_set = set(isolated)
     return isolated, tuple(value for value in test_ids if value not in isolated_set)
 
@@ -249,12 +247,18 @@ def _run_discovered_shards(
         app_shards = [("qt-app", app_ids[:midpoint])]
         if len(app_ids) > midpoint:
             app_shards.append(("qt-app-2", app_ids[midpoint:]))
-        pregeneration_ids, remainder_ids = _isolate_pregeneration_tests(remainder_ids)
+        pregeneration_ids, remainder_ids = _isolate_module(
+            remainder_ids, "tests.test_self_service_pregeneration"
+        )
+        catalog_ids, remainder_ids = _isolate_module(
+            remainder_ids, "tests.test_ui_catalog"
+        )
         shards = (
             *app_shards,
             ("qt-assets", asset_ids),
             ("qt-ocr", ocr_ids),
             ("qt-pregeneration", pregeneration_ids),
+            ("qt-catalog", catalog_ids),
             ("remainder", remainder_ids),
         )
         if selected_modules is not None:
@@ -273,17 +277,20 @@ def _run_discovered_shards(
             print(f"Running {system} unittest shard {name}: {len(ids)} tests")
             started = time.monotonic()
             status = _run_shard(system, name, inventory)
+            elapsed = round(time.monotonic() - started)
             if status:
+                print(
+                    f"{system} unittest shard {name} exited {status} after {elapsed} seconds"
+                )
                 return status
             if (
-                name == "remainder"
+                name in {"qt-catalog", "remainder"}
                 and require_all
                 and selected_modules is None
                 and os.environ.get("GITHUB_ACTIONS")
             ):
-                elapsed = round(time.monotonic() - started)
                 print(
-                    f"::notice title=Unittest timing::{system} remainder completed in {elapsed} seconds"
+                    f"::notice title=Unittest timing::{system} {name} completed in {elapsed} seconds"
                 )
     count = sum(len(ids) for _, ids in shards)
     print(f"Ran {count} exact discovered tests once in {len(shards)} shards")

@@ -139,7 +139,7 @@ jobs:
           $testStatus = $LASTEXITCODE
           if ($testStatus -eq 0) {
             Get-Content -LiteralPath $testLog | Where-Object {
-              $_ -cmatch '^::notice title=Unittest timing::Windows remainder completed in [0-9]+ seconds$'
+              $_ -cmatch '^::notice title=Unittest timing::Windows (qt-catalog|remainder) completed in [0-9]+ seconds$'
             } | Write-Output
           }
           exit $testStatus
@@ -163,11 +163,37 @@ jobs:
             $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
             $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
             $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+),? in .*$'
-            $shardPattern = '(qt-app|qt-app-2|qt-assets|qt-ocr|qt-pregeneration|remainder)'
+            $shardPattern = '(qt-app|qt-app-2|qt-assets|qt-ocr|qt-pregeneration|qt-catalog|remainder)'
             $exceptionPattern = '^(AssertionError|AttributeError|FileNotFoundError|ImportError|' +
               'IndexError|KeyError|MemoryError|ModuleNotFoundError|OSError|OverflowError|' +
               'PermissionError|RecursionError|RuntimeError|TimeoutError|TypeError|' +
               'UnicodeDecodeError|UnicodeEncodeError|ValueError|ZeroDivisionError)(:|$)'
+            $terminalContext = [Collections.Generic.List[string]]::new()
+            $terminalPatterns = @(
+              ('^Running Windows unittest shard ' + $shardPattern + ': [0-9]+ tests\r?$'),
+              ('^Windows unittest shard ' + $shardPattern + ' exceeded [0-9]+ seconds\r?$'),
+              ('^Windows unittest shard ' + $shardPattern + ' exited -?[0-9]{1,11} after [0-9]{1,10} seconds\r?$')
+            )
+            foreach ($pattern in $terminalPatterns) {
+              $states = [regex]::Matches($testOutput, $pattern, [Text.RegularExpressions.RegexOptions]::Multiline, [TimeSpan]::FromSeconds(2))
+              if ($states.Count) { $terminalContext.Add($states[-1].Value.TrimEnd([char]13)) }
+            }
+            $testPattern = '^(?<method>test_[A-Za-z0-9_]+) \((?<module>tests\.[A-Za-z0-9_.]+)\.[A-Za-z0-9_]+\.\k<method>\) \.\.\.'
+            $testMatches = [regex]::Matches($testOutput, $testPattern, [Text.RegularExpressions.RegexOptions]::Multiline, [TimeSpan]::FromSeconds(2))
+            $lookupTimer = [Diagnostics.Stopwatch]::StartNew()
+            for ($index = $testMatches.Count - 1; $index -ge 0 -and $lookupTimer.Elapsed.TotalSeconds -lt 2; $index--) {
+              $testMatch = $testMatches[$index]
+              $module = $testMatch.Groups['module'].Value
+              $method = $testMatch.Groups['method'].Value
+              $testPath = $module.Replace('.', '/') + '.py'
+              if ($repoPythonFiles -ccontains $testPath) {
+                $source = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $testPath) -Raw
+                if ($source -cmatch ('(?m)^\s+(?:async )?def ' + [regex]::Escape($method) + '\(')) {
+                  $terminalContext.Add("last-test=${module}.${method}")
+                  break
+                }
+              }
+            }
             $failureSections = [regex]::Matches($testOutput, '(?ms)^={70}\r?\n(?:FAIL|ERROR): .*?(?=^={70}\r?$|^-{70}\r?\nRan [0-9]+ tests?\b|\z)')
             $contextOutputs = if ($failureSections.Count) {
               @($failureSections | ForEach-Object { $_.Value })
@@ -176,6 +202,7 @@ jobs:
             }
             foreach ($contextOutput in $contextOutputs) {
               $context = [Collections.Generic.List[string]]::new()
+              $context.AddRange($terminalContext)
               foreach ($line in ($contextOutput -split '\r?\n')) {
                 if ($line -match $framePattern) {
                   $repoPath = $Matches[1].Replace('\', '/')
@@ -192,10 +219,6 @@ jobs:
                   $context.Add($Matches[1])
                 } elseif ($line -match '^(?:Fatal Python error|Windows fatal exception): (Aborted|Segmentation fault|Access violation)$') {
                   $context.Add($Matches[1])
-                } elseif ($line -match ('^Running Windows unittest shard ' + $shardPattern + ': [0-9]+ tests$')) {
-                  $context.Add("shard=$($Matches[1])")
-                } elseif ($line -match ('^Windows unittest shard ' + $shardPattern + ' exceeded [0-9]+ seconds$')) {
-                  $context.Add("timeout=$($Matches[1])")
                 }
               }
               $summary = if ($context.Count) {
