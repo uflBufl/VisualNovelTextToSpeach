@@ -205,16 +205,19 @@ class RuntimePathsTest(unittest.TestCase):
                 ),
             ):
                 configured = configure_bundled_dependencies(bundle)
-                self.assertEqual(configured, tesseract.resolve())
+                self.assertEqual(configured, tesseract.absolute())
                 self.assertEqual(
-                    find_bundled_espeak(bundle), (executable.resolve(), data.resolve())
+                    find_bundled_espeak(bundle),
+                    (executable.absolute(), data.absolute()),
                 )
                 self.assertEqual(
-                    pytesseract.pytesseract.tesseract_cmd, str(tesseract.resolve())
+                    pytesseract.pytesseract.tesseract_cmd, str(tesseract.absolute())
                 )
-                self.assertEqual(os.environ["PATH"], str(executable.parent.resolve()))
-                self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(data.resolve()))
-                self.assertEqual(os.environ["TESSDATA_PREFIX"], str(tessdata.resolve()))
+                self.assertEqual(os.environ["PATH"], str(executable.parent.absolute()))
+                self.assertEqual(os.environ["ESPEAK_DATA_PATH"], str(data.absolute()))
+                self.assertEqual(
+                    os.environ["TESSDATA_PREFIX"], str(tessdata.absolute())
+                )
 
     def test_incomplete_bundle_does_not_override_system_tesseract(self):
         with TemporaryDirectory() as temporary_directory:

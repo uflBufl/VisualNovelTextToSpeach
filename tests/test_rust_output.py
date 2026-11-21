@@ -165,12 +165,19 @@ class RustOutputProtocolTest(unittest.TestCase):
             self.workers.append(worker)
             return worker
 
-        factory = patch("vntts.rust_output.RustAudioWorker", side_effect=create)
-        factory.start()
-        self.addCleanup(factory.stop)
-        module = RustAudioModule()
+        module = RustAudioModule(worker_factory=create)
         self.addCleanup(module._terminate)
         return module
+
+    def test_protocol_peer_factory_belongs_only_to_its_module(self):
+        module = self.module(mode=["stream"])
+        unrelated_factory = Mock()
+        unrelated = RustAudioModule(worker_factory=unrelated_factory)
+        unrelated.acquire()
+        unrelated_factory.assert_called_once_with()
+        self.assertEqual(self.workers, [])
+        module.query_devices(kind="output")
+        self.assertEqual(len(self.workers), 1)
 
     @staticmethod
     def stream(module, channels=2):
@@ -619,14 +626,13 @@ class RustOutputProtocolTest(unittest.TestCase):
             ),
         ):
             with self.subTest(operation=command["op"]):
-                module = RustAudioModule()
-                self.addCleanup(module._terminate)
                 worker = Mock()
                 worker.ready = {"query_trace": True}
                 worker.receive.side_effect = queue.Empty
-                with patch("vntts.rust_output.RustAudioWorker", return_value=worker):
-                    with self.assertRaises(RuntimeError) as caught:
-                        getattr(module, method)(**options)
+                module = RustAudioModule(worker_factory=lambda: worker)
+                self.addCleanup(module._terminate)
+                with self.assertRaises(RuntimeError) as caught:
+                    getattr(module, method)(**options)
                 self.assertEqual(str(caught.exception), message)
                 worker.send.assert_called_once_with({**command, "trace": True})
                 timeout = worker.receive.call_args.args[0]

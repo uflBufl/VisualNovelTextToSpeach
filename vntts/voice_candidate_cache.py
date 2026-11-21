@@ -361,6 +361,8 @@ def _strings(value: object) -> Iterator[str]:
 def _candidate_for_path(
     root: Path, path: Path, *, base: Path | None = None
 ) -> str | None:
+    if "\x00" in str(path):
+        raise ValueError("Candidate reference path contains a null byte")
     if not path.is_absolute() and base is not None:
         path = base / path
     resolved = path.resolve(strict=False)

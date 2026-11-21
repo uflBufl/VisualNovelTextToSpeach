@@ -487,6 +487,7 @@ class TimelineAcquisitionEntrypointTest(unittest.TestCase):
             tray.generation_timelines.start_acquisition.side_effect = failure
         with (
             patch.object(app, "configure_bundled_dependencies"),
+            patch.object(app, "configure_fatal_crash_log"),
             patch.object(app, "enable_windows_dpi_awareness"),
             patch.object(app.QApplication, "instance", return_value=application),
             patch("vntts.system_audio.initialize_audio_device_monitor"),

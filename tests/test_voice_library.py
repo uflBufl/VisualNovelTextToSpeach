@@ -32,6 +32,14 @@ def write_wav(path: Path, frames: bytes) -> None:
         output.writeframes(frames)
 
 
+def library_hashes(root: Path) -> dict[str, str]:
+    return {
+        name: digest
+        for name, digest in tree_hashes(root).items()
+        if name != ".voice-library.lock"
+    }
+
+
 class _CopySnapshotProbe:
     def __init__(self, source: VoiceLibrary, new_reference: Path) -> None:
         self.source = source
@@ -549,7 +557,7 @@ class VoiceLibraryTest(unittest.TestCase):
                     "blob": alternative.path,
                     "extra": extra,
                 }[member]
-                before = tree_hashes(source.root)
+                before = library_hashes(source.root)
                 destination = root / "copy"
                 original_copy = voice_library.copy_regular_file
                 refused = []
@@ -581,26 +589,26 @@ class VoiceLibraryTest(unittest.TestCase):
                 self.assertIsNone(caught.exception.__cause__)
                 self.assertTrue(destination.is_dir())
                 self.assertFalse(failed_target.exists())
-                self.assertEqual(tree_hashes(source.root), before)
+                self.assertEqual(library_hashes(source.root), before)
                 source.validate()
                 shutil.rmtree(destination)
                 recovered = source.copy_to(destination / "renamed.json")
                 recovered.validate()
                 expected = before.copy()
                 expected["renamed.json"] = expected.pop("custom.json")
-                self.assertEqual(tree_hashes(destination), expected)
+                self.assertEqual(library_hashes(destination), expected)
                 self.assertEqual(recovered.binding("Role"), source.binding("Role"))
-                self.assertEqual(tree_hashes(source.root), before)
+                self.assertEqual(library_hashes(source.root), before)
                 with self.assertRaisesRegex(VoiceLibraryError, "already exists"):
                     source.copy_to(destination / "renamed.json")
-                self.assertEqual(tree_hashes(destination), expected)
+                self.assertEqual(library_hashes(destination), expected)
 
     def test_copy_to_preserves_interrupt_and_caller_owned_partial_tree(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             source = VoiceLibrary(root / "source")
             source.select("Role", route="narrator")
-            before = tree_hashes(source.root)
+            before = library_hashes(source.root)
             destination = root / "copy"
             original_copy = voice_library.copy_regular_file
             interrupt = KeyboardInterrupt("copy interrupted")
@@ -619,11 +627,37 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertIs(caught.exception, interrupt)
             self.assertEqual(len(copied_members), 1)
             self.assertTrue(copied_members[0].is_file())
-            self.assertEqual(tree_hashes(source.root), before)
+            self.assertEqual(library_hashes(source.root), before)
             shutil.rmtree(destination)
             copied = source.copy_to(destination)
             copied.validate()
-            self.assertEqual(tree_hashes(copied.root), before)
+            self.assertEqual(library_hashes(copied.root), before)
+
+    def test_copy_to_skips_held_root_guard_and_retains_nested_guard_names(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = VoiceLibrary(root / "source")
+            source.select("Role", route="narrator")
+            guard = source.root / ".voice-library.lock"
+            nested = source.root / "extra" / guard.name
+            nested.parent.mkdir()
+            nested.write_bytes(b"ordinary library member")
+            original_copy = voice_library.copy_regular_file
+
+            def copy(original, target, **kwargs):
+                if Path(original) == guard:
+                    raise PermissionError("held Windows byte-range lock")
+                return original_copy(original, target, **kwargs)
+
+            with patch.object(voice_library, "copy_regular_file", copy):
+                copied = source.copy_to(root / "copy")
+            self.assertFalse((copied.root / guard.name).exists())
+            self.assertEqual(
+                (copied.root / "extra" / guard.name).read_bytes(), nested.read_bytes()
+            )
+            copied.select("Another role", route="narrator")
+            self.assertTrue((copied.root / guard.name).is_file())
+            copied.validate()
 
     def test_copy_to_preserves_complete_tree_metadata_and_person_aliases(self):
         with TemporaryDirectory() as directory:
@@ -638,6 +672,8 @@ class VoiceLibraryTest(unittest.TestCase):
             (extra_directory / "payload.bin").write_bytes(b"extra member")
             metadata = {}
             for member in (source.root, *source.root.rglob("*")):
+                if member == source.root / ".voice-library.lock":
+                    continue
                 member.chmod(0o750 if member.is_dir() else 0o600)
                 os.utime(member, ns=(1_700_000_000_000_000_000,) * 2)
                 captured = member.stat()
@@ -645,9 +681,9 @@ class VoiceLibraryTest(unittest.TestCase):
                     stat.S_IMODE(captured.st_mode),
                     captured.st_mtime_ns,
                 )
-            before = tree_hashes(source.root)
+            before = library_hashes(source.root)
             copied = source.copy_to(root / "copy")
-            self.assertEqual(tree_hashes(copied.root), before)
+            self.assertEqual(library_hashes(copied.root), before)
             self.assertEqual(copied.person_aliases(), source.person_aliases())
             self.assertEqual(copied.binding("Alias"), source.binding("Alias"))
             copied.validate()
@@ -661,7 +697,7 @@ class VoiceLibraryTest(unittest.TestCase):
                     self.assertEqual(
                         (stat.S_IMODE(staged.st_mode), staged.st_mtime_ns), expected
                     )
-            self.assertEqual(tree_hashes(source.root), before)
+            self.assertEqual(library_hashes(source.root), before)
 
     def test_copy_to_follows_extra_symlinks_and_aggregates_dangling_errors(self):
         with TemporaryDirectory() as directory:

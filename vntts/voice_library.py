@@ -722,6 +722,10 @@ class VoiceLibrary:
                     self.root,
                     target.root,
                     copy_function=partial(copy_regular_file, preserve_metadata=True),
+                    # Windows byte-range locks prevent reading the held guard.
+                    ignore=lambda directory, _names: (
+                        (".voice-library.lock",) if Path(directory) == self.root else ()
+                    ),
                 )
                 if self.path.name != target.path.name:
                     (target.root / self.path.name).replace(target.path)

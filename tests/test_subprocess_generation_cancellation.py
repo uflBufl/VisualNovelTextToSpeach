@@ -1,6 +1,7 @@
 """Explicit parent cancellation never refunds an unknown crash or completed result."""
 
 import json
+import os
 import socket
 import sys
 import time
@@ -9,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -40,6 +42,47 @@ class SubprocessGenerationCancellationTest(unittest.TestCase):
         self.lease_path = self.output / ".generation-lease.json"
         self.process = Mock(pid=999999, returncode=None)
         self.process.poll.side_effect = lambda: self.process.returncode
+
+    def test_own_windows_venv_launch_keeps_environment_and_direct_process_ownership(
+        self,
+    ):
+        executable = "C:/venv/Scripts/python.exe"
+        base = "C:/Python/python.exe"
+        for platform, frozen, command, base_executable, bypass in (
+            ("win32", False, executable, base, True),
+            ("win32", False, "C:/external/python.exe", base, False),
+            ("win32", True, executable, base, False),
+            ("win32", False, executable, executable, False),
+            ("linux", False, executable, base, False),
+        ):
+            with self.subTest(platform=platform, frozen=frozen, command=command):
+                process = Mock(returncode=0)
+                process.poll.return_value = 0
+                process.communicate.return_value = ("", "")
+                factory = Mock(return_value=process)
+                worker = OfflineGenerationWorker(popen_factory=factory)
+                environment = os.environ.copy()
+                with patch(
+                    "vntts.pregeneration_generation.sys",
+                    SimpleNamespace(
+                        platform=platform,
+                        frozen=frozen,
+                        executable=executable,
+                        _base_executable=base_executable,
+                    ),
+                ):
+                    worker._run_subprocess([command, "-c", "pass"], None)
+                self.assertEqual(
+                    factory.call_args.args[0],
+                    (base if bypass else command, "-c", "pass"),
+                )
+                self.assertEqual(
+                    factory.call_args.kwargs.get("env"),
+                    {**environment, "__PYVENV_LAUNCHER__": executable}
+                    if bypass
+                    else None,
+                )
+                self.assertEqual(os.environ, environment)
 
     def generate(self, renderer, **options):
         return bulk.run_bulk_generation(
@@ -295,8 +338,21 @@ run_bulk_generation(sys.argv[1], sys.argv[2], SyntheticRenderer(inspect_state=wa
         trigger.start()
         started = time.monotonic()
         worker = OfflineGenerationWorker()
+
+        def capture(*arguments):
+            witness = bulk.capture_generation_cancellation(*arguments)
+            self.assertIsNotNone(witness)
+            self.assertEqual(witness.lease["pid"], arguments[-1].pid)
+            return witness
+
         try:
-            with self.assertRaises(OfflineGenerationCancelled):
+            with (
+                patch(
+                    "vntts.pregeneration_generation.capture_generation_cancellation",
+                    side_effect=capture,
+                ),
+                self.assertRaises(OfflineGenerationCancelled),
+            ):
                 worker._run_subprocess(
                     [
                         sys.executable,

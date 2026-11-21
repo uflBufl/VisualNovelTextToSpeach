@@ -694,12 +694,26 @@ class OfflineGenerationWorker:
     ) -> None:
         with self._progress_lock:
             self._memory_progress_enabled = False
+        command = tuple(arguments)
+        options: dict[str, dict[str, str]] = {}
+        if (
+            sys.platform == "win32"
+            and not getattr(sys, "frozen", False)
+            and command
+            and os.path.normcase(command[0]) == os.path.normcase(sys.executable)
+            and os.path.normcase(sys._base_executable)
+            != os.path.normcase(sys.executable)
+        ):
+            # Bypass the venv redirector so Popen owns the PID recorded by generation.
+            command = (sys._base_executable, *command[1:])
+            options["env"] = {**os.environ, "__PYVENV_LAUNCHER__": sys.executable}
         try:
             process = self.popen_factory(
-                tuple(arguments),
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                **options,
             )
         except OSError as error:
             raise OfflineGenerationError(

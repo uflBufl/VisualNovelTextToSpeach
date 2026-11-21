@@ -5,6 +5,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import psutil
@@ -143,7 +144,9 @@ decoder.wait()
         process = Mock(pid=123)
         process.poll.return_value = None
         with (
-            patch.object(source_audio_process.sys, "platform", "darwin"),
+            patch.object(
+                source_audio_process, "sys", SimpleNamespace(platform="darwin")
+            ),
             patch.object(
                 source_audio_process.psutil,
                 "Process",
@@ -155,6 +158,7 @@ decoder.wait()
                 side_effect=ProcessLookupError,
                 create=True,
             ),
+            patch.object(source_audio_process.signal, "SIGKILL", 9, create=True),
         ):
             owner = SourceAudioProcess(
                 ["publisher"], popen_factory=Mock(return_value=process)
@@ -175,7 +179,9 @@ decoder.wait()
         operations.attach_mock(process, "process")
         factory = Mock(return_value=process)
         with (
-            patch.object(source_audio_process.sys, "platform", "win32"),
+            patch.object(
+                source_audio_process, "sys", SimpleNamespace(platform="win32")
+            ),
             patch.object(source_audio_process, "RecorderJob", return_value=job),
             patch.object(source_audio_process.psutil, "Process", return_value=identity),
         ):
@@ -207,7 +213,9 @@ decoder.wait()
         job.close.side_effect = OSError("job cleanup failed")
         factory = Mock(return_value=process)
         with (
-            patch.object(source_audio_process.sys, "platform", "win32"),
+            patch.object(
+                source_audio_process, "sys", SimpleNamespace(platform="win32")
+            ),
             patch.object(source_audio_process, "RecorderJob", return_value=job),
             patch.object(source_audio_process.psutil, "Process", return_value=identity),
             self.assertLogs("vntts.cleanup", level="ERROR"),

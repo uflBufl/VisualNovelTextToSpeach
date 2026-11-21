@@ -54,7 +54,8 @@ class NativeTesseractTest(unittest.TestCase):
         )
         loader.start()
         self.addCleanup(loader.stop)
-        self.engine = NativeTesseract("eng+rus", tessdata_dir="/models")
+        self.models = Path.cwd() / "models"
+        self.engine = NativeTesseract("eng+rus", tessdata_dir=str(self.models))
         self.addCleanup(self.engine.close)
         self.image = Image.new("L", (100, 30), 255)
 
@@ -66,7 +67,7 @@ class NativeTesseractTest(unittest.TestCase):
             self.assertEqual(data["conf"], [-1, 96])
             self.assertEqual(data["left"], [0, 5])
         self.library.TessBaseAPIInit3.assert_called_once_with(
-            123, b"/models", b"eng+rus"
+            123, os.fsencode(self.models), b"eng+rus"
         )
         self.assertEqual(
             self.library.TessBaseAPISetVariable.call_args_list,
@@ -246,16 +247,14 @@ class TesseractConfigTest(unittest.TestCase):
 
 class TesseractDiscoveryTest(unittest.TestCase):
     def test_explicit_and_environment_model_directories_skip_executable(self):
+        explicit = str(Path.cwd() / "explicit")
+        environment = str(Path.cwd() / "environment-models")
         with (
-            patch.dict(os.environ, {"TESSDATA_PREFIX": "/environment-models"}),
+            patch.dict(os.environ, {"TESSDATA_PREFIX": environment}),
             patch("vntts.tesseract_native.shutil.which") as which,
         ):
-            self.assertEqual(
-                _tessdata_directory("configured", "/explicit"), "/explicit"
-            )
-            self.assertEqual(
-                _tessdata_directory("configured", None), "/environment-models"
-            )
+            self.assertEqual(_tessdata_directory("configured", explicit), explicit)
+            self.assertEqual(_tessdata_directory("configured", None), environment)
         which.assert_not_called()
 
     def test_discovers_models_beside_configured_executable_or_install_prefix(self):
@@ -354,7 +353,7 @@ class TesseractDiscoveryTest(unittest.TestCase):
             patch("vntts.tesseract_native.ct.CDLL", return_value=library),
         ):
             loaded, directory = _load_library(
-                "configured", "/installed/libtesseract-5.dll"
+                "configured", str(Path.cwd() / "installed" / "libtesseract-5.dll")
             )
         self.assertIs(loaded, library)
         self.assertIs(directory, dll_directory)

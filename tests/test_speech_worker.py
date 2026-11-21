@@ -51,6 +51,12 @@ from vntts.synthesis import (
 )
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
+SYNTHETIC_RUNTIME_PATHS = (
+    Path("/runtime").resolve(),
+    Path("/runtime/python").resolve(),
+    Path("/site").resolve(),
+)
+
 
 class FakeWorkerBackend:
     sample_rate = 24_000
@@ -630,7 +636,7 @@ class WorkerRenderCancellationTests(unittest.TestCase):
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2015,7 +2021,7 @@ print("worker-import-ready")
         with patch.object(IsolatedSpeechBackend, "_start_worker"):
             with patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ):
                 IsolatedSpeechBackend.__init__(
                     backend,
@@ -2034,7 +2040,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2072,7 +2078,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2114,7 +2120,7 @@ print("worker-import-ready")
         with patch.object(IsolatedSpeechBackend, "_start_worker"):
             with patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ):
                 IsolatedSpeechBackend.__init__(
                     backend,
@@ -2131,7 +2137,7 @@ print("worker-import-ready")
         with patch.object(IsolatedSpeechBackend, "_start_worker"):
             with patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ):
                 IsolatedSpeechBackend.__init__(
                     backend,
@@ -2160,11 +2166,7 @@ print("worker-import-ready")
                     patch.object(IsolatedSpeechBackend, "_start_worker"),
                     patch(
                         "vntts.speech_worker._runtime_paths",
-                        return_value=(
-                            Path("/runtime"),
-                            Path("/runtime/python"),
-                            Path("/site"),
-                        ),
+                        return_value=SYNTHETIC_RUNTIME_PATHS,
                     ),
                 ):
                     backend = IsolatedSpeechBackend(
@@ -2221,11 +2223,7 @@ print("worker-import-ready")
                     patch.object(IsolatedSpeechBackend, "_start_worker"),
                     patch(
                         "vntts.speech_worker._runtime_paths",
-                        return_value=(
-                            Path("/runtime"),
-                            Path("/runtime/python"),
-                            Path("/site"),
-                        ),
+                        return_value=SYNTHETIC_RUNTIME_PATHS,
                     ),
                 ):
                     backend = IsolatedSpeechBackend(
@@ -2260,7 +2258,7 @@ print("worker-import-ready")
         with patch.object(IsolatedSpeechBackend, "_start_worker"):
             with patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ):
                 IsolatedSpeechBackend.__init__(
                     backend,
@@ -2284,7 +2282,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2330,7 +2328,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2381,11 +2379,7 @@ print("worker-import-ready")
                     patch.object(IsolatedSpeechBackend, "_start_worker"),
                     patch(
                         "vntts.speech_worker._runtime_paths",
-                        return_value=(
-                            Path("/runtime"),
-                            Path("/runtime/python"),
-                            Path("/site"),
-                        ),
+                        return_value=SYNTHETIC_RUNTIME_PATHS,
                     ),
                 ):
                     backend = IsolatedSpeechBackend(
@@ -2457,7 +2451,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend(
@@ -2533,7 +2527,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend("moss-tts", CharacterVoiceRegistry())
@@ -2564,7 +2558,7 @@ print("worker-import-ready")
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
                 "vntts.speech_worker._runtime_paths",
-                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+                return_value=SYNTHETIC_RUNTIME_PATHS,
             ),
         ):
             backend = IsolatedSpeechBackend("moss-tts", CharacterVoiceRegistry())
@@ -2598,11 +2592,7 @@ print("worker-import-ready")
                     patch.object(IsolatedSpeechBackend, "_start_worker"),
                     patch(
                         "vntts.speech_worker._runtime_paths",
-                        return_value=(
-                            Path("/runtime"),
-                            Path("/runtime/python"),
-                            Path("/site"),
-                        ),
+                        return_value=SYNTHETIC_RUNTIME_PATHS,
                     ),
                 ):
                     backend = IsolatedSpeechBackend(
@@ -2683,11 +2673,7 @@ print("worker-import-ready")
                 patch.object(IsolatedSpeechBackend, "_start_worker"),
                 patch(
                     "vntts.runtime_installation.ensure_speech_runtime",
-                    return_value=(
-                        Path("/runtime"),
-                        Path("/runtime/python"),
-                        Path("/site"),
-                    ),
+                    return_value=SYNTHETIC_RUNTIME_PATHS,
                 ),
             ):
                 backend = IsolatedSpeechBackend(

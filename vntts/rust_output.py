@@ -120,7 +120,10 @@ class RustAudioModule:
 
     PortAudioError = RustAudioFormatError
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, worker_factory: Callable[[], RustAudioWorker] = RustAudioWorker
+    ) -> None:
+        self.worker_factory = worker_factory
         self.lock = RLock()
         self.query_worker: RustAudioWorker | None = None
         self.idle: list[RustAudioWorker] = []
@@ -141,7 +144,7 @@ class RustAudioModule:
                 self.query_worker = None
                 worker.close()
             if self.query_worker is None:
-                self.query_worker = RustAudioWorker()
+                self.query_worker = self.worker_factory()
             worker = self.query_worker
             started = monotonic()
             trace = worker.ready.get("query_trace") is True
@@ -225,7 +228,7 @@ class RustAudioModule:
                 ):
                     return worker
                 worker.close()
-        return RustAudioWorker()
+        return self.worker_factory()
 
     def release(self, worker: RustAudioWorker) -> None:
         with self.lock:
