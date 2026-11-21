@@ -82,13 +82,20 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             *grouped,
         ]
         ran = {}
+        report = Path(self.enterContext(TemporaryDirectory())) / "report.txt"
 
         def run(_system, shard, path):
             ran[shard] = json.loads(path.read_text())
+            self.assertIn(
+                f"Running Windows unittest shard {shard}:", report.read_text()
+            )
             return 1 if shard == "remainder-1" else 0
 
         with (
             redirect_stdout(StringIO()),
+            patch.dict(
+                os.environ, {"GITHUB_ACTIONS": "1", "VNTTS_TEST_REPORT": str(report)}
+            ),
             patch.object(
                 unittest.defaultTestLoader,
                 "discover",
@@ -99,6 +106,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             self.assertEqual(_run_sharded_full_discovery("Windows"), 1)
         self.assertEqual(ran["remainder-1"], list(grouped[:1]))
         self.assertEqual(ran["remainder"], list(grouped[1:]))
+        self.assertIn("Windows unittest shard remainder exited 0", report.read_text())
 
     def test_selected_pregeneration_runs_only_its_isolated_shard(self):
         test_ids = (

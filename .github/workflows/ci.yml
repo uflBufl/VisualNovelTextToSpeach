@@ -137,6 +137,8 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
+          $report = Join-Path $env:RUNNER_TEMP "windows-unit-test-report.txt"
+          Set-Content -LiteralPath $report -Value "Starting Windows unit tests"
           uv run --frozen python scripts/run_ci_unittests.py discover -s tests *> $testLog
           $testStatus = $LASTEXITCODE
           if ($testStatus -eq 0) {
@@ -144,7 +146,7 @@ jobs:
               $_ -cmatch '^::notice title=Unittest timing::Windows (qt-catalog|remainder(?:-1)?) completed in [0-9]+ seconds$'
             } | Write-Output
           } else {
-            Add-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "windows-unit-test-report.txt") -Value "Test runner exit code: ${testStatus}"
+            Add-Content -LiteralPath $report -Value "Test runner exit code: ${testStatus}"
           }
           exit $testStatus
 

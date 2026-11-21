@@ -411,19 +411,18 @@ def _run_discovered_shards(
         for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
-            print(f"Running {system} unittest shard {name}: {len(ids)} tests")
+            starting = f"Running {system} unittest shard {name}: {len(ids)} tests"
+            print(starting, flush=True)
+            if os.environ.get("VNTTS_TEST_REPORT"):
+                _write_safe_report((starting,))
             started = time.monotonic()
             status = _run_shard(system, name, inventory)
             elapsed = round(time.monotonic() - started)
+            finished = f"{system} unittest shard {name} exited {status} after {elapsed} seconds"
+            if status or os.environ.get("VNTTS_TEST_REPORT"):
+                _write_safe_report((f"- {finished}.",))
             if status:
-                _write_safe_report(
-                    (
-                        f"- {system} unittest shard {name} exited {status} after {elapsed} seconds.",
-                    )
-                )
-                print(
-                    f"{system} unittest shard {name} exited {status} after {elapsed} seconds"
-                )
+                print(finished)
                 if name == "remainder-1":
                     early_status = status
                     continue
