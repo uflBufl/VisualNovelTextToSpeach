@@ -26,6 +26,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.worker_path = str(self.root / "audio-worker")
 
     def recording(self, workers=lambda: ()):
         return NativeDiagnosticRecording(
@@ -151,7 +152,13 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                 clock[0] = 1300.0
                 return ()
             recording.cancelled.set()
-            return ({"worker_pid": 123, "worker_path": "/worker", "worker_id": "late"},)
+            return (
+                {
+                    "worker_pid": 123,
+                    "worker_path": self.worker_path,
+                    "worker_id": "late",
+                },
+            )
 
         recording.workers = workers
         with patch(
@@ -189,7 +196,11 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self,
     ):
         recording = self.recording()
-        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        identity = {
+            "worker_pid": 123,
+            "worker_path": self.worker_path,
+            "worker_id": "first",
+        }
         key = tuple(identity.values())
         recording._worker_arms[key] = "armed"
         self.assertEqual(
@@ -215,7 +226,11 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertEqual(report["acquisition_gaps"][0]["worker_id"], "replacement")
 
     def test_worker_arm_failure_and_recorder_exit_release_waiters(self):
-        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        identity = {
+            "worker_pid": 123,
+            "worker_path": self.worker_path,
+            "worker_id": "first",
+        }
         for cause, reason in (
             ("capture", "capture-failed"),
             ("exit", "recorder-stopped"),
@@ -238,7 +253,11 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
     def test_native_started_tap_arms_cold_worker_without_waiting_for_source_samples(
         self,
     ):
-        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        identity = {
+            "worker_pid": 123,
+            "worker_path": self.worker_path,
+            "worker_id": "first",
+        }
         replacement = {**identity, "worker_pid": 456, "worker_id": "replacement"}
         recording = self.recording(lambda: (identity, replacement))
         commands, results = [], []
@@ -305,7 +324,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             lambda: (
                 {
                     "worker_pid": 123,
-                    "worker_path": "/native/audio-worker",
+                    "worker_path": self.worker_path,
                     "clip_id": 1,
                 },
             )
@@ -313,7 +332,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         commands = self.run_fake(recording)
         self.assertEqual(commands[0][1:4], ["--video-only", "50", "60"])
         self.assertEqual(commands[1][1:4], ["--capture", "50", "/game"])
-        self.assertEqual(commands[2][1:4], ["--capture", "123", "/native/audio-worker"])
+        self.assertEqual(commands[2][1:4], ["--capture", "123", self.worker_path])
         self.assertEqual(commands[2][-1], "--allow-audio-capture")
         self.assertEqual(recording.status, "stopped")
         self.assertIsNotNone(recording.ready_monotonic)
@@ -357,7 +376,11 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
 
     def test_native_gap_keeps_worker_armed_and_recording_until_owned_stop(self):
         clock = [100.0]
-        identity = {"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"}
+        identity = {
+            "worker_pid": 123,
+            "worker_path": self.worker_path,
+            "worker_id": "first",
+        }
         recording = self.recording()
         recording.deadline = 101.0
         gaps = [
@@ -396,7 +419,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
                     json.dumps(
                         {
                             "status": "in_progress",
-                            "target": {"pid": 123, "executable": "/worker"},
+                            "target": {"pid": 123, "executable": self.worker_path},
                             "capture_started_monotonic_s": 100.0,
                             "errors": [],
                             "acquisition_gaps": gaps,
@@ -413,23 +436,26 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
             nonlocal worker_polls
             worker_polls += 1
             if worker_polls > 1:
-                self.assertIsNotNone(recording.ready_monotonic)
-                process = recording.processes[-1][0]
-                self.assertIsNone(process.poll())
-                self.assertEqual(recording.status, "degraded")
-                self.assertEqual(
-                    recording.wait_for_worker(identity, lambda: False), (True, "armed")
-                )
-                report = recording.report()
-                self.assertEqual(report["qualification"], "partial")
-                self.assertEqual(
-                    report["acquisition_gaps"],
-                    [{**gap, "capture": "rust-123", **identity} for gap in gaps],
-                )
-                self.assertFalse(recording._failures)
-                self.assertIsNone(recording.error_type)
-                clock[0] = 101.0
-                recording.cancelled.set()
+                try:
+                    self.assertIsNotNone(recording.ready_monotonic)
+                    process = recording.processes[-1][0]
+                    self.assertIsNone(process.poll())
+                    self.assertEqual(recording.status, "degraded")
+                    self.assertEqual(
+                        recording.wait_for_worker(identity, lambda: False),
+                        (True, "armed"),
+                    )
+                    report = recording.report()
+                    self.assertEqual(report["qualification"], "partial")
+                    self.assertEqual(
+                        report["acquisition_gaps"],
+                        [{**gap, "capture": "rust-123", **identity} for gap in gaps],
+                    )
+                    self.assertFalse(recording._failures)
+                    self.assertIsNone(recording.error_type)
+                finally:
+                    clock[0] = 101.0
+                    recording.cancelled.set()
             return (identity,)
 
         def finalize():
@@ -531,14 +557,21 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         clock = [100.0]
         metadata = self.video_partial()
 
+        worker_polls = 0
+
         def workers():
-            if recording.ready_monotonic is None:
+            nonlocal worker_polls
+            worker_polls += 1
+            if worker_polls == 1:
                 (self.root / "window" / "session.json").write_text(json.dumps(metadata))
             else:
-                self.assertEqual(recording.report()["qualification"], "partial")
-                self.assertFalse(recording._failures)
-                clock[0] = 101.0
-                recording.cancelled.set()
+                try:
+                    self.assertIsNotNone(recording.ready_monotonic)
+                    self.assertEqual(recording.report()["qualification"], "partial")
+                    self.assertFalse(recording._failures)
+                finally:
+                    clock[0] = 101.0
+                    recording.cancelled.set()
             return ()
 
         recording.workers = workers
@@ -859,13 +892,19 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
     def test_failed_worker_keeps_independent_captures_and_new_worker_recording(self):
         snapshots = iter(
             (
-                ({"worker_pid": 123, "worker_path": "/worker", "worker_id": "first"},),
+                (
+                    {
+                        "worker_pid": 123,
+                        "worker_path": self.worker_path,
+                        "worker_id": "first",
+                    },
+                ),
                 (),
             )
         )
         replacement = {
             "worker_pid": 456,
-            "worker_path": "/worker",
+            "worker_path": self.worker_path,
             "worker_id": "second",
         }
         recording = self.recording(lambda: next(snapshots, (replacement,)))
@@ -887,7 +926,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
     def test_pid_reuse_starts_separate_segment_and_idle_worker_is_not_relaunched(self):
         first = {
             "worker_pid": 123,
-            "worker_path": "/worker",
+            "worker_path": self.worker_path,
             "worker_id": "first",
             "clip_id": 1,
         }

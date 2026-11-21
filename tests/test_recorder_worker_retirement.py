@@ -28,7 +28,7 @@ class RecorderWorkerRetirementTest(unittest.TestCase):
         self.addCleanup(self.clock.stop)
         self.identity = {
             "worker_pid": 123,
-            "worker_path": "/worker",
+            "worker_path": str(self.root / "worker"),
             "worker_id": "first",
         }
 

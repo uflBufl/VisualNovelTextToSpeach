@@ -372,10 +372,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 - [ ] With verified background workspace isolation, or an explicitly approved native session, open the audio file picker by keyboard on macOS and Windows; choose and cancel multiple local recordings, then retry after a file becomes unavailable. Verify focus restoration and the readability of invalid-name errors and replacement prompts. Enter/Escape must keep the old voice; explicit Replace voice must update only the intended custom character. Use a disposable library and retain native focus evidence. Offscreen Qt tests and renders qualify draft, keyboard dispatch, scrolling and guarded publication, not native picker placement.
 
-## Keep full regression shards within their watchdogs
-
-- [ ] Measure the `remainder` shard in full GitHub Actions runs on macOS and Windows. If it approaches the 900-second watchdog, time the slow tests on that runner before changing the grouping. Preserve exact test coverage and the existing timeouts.
-
 ## Qualify native macOS permission recovery
 
 - [ ] In an explicitly approved native macOS session (OS prompts and System Settings may interrupt the desktop), test Screen Recording and Accessibility separately: Request, deny/grant/retry, and Open/Manage Settings. Confirm each opens the corresponding system control; change access and return to VNTTS, then verify automatic status refresh and manual Refresh status. Check pending-request Close/Escape, keyboard focus; preserve screenshots and focus evidence. Offscreen tests verify dispatch, state, keyboard, scroll/copy and exact target URLs, not native OS routing or prompts.
@@ -402,8 +398,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Repair current GitHub CI failures
 
 - [ ] Qualify native UI test ownership so discarded tray widgets are destroyed on the GUI thread; obtain a reproducible owner/lifetime sequence before changing it. If native app exit0 after initial UI readiness recurs unexpectedly, capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit remains unconfirmed. Keep that exit investigation separate from the reproduced retired-signal completion and from Rust feeding.
-- [ ] Qualify the existing interpreter-shutdown watchdog and fixed shard/timeout failure labels on actual Windows CI, including post-test worker hangs. Bounded local subprocess tests do not establish Windows host behavior.
-- [ ] Verify all 13 non-audit GitHub jobs on the temporary branch `codex/ci-verification-7f4e78be`. Keep the deferred dependency-audit failure unchanged and delete the temporary remote branch after verification.
+- [ ] Verify on Windows CI that the watchdog terminates a process held open by a worker after the last test has finished.
 
 ## Follow the system audio output during playback
 
@@ -423,16 +418,12 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Qualify remaining model dependency risks
 
-- [ ] Rerun `scripts/dependency_audit.py` after explicit permission to send
-      dependency versions and locked Git revisions to OSV (`api.osv.dev`).
-      The October 9 rerun was rejected before execution by automatic approval
-      review; local lock consistency checks do not replace this external audit.
-- [ ] Qualify the upstream Transformers custom-generation consent fix in each
-      affected model stack before changing locks. Commit
+- [ ] Clear the Transformers custom-generation advisory that blocks the Chatterbox
+      Nano and MOSS SoundEffect v2 dependency audits. Qualify the upstream fix
+      against their pinned runtimes before changing locks. Commit
       `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55` is included in released 5.17.0,
-      but GHSA-x9r9-c232-4q39/PYSEC-2026-4174 still lack a fixed-release mapping;
-      do not equate source verification with runtime compatibility or add an
-      unproven ignore. Retain loaded-module provenance and actual model
+      and both pinned versions are affected by GHSA-x9r9-c232-4q39
+      (PYSEC-2026-4174). Retain loaded-module provenance and actual model
       generation/voice checks for any upgrade, backport or replacement.
 - [ ] Qualify Coqui 0.28 with real pinned model weights and generated audio on
       CPU/CUDA. Check persisted voice reuse across upgrade;
@@ -460,7 +451,7 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       path is functional but may preserve expression less well than a reference
       with verified spoken words.
 - [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
-- [ ] Resolve the Qwen dependency audit findings or explicitly accept their release risk. After the Windows quality check, make Qwen the preferred offline engine on supported installations and verify narrator setup and story preparation; keep MOSS available as an alternative.
+- [ ] Before making Qwen the preferred offline engine, review the pinned dependencies' CI exceptions for release and complete the Windows quality check. Then verify narrator setup and story preparation with Qwen and keep MOSS available.
 
 ## Active - Finish repeated UI scanability rollout
 
