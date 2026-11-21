@@ -14,10 +14,31 @@ from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.symlink_support import symlink_or_skip
 from vntts.document_identity import file_sha256
 from vntts.voice_packs import VoicePackManager
-from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    VoiceManifestError,
+    _contained_manifest_reference,
+)
 
 
 class AssetInputAdmissionTest(unittest.TestCase):
+    def test_nul_references_are_refused_before_path_resolution(self):
+        with patch("vntts.voices.Path") as path:
+            for entry_index, label in ((None, "Voice"), (0, "Voice entry 0")):
+                with (
+                    self.subTest(entry_index=entry_index),
+                    self.assertRaises(VoiceManifestError) as raised,
+                ):
+                    _contained_manifest_reference(
+                        "manifest.json", "bad\x00.wav", entry_index=entry_index
+                    )
+                self.assertEqual(
+                    str(raised.exception),
+                    f"{label} reference must be a safe POSIX-relative path",
+                )
+                self.assertIsNone(raised.exception.__cause__)
+        path.assert_not_called()
+
     @unittest.skipUnless(
         hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"), "POSIX FIFO"
     )
@@ -302,7 +323,7 @@ class AssetInputAdmissionTest(unittest.TestCase):
                 ("linked.wav", "Voice entry 0 reference must not use symlinks"),
                 (
                     "bad\x00.wav",
-                    "Voice entry 0 reference must stay within the manifest directory",
+                    "Voice entry 0 reference must be a safe POSIX-relative path",
                 ),
             ):
                 with self.subTest(reference=reference):

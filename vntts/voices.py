@@ -662,7 +662,7 @@ def _contained_manifest_reference(
         not isinstance(reference, str)
         or not reference.strip()
         or "\\" in reference
-        or ("\x00" in reference and entry_index is None)
+        or "\x00" in reference
     ):
         raise VoiceManifestError(f"{label} must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
