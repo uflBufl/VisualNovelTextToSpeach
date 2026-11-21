@@ -716,6 +716,25 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
             story_index = refreshed.catalogs[0].story_index
             self.assertNotIn(story_index, dict(refreshed.watched_paths))
 
+    def test_new_catalog_entries_with_unchanged_directory_timestamps(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provider = root / "synthetic"
+            directory = provider / provider.name
+            directory.mkdir(parents=True)
+            stamps = {path: path.stat() for path in (root, provider, directory)}
+            snapshot = discover_prepared_audio(catalog_root=root)
+            (directory / "story-index.jsonl").touch()
+            original_stat = Path.stat
+
+            def fixed_stat(path, *args, **kwargs):
+                if path in stamps:
+                    return stamps[path]
+                return original_stat(path, *args, **kwargs)
+
+            with patch.object(Path, "stat", fixed_stat):
+                self.assertTrue(snapshot.changed())
+
     def test_pack_playback_does_not_poll_its_admitted_manifest(self):
         with TemporaryDirectory() as temporary:
             pack, line_id, _text, text_hash, _wav = write_synthetic_game_pack(

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -67,10 +69,13 @@ class PreparedAudioSource:
         return self.game_id, self.content_sha256
 
 
+type _PathSignature = tuple[int, int, int, frozenset[str] | None] | None
+
+
 @dataclass(frozen=True)
 class PreparedAudioSnapshot:
     sources: tuple[PreparedAudioSource, ...] = ()
-    watched_paths: tuple[tuple[Path, tuple[int, int, int] | None], ...] = ()
+    watched_paths: tuple[tuple[Path, _PathSignature], ...] = ()
     catalogs: tuple[ReadingCatalog, ...] = ()
 
     def changed(self) -> bool:
@@ -360,12 +365,13 @@ def _document(path: Path) -> dict[str, object]:
     return value
 
 
-def _signature(path: Path) -> tuple[int, int, int] | None:
+def _signature(path: Path) -> _PathSignature:
     try:
-        stat = path.stat()
+        info = path.stat()
+        names = frozenset(os.listdir(path)) if stat.S_ISDIR(info.st_mode) else None
+        return info.st_mtime_ns, info.st_ctime_ns, info.st_size, names
     except OSError:
         return None
-    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
 
 def _name_key(value: str) -> str:
@@ -405,6 +411,7 @@ def discover_prepared_audio(
     warn = warn or (lambda _message: None)
     sources: dict[Path, PreparedAudioSource] = {}
     watched: set[Path] = set()
+    stamps: dict[Path, _PathSignature] = {}
     prior_stamps = dict(previous.watched_paths) if previous else {}
     prior_sources = (
         {source.library.manifest_path: source for source in previous.sources}
@@ -609,12 +616,12 @@ def discover_prepared_audio(
             for job in jobs.values():
                 directory = store.directory_for(str(job["job_id"]))
                 root = directory / "game-packs"
-                watched.add(root)
                 if any(
                     path.is_symlink() or path.is_junction()
                     for path in (directory, root)
                 ):
                     continue
+                stamps[root] = _signature(root)
                 for path in sorted(root.glob("pack-*/game-pack.json")):
                     if path.parent.is_symlink() or path.parent.is_junction():
                         continue
@@ -695,14 +702,14 @@ def discover_prepared_audio(
     )
     paths: set[Path] = set()
     if root is not None:
-        watched.add(root)
-        watched.update(path for path in root.glob("*") if path.is_dir())
-        watched.update(path for path in root.glob("*/*") if path.is_dir())
-        paths.update(
-            path / path.name / "story-index.jsonl"
-            for path in root.glob("*")
-            if (path / path.name / "story-index.jsonl").is_file()
-        )
+        stamps[root] = _signature(root)
+        for provider in root.glob("*"):
+            if provider.is_dir():
+                directory = provider / provider.name
+                stamps[directory] = _signature(directory)
+                index = directory / "story-index.jsonl"
+                if index.is_file():
+                    paths.add(index)
     paths.update(
         source.catalog_story_index
         for source in sources.values()
@@ -765,8 +772,9 @@ def discover_prepared_audio(
                 )
 
         attempt(add_catalog)
+    stamps.update((path, _signature(path)) for path in watched)
     return PreparedAudioSnapshot(
         tuple(sources.values()),
-        tuple((path, _signature(path)) for path in sorted(watched)),
+        tuple(sorted(stamps.items())),
         tuple(catalogs),
     )
