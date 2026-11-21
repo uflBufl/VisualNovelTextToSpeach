@@ -132,6 +132,8 @@ jobs:
 
       - name: Run Windows unit tests
         shell: pwsh
+        env:
+          VNTTS_TEST_REPORT: ${{ runner.temp }}/windows-unit-test-report.txt
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $testLog = Join-Path $env:RUNNER_TEMP "windows-unit-tests.log"
@@ -239,6 +241,14 @@ jobs:
             Write-Output "::error title=Windows unit test diagnostics failed::stage=${stage}; script line=${scriptLine}; category=${category}"
             exit 1
           }
+
+      - name: Preserve safe Windows unit test report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-unit-test-report
+          path: ${{ runner.temp }}/windows-unit-test-report.txt
+          if-no-files-found: warn
 
   linux-x11-unit-tests:
     runs-on: ubuntu-latest

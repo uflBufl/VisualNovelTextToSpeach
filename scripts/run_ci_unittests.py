@@ -1,3 +1,5 @@
+import ast
+import builtins
 import faulthandler
 import json
 import os
@@ -104,6 +106,78 @@ def _isolate_module(test_ids: Sequence[str], module: str) -> tuple[_TestIds, _Te
     return isolated, tuple(value for value in test_ids if value not in isolated_set)
 
 
+def _write_safe_report(lines: Sequence[str]) -> None:
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    content = "\n".join(lines)[:16_000] + "\n"
+    for variable in ("GITHUB_STEP_SUMMARY", "VNTTS_TEST_REPORT"):
+        if destination := os.environ.get(variable):
+            try:
+                with Path(destination).open("a", encoding="utf-8") as output:
+                    output.write(content)
+            except Exception:
+                # Reporting must preserve the original test outcome.
+                pass
+
+
+def _report_test_failures(result: unittest.TestResult, test_ids: Sequence[str]) -> None:
+    root = Path(__file__).resolve().parents[1]
+    inventory = set(test_ids)
+    lines: list[str] = []
+    for kind, failures in (
+        ("FAIL", result.failures),
+        ("ERROR", result.errors),
+        ("UNEXPECTED SUCCESS", ((test, "") for test in result.unexpectedSuccesses)),
+    ):
+        if len(lines) >= 40:
+            break
+        for test, traceback in failures:
+            test = getattr(test, "test_case", test)
+            if not isinstance(test, unittest.TestCase):
+                continue
+            test_id = test.id()
+            if test_id not in inventory or not re.fullmatch(
+                r"tests(?:\.[A-Za-z_][A-Za-z0-9_]*)+", test_id
+            ):
+                continue
+            module, class_name, method = test_id.rsplit(".", 2)
+            path = root / (module.replace(".", "/") + ".py")
+            try:
+                source = read_regular_text(path, encoding="utf-8")
+                definition = next(
+                    member
+                    for node in ast.parse(source).body
+                    if isinstance(node, ast.ClassDef) and node.name == class_name
+                    for member in node.body
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and member.name == method
+                )
+            except OSError, UnicodeError, SyntaxError, StopIteration:
+                continue
+            line = definition.lineno
+            source_lines = len(source.splitlines())
+            for filename, number in re.findall(
+                r'File "([^"\r\n]+)", line ([0-9]+)', traceback
+            ):
+                if filename == str(path) and 1 <= int(number) <= source_lines:
+                    line = int(number)
+            exception = ""
+            for name in re.findall(
+                r"^([A-Za-z_][A-Za-z0-9_]*)(?::|$)", traceback, flags=re.MULTILINE
+            ):
+                value = getattr(builtins, name, None)
+                if isinstance(value, type) and issubclass(value, BaseException):
+                    exception = f" {name}"
+            record = f"- {kind} `{test_id}`{exception} `{path.relative_to(root).as_posix()}:{line}`"
+            if record not in lines:
+                lines.append(record)
+            if len(lines) >= 40:
+                break
+    _write_safe_report(
+        lines or ("- Unit tests failed; no source-validated test ID available.",)
+    )
+
+
 def _run_exact_test_file(path: str | Path) -> int:
     try:
         test_ids = decode_json(read_regular_text(Path(path), encoding="utf-8"))
@@ -127,6 +201,11 @@ def _run_exact_test_file(path: str | Path) -> int:
         print("Exact test inventory must name individual test cases", file=sys.stderr)
         return 2
     result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if not result.wasSuccessful():
+        try:
+            _report_test_failures(result, test_ids)
+        except Exception:
+            _write_safe_report(("- Unit tests failed; safe test report unavailable.",))
     if result.testsRun != len(test_ids):
         print(
             f"Exact test inventory expected {len(test_ids)} tests but ran "
@@ -279,6 +358,11 @@ def _run_discovered_shards(
             status = _run_shard(system, name, inventory)
             elapsed = round(time.monotonic() - started)
             if status:
+                _write_safe_report(
+                    (
+                        f"- {system} unittest shard {name} exited {status} after {elapsed} seconds.",
+                    )
+                )
                 print(
                     f"{system} unittest shard {name} exited {status} after {elapsed} seconds"
                 )

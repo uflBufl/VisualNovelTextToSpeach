@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ from unittest.mock import Mock, patch
 from scripts.run_ci_unittests import (
     _flatten_suite,
     _isolate_module,
+    _report_test_failures,
     _run_exact_test_file,
     _run_shard,
     _run_sharded_full_discovery,
@@ -23,6 +25,11 @@ from scripts.run_ci_unittests import (
 
 
 class CiUnitTestRunnerTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": "", "VNTTS_TEST_REPORT": ""})
+        )
+
     def test_repository_discovery_has_no_testcase_import_aliases(self):
         suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
         test_ids = [test.id() for test in _flatten_suite(suite)]
@@ -187,6 +194,91 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             with patch("unittest.TextTestRunner.run") as run:
                 self.assertEqual(_run_exact_test_file(path), 2)
                 run.assert_not_called()
+
+    def test_failed_inventory_writes_only_safe_ids_and_locations_to_both_reports(self):
+        canary = "PRIVATE_CANARY_ci_report"
+        method = "test_partition_assigns_every_test_exactly_once"
+        case_class = importlib.import_module(
+            "tests.test_ci_unittest_runner"
+        ).CiUnitTestRunnerTest
+        test_id = f"{case_class.__module__}.CiUnitTestRunnerTest.{method}"
+
+        def fail(case):
+            with case.subTest(private=canary):
+                raise ValueError(canary)
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = root / "inventory.json"
+            inventory.write_text(json.dumps([test_id]), encoding="utf-8")
+            summary, report = root / "summary.md", root / "safe-report.txt"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_ACTIONS": "1",
+                        "GITHUB_STEP_SUMMARY": str(summary),
+                        "VNTTS_TEST_REPORT": str(report),
+                    },
+                ),
+                patch.object(case_class, method, fail),
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(_run_exact_test_file(inventory), 1)
+            safe = report.read_text("utf-8")
+            self.assertEqual(summary.read_text("utf-8"), safe)
+            self.assertIn(f"`{test_id}` ValueError", safe)
+            self.assertRegex(safe, r"`tests/test_ci_unittest_runner\.py:[1-9][0-9]*`")
+            self.assertNotIn(canary, safe)
+            self.assertNotIn("private", safe)
+            self.assertNotIn(str(root), safe)
+
+    def test_safe_report_rejects_unknown_test_objects_and_preserves_failure_status(
+        self,
+    ):
+        method = "test_partition_assigns_every_test_exactly_once"
+        case_class = importlib.import_module(
+            "tests.test_ci_unittest_runner"
+        ).CiUnitTestRunnerTest
+        case = case_class(method)
+        result = unittest.TestResult()
+        result.failures.append(
+            (Mock(id=Mock(return_value="PRIVATE_CANARY")), "PRIVATE_CANARY")
+        )
+        with TemporaryDirectory() as directory:
+            report = Path(directory) / "report.txt"
+            with patch.dict(
+                os.environ,
+                {
+                    "GITHUB_ACTIONS": "1",
+                    "GITHUB_STEP_SUMMARY": directory,
+                    "VNTTS_TEST_REPORT": str(report),
+                },
+            ):
+                _report_test_failures(result, (case.id(),))
+            self.assertEqual(
+                report.read_text("utf-8"),
+                "- Unit tests failed; no source-validated test ID available.\n",
+            )
+            inventory = Path(directory) / "inventory.json"
+            inventory.write_text(json.dumps([case.id()]), encoding="utf-8")
+
+            def fail(case):
+                raise AssertionError("PRIVATE_CANARY")
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_ACTIONS": "1",
+                        "GITHUB_STEP_SUMMARY": directory,
+                        "VNTTS_TEST_REPORT": directory,
+                    },
+                ),
+                patch.object(case_class, method, fail),
+                redirect_stderr(StringIO()),
+            ):
+                self.assertEqual(_run_exact_test_file(inventory), 1)
 
     def test_shard_spawn_failure_survives_transcript_and_inventory_cleanup(self):
         primary = OSError("shard launch failed")
