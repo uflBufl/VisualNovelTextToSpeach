@@ -254,7 +254,8 @@ class DurableSettingsMixin:
         _onboarding_preview_settings: AppSettings | None
         _onboarding_reading_settings: AppSettings | None
         _onboarding_start_live: bool
-        _reading_window_setup_settings: AppSettings | None
+        _reading_window_retry_settings: AppSettings | None
+        _reading_window_hint: str | None
         _shutting_down: bool
         _settings_path: Path
         _settings_revision: bytes | None
@@ -656,7 +657,8 @@ class DurableSettingsMixin:
             self._restore_onboarding_runtime()
             return
         self._onboarding_preview_settings = None
-        self._reading_window_setup_settings = None
+        self._reading_window_retry_settings = None
+        self._reading_window_hint = None
         self.settings = candidate
         reading_settings = None
         if self._onboarding_reading_settings is not None:

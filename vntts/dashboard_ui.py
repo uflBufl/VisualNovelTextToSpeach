@@ -91,8 +91,8 @@ class RuntimeControlState:
     unavailable_reason: str | None = None
     needs_readiness_check: bool = False
     indexed_current: bool = False
-    recover_game_window: bool = False
     needs_screen_region: bool = False
+    window_hint: str | None = None
     waiting_for_game: bool = False
     speaking_character: str = ""
 
@@ -178,10 +178,14 @@ class RuntimeControlState:
         if control == "live" and not self.output_available:
             return "Connect an audio output device before starting reading."
         if not self.ready:
-            return self.unavailable_reason or (
-                _INITIALIZE_READING_REASON
-                if self.can_initialize
-                else "VNTTS is not ready. Select Check readiness."
+            return (
+                self.window_hint
+                or self.unavailable_reason
+                or (
+                    _INITIALIZE_READING_REASON
+                    if self.can_initialize
+                    else "VNTTS is not ready. Select Check readiness."
+                )
             )
         reasons = {
             "read": "Stop reading and speech before reading the visible dialogue once.",
@@ -309,7 +313,6 @@ class _GameWindowComboBox(QComboBox):
 
 class ControlDashboard(QMainWindow):
     reading_setup_requested = Signal()
-    window_setup_requested = Signal()
     game_window_requested = Signal(object)
     screen_capture_requested = Signal()
     read_requested = Signal()
@@ -366,9 +369,8 @@ class ControlDashboard(QMainWindow):
         self._unavailable_reason: str | None = None
         self._sequence_expected_candidate_count = 0
         self._sequence_controls_available = False
-        self._recover_game_window = False
-        self._window_problem = False
         self._needs_screen_region = False
+        self._window_hint: str | None = None
         self._needs_readiness_check = False
         self._voice_dirty = False
         self._voice_busy = False
@@ -1425,7 +1427,8 @@ class ControlDashboard(QMainWindow):
             )
         elif not self._ready:
             self.reading_state.setText(
-                "Ready to start" if self._can_initialize else "Not ready"
+                self._window_hint
+                or ("Ready to start" if self._can_initialize else "Not ready")
             )
             self._set_action_reason(self._reading_setup_reason())
 
@@ -1441,6 +1444,7 @@ class ControlDashboard(QMainWindow):
         self._ready = state.ready
         self._can_initialize = state.can_initialize
         self._unavailable_reason = state.unavailable_reason
+        self._window_hint = state.window_hint
         self._needs_readiness_check = state.needs_readiness_check
         self._dialogue_current = state.speaking or state.paused
         self._update_dialogue_title()
@@ -1456,6 +1460,8 @@ class ControlDashboard(QMainWindow):
             if not state.output_available and (state.output_interrupted or state.paused)
             else "Waiting for audio output."
             if not state.output_available and not state.active
+            else state.window_hint
+            if state.window_hint
             else "Speech paused"
             if state.paused
             else "Return to the game to continue reading"
@@ -1480,9 +1486,6 @@ class ControlDashboard(QMainWindow):
             state.ready or state.can_initialize or state.active or state.transition
         )
         self.prepare_reading_button.setVisible(needs_setup)
-        window_problem = "window" in (state.unavailable_reason or "").casefold()
-        self._recover_game_window = state.recover_game_window
-        self._window_problem = state.recover_game_window or window_problem
         self._needs_screen_region = state.needs_screen_region
         self.prepare_reading_button.setText(self._reading_setup_action())
         self.story_actions.setVisible(state.ready and self._sequence_controls_available)
@@ -1521,10 +1524,6 @@ class ControlDashboard(QMainWindow):
     def _reading_setup_action(self) -> str:
         if self._needs_screen_region:
             return "Set dialogue area"
-        if self._recover_game_window or (
-            self._window_problem and self._capture_mode == "window"
-        ):
-            return "Select game window"
         if self._needs_readiness_check:
             return "Check readiness"
         return "Set up and start"
@@ -1532,10 +1531,6 @@ class ControlDashboard(QMainWindow):
     def _request_reading_setup(self) -> None:
         if self._needs_screen_region:
             self.calibration_requested.emit()
-        elif self._recover_game_window:
-            self.window_setup_requested.emit()
-        elif self._window_problem and self._capture_mode == "window":
-            self.game_window.showPopup()
         elif self._needs_readiness_check:
             self.readiness_requested.emit()
         else:
@@ -1552,7 +1547,8 @@ class ControlDashboard(QMainWindow):
         self.action_reason.setText(message)
         self.action_reason.setVisible(
             not self._ready
-            and (not self._can_initialize or bool(self._unavailable_reason))
+            and not self._window_hint
+            and not self._can_initialize
             and self.loading_panel.isHidden()
         )
         if self._ready:

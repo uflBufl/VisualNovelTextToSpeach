@@ -29,6 +29,10 @@ class WindowNotFoundError(WindowCaptureError):
     pass
 
 
+class WindowAmbiguousError(WindowNotFoundError):
+    pass
+
+
 class WindowMinimizedError(WindowCaptureError):
     pass
 
@@ -659,6 +663,27 @@ class WindowCaptureTarget(DisplayCaptureTarget):
             )
         return self.backend.get_client_geometry(window.handle)
 
+    def retry_geometry(self) -> WindowGeometry:
+        """On an explicit retry, allow a unique exact title to acquire a new owner."""
+        if self._selected_window is not None:
+            try:
+                if self._process_identity is not None:
+                    self._native_target()
+                return self.get_geometry()
+            except WindowNotFoundError:
+                pass
+
+        matches = [
+            window
+            for window in self.list_windows()
+            if window.title.strip().casefold() == self.window_title.casefold()
+        ]
+        replacement = self._unique_window(matches)
+        self.close()
+        self._process_identity = None
+        self.bind_window(replacement)
+        return self.get_geometry()
+
     def _native_target(self) -> dict[str, object]:
         window = self._resolve_window()
         if window.minimized:
@@ -768,17 +793,22 @@ class WindowCaptureTarget(DisplayCaptureTarget):
             for item in windows
             if item.title.casefold() == self.window_title.casefold()
         ]
-        candidates = exact or windows
-        if len(candidates) != 1:
-            raise WindowNotFoundError(
-                f"Game window {self.window_title!r} is unavailable or ambiguous; select it again"
-            )
-        window = candidates[0]
-
+        window = self._unique_window(exact or windows)
         if update_selection:
             self._handle = window.handle
             self.last_window = window
         return window
+
+    def _unique_window(self, candidates: list[WindowInfo]) -> WindowInfo:
+        if not candidates:
+            raise WindowNotFoundError(
+                f"Game window {self.window_title!r} is unavailable; select it again"
+            )
+        if len(candidates) > 1:
+            raise WindowAmbiguousError(
+                f"Multiple game windows match {self.window_title!r}. Capture is unavailable."
+            )
+        return candidates[0]
 
     def _title_matches(self, title: str) -> bool:
         expected = self.window_title.casefold()

@@ -9,6 +9,7 @@ from vntts.window_capture import (
     LinuxX11WindowBackend,
     MacOSWindowBackend,
     WaylandWindowBackend,
+    WindowAmbiguousError,
     WindowCaptureTarget,
     WindowCaptureUnavailableError,
     WindowGeometry,
@@ -163,6 +164,16 @@ class WindowCaptureTargetTest(unittest.TestCase):
 
         with self.assertRaisesRegex(WindowNotFoundError, "Select a game window"):
             target.get_geometry()
+
+    def test_duplicate_windows_report_ambiguity_before_reading_geometry(self):
+        backend = Mock()
+        backend.list_windows.return_value = [
+            WindowInfo(100, "Game", 42),
+            WindowInfo(200, "Game", 84),
+        ]
+        with self.assertRaisesRegex(WindowAmbiguousError, "Multiple game windows"):
+            WindowCaptureTarget("Game", backend).get_geometry()
+        backend.get_client_geometry.assert_not_called()
 
     def test_reports_whether_selected_window_is_foreground(self):
         window = WindowInfo(100, "Reverse: 1999", 42)
@@ -325,6 +336,15 @@ class WindowCaptureIdentityTest(unittest.TestCase):
         with self.assertRaisesRegex(WindowNotFoundError, "process changed"):
             self.target.capture_native()
         self.create.assert_called_once()
+
+    def test_explicit_retry_reopens_capture_when_the_os_reuses_the_same_ids(self):
+        self.target.bind_window(self.window)
+        self.target.capture_native()
+        self.fingerprint.return_value = {"scheme": "test", "token": "new-process"}
+        self.target.retry_geometry()
+        self.worker.close.assert_called_once()
+        self.target.capture_native()
+        self.assertEqual(self.create.call_count, 2)
 
     def test_unavailable_process_discards_source_and_keeps_selected_owner(self):
         for error in (psutil.NoSuchProcess(42), psutil.AccessDenied(42)):

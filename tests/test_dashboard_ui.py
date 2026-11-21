@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -231,7 +232,12 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard = ControlDashboard(AppSettings(capture_mode="window"))
         dashboard.show_reading()
         dashboard.show()
-        dashboard.set_runtime_controls(RuntimeControlState(can_initialize=True))
+        dashboard.set_runtime_controls(
+            RuntimeControlState(
+                can_initialize=True,
+                unavailable_reason="Start narration when you are ready.",
+            )
+        )
         self.assertTrue(dashboard.action_reason.isHidden())
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
         dashboard.set_runtime_controls(
@@ -1101,23 +1107,42 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn(diagnostic, dashboard._copy_details())
         dashboard.deleteLater()
 
-    def test_missing_window_opens_reading_window_picker(self):
-        dashboard = ControlDashboard(
-            AppSettings(capture_mode="window", onboarding_completed=True)
+    def test_missing_window_keeps_start_and_shows_one_hint_under_the_picker(self):
+        settings = AppSettings(
+            capture_mode="window",
+            game_window_title="Saved game",
+            onboarding_completed=True,
         )
+        dashboard = ControlDashboard(settings)
+        dashboard.show_reading()
         requested = []
-        dashboard.window_setup_requested.connect(lambda: requested.append("window"))
-        dashboard.settings_requested.connect(lambda: requested.append("settings"))
-        dashboard.reading_setup_requested.connect(lambda: requested.append("engine"))
-        dashboard.set_ready(False, reason="Selected game window is unavailable")
-        self.assertEqual(dashboard.prepare_reading_button.text(), "Select game window")
-        self.assertFalse(dashboard.prepare_reading_button.isHidden())
-        self.assertTrue(dashboard.prepare_reading_button.isDefault())
-        self.assertFalse(dashboard.live_button.isEnabled())
-        with patch.object(dashboard.game_window, "showPopup") as open_picker:
-            dashboard.prepare_reading_button.click()
-        open_picker.assert_called_once_with()
-        self.assertEqual(requested, [])
+        dashboard.live_requested.connect(lambda: requested.append("start"))
+        hint = "Open the game or choose another window."
+        for state in (
+            RuntimeControlState(can_initialize=True),
+            RuntimeControlState(ready=True),
+        ):
+            dashboard.set_runtime_controls(replace(state, window_hint=hint))
+            dashboard.set_configuration(settings)
+            dashboard.set_loading(False)
+            self.assertTrue(dashboard.reading_state.isVisibleTo(dashboard))
+            self.assertEqual(dashboard.reading_state.text(), hint)
+            self.assertTrue(dashboard.action_reason.isHidden())
+            self.assertTrue(dashboard.prepare_reading_button.isHidden())
+            self.assertEqual(dashboard.game_window.currentText(), "Saved game")
+            self.assertTrue(dashboard.live_button.isDefault())
+            self.assertTrue(dashboard.live_button.isEnabled())
+            dashboard.live_button.click()
+            dashboard.set_runtime_controls(state)
+            self.assertNotEqual(dashboard.reading_state.text(), hint)
+        self.assertEqual(requested, ["start", "start"])
+        dashboard.set_runtime_controls(
+            RuntimeControlState(live=True, waiting_for_game=True, window_hint=hint)
+        )
+        self.assertEqual(dashboard.reading_state.text(), hint)
+        self.assertTrue(dashboard.action_reason.isHidden())
+        self.assertEqual(dashboard.live_button.text(), "")
+        self.assertEqual(dashboard.live_button.accessibleName(), "Stop reading")
         dashboard.deleteLater()
 
     def test_stories_explains_that_preparation_precedes_opening_the_game(self):
