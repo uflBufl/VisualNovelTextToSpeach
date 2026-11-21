@@ -89,7 +89,7 @@ from vntts.calibration import (
     show_calibration_overlay,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
-from vntts.configuration_apply import ConfigurationApplyMixin
+from vntts.configuration_apply import AreaSelection, ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
     CompactController,
@@ -105,7 +105,11 @@ from vntts.diagnostics import (
 )
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
-from vntts.durable_settings import DurableSettingsMixin, remembered_capture_areas
+from vntts.durable_settings import (
+    CaptureAreaEdits,
+    DurableSettingsMixin,
+    remembered_capture_areas,
+)
 from vntts.fatal_crashes import configure_fatal_crash_log
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import apply_game_pack
@@ -296,6 +300,7 @@ class AppSignals(QObject):
     error_reported = Signal(object)
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
+    support_export_progress = Signal(str)
     onboarding_playback_started = Signal(int)
     onboarding_capture_requested = Signal(object)
     onboarding_capture_released = Signal(object)
@@ -405,10 +410,9 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.remembered_capture_areas = remembered_capture_areas
         self.voice_library = voice_library or application_voice_library()
-        self.story_area_requested = False
-        self.dialogue_area_requested = False
         self.dialogue_region = dialogue_region
         self.story_region = story_region
+        self.area_edits: CaptureAreaEdits = {}
         self._voice_binding_rollback = self.voice_library.binding_rollback()
         self._initialize_settings(settings)
         window_layout = self._build_capture_controls(settings)
@@ -590,16 +594,18 @@ class SettingsDialog(QDialog):
         )
         self.story_area_button = QPushButton()
         self.story_area_button.setToolTip(
-            "Save these settings, then select where story text may appear. "
+            "Select where story text may appear. Save Settings to keep the selection. "
             "Keep game controls and menus outside the area."
         )
-        self.story_area_button.clicked.connect(self._request_story_area)
+        self.story_area_button.clicked.connect(
+            lambda: self._request_area(AreaSelection.STORY)
+        )
         self.dialogue_area_button = QPushButton()
         self.dialogue_area_button.setToolTip(
-            "Save these settings, then select the dialogue text area."
+            "Select the dialogue text area. Save Settings to keep the selection."
         )
         self.dialogue_area_button.clicked.connect(
-            lambda: self.validate_and_accept(dialogue_area=True)
+            lambda: self._request_area(AreaSelection.DIALOGUE)
         )
         self.dialogue_area_summary = QLabel()
         self.story_area_summary = QLabel()
@@ -827,9 +833,73 @@ class SettingsDialog(QDialog):
         shortcuts_form.addRow("Start / stop reading hotkey", self.live_hotkey)
         return shortcuts_form
 
-    def _request_story_area(self) -> None:
-        self.discover_text_layouts.setChecked(True)
-        self.validate_and_accept(story_area=True)
+    def _request_area(self, selection: AreaSelection) -> None:
+        if (
+            self.capture_mode.currentData() == "window"
+            and not self.game_window.currentText().strip()
+        ):
+            self._show_validation_message(
+                "Choose a game window before selecting an area."
+            )
+            self.game_window.setFocus()
+            return
+        if selection == AreaSelection.STORY and self.capture_areas()[0] is None:
+            self._show_validation_message(
+                "Set the dialogue area first so the Story area can include it."
+            )
+            self.dialogue_area_button.setFocus()
+            return
+        button = (
+            self.story_area_button
+            if selection == AreaSelection.STORY
+            else self.dialogue_area_button
+        )
+        button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.done(selection)
+
+    def edited_capture_areas(self) -> tuple[DialogRegion, DialogRegion | None] | None:
+        return self.area_edits.get(
+            capture_target_identity(
+                self.capture_mode.currentData(), self.game_window.currentText()
+            )
+        )
+
+    def capture_areas(self) -> tuple[DialogRegion | None, DialogRegion | None]:
+        if edited := self.edited_capture_areas():
+            return edited
+        mode, title = self.capture_mode.currentData(), self.game_window.currentText()
+        if capture_target_identity(mode, title) == capture_target_identity(
+            self.original_settings.capture_mode,
+            self.original_settings.game_window_title,
+        ):
+            return self.dialogue_region, self.story_region
+        return (
+            self.remembered_capture_areas(mode, title)
+            if self.remembered_capture_areas
+            else (None, None)
+        )
+
+    def select_draft_region(
+        self, selection: AreaSelection, region: DialogRegion
+    ) -> None:
+        dialogue, story = self.capture_areas()
+        if selection == AreaSelection.STORY:
+            if dialogue is None or not region.contains(dialogue):
+                raise ValueError(
+                    "The story area must include the entire dialogue area."
+                )
+            story = region
+            self.discover_text_layouts.setChecked(True)
+        else:
+            dialogue = region
+            if story is not None and not story.contains(dialogue):
+                story = None
+        self.area_edits[
+            capture_target_identity(
+                self.capture_mode.currentData(), self.game_window.currentText()
+            )
+        ] = dialogue, story
+        self.update_capture_controls()
 
     def _build_capture_form(
         self,
@@ -1334,8 +1404,6 @@ class SettingsDialog(QDialog):
         if pending is None:
             return
         if error is not None:
-            self.story_area_requested = False
-            self.dialogue_area_requested = False
             cause = error.__cause__
             self._game_pack_error = (
                 f"Game pack: invalid JSON at line {cause.lineno}, "
@@ -1347,10 +1415,7 @@ class SettingsDialog(QDialog):
             return
         assert settings is not None
         self._game_pack_validation = self._game_pack_key(pending), settings
-        self.validate_and_accept(
-            story_area=self.story_area_requested,
-            dialogue_area=self.dialogue_area_requested,
-        )
+        self.validate_and_accept()
 
     def _cancel_pack_check(self) -> None:
         self.game_pack_runner.cancel()
@@ -1358,8 +1423,6 @@ class SettingsDialog(QDialog):
         self.save_button.setEnabled(True)
         self.story_area_button.setEnabled(True)
         self.dialogue_area_button.setEnabled(True)
-        self.story_area_requested = False
-        self.dialogue_area_requested = False
 
     def validation_errors(self) -> tuple[ValidationError, ...]:
         errors: list[ValidationError] = []
@@ -1663,21 +1726,7 @@ class SettingsDialog(QDialog):
         self.capture_form.setRowVisible(self.game_window_layout, window_capture)
         self.game_window.setEnabled(window_capture)
         self.refresh_windows_button.setEnabled(window_capture)
-        same_source = capture_target_identity(
-            self.capture_mode.currentData(), self.game_window.currentText()
-        ) == capture_target_identity(
-            self.original_settings.capture_mode,
-            self.original_settings.game_window_title,
-        )
-        dialogue_region, story_region = self.dialogue_region, self.story_region
-        if not same_source:
-            dialogue_region, story_region = (
-                self.remembered_capture_areas(
-                    self.capture_mode.currentData(), self.game_window.currentText()
-                )
-                if self.remembered_capture_areas
-                else (None, None)
-            )
+        dialogue_region, story_region = self.capture_areas()
         for button, summary, region, name in (
             (
                 self.dialogue_area_button,
@@ -1695,7 +1744,7 @@ class SettingsDialog(QDialog):
             selected = region is not None
             button.setText(f"{'Adjust' if selected else 'Set'} {name} area...")
             summary.setText(
-                f"Saved selection: left {region.left:.0%}, top {region.top:.0%}, "
+                f"Selection: left {region.left:.0%}, top {region.top:.0%}, "
                 f"width {region.width:.0%}, height {region.height:.0%}."
                 if region is not None
                 else "Not set for this capture source."
@@ -1795,18 +1844,12 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Newer voice selection kept", str(error))
         super().reject()
 
-    def validate_and_accept(
-        self, *, story_area: bool = False, dialogue_area: bool = False
-    ) -> None:
+    def validate_and_accept(self) -> None:
         if self.game_pack_runner.active:
             return
-        self.story_area_requested = story_area
-        self.dialogue_area_requested = dialogue_area
         self._game_pack_error = None
         errors = self.update_validation_summary()
         if errors:
-            self.story_area_requested = False
-            self.dialogue_area_requested = False
             self._focus_validation_errors(errors)
             return
         settings = self._raw_settings()
@@ -2200,6 +2243,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.support_export_runner = LatestTaskRunner(self)
         self.support_export_runner.finished.connect(self._support_export_finished)
+        self.signals.support_export_progress.connect(self._support_export_progress)
         self.support_history_runner = LatestTaskRunner(self)
         self.support_history_runner.finished.connect(self._diagnostic_history_finished)
         self._diagnostic_deletion_id: str | None = None
@@ -2265,6 +2309,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._calibration_visibility: CaptureWindowVisibility | None = None
         self._calibration_capture_generation = 0
         self._calibration_capture_pending = False
+        self._settings_area_dialog: SettingsDialog | None = None
         self._calibrating_story_area = False
         self._calibration_story_binding: tuple[str | None, str, str | None] | None = (
             None
@@ -3857,6 +3902,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
         return True
 
+    def _pick_settings_area(
+        self, dialog: SettingsDialog, selection: AreaSelection
+    ) -> None:
+        if (
+            self._calibration_capture_pending
+            or self.calibration_overlay is not None
+            or self._controller_busy
+        ):
+            dialog._show_validation_message(
+                "Finish the current operation before selecting an area."
+            )
+            QTimer.singleShot(
+                0, self, lambda: self._edit_settings(dialog, areas=dialog.area_edits)
+            )
+            return
+        self._settings_area_dialog = dialog
+        self._begin_calibration(
+            selection == AreaSelection.STORY, dialog.capture_mode.currentData()
+        )
+
     def calibrate_story_area(self) -> None:
         self.calibrate(story_area=True)
 
@@ -3883,6 +3948,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if not started and self.diagnostics_dialog is not None:
                 self.diagnostics_dialog.set_calibration_pending(False)
             return
+        self._begin_calibration(story_area, self.settings.capture_mode)
+
+    def _begin_calibration(self, story_area: bool, capture_mode: str) -> None:
         self._calibrating_story_area = story_area
         self._calibration_story_binding = (
             self._story_area_binding() if story_area else None
@@ -3893,12 +3961,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             CaptureWindowVisibility(
                 self, may_restore=lambda _window: not self._shutting_down
             )
-            if self.settings.capture_mode == "screen"
+            if capture_mode == "screen"
             else None
         )
         self.set_status(
             "Capturing screen for calibration..."
-            if self.settings.capture_mode == "screen"
+            if capture_mode == "screen"
             else "Capturing game window for calibration..."
         )
         visibility = self._calibration_visibility
@@ -3924,9 +3992,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             return
         generation = self._calibration_capture_generation
+        capture = self._capture_calibration_background
+        dialog = self._settings_area_dialog
+        if dialog is not None:
+            target = None
+            if dialog.capture_mode.currentData() == "window":
+                title = dialog.game_window.currentText()
+                try:
+                    target = self.controller.window_capture_target(title)
+                except WindowCaptureError as error:
+                    self._calibration_capture_finished(None, error)
+                    return
+            capture = partial(capture_calibration_preview, target)
         self.calibration_capture_runner.start(
             lambda: (
-                self._capture_calibration_background()
+                capture()
                 if (
                     not self._shutting_down
                     and self._calibration_capture_pending
@@ -3951,47 +4031,67 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down:
             return
         if error is not None or result is None:
-            self.restore_control_window()
-            self.show_error(f"Unable to capture a calibration preview: {error}")
+            self._calibration_error(error)
             return
         self._open_calibration_overlay(*result)
+
+    def _calibration_error(self, error: Exception | None) -> None:
+        message = (
+            f"Unable to capture a calibration preview: {error or 'no image returned'}"
+        )
+        if self._settings_area_dialog is not None:
+            self._settings_area_dialog._show_validation_message(message)
+        self.restore_control_window()
+        self.show_error(message)
 
     def _open_calibration_overlay(
         self, geometry: WindowGeometry | None, background: Image.Image
     ) -> None:
         try:
-            try:
-                region = self.controller._capture_region()
-            except CaptureRegionNeedsCalibration:
-                if self._calibrating_story_area:
-                    raise
-                region = default_dialog_region
-            if self._calibrating_story_area:
-                binding = self._calibration_story_binding
-                if binding is None or binding != self._story_area_binding():
-                    raise ValueError(
-                        "The selected game changed. Open story area setup again"
-                    )
+            dialog = self._settings_area_dialog
+            story_area = self._calibrating_story_area
+            save: Callable[[DialogRegion], None]
+            if dialog is not None:
+                dialogue, story = dialog.capture_areas()
+                selection = (
+                    AreaSelection.STORY if story_area else AreaSelection.DIALOGUE
+                )
+                save = partial(dialog.select_draft_region, selection)
+            else:
+                try:
+                    dialogue = self.controller._capture_region()
+                except CaptureRegionNeedsCalibration:
+                    if story_area:
+                        raise
+                    dialogue = default_dialog_region
+                story = None
+                save = self._save_calibration_region
+                if story_area:
+                    binding = self._calibration_story_binding
+                    if binding is None or binding != self._story_area_binding():
+                        raise ValueError(
+                            "The selected game changed. Open story area setup again"
+                        )
+                    story = self.controller._story_region()
+                    save = partial(self._save_story_area, binding=binding)
+            if story_area:
                 overlay = show_calibration_overlay(
                     geometry,
                     background=background,
-                    save_region=lambda selected: self._save_story_area(
-                        selected, binding
-                    ),
-                    capture_region=self.controller._story_region() or region,
-                    story_dialogue_region=region,
+                    save_region=save,
+                    capture_region=story or dialogue,
+                    story_dialogue_region=dialogue,
                     story_recognizer=self.controller.preview_story_area,
                 )
             else:
                 overlay = show_calibration_overlay(
                     geometry,
                     background=background,
-                    save_region=self._save_calibration_region,
-                    capture_region=region,
+                    save_region=save,
+                    capture_region=dialogue or default_dialog_region,
                 )
         except Exception as error:
-            self.restore_control_window()
-            self.show_error(f"Unable to capture a calibration preview: {error}")
+            self._calibration_error(error)
             return
         self.calibration_overlay = overlay
         overlay.closed.connect(
@@ -4011,6 +4111,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if is_current and not self._shutting_down:
             if overlay.saved_region is None:
                 message = overlay.save_error or "Calibration cancelled"
+            elif self._settings_area_dialog is not None:
+                message = "Area selected. Save Settings to keep it."
             elif overlay.story_dialogue_region is None:
                 message = "Dialogue area saved"
             elif self.settings.discover_text_layouts:
@@ -4020,7 +4122,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "Story area saved; enable text discovery in Settings to use it"
                 )
             self.set_status(message)
+            saved_to_runtime = (
+                overlay.saved_region is not None and self._settings_area_dialog is None
+            )
             self.restore_control_window()
+            if (
+                saved_to_runtime
+                and self.readiness_dialog is not None
+                and self.readiness_dialog.isVisible()
+            ):
+                self.readiness_dialog.update_settings(self._readiness_settings())
 
     def _cancel_calibration(self) -> None:
         self._calibration_capture_generation += 1
@@ -4087,6 +4198,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._calibration_visibility = None
         if visibility is not None:
             visibility.restore()
+        settings_dialog = self._settings_area_dialog
+        if settings_dialog is not None:
+            self._settings_area_dialog = None
+            if not self._shutting_down:
+                button = (
+                    settings_dialog.story_area_button
+                    if self._calibrating_story_area
+                    else settings_dialog.dialogue_area_button
+                )
+                button.setFocus(Qt.FocusReason.OtherFocusReason)
+                QTimer.singleShot(
+                    0,
+                    self,
+                    lambda: self._edit_settings(
+                        settings_dialog, areas=settings_dialog.area_edits
+                    ),
+                )
         dialog = self.diagnostics_dialog
         if dialog is not None and isValid(dialog) and dialog.isVisible():
             dialog.request_refresh()
@@ -4670,11 +4798,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         dialog.pocket_setup.readyChanged.connect(self._remember_pocket_model_setup)
         # Apply or discard the open settings draft before reloading the saved runtime.
-        dialog.finished.connect(
-            lambda _result: QTimer.singleShot(
-                0, self, self._reload_prepared_pocket_model
+        for signal in (dialog.accepted, dialog.rejected):
+            signal.connect(
+                lambda: QTimer.singleShot(0, self, self._reload_prepared_pocket_model)
             )
-        )
         return dialog
 
     def _remember_pocket_model_setup(self, ready: bool) -> None:
@@ -6057,7 +6184,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             self.refresh_diagnostic_history()
             return
-        path = session.directory.parent / (session.session_id + ".zip")
+        path = session.directory / "support.zip"
         if self.support_dialog is not None:
             self.support_dialog.set_export_started()
         self.support_export_runner.start(
@@ -6193,8 +6320,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 previous_session=self.previous_session,
                 audio_lifecycle=self.audio_lifecycle,
                 voice_library=self.controller.voice_library,
+                progress=self.signals.support_export_progress.emit,
             ).build(path)
         )
+
+    def _support_export_progress(self, message: str) -> None:
+        if not self._shutting_down and self.support_dialog is not None:
+            self.support_dialog.set_export_progress(message)
 
     def _support_export_finished(
         self, output: str | None, error: Exception | None
@@ -6213,6 +6345,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.support_dialog.set_export_result(successful, message)
         if successful:
             self.set_status(f"Support bundle saved to {message}")
+            self.refresh_diagnostic_history()
         else:
             self.show_error(f"Support bundle export failed: {message}")
 
@@ -6778,6 +6911,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.speech_runtime_timer.stop()
         self._shutting_down = True
+        if self._settings_area_dialog is not None:
+            self._settings_area_dialog.reject()
+            self._settings_area_dialog = None
         if self.readiness_dialog is not None:
             self.readiness_dialog.close()
         self.voice_auditions.suspend()

@@ -5,7 +5,6 @@
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
       and returning players. Ask them to choose a window, hear a line, switch
       games, stop, and find the page-turn setting without guidance.
-- [ ] Check keyboard access to the game window picker on Windows.
 - [ ] On macOS, exercise game audio and focus changes with a prepared chapter.
       Verify keyboard access to the window picker and Stop.
 - [ ] On macOS, qualify native output recovery after removing and reconnecting
@@ -25,25 +24,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       Run native Windows recording regressions; ordinary readiness and normal
       stop no longer need to be repeated as unverified prerequisites.
 
-## Active - Support 30 Windows Reading repairs
-
-Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
-`e7bf2665`, 2026-11-17.
-
-- [ ] **Pre-OCR latency qualification:** on Windows, correlate capture, layout
-      detection, queueing, OCR and canonical admission separately under actual
-      background generation. Recheck the same scene with static and changing
-      text; exact-repeat reuse does not remove inference for new pixels. The
-      archived frame age before OCR was190ms vs55ms, while raw OCR medians were
-      129ms vs124ms in different scenes, so those are not a controlled benchmark.
-      The layout span still excludes model preparation and is not retained
-      separately in the timeline. Preserve Story coverage and current-frame,
-      confidence and ownership gates while attributing the remaining delay.
-- [ ] On Windows, check screen feedback on uncertain or empty observations and
-      copy the recognized fragment during background generation. After Stop and
-      restart, confirm a previous fragment is not shown for the new dialogue.
-- [ ] Verify that changing generation priority preserves completed audio.
-
 ## Active - Remaining Windows Reading qualification
 
 - [ ] After an unavailable optional announcement, change to a working narrator
@@ -57,21 +37,15 @@ Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
 
 ## Active - Windows story preparation ASR compatibility
 
-- [ ] On Windows, resume the affected new-story preparation and verify source
-      audio analysis, voice planning and synthesis complete. Verify live progress
-      and cancellation through stdout pipes for duration, semantics, references
-      and portraits. Local Whisper inference and pipe regressions do not replace
-      this platform gate.
-      During automatic reference qualification, verify model startup, preview
-      rendering and ASR show the current character/reference counters and elapsed
-      time in the main panel, including cancel/retry and a small Windows window.
+- [ ] On Windows, verify cancellation and retry during duration, semantics,
+      reference and portrait analysis over stdout pipes. In a small window,
+      check that the current character/reference counters and elapsed time
+      remain visible during model startup, preview rendering and ASR.
 
 ## Active - Remaining SQLite runtime generation qualification
 
-- [ ] On Windows, verify fallback, review and newly committed audio becoming
-      available to an already active reader.
-      Confirm publication does not replace an open database or require working
-      JSON.
+- [ ] Verify fallback and review on Windows. Confirm that publishing generated
+      audio keeps the open database in place and works without working JSON.
 
 ## Active - Remaining CI qualification
 
@@ -158,12 +132,13 @@ Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
       On Windows10, exercise FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **REC-12-01 - Qualify recording resize on Windows10.** On its host, record
+- [ ] **REC-12-01 - Qualify native Windows recording after the resize fix.** On a Windows test host, record
       shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
       Decode the fixed-resolution MP4: require the entire selected window, fresh
       black borders and no desktop/covering-window pixels. Verify timestamps,
-      Stop and cleanup. Cross-compilation and pixel tests do not qualify native
-      WGC/Media Foundation behavior.
+      Stop and cleanup. Compare calibration and decoded video against a reference
+      SDR frame. Record the display HDR setting and SDR white level when testing
+      HDR-to-SDR conversion.
 
 - [ ] **Deferred document and new-game reading layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).

@@ -409,6 +409,24 @@ class DiagnosticHistoryUITest(unittest.TestCase):
                             )
                         )
 
+    def test_starting_export_reveals_progress_in_a_small_window(self):
+        self.dialog.resize(620, 600)
+        self.dialog.show()
+        self.application.processEvents()
+        outer = self.dialog.body_scroll
+        outer.verticalScrollBar().setValue(0)
+        self.dialog.set_export_started()
+        self.dialog.set_export_progress("Archiving game.mp4: 50%")
+        status = self.dialog.operation_status
+        self.assertIn("50%", status.toPlainText())
+        self.assertTrue(
+            outer.viewport()
+            .rect()
+            .contains(
+                status.rect().translated(status.mapTo(outer.viewport(), QPoint()))
+            )
+        )
+
     def test_keyboard_reaches_and_reveals_session_controls_in_order(self):
         self.dialog.set_diagnostic_sessions([session_entry(1)])
         font = self.dialog.font()

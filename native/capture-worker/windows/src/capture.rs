@@ -272,6 +272,15 @@ impl Source {
         }
     }
     fn frame(&self, timeout: Duration) -> Result<Frame, Failure> {
+        self.wait_frame(timeout, |metadata| unsafe {
+            validate_cached(&self.target, self.process_created, metadata)
+        })
+    }
+    fn wait_frame(
+        &self,
+        timeout: Duration,
+        validate: impl Fn(&Value) -> Result<(), Failure>,
+    ) -> Result<Frame, Failure> {
         let deadline = Instant::now() + timeout;
         let mut state = self.shared.0.lock().unwrap();
         loop {
@@ -282,14 +291,20 @@ impl Source {
             if let Some(frame) = &state.latest {
                 let frame = frame.clone();
                 // Validate cached static content at request time as well as on native frame arrival.
-                let geometry =
-                    unsafe { validate_cached(&self.target, self.process_created, &frame.metadata) };
-                if let Err(error) = geometry {
-                    state.latest = None;
-                    return Err(error);
+                let geometry = validate(&frame.metadata);
+                match geometry {
+                    Ok(()) => {
+                        ensure_live(&self.closed, &self.stop)?;
+                        return Ok(frame);
+                    }
+                    Err(error) => {
+                        state.latest = None;
+                        if error.code != "layout_changed" {
+                            return Err(error);
+                        }
+                        // The producer will publish the new layout; never return stale pixels.
+                    }
                 }
-                ensure_live(&self.closed, &self.stop)?;
-                return Ok(frame);
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -440,10 +455,20 @@ unsafe fn run_source(
                         }
                         let (surface, client) = before;
                         if surface[2] != size.Width || surface[3] != size.Height {
-                            return Err(Failure::new("unsupported_layout", "WGC extent does not match physical DWM/monitor bounds; crop mapping is unverified"));
+                            shared.0.lock().unwrap().latest = None;
+                            layout = None;
+                            continue;
                         }
                         let content =
-                            pixels::client_rect(surface, client, size.Width, size.Height)?;
+                            match pixels::client_rect(surface, client, size.Width, size.Height) {
+                                Ok(content) => content,
+                                Err(error) if error.code == "layout_changed" => {
+                                    shared.0.lock().unwrap().latest = None;
+                                    layout = None;
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            };
                         sequence += 1;
                         let (scope, window_id, pid) = match native.target {
                             Target::Window { window_id, pid } => {
@@ -860,6 +885,68 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             closed: Arc::new(AtomicBool::new(false)),
             done,
+        }
+    }
+    #[test]
+    fn layout_transition_waits_for_a_new_frame_without_ending_the_source() {
+        let source = stopped_source();
+        let shared = source.shared.clone();
+        shared.0.lock().unwrap().latest = Some(Frame {
+            metadata: json!({"layout_epoch": 1}),
+            pixels: Arc::new(vec![1]),
+        });
+        let producer = thread::spawn(move || {
+            // Publication must follow invalidation, including when it races the waiter.
+            loop {
+                let mut state = shared.0.lock().unwrap();
+                if state.latest.is_none() {
+                    state.latest = Some(Frame {
+                        metadata: json!({"layout_epoch": 2}),
+                        pixels: Arc::new(vec![2]),
+                    });
+                    shared.1.notify_all();
+                    break;
+                }
+                drop(state);
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let frame = source
+            .wait_frame(Duration::from_secs(2), |metadata| {
+                if metadata["layout_epoch"] == 1 {
+                    Err(Failure::new("layout_changed", "window resized"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap();
+        producer.join().unwrap();
+        assert_eq!(frame.metadata["layout_epoch"], 2);
+        assert_eq!(*frame.pixels, vec![2]);
+    }
+    #[test]
+    fn layout_wait_remains_bounded_and_identity_errors_remain_terminal() {
+        for code in ["layout_changed", "identity_changed", "target_closed"] {
+            let source = stopped_source();
+            source.shared.0.lock().unwrap().latest = Some(Frame {
+                metadata: json!({}),
+                pixels: Arc::new(vec![1]),
+            });
+            let error = source
+                .wait_frame(Duration::from_millis(1), |_| {
+                    Err(Failure::new(code, "invalid cached frame"))
+                })
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.code,
+                if code == "layout_changed" {
+                    "capture_timeout"
+                } else {
+                    code
+                }
+            );
+            assert!(source.shared.0.lock().unwrap().latest.is_none());
         }
     }
     #[test]

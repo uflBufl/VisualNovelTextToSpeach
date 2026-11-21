@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import stat
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -310,6 +311,8 @@ def _diagnostic_export_entries(directory: Path) -> list[tuple[str, Path]]:
     entries: list[tuple[str, Path]] = []
     total = 0
     for index, path in enumerate(directory.rglob("*")):
+        if path == directory / "support.zip":
+            continue
         if index >= 2048:
             raise ValueError("Diagnostic export exceeds its bounded file budget")
         if path.is_symlink():
@@ -370,6 +373,14 @@ class DiagnosticSessionEntry:
     file_counts: dict[str, int] | None = None
 
 
+def _directory_session_id(directory: Path) -> str | None:
+    match = re.fullmatch(
+        r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}Z_[\w.-]{1,80}_)?([0-9a-f]{32})",
+        directory.name,
+    )
+    return match[1] if match else None
+
+
 def _session_directory(root: Path, session_id: str) -> Path:
     if (
         root.is_symlink()
@@ -377,13 +388,22 @@ def _session_directory(root: Path, session_id: str) -> Path:
         or re.fullmatch(r"[0-9a-f]{32}", session_id) is None
     ):
         raise ValueError("Diagnostic session directory is unsafe")
-    directory = root / session_id
+    matches = [
+        directory
+        for directory in root.iterdir()
+        if _directory_session_id(directory) == session_id
+    ]
+    if len(matches) != 1:
+        raise ValueError("Diagnostic session directory is missing or ambiguous")
+    directory = matches[0]
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("Diagnostic session directory is unsafe")
     return directory
 
 
 def _session_report(directory: Path) -> dict[str, object]:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("Diagnostic session directory is unsafe")
     metadata = directory / "session.json"
     if metadata.is_symlink():
         raise ValueError("Diagnostic metadata contains a symlink")
@@ -397,7 +417,7 @@ def _session_report(directory: Path) -> dict[str, object]:
         or report.get("schema") != "vntts.reading-diagnostics"
         or type(report.get("version")) is not int
         or report["version"] != 1
-        or report.get("session_id") != directory.name
+        or report.get("session_id") != _directory_session_id(directory)
         or not isinstance(report.get("started_at"), str)
     ):
         raise ValueError("Diagnostic metadata is invalid")
@@ -427,7 +447,7 @@ def _finished_session(
             )
         ):
             raise ValueError("Diagnostic journals are incomplete")
-    return SavedDiagnosticSession(directory, directory.name, report)
+    return SavedDiagnosticSession(directory, str(report["session_id"]), report)
 
 
 def load_saved_diagnostic_session(
@@ -547,7 +567,7 @@ def _exportable_session(
         "analysis_status": "partial",
         "interruption_reason": reason,
     }
-    return SavedDiagnosticSession(directory, directory.name, partial)
+    return SavedDiagnosticSession(directory, str(report["session_id"]), partial)
 
 
 def _prepare_interrupted_export(session: SavedDiagnosticSession) -> None:
@@ -611,18 +631,22 @@ def _session_inventory(directory: Path) -> tuple[int, dict[str, int]]:
 
 
 def _history_entry(directory: Path) -> DiagnosticSessionEntry:
+    session_id = _directory_session_id(directory)
+    assert session_id is not None
     report = None
     saved = None
     size = None
     file_counts = None
     errors = []
     try:
-        _session_directory(directory.parent, directory.name)
         size, file_counts = _session_inventory(directory)
+        legacy_archive = _legacy_session_archive(directory, session_id)
+        if legacy_archive is not None:
+            size += legacy_archive.stat().st_size
+            file_counts[".zip"] = file_counts.get(".zip", 0) + 1
     except (OSError, ValueError) as error:
         errors.append(str(error))
     try:
-        _session_directory(directory.parent, directory.name)
         report = _session_report(directory)
         if not errors:
             saved = _exportable_session(directory, report)
@@ -630,7 +654,7 @@ def _history_entry(directory: Path) -> DiagnosticSessionEntry:
     except (OSError, ValueError, TypeError, IndexError) as error:
         errors.append(str(error))
     return DiagnosticSessionEntry(
-        directory, directory.name, report, size, saved, "; ".join(errors), file_counts
+        directory, session_id, report, size, saved, "; ".join(errors), file_counts
     )
 
 
@@ -650,7 +674,7 @@ def list_diagnostic_sessions(root: Path) -> list[DiagnosticSessionEntry]:
     entries = [
         _history_entry(directory)
         for directory in root.iterdir()
-        if re.fullmatch(r"[0-9a-f]{32}", directory.name)
+        if _directory_session_id(directory) is not None
     ]
     return sorted(entries, key=_session_started, reverse=True)
 
@@ -661,18 +685,42 @@ def latest_finished_diagnostic_session(root: Path) -> SavedDiagnosticSession | N
     latest: SavedDiagnosticSession | None = None
     try:
         for directory in root.iterdir():
-            saved = load_saved_diagnostic_session(root, directory.name)
-            if saved is not None and saved.report.get("status") != "finished":
+            session_id = _directory_session_id(directory)
+            if session_id is None:
                 continue
-            if saved is not None and (
-                latest is None
-                or datetime.fromisoformat(str(saved.report["started_at"]))
-                > datetime.fromisoformat(str(latest.report["started_at"]))
-            ):
+            try:
+                saved = _finished_session(directory, _session_report(directory))
+            except OSError, ValueError, TypeError, IndexError:
+                continue
+            if latest is None or datetime.fromisoformat(
+                str(saved.report["started_at"])
+            ) > datetime.fromisoformat(str(latest.report["started_at"])):
                 latest = saved
     except OSError:
         return None
     return latest
+
+
+def _legacy_session_archive(directory: Path, session_id: str) -> Path | None:
+    archive = directory.parent / (session_id + ".zip")
+    try:
+        if not stat.S_ISREG(archive.stat(follow_symlinks=False).st_mode):
+            return None
+        with open_regular_binary(archive) as source, zipfile.ZipFile(source) as bundle:
+            metadata = bundle.getinfo("reading-session/session.json")
+            if metadata.file_size > 65536:
+                return None
+            report = json.loads(bundle.read(metadata))
+            if (
+                isinstance(report, dict)
+                and report.get("schema") == "vntts.reading-diagnostics"
+                and report.get("version") == 1
+                and report.get("session_id") == session_id
+            ):
+                return archive
+    except OSError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile:
+        pass
+    return None
 
 
 def delete_saved_diagnostic_session(root: Path, session_id: str) -> None:
@@ -680,6 +728,9 @@ def delete_saved_diagnostic_session(root: Path, session_id: str) -> None:
     _exportable_session(directory, _session_report(directory))
     # Inspect all evidence before rmtree; no symlinks or special files are owned data.
     _session_inventory(directory)
+    legacy_archive = _legacy_session_archive(directory, session_id)
+    if legacy_archive is not None:
+        legacy_archive.unlink()
     shutil.rmtree(directory)
 
 
@@ -701,11 +752,17 @@ class ReadingDiagnosticSession:
             raise RuntimeError("A diagnostic session is already active")
         root.mkdir(parents=True, exist_ok=True)
         self.session_id = uuid4().hex
-        self.directory = root / self.session_id
+        started = datetime.now(timezone.utc)
+        title = str((target or {}).get("title") or "logs")
+        title = re.sub(r"[^\w.-]+", "_", title).strip("._-")[:80] or "recording"
+        title = title.encode("utf-8")[:180].decode("utf-8", errors="ignore")
+        self.directory = root / (
+            started.strftime("%Y-%m-%d_%H-%M-%SZ_") + title + "_" + self.session_id
+        )
         self.directory.mkdir(parents=True)
         self.timelines, self.seconds = timelines, seconds
         self._initialize_retained_evidence()
-        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.started_at = started.isoformat()
         self.started_monotonic = monotonic()
         process = psutil.Process()
         self.owner = {

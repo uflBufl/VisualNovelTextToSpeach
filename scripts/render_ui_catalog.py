@@ -2726,7 +2726,6 @@ def _render_stories(
 
     def dashboard_live_tts() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.setChecked(True)
         dashboard.set_configuration(replace(settings, speech_backend="pocket-tts"))
         dashboard.set_diagnostic(
@@ -2761,7 +2760,6 @@ def _render_stories(
 
     def dashboard_auto_advance_off() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.set_configuration(
             replace(settings, auto_advance_enabled=False, auto_advance_key="right")
         )
@@ -2769,13 +2767,11 @@ def _render_stories(
 
     def dashboard_auto_advance_unavailable() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.set_configuration(replace(settings, capture_mode="screen"))
         return dashboard
 
     def dashboard_auto_advance_manual() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.set_configuration(
             replace(settings, live_sequence_mode="audio-manual")
         )
@@ -2791,7 +2787,6 @@ def _render_stories(
 
     def dashboard_auto_advance_focus() -> ControlDashboard:
         dashboard = dashboard_long_values()
-        dashboard.reading_options_toggle.setChecked(True)
         QTimer.singleShot(0, dashboard.auto_advance_check.setFocus)
         return dashboard
 
@@ -2824,7 +2819,6 @@ def _render_stories(
 
     def dashboard_technical() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.setChecked(True)
         return dashboard
 

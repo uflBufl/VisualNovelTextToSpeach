@@ -16,7 +16,7 @@ For a source checkout, use the developer instructions below.
    **Set up and start**, mark the dialogue box and preview it with **Read this line**.
    Choose **Save and start reading**, then return to the game. You can add
    a **Story area** later in Settings for captions outside the dialogue box.
-3. Under **Reading options**, choose whether to advance after speech or open
+3. On **Reading**, choose whether to advance after speech or open
    **Compact** controls. Keep the game focused for automatic advancement.
    The stop icon ends capture and queued speech. Use the adjacent button to
    pause or resume. If an audio output change interrupts a line, resume restarts
@@ -56,7 +56,7 @@ in Settings, setup or Stories. Sign in and accept the original model terms in
 your browser; the application downloads the original Kyutai model and remembers
 its local readiness. Other engines have their own model requirements.
 
-**Dialogue** under **Reading options** speaks the visible line once when reading
+**Read once** on **Reading** speaks the visible line once when reading
 is stopped. **Expand** in compact controls returns to the main window. Settings
 and the readiness check are also available through the desktop controls.
 

@@ -42,6 +42,11 @@ if TYPE_CHECKING:
     from vntts.configuration_apply import _Controller, _Dashboard, _Signals
 
 
+type CaptureAreaEdits = dict[
+    tuple[str, str | None], tuple[DialogRegion, DialogRegion | None]
+]
+
+
 class _OnboardingTestPage(Protocol):
     def set_result(self, succeeded: bool, message: str) -> None: ...
 
@@ -297,6 +302,7 @@ class DurableSettingsMixin:
         *,
         dialog_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
+        area_edits: CaptureAreaEdits | None = None,
     ) -> Path:
         with self._settings_commit_lock:
             values = asdict(candidate)
@@ -323,11 +329,24 @@ class DurableSettingsMixin:
                 )
             rollback: list[_CaptureRollback] = []
             try:
-                if capture_target_identity(
+                target = capture_target_identity(
                     saved_settings.capture_mode, saved_settings.game_window_title
-                ) != capture_target_identity(
+                )
+                old_target = capture_target_identity(
                     previous.capture_mode, previous.game_window_title
-                ):
+                )
+                edits = dict(area_edits or {})
+                edited_active = edits.pop(target, None)
+                if edited_active is not None:
+                    dialog_region, story_region = edited_active
+                if old_target != target:
+                    if previous.active_profile_id and old_target in edits:
+                        self._save_setup_capture_regions(
+                            previous,
+                            *edits[old_target],
+                            rollback=rollback,
+                            replace_story=True,
+                        )
                     completed = self._switch_capture_areas(
                         previous,
                         saved_settings,
@@ -340,9 +359,31 @@ class DurableSettingsMixin:
                             onboarding_completed=True
                         )
                         values["onboarding_completed"] = True
+                if edits:
+                    history_path = _area_history_path()
+                    snapshot = _capture_snapshot(history_path)
+                    history = dict(snapshot[0])
+                    for (mode, title), (dialogue, wide) in edits.items():
+                        key = _target_key(mode, title)
+                        prior = history.get(key)
+                        entry = {
+                            **dialogue.to_json(),
+                            "coordinate_space": CAPTURE_COORDINATE_SPACE,
+                            "completed": mode == "screen"
+                            or isinstance(prior, dict)
+                            and prior.get("completed") is True,
+                        }
+                        if wide is not None:
+                            entry["story_region"] = wide.to_json()
+                        history[key] = entry
+                    _replace_capture_document(history_path, snapshot, history, rollback)
                 if dialog_region is not None:
                     self._save_setup_capture_regions(
-                        candidate, dialog_region, story_region, rollback=rollback
+                        candidate,
+                        dialog_region,
+                        story_region,
+                        rollback=rollback,
+                        replace_story=edited_active is not None,
                     )
                 self._settings_revision = _capture_write(
                     self._settings_path,
@@ -467,6 +508,7 @@ class DurableSettingsMixin:
         story_region: DialogRegion | None,
         *,
         rollback: list[_CaptureRollback] | None = None,
+        replace_story: bool = False,
     ) -> None:
         if story_region is not None and not story_region.contains(dialog_region):
             raise ValueError("The story area must include the entire dialogue region")
@@ -498,11 +540,11 @@ class DurableSettingsMixin:
                 lambda: self.profile_store.update_region(profile_id, dialog_region),
                 rollback,
             )
-            if story_region is not None:
+            if story_region is not None or replace_story:
                 _capture_write(
                     self.profile_store.path,
                     profile_id,
-                    {"story_region": story_region.to_json()},
+                    {"story_region": story_region.to_json() if story_region else None},
                     lambda: self.profile_store.update_story_region(
                         profile_id, story_region
                     ),
@@ -521,16 +563,20 @@ class DurableSettingsMixin:
                 lambda: save_dialog_region(dialog_region, path),
                 rollback,
             )
-            if story_region is not None:
+            if story_region is not None or replace_story:
                 _capture_write(
                     path,
                     None,
                     {
-                        "story_region": story_region.to_json(),
+                        "story_region": story_region.to_json()
+                        if story_region
+                        else _MISSING,
                         "story_binding": {
                             "capture_mode": settings.capture_mode,
                             "game_window_title": settings.game_window_title,
-                        },
+                        }
+                        if story_region
+                        else _MISSING,
                     },
                     lambda: save_story_region(
                         story_region,

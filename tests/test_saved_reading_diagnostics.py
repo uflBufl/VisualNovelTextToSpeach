@@ -4,6 +4,7 @@ import shutil
 import struct
 import unittest
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -332,6 +333,167 @@ class SavedReadingDiagnosticsTest(unittest.TestCase):
                     builder.build(root / "cannot-fit.zip")
             self.assertFalse((root / "cannot-fit.zip").exists())
 
+    def test_managed_archive_is_counted_deleted_and_excluded_from_repeat_exports(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            before = list_diagnostic_sessions(root)[0]
+            saved = load_saved_diagnostic_session(root, session.session_id)
+            builder = SupportBundleBuilder(
+                AppSettings(ocr_diagnostics_directory=str(root / "ocr")),
+                RuntimeSupportLog(),
+                dependency_probe=lambda: {},
+                diagnostic_session=saved,
+            )
+            with patch("vntts.support.collect_build_identity", return_value={}):
+                archive = builder.build(session.directory / "support.zip")
+                entry = list_diagnostic_sessions(root)[0]
+                self.assertEqual(
+                    entry.size_bytes, before.size_bytes + archive.stat().st_size
+                )
+                self.assertEqual(entry.file_counts[".zip"], 1)
+                builder.build(archive)
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertNotIn("reading-session/support.zip", bundle.namelist())
+            external = root / "user-export.zip"
+            shutil.copyfile(archive, external)
+            delete_saved_diagnostic_session(root, session.session_id)
+            self.assertFalse(archive.exists())
+            self.assertTrue(external.exists())
+
+    def test_legacy_archive_is_managed_only_when_its_session_identity_matches(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = self.recorded_session(root)
+            second = self.recorded_session(root)
+            before = {
+                entry.session_id: entry.size_bytes
+                for entry in list_diagnostic_sessions(root)
+            }
+            owned = root / (first.session_id + ".zip")
+            external = root / (second.session_id + ".zip")
+            for path in (owned, external):
+                with zipfile.ZipFile(path, "w") as bundle:
+                    bundle.writestr(
+                        "reading-session/session.json",
+                        (first.directory / "session.json").read_bytes(),
+                    )
+            entries = {
+                entry.session_id: entry for entry in list_diagnostic_sessions(root)
+            }
+            self.assertEqual(
+                entries[first.session_id].size_bytes,
+                before[first.session_id] + owned.stat().st_size,
+            )
+            self.assertEqual(
+                entries[second.session_id].size_bytes, before[second.session_id]
+            )
+            delete_saved_diagnostic_session(root, first.session_id)
+            delete_saved_diagnostic_session(root, second.session_id)
+            self.assertFalse(owned.exists())
+            self.assertTrue(external.exists())
+
+    def test_video_is_stored_and_archive_progress_reports_copied_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            video = b"video" * 500_000
+            (session.directory / "game.MP4").write_bytes(video)
+            progress = Mock()
+            with patch("vntts.support.collect_build_identity", return_value={}):
+                archive = SupportBundleBuilder(
+                    AppSettings(ocr_diagnostics_directory=str(root / "ocr")),
+                    RuntimeSupportLog(),
+                    dependency_probe=lambda: {},
+                    diagnostic_session=load_saved_diagnostic_session(
+                        root, session.session_id
+                    ),
+                    progress=progress,
+                ).build(root / "export.zip")
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertEqual(
+                    bundle.getinfo("reading-session/game.MP4").compress_type,
+                    zipfile.ZIP_STORED,
+                )
+                self.assertEqual(
+                    bundle.getinfo("reading-session/session.json").compress_type,
+                    zipfile.ZIP_DEFLATED,
+                )
+                self.assertEqual(bundle.read("reading-session/game.MP4"), video)
+            messages = [call.args[0] for call in progress.call_args_list]
+            self.assertTrue(
+                any(
+                    "Archiving reading-session/game.MP4:" in message
+                    for message in messages
+                )
+            )
+            self.assertTrue(any("MiB (100%)" in message for message in messages))
+            self.assertEqual(messages[-1], "Finalizing archive...")
+
+    def test_legacy_archive_symlink_is_not_followed_or_deleted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = self.recorded_session(root)
+            before = list_diagnostic_sessions(root)[0].size_bytes
+            external = root / "external.zip"
+            external.write_bytes(b"external data")
+            linked = root / (session.session_id + ".zip")
+            linked.symlink_to(external)
+            self.assertEqual(list_diagnostic_sessions(root)[0].size_bytes, before)
+            delete_saved_diagnostic_session(root, session.session_id)
+            self.assertTrue(linked.is_symlink())
+            self.assertEqual(external.read_bytes(), b"external data")
+
+    def test_readable_folders_preserve_uuid_identity_and_legacy_sessions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = {"title": "Game: /Window?"}
+            recorder = Mock(target=target, status="stopped", error_message=None)
+            recorder.report.return_value = {}
+            started = datetime(2026, 11, 22, 15, 4, 5, tzinfo=timezone.utc)
+            with (
+                patch("vntts.reading_diagnostics.datetime", wraps=datetime) as clock,
+                patch(
+                    "vntts.reading_diagnostics.NativeDiagnosticRecording",
+                    return_value=recorder,
+                ),
+                patch("vntts.reading_diagnostics_analysis.analyze_session"),
+            ):
+                clock.now.return_value = started
+                session = ReadingDiagnosticSession(
+                    root, GenerationTimelineLog(), target=target
+                )
+                self.addCleanup(session.stop, 3)
+                session.stop(3)
+            self.assertEqual(
+                session.directory.name,
+                "2026-11-22_15-04-05Z_Game_Window_" + session.session_id,
+            )
+            self.assertRegex(session.session_id, r"^[0-9a-f]{32}$")
+            self.assertEqual(
+                load_saved_diagnostic_session(root, session.session_id).directory,
+                session.directory,
+            )
+            self.assertEqual(
+                list_diagnostic_sessions(root)[0].session_id, session.session_id
+            )
+            legacy = root / session.session_id
+            session.directory.rename(legacy)
+            self.assertEqual(latest_finished_diagnostic_session(root).directory, legacy)
+            delete_saved_diagnostic_session(root, session.session_id)
+            self.assertFalse(legacy.exists())
+
+    def test_export_progress_does_not_replace_completed_result(self):
+        dialog = SupportCenterDialog(RuntimeSupportLog())
+        self.addCleanup(dialog.close)
+        dialog.set_export_started()
+        dialog.set_export_progress("Archiving game.mp4: 50%")
+        self.assertIn("Archiving game.mp4: 50%", dialog.operation_status.toPlainText())
+        dialog.set_export_result(True, "saved.zip")
+        dialog.set_export_progress("Late worker update")
+        self.assertIn("saved.zip", dialog.operation_status.toPlainText())
+        self.assertNotIn("Late worker update", dialog.operation_status.toPlainText())
+
     def test_restore_rejects_symlink_paths_and_bounded_oversize_metadata(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -625,7 +787,7 @@ class SavedReadingDiagnosticsTest(unittest.TestCase):
                 TrayApplication.export_reading_diagnostics(tray, saved.session_id)
             tray.support_export_runner.start.assert_called_once_with(
                 tray._build_support_bundle,
-                str(root / (live.session_id + ".zip")),
+                str(live.directory / "support.zip"),
                 None,
                 saved,
             )

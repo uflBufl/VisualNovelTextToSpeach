@@ -2832,6 +2832,7 @@ class SupportBundleBuilder:
         voice_library: VoiceLibrary | None = None,
         diagnostic_session: "ReadingDiagnosticSession | SavedDiagnosticSession | None" = None,
         profile_store_loader: Callable[[], GameProfileStore] | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> None:
         self.settings = settings
         self.event_log = event_log
@@ -2845,23 +2846,26 @@ class SupportBundleBuilder:
         self.voice_library = voice_library
         self.diagnostic_session = diagnostic_session
         self.profile_store_loader = profile_store_loader or GameProfileStore.load
+        self.progress = progress or (lambda message: None)
 
     def build(self, path: str | Path) -> Path:
         path = Path(path).expanduser()
         if path.suffix.casefold() != ".zip":
             path = path.with_suffix(".zip")
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.progress("Preparing diagnostic evidence...")
         session_entries = (
             self.diagnostic_session.export_entries()
             if self.diagnostic_session is not None
             else ()
         )
-        if session_entries:
-            required = sum(source.stat().st_size for _, source in session_entries)
-            if shutil.disk_usage(path.parent).free < required * 1.01 + 512 * 1024**2:
-                raise OSError(
-                    "Not enough free disk space to export diagnostic evidence"
-                )
+        total = sum(source.stat().st_size for _, source in session_entries)
+        if (
+            session_entries
+            and shutil.disk_usage(path.parent).free < total * 1.01 + 512 * 1024**2
+        ):
+            raise OSError("Not enough free disk space to export diagnostic evidence")
+        self.progress("Collecting technical logs...")
         active_content = collect_active_content_identity(self.settings)
         preparation = pregeneration_support.report()
         files = {
@@ -2954,12 +2958,32 @@ class SupportBundleBuilder:
                         filename,
                         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     )
+                completed = 0
+                updated = 0.0
                 for filename, source in session_entries:
+                    info = zipfile.ZipInfo(filename)
+                    suffix = source.suffix.casefold()
+                    info.compress_type = (
+                        zipfile.ZIP_STORED if suffix == ".mp4" else zipfile.ZIP_DEFLATED
+                    )
+                    if suffix in {".caf", ".wav"}:
+                        info.compress_level = 1
                     with (
                         open_regular_binary(source) as original,
-                        archive.open(filename, "w", force_zip64=True) as output,
+                        archive.open(info, "w", force_zip64=True) as output,
                     ):
-                        shutil.copyfileobj(original, output)
+                        while chunk := original.read(1024**2):
+                            output.write(chunk)
+                            completed += len(chunk)
+                            now = monotonic()
+                            if now - updated >= 0.1 or completed == total:
+                                self.progress(
+                                    f"Archiving {filename}: {completed / 1024**2:.1f} / "
+                                    f"{total / 1024**2:.1f} MiB "
+                                    f"({min(100, completed * 100 // max(1, total))}%)"
+                                )
+                                updated = now
+                self.progress("Finalizing archive...")
         return path
 
 

@@ -28,7 +28,8 @@ Reading
 [Play] [Pause]   [ Reverse: 1999       v ]
 Reading stopped
 
-> Reading options
+[Read once] [Compact]       [Details]
+[ ] Auto advance after speech
 ```
 
 Start changes to Cancel start or Stop in place. Pause stays visible while idle.
@@ -38,8 +39,8 @@ and restarts the interrupted line. Stop remains available while paused.
 Selecting another source ends the old session and its queued speech before
 binding the new target. Opening and dismissing the picker keeps reading.
 
-Keep **Reading options** below the controls. Its ordinary setting is whether
-the game should advance after speech. Reflect the saved choice and key binding.
+Show the one-shot read action, Compact, Details and the auto-advance setting
+directly below the primary controls. Reflect the saved choice and key binding.
 Changing a default for new installations is a separate product decision.
 Show the speaker and selected line on Reading as soon as dialogue arrives.
 Keep the line visible while paused or waiting, and clear it when the game changes.

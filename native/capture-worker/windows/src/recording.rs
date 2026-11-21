@@ -109,9 +109,17 @@ fn skipped_frames(previous: u64, current: u64) -> Result<u64, &'static str> {
         .ok_or("Video frame sequence did not advance")
 }
 
+fn capture_stop_reason<'a>(reason: Result<Option<&'a str>, &'a str>, failed: bool) -> &'a str {
+    match reason {
+        Ok(Some(reason)) | Err(reason) => reason,
+        Ok(None) if failed => "capture_failed",
+        Ok(None) => "duration",
+    }
+}
+
 #[cfg(windows)]
 mod native {
-    use super::Options;
+    use super::{capture_stop_reason, Options};
     use serde_json::{json, Value};
     use std::{
         fs,
@@ -429,10 +437,13 @@ mod native {
             if self.metadata.get("capture_stopped_monotonic_s").is_none() {
                 self.metadata["capture_stopped_monotonic_s"] = json!(clock()?);
             }
-            self.metadata["stop_reason"] = json!(reason
-                .as_ref()
-                .map(|r| r.unwrap_or("duration"))
-                .unwrap_or_else(|e| e.as_str()));
+            self.metadata["stop_reason"] = json!(capture_stop_reason(
+                reason
+                    .as_ref()
+                    .map(|reason| *reason)
+                    .map_err(String::as_str),
+                result.is_err(),
+            ));
             self.metadata["stop_requested"] = json!(matches!(reason, Ok(Some("requested_stop"))));
             self.metadata["elapsed_seconds"] = json!(self.begin.elapsed().as_secs_f64());
             match &result {
@@ -604,6 +615,25 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_failure_does_not_claim_the_requested_duration_elapsed() {
+        assert_eq!(capture_stop_reason(Ok(None), true), "capture_failed");
+        assert_eq!(capture_stop_reason(Ok(None), false), "duration");
+        for failed in [false, true] {
+            assert_eq!(
+                capture_stop_reason(Ok(Some("requested_stop")), failed),
+                "requested_stop"
+            );
+            assert_eq!(
+                capture_stop_reason(Ok(Some("duration")), failed),
+                "duration"
+            );
+            assert_eq!(
+                capture_stop_reason(Err("selected_process_exited"), failed),
+                "selected_process_exited"
+            );
+        }
+    }
     #[test]
     fn counts_initial_and_intermediate_video_losses() {
         assert_eq!(skipped_frames(0, 1), Ok(0));

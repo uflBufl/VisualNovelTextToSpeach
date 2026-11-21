@@ -599,7 +599,7 @@ class SupportCenterDialog(QDialog):
             self,
             "Delete diagnostic session?",
             f"Delete {item.text(0)} — {item.text(1)} ({item.text(2)})?\n"
-            "The session's logs and recordings will be permanently deleted.",
+            "The session's logs, recordings and saved archive will be permanently deleted.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -702,6 +702,7 @@ class SupportCenterDialog(QDialog):
         self.export_button.setEnabled(False)
         self._export_status = "Creating support report..."
         self._show_status()
+        self.body_scroll.ensureWidgetVisible(self.operation_status.viewport())
 
     def set_export_result(self, successful: bool | None, message: str) -> None:
         self._export_busy = False
@@ -716,6 +717,11 @@ class SupportCenterDialog(QDialog):
         else:
             self._export_status = message or "Support report export cancelled."
         self._show_status()
+
+    def set_export_progress(self, message: str) -> None:
+        if self._export_busy:
+            self._export_status = message
+            self._show_status()
 
 
 def _diagnostic_issue(

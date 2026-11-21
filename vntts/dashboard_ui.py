@@ -119,7 +119,7 @@ class RuntimeControlState:
             "Use original game audio, prepared audio or the configured live fallback "
             "for the indexed line; continue manually in the game."
             if self.indexed_current
-            else ""
+            else "Read the dialogue currently visible on screen once."
         )
 
     @property
@@ -198,7 +198,7 @@ def _apply_reading_capabilities(
     pause_button: QPushButton,
     icon_only: bool = False,
 ) -> None:
-    read_button.setText("Indexed line" if state.indexed_current else "Dialogue")
+    read_button.setText("Indexed line" if state.indexed_current else "Read once")
     read_button.setAccessibleName(state.read_label)
     read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
@@ -509,7 +509,7 @@ class ControlDashboard(QMainWindow):
         self.details_toggle.toggled.connect(self._set_details_expanded)
 
     def _build_action_buttons(self) -> QHBoxLayout:
-        self.read_button = QPushButton("Dialogue")
+        self.read_button = QPushButton("Read once")
         set_action_icon(self.read_button, "volume-2")
         self.live_button = QPushButton("")
         set_action_icon(self.live_button, "play")
@@ -736,20 +736,12 @@ class ControlDashboard(QMainWindow):
         layout.addWidget(self.story_context)
         layout.addWidget(self.sequence_notice)
         layout.addWidget(self.story_actions)
-        self.reading_optional_content = QWidget()
-        optional_layout = QVBoxLayout(self.reading_optional_content)
-        optional_layout.setContentsMargins(0, 0, 0, 0)
-        self.reading_optional_content.hide()
-        layout.addWidget(self.reading_optional_content)
         self.details_layout.addWidget(self.reading_defaults)
         self.details_layout.addWidget(self.speech_runtime)
         self.details_layout.addWidget(
             self.moss_runtime_button, 0, Qt.AlignmentFlag.AlignLeft
         )
         self.details_layout.addWidget(self.reading_policy)
-        detail_actions = QHBoxLayout()
-        detail_actions.addStretch(1)
-        detail_actions.addWidget(self.details_toggle)
         self.copy_details_button = copy_text_button("Copy details", self._copy_details)
         self.copy_details_button.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
@@ -757,8 +749,7 @@ class ControlDashboard(QMainWindow):
         self.details_layout.addWidget(
             self.copy_details_button, 0, Qt.AlignmentFlag.AlignLeft
         )
-        optional_layout.addLayout(detail_actions)
-        optional_layout.addWidget(self.details_content)
+        layout.addWidget(self.details_content)
         layout.addStretch(1)
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -813,32 +804,12 @@ class ControlDashboard(QMainWindow):
         self.details_layout.addWidget(self.capture_target)
         controls_layout.addLayout(control_status)
         controls_layout.addWidget(self.action_reason)
-        self.reading_options_toggle = QPushButton("Reading options")
-        self.reading_options_toggle.setCheckable(True)
-        self.reading_options_toggle.setAccessibleDescription(
-            "Show dialogue-once, compact controls and automatic page-turn options"
-        )
-        controls_layout.addWidget(
-            self.reading_options_toggle, 0, Qt.AlignmentFlag.AlignLeft
-        )
-        self.reading_options_content = QWidget()
-        options_layout = QVBoxLayout(self.reading_options_content)
-        options_layout.setContentsMargins(0, 0, 0, 0)
         reading_actions.addWidget(self.compact_button)
         reading_actions.addStretch()
-        options_layout.addLayout(reading_actions)
-        options_layout.addWidget(self.auto_advance_check)
-        self.reading_options_toggle.toggled.connect(
-            self.reading_options_content.setVisible
-        )
-        self.reading_options_toggle.toggled.connect(
-            self.reading_optional_content.setVisible
-        )
-        self.reading_options_content.hide()
-        controls_layout.addWidget(self.reading_options_content)
-        self.auto_advance_focus_frame = QFocusFrame(self.reading_options_content)
-        self.auto_advance_focus_frame.setWidget(self.auto_advance_check)
-        options_layout.addWidget(self.auto_advance_reason)
+        reading_actions.addWidget(self.details_toggle)
+        controls_layout.addLayout(reading_actions)
+        controls_layout.addWidget(self.auto_advance_check)
+        controls_layout.addWidget(self.auto_advance_reason)
         return controls
 
     def _build_stories_page(self) -> QWidget:
@@ -946,10 +917,10 @@ class ControlDashboard(QMainWindow):
         make_text_copyable(self)
         self.setTabOrder(self.live_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.game_window)
-        self.setTabOrder(self.game_window, self.reading_options_toggle)
-        self.setTabOrder(self.reading_options_toggle, self.read_button)
+        self.setTabOrder(self.game_window, self.read_button)
         self.setTabOrder(self.read_button, self.compact_button)
         self.setTabOrder(self.compact_button, self.auto_advance_check)
+        self.setTabOrder(self.auto_advance_check, self.details_toggle)
         self.setTabOrder(self.settings_button, self.setup_more_button)
         self.setTabOrder(self.setup_more_button, self.setup_primary_button)
         for form in self.findChildren(QFormLayout):
@@ -1542,8 +1513,6 @@ class ControlDashboard(QMainWindow):
         if loading and not state.active and not state.transition:
             self.live_button.setAccessibleName("Loading voice")
             self.live_button.setEnabled(False)
-        if state.indexed_current:
-            self.reading_options_toggle.setChecked(True)
         self.prepare_reading_button.setDefault(
             not state.ready and not state.active and not state.can_initialize
         )
@@ -1745,7 +1714,7 @@ class CompactController(QWidget):
         set_action_icon(self.live_button, "play")
         self.pause_button = QPushButton("")
         set_action_icon(self.pause_button, "pause")
-        self.read_button = QPushButton("Dialogue")
+        self.read_button = QPushButton("Read once")
         set_action_icon(self.read_button, "volume-2")
         self.sequence_expected_button = QPushButton("Use expected next line")
         set_action_icon(self.sequence_expected_button, "skip-forward")

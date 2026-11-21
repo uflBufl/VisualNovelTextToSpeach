@@ -517,7 +517,8 @@ class ReadinessDialog(QDialog):
         remediation = result.remediation
         signal = signals.get(remediation) if remediation is not None else None
         if signal is not None:
-            self.close()
+            if remediation not in {"story-area", "calibration"}:
+                self.close()
             signal.emit()
 
     def closeEvent(self, event: QCloseEvent) -> None:

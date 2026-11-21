@@ -80,12 +80,12 @@ errors invalidate cached pixels. Device-loss HRESULT is retained; reopen the
 session after the error. A first device-loss failure recreates the native source once; a second loss is explicit. Recovery clears cached pixels and preserves the session sequence, epoch and HRESULT/removal details on failure.
 
 Capture uses RGBA16F scRGB throughout the native pool and staging texture, then
-converts linear Rec.709 to SDR sRGB/BGRA8 with fixed global Reinhard peak mapping
-`rgb / (max(rgb) + 0.25)` before sRGB encoding. This compresses all channels
-together instead of clipping HDR channels independently; 80-nit scRGB white maps
-to 0.8 linear SDR. The fixed mapping also applies to SDR and avoids temporal
-auto-exposure changes. Alpha is opaque. This is implemented color conversion,
-not evidence of HDR display/game correctness. SDR/HDR visual fidelity, OCR,
+converts linear Rec.709 to SDR sRGB/BGRA8. SDR values retain their linear
+brightness before sRGB encoding; 80-nit scRGB white maps to SDR white. Pixels
+above SDR white are scaled together by their peak channel, preserving channel
+ratios instead of clipping channels independently. HDR highlight luminance
+above that white point is not retained in SDR output. Alpha is opaque. This is
+implemented color conversion, not evidence of HDR display/game correctness. SDR/HDR visual fidelity, OCR,
 latency and CPU cost have not been verified on Windows hardware.
 
 Real-game capture, occlusion, volume HUD, fullscreen, lifecycle/DPI transitions,

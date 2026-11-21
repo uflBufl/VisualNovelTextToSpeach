@@ -113,8 +113,7 @@ pub fn client_rect(
     Ok([x, y, client[2], client[3]])
 }
 
-/// scRGB linear Rec.709 (1.0 = 80 nit) to deterministic SDR sRGB.
-/// Fixed exposure plus a continuous peak-preserving shoulder avoids per-frame exposure pumping.
+/// scRGB linear Rec.709 (1.0 = 80 nit) to SDR sRGB, preserving SDR contrast.
 pub fn convert_rgba16f(
     input: &[u8],
     pitch: usize,
@@ -149,8 +148,8 @@ pub fn convert_rgba16f(
                 *value = value.max(0.0);
             }
             let peak = rgb.into_iter().fold(0.0_f32, f32::max);
-            // Fixed global Reinhard mapping: 80-nit scRGB white maps to 0.8 linear SDR.
-            let scale = 1.0 / (peak + 0.25);
+            // Only HDR peaks need fitting into SDR; scaling SDR pixels lifts shadows.
+            let scale = 1.0 / peak.max(1.0);
             let destination = (y * width + x) * 4;
             for channel in 0..3 {
                 let linear = (rgb[2 - channel] * scale).clamp(0.0, 1.0);
@@ -292,7 +291,7 @@ mod tests {
         }
         assert_eq!(
             convert_rgba16f(&data, 16, 1, 2).unwrap(),
-            vec![0, 0, 231, 255, 0, 0, 231, 255]
+            vec![0, 0, 255, 255, 0, 0, 255, 255]
         );
         assert!(convert_rgba16f(&data, 7, 1, 2).is_err());
         assert!(convert_rgba16f(&data[..20], 16, 1, 2).is_err());
@@ -308,9 +307,33 @@ mod tests {
         assert!(dimensions(i32::MAX, i32::MAX).is_err());
     }
     #[test]
-    fn hdr_highlights_are_compressed_not_channel_clipped() {
+    fn sdr_gray_ramp_keeps_the_srgb_transfer_and_white_point() {
+        // Exact half-float values: black, 1/1024, 1/16, 1/4, 1/2, white.
+        let ramp: Vec<_> = [0u16, 0x1400, 0x2c00, 0x3400, 0x3800, 0x3c00]
+            .into_iter()
+            .flat_map(|value| [value, value, value, 0x3c00])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            convert_rgba16f(&ramp, ramp.len(), 6, 1).unwrap(),
+            gray_pixels(&[0, 3, 71, 137, 188, 255])
+        );
+    }
+    #[test]
+    fn invalid_float_channels_are_bounded_without_changing_sdr_neighbors() {
+        let input: Vec<_> = [0x7c00u16, 0x7e00, 0xbc00, 0x3c00, 0x3800, 0x3400, 0, 0x3c00]
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            convert_rgba16f(&input, input.len(), 2, 1).unwrap(),
+            [0, 0, 0, 255, 0, 137, 188, 255]
+        );
+    }
+    #[test]
+    fn hdr_peaks_preserve_channel_ratios_in_sdr() {
         let result = convert_rgba16f(&[0, 0x49, 0, 0x45, 0, 0x41, 0, 0x3c], 8, 1, 1).unwrap();
-        assert!(result[2] < 255 && result[2] > result[1] && result[1] > result[0]);
+        assert_eq!(result, [137, 188, 255, 255]);
         assert_eq!(half(0x3c00), 1.0);
         assert_eq!(half(1), 2.0_f32.powi(-24));
     }

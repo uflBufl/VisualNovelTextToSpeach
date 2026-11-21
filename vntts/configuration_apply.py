@@ -1,6 +1,7 @@
 """Background application of already-persisted desktop configuration."""
 
 from collections.abc import Callable
+from enum import IntEnum
 from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Protocol
@@ -21,18 +22,21 @@ from vntts.settings import (
 )
 
 if TYPE_CHECKING:
+    from vntts.app import SettingsDialog
+    from vntts.durable_settings import CaptureAreaEdits
     from vntts.ocr import DialogRegion
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+
+
+class AreaSelection(IntEnum):
+    DIALOGUE = 2
+    STORY = 3
 
 
 class _ConfigurationDialog(Protocol):
     def exec(self) -> int: ...
 
     def settings(self) -> AppSettings: ...
-
-
-class _SettingsDialog(_ConfigurationDialog, Protocol):
-    def restore_initial_voice_bindings(self) -> None: ...
 
 
 class _Controller(Protocol):
@@ -103,6 +107,7 @@ class ConfigurationApplyMixin:
         sequence_resync_action: QAction
         sequence_expected_action: QAction
         _controller_busy: bool
+        _settings_area_dialog: SettingsDialog | None
         _last_saved_settings: AppSettings | None
         _controller_ready: bool
         _capture_setup_pending: bool
@@ -129,11 +134,11 @@ class ConfigurationApplyMixin:
 
         def show_error(self, message: str) -> None: ...
 
-        def _create_settings_dialog(self) -> _SettingsDialog: ...
+        def _create_settings_dialog(self) -> SettingsDialog: ...
 
-        def calibrate_story_area(self) -> None: ...
-
-        def calibrate(self) -> None: ...
+        def _pick_settings_area(
+            self, dialog: SettingsDialog, selection: AreaSelection
+        ) -> None: ...
 
         def _create_asset_manager_dialog(self) -> _ConfigurationDialog: ...
 
@@ -149,6 +154,7 @@ class ConfigurationApplyMixin:
             *,
             dialog_region: DialogRegion | None = None,
             story_region: DialogRegion | None = None,
+            area_edits: CaptureAreaEdits | None = None,
         ) -> Path: ...
 
         def _runtime_settings(
@@ -307,11 +313,18 @@ class ConfigurationApplyMixin:
         self.show_error(message)
 
     def _save_capture_selection(
-        self, candidate: AppSettings
+        self,
+        candidate: AppSettings,
+        areas: "CaptureAreaEdits | None" = None,
     ) -> tuple[AppSettings, Path]:
         candidate, changed = reconcile_capture_target(self.settings, candidate)
-        path = self._save_settings_candidate(candidate)
-        if changed:
+        if not areas:
+            path = self._save_settings_candidate(candidate)
+        else:
+            if candidate.capture_mode == "screen" and ("screen", None) in areas:
+                candidate = candidate.updated(onboarding_completed=True)
+            path = self._save_settings_candidate(candidate, area_edits=areas)
+        if changed or areas:
             if self._last_saved_settings is not None:
                 candidate = candidate.updated(
                     onboarding_completed=self._last_saved_settings.onboarding_completed
@@ -325,6 +338,7 @@ class ConfigurationApplyMixin:
         original_settings: AppSettings,
         *,
         restore_voice_bindings: Callable[[], None],
+        areas: "CaptureAreaEdits | None" = None,
     ) -> tuple[AppSettings, Path] | None:
         launch_changed = (
             updated_settings.launch_at_login != original_settings.launch_at_login
@@ -339,7 +353,7 @@ class ConfigurationApplyMixin:
                 )
                 return None
         try:
-            return self._save_capture_selection(updated_settings)
+            return self._save_capture_selection(updated_settings, areas)
         except (OSError, ValueError) as error:
             rollback_error = None
             if launch_changed:
@@ -356,6 +370,9 @@ class ConfigurationApplyMixin:
             return None
 
     def open_settings(self) -> None:
+        if self._settings_area_dialog is not None:
+            self.set_status("Finish or cancel area selection to return to Settings.")
+            return
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
@@ -367,8 +384,19 @@ class ConfigurationApplyMixin:
                 self.open_settings, "Stopping reading before opening Settings..."
             )
             return
-        dialog = self._create_settings_dialog()
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        self._edit_settings(self._create_settings_dialog())
+
+    def _edit_settings(
+        self, dialog: SettingsDialog, *, areas: "CaptureAreaEdits | None" = None
+    ) -> None:
+        if self._shutting_down:
+            dialog.reject()
+            return
+        result = dialog.exec()
+        if result in (AreaSelection.DIALOGUE, AreaSelection.STORY):
+            self._pick_settings_area(dialog, AreaSelection(result))
+            return
+        if result != QDialog.DialogCode.Accepted:
             return
         try:
             updated_settings = user_preferences(dialog.settings())
@@ -383,6 +411,7 @@ class ConfigurationApplyMixin:
             updated_settings,
             original_settings,
             restore_voice_bindings=dialog.restore_initial_voice_bindings,
+            areas=areas,
         )
         if saved is None:
             return
@@ -419,13 +448,6 @@ class ConfigurationApplyMixin:
             success_status=success_status,
             refresh_hotkeys=True,
             restart=bool(restart_changes and self._controller_ready),
-            after_apply=(
-                self.calibrate_story_area
-                if getattr(dialog, "story_area_requested", False) is True
-                else self.calibrate
-                if getattr(dialog, "dialogue_area_requested", False) is True
-                else None
-            ),
         )
 
     def open_assets(self) -> None:

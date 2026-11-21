@@ -174,14 +174,14 @@ class ControlDashboardTest(unittest.TestCase):
             self.assertTrue(dashboard.pause_button.isVisibleTo(dashboard))
             self.assertEqual(dashboard.live_button.text(), "")
             self.assertEqual(dashboard.pause_button.text(), "")
-            self.assertFalse(dashboard.read_button.isVisibleTo(dashboard))
-            self.assertFalse(dashboard.compact_button.isVisibleTo(dashboard))
+            self.assertTrue(dashboard.read_button.isVisibleTo(dashboard))
+            self.assertTrue(dashboard.compact_button.isVisibleTo(dashboard))
             self.assertTrue(dashboard.dialogue_card.isVisibleTo(dashboard))
         dashboard._quitting = True
         dashboard.close()
         dashboard.deleteLater()
 
-    def test_reading_controls_fit_narrow_window_with_options_disclosed(self):
+    def test_reading_controls_fit_narrow_window_with_details_open(self):
         dashboard = ControlDashboard(AppSettings(capture_mode="window"))
         dashboard.show_reading()
         dashboard.set_ready(True)
@@ -192,7 +192,7 @@ class ControlDashboardTest(unittest.TestCase):
         primary_position = dashboard.live_button.mapTo(
             dashboard, dashboard.live_button.rect().topLeft()
         )
-        dashboard.reading_options_toggle.click()
+        dashboard.details_toggle.click()
         self.application.processEvents()
         self.assertEqual(
             dashboard.live_button.mapTo(
@@ -372,11 +372,10 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.deleteLater()
         compact.deleteLater()
 
-    def test_closing_reading_options_keeps_dialogue_and_hides_details(self):
+    def test_closing_details_keeps_dialogue_and_controls(self):
         dashboard = ControlDashboard(AppSettings())
         dashboard.show_reading()
         dashboard.show()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.setChecked(True)
         dashboard.set_dialogue("Speaker", "A line")
         self.assertTrue(dashboard.dialogue.isVisibleTo(dashboard))
@@ -392,8 +391,8 @@ class ControlDashboardTest(unittest.TestCase):
                 guidance="Select the visible story position.",
             )
         )
-        dashboard.reading_options_toggle.setChecked(False)
-        self.assertFalse(dashboard.details_toggle.isVisibleTo(dashboard))
+        dashboard.details_toggle.setChecked(False)
+        self.assertTrue(dashboard.details_toggle.isVisibleTo(dashboard))
         self.assertTrue(dashboard.dialogue.isVisibleTo(dashboard))
         self.assertFalse(dashboard.configuration.isVisibleTo(dashboard))
         self.assertTrue(dashboard.story_context.isVisibleTo(dashboard))
@@ -500,7 +499,6 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.show_reading()
         dashboard.set_ready(True)
         dashboard.show()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.compact_button.setFocus()
         self.application.processEvents()
 
@@ -656,7 +654,6 @@ class ControlDashboardTest(unittest.TestCase):
     def test_optional_dialogue_scrolls_and_copies_exact_details(self):
         dashboard = ControlDashboard(AppSettings())
         dashboard.show_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.set_ready(True)
         dashboard.set_dialogue("Hotelier", "Your room is ready.")
         source = (
@@ -792,7 +789,6 @@ class ControlDashboardTest(unittest.TestCase):
                 font.setPointSize(point_size)
                 dashboard.dialogue.setFont(font)
                 dashboard.show_reading()
-                dashboard.reading_options_toggle.setChecked(True)
                 dashboard.set_ready(True)
                 dashboard.set_dialogue("Cornerstone", "One\nTwo\nThree\nFour")
                 dashboard.show()
@@ -830,7 +826,6 @@ class ControlDashboardTest(unittest.TestCase):
     def test_dialogue_refresh_preserves_selection_until_the_text_changes(self):
         dashboard = ControlDashboard(AppSettings())
         dashboard.show_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         text = "A long shared prefix. " * 40 + "First ending."
         dashboard.set_dialogue("Cornerstone", text)
         dashboard.show()
@@ -912,7 +907,6 @@ class ControlDashboardTest(unittest.TestCase):
 
     def test_recognition_refresh_preserves_selection_and_scroll(self):
         dashboard = ControlDashboard(AppSettings())
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.setChecked(True)
         dashboard.set_live(True)
         text = "A long recognized phrase. " * 80 + "Unfinished ending"
@@ -981,7 +975,6 @@ class ControlDashboardTest(unittest.TestCase):
                 dashboard = ControlDashboard(AppSettings())
                 dashboard.setFont(QFont(dashboard.font().family(), point_size))
                 dashboard.show_reading()
-                dashboard.reading_options_toggle.setChecked(True)
                 dashboard.details_toggle.setChecked(True)
                 dashboard.set_dialogue("Hotelier", "The complete selected dialogue.")
                 dashboard.set_recognition("First line\nSecond line")
@@ -1322,15 +1315,12 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_ready(True)
         self.assertTrue(dashboard.action_reason.isHidden())
         self.assertFalse(dashboard.copy_details_button.isVisibleTo(dashboard))
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.click()
         self.assertTrue(dashboard.copy_details_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.click()
         dashboard.set_ready(False, reason="Select a game window")
         self.assertTrue(dashboard.action_reason.isVisibleTo(dashboard))
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.resize(620, 440)
         self.application.processEvents()
         for button in (
@@ -1486,7 +1476,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertFalse(dashboard.dialogue_card.isVisibleTo(dashboard))
-        self.assertFalse(dashboard.details_toggle.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.details_toggle.isVisibleTo(dashboard))
         dashboard.set_dialogue("Speaker", "A line")
         dashboard.set_recognition("A recognized line")
         dashboard.set_diagnostic(
@@ -1499,7 +1489,6 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.speaker.accessibleName(), "Current dialogue speaker")
         self.assertFalse(dashboard.recognition_area.isVisibleTo(dashboard))
         self.assertFalse(dashboard.current_audio.isVisibleTo(dashboard))
-        dashboard.reading_options_toggle.click()
         self.assertTrue(dashboard.details_toggle.isVisibleTo(dashboard))
         self.assertFalse(dashboard.recognition_area.isVisibleTo(dashboard))
         self.assertFalse(dashboard.current_audio.isVisibleTo(dashboard))
@@ -1528,7 +1517,6 @@ class ControlDashboardTest(unittest.TestCase):
             QSizePolicy.Policy.Fixed,
         )
 
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.click()
 
         self.assertTrue(dashboard.details_content.isVisibleTo(dashboard))
@@ -1594,7 +1582,6 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(dashboard.sequence_group.isVisibleTo(dashboard))
 
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.click()
 
         self.assertTrue(dashboard.sequence_group.isVisibleTo(dashboard))
@@ -1793,7 +1780,6 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.sequence_expected_requested.connect(lambda: requested.append(True))
         dashboard.sequence_expected_button.click()
         self.assertEqual(requested, [True])
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.click()
         self.assertTrue(dashboard.sequence_expected_button.isVisibleTo(dashboard))
         dashboard.set_sequence_status(LiveSequenceStatus("audio-manual", "locked"))
@@ -2281,7 +2267,8 @@ class ControlDashboardTest(unittest.TestCase):
                 controls.set_runtime_controls(RuntimeControlState(ready=True))
                 self.assertEqual(controls.live_button.toolTip(), "Start reading")
                 self.assertEqual(
-                    controls.read_button.toolTip(), "Read current dialogue"
+                    controls.read_button.toolTip(),
+                    "Read the dialogue currently visible on screen once.",
                 )
                 self.assertTrue(controls.live_button.isEnabled())
                 self.assertTrue(controls.read_button.isEnabled())
@@ -2597,7 +2584,6 @@ class ControlDashboardTest(unittest.TestCase):
             )
         )
         dashboard.show_reading()
-        dashboard.reading_options_toggle.setChecked(True)
         dashboard.details_toggle.setChecked(True)
         dashboard.setMinimumHeight(200)
         dashboard.resize(720, 200)

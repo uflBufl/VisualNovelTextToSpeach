@@ -716,9 +716,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.wait_until(dialog.reading_export.isEnabled)
             self.assertTrue(dialog.reading_export.isEnabled())
             dialog.reading_export.click()
-            archive_path = (
-                Path(directory) / "reading-diagnostics" / (session.session_id + ".zip")
-            )
+            archive_path = session.directory / "support.zip"
             self.wait_until(
                 lambda: (
                     archive_path.is_file() and not tray.support_export_runner.active
@@ -7294,6 +7292,12 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.support_dialog.set_export_result.assert_not_called()
             self.assertTrue(tray_application.support_export_runner.active)
             builder.build.assert_not_called()
+            tray_application.signals.support_export_progress.emit(
+                "Archiving game.mp4: 50%"
+            )
+            tray_application.support_dialog.set_export_progress.assert_called_once_with(
+                "Archiving game.mp4: 50%"
+            )
             pool.tasks.pop(0).run()
             self.application.processEvents()
 
@@ -7306,6 +7310,7 @@ class TrayApplicationTest(unittest.TestCase):
             previous_session=tray_application.previous_session,
             audio_lifecycle=tray_application.audio_lifecycle,
             voice_library=tray_application.controller.voice_library,
+            progress=tray_application.signals.support_export_progress.emit,
         )
         builder.build.assert_called_once_with("support.zip")
         tray_application.support_dialog.set_export_result.assert_called_once_with(
@@ -9785,48 +9790,6 @@ class TrayApplicationTest(unittest.TestCase):
             tray.open_diagnostics()
             tray.diagnostics_dialog.story_area_button.click()
             calibrate.assert_called_once_with()
-
-    def test_settings_story_area_button_saves_and_requests_setup(self):
-        dialog = SettingsDialog(AppSettings(discover_text_layouts=False))
-        self.assertEqual(dialog.story_area_button.text(), "Set story area...")
-        dialog.story_area_button.click()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertTrue(dialog.story_area_requested)
-        self.assertTrue(dialog.settings().discover_text_layouts)
-
-    def test_story_setup_keeps_settings_validation_and_does_not_linger_after_error(
-        self,
-    ):
-        dialog = SettingsDialog(AppSettings())
-        dialog.screenshot_directory.clear()
-        dialog.story_area_button.click()
-        self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertFalse(dialog.story_area_requested)
-        self.assertIn("Screenshot directory", dialog.validation_summary.toPlainText())
-        with TemporaryDirectory() as directory:
-            dialog.screenshot_directory.setText(directory)
-            dialog.validate_and_accept()
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-        self.assertFalse(dialog.story_area_requested)
-
-    def test_story_setup_waits_for_normal_asynchronous_game_pack_validation(self):
-        with TemporaryDirectory() as directory:
-            pack = Path(directory) / "pack.json"
-            pack.touch()
-            dialog = SettingsDialog(AppSettings(screenshot_directory=directory))
-            dialog.game_pack.setText(str(pack))
-            pool = ManualThreadPool()
-            dialog.game_pack_runner.thread_pool = pool
-            with patch(
-                "vntts.app.apply_game_pack", side_effect=lambda settings, *_: settings
-            ):
-                dialog.story_area_button.click()
-                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
-                self.assertFalse(dialog.story_area_button.isEnabled())
-                pool.run_next()
-                self.application.processEvents()
-                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-                self.assertTrue(dialog.story_area_requested)
 
     def test_story_area_missing_profile_reports_error_without_global_fallback(self):
         controller = Mock()

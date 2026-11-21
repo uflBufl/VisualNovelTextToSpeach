@@ -286,6 +286,39 @@ class StoryAreaSetupTest(unittest.TestCase):
             get_story_region(capture_mode="window", game_window_title="Game")
         )
 
+    def test_settings_save_keeps_area_edits_for_each_source_and_clears_outgrown_story(
+        self,
+    ):
+        screen_dialogue = DialogRegion(0.1, 0.6, 0.8, 0.3)
+        full = DialogRegion(0, 0, 1, 1)
+        self.host._save_settings_candidate(
+            self.settings,
+            area_edits={
+                ("screen", None): (screen_dialogue, full),
+                ("window", "game"): (self.dialogue, self.story),
+            },
+        )
+        self.assertEqual(
+            get_story_region(capture_mode="window", game_window_title="Game"),
+            self.story,
+        )
+        self.host._save_settings_candidate(
+            self.settings, area_edits={("window", "game"): (full, None)}
+        )
+        self.assertIsNone(
+            get_story_region(capture_mode="window", game_window_title="Game")
+        )
+        self.host._save_settings_candidate(
+            self.settings.updated(capture_mode="screen", game_window_title=None)
+        )
+        self.assertEqual(
+            get_story_region(capture_mode="screen", game_window_title=None), full
+        )
+        self.assertEqual(
+            DialogRegion.from_mapping(json.loads(self.region_file.read_text())),
+            screen_dialogue,
+        )
+
     def test_stale_settings_are_rejected_before_any_story_grant(self):
         self.host._save_settings_candidate(self.settings)
         self.settings.updated(output_volume_percent=42).save(self.host._settings_path)
