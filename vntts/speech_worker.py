@@ -1920,8 +1920,7 @@ class IsolatedSpeechBackend:
                 )
             self._stop_requested.clear()
             process = self._ensure_worker(cancellation=cancellation)
-            if command_type != "set-live-mode":
-                self._synchronize_live_mode(process, cancellation=cancellation)
+            self._synchronize_live_mode(process, cancellation=cancellation)
             return self._exchange_value(
                 process, command_type, cancellation=cancellation, **values
             )
@@ -2015,18 +2014,14 @@ class IsolatedSpeechBackend:
         return changed
 
     def set_live_mode_active(self, active: bool) -> bool:
+        # The worker applies the requested mode before its next speech operation.
         self._live_mode_active = bool(active)
         if self.deferred_startup:
-            if not active:
+            if active:
+                self.load_in_background()
+            else:
                 self.cancel_startup()
-                return False
-            self.load_in_background()
-            return True
-        if not active and (self.process is None or self.process.poll() is not None):
-            return False
-        result = bool(self._request_value("set-live-mode", active=bool(active)))
-        self._worker_live_mode = bool(active)
-        return result
+        return bool(active)
 
     @property
     def startup_pending(self) -> bool:

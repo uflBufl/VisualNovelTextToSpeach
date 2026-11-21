@@ -969,6 +969,47 @@ class WorkerRenderCancellationTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_live_controls_remain_available_while_pocket_restarts_for_speech(self):
+        # Stop can retire the eagerly loaded process during synthesis.
+        with (
+            patch.object(IsolatedSpeechBackend, "_prepare_runtime"),
+            patch.object(IsolatedSpeechBackend, "_start_worker") as launch,
+        ):
+            backend = IsolatedSpeechBackend("pocket-tts", CharacterVoiceRegistry())
+            self.addCleanup(backend.shutdown)
+            launch.reset_mock()
+            self.assertTrue(backend.set_live_mode_active(True))
+            launch.assert_not_called()
+
+        loading, release = Event(), Event()
+
+        def restart(**_options):
+            loading.set()
+            release.wait()
+            backend.process = FakeProcess(None)
+
+        with (
+            patch.object(backend, "_start_worker", side_effect=restart),
+            patch.object(backend, "_exchange_value", return_value=True) as exchange,
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            prime = pool.submit(backend.prime, "Narrator")
+            try:
+                self.assertTrue(loading.wait(3))
+                self.assertFalse(
+                    pool.submit(backend.set_live_mode_active, False).result(3)
+                )
+            finally:
+                release.set()
+            self.assertTrue(prime.result(3))
+        self.assertEqual(
+            [
+                (call.args[1], call.kwargs.get("active"))
+                for call in exchange.call_args_list
+            ],
+            [("set-live-mode", False), ("prime", None)],
+        )
+
     def test_parent_preserves_only_explicit_configuration_errors_from_worker(self):
         for command in ("prime", "render"):
             for wire_error, expected in (

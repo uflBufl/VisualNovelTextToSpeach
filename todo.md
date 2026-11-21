@@ -2,8 +2,6 @@
 
 ## Windows Reading follow-up
 
-- [ ] Move blocking Pocket worker startup and live-mode activation off the UI
-      thread. Keep Start, cancellation and window switching responsive.
 - [ ] Treat superseded story-caption frames as cancellations in live capture.
       Continue with the current frame and report actual capture failures.
 
