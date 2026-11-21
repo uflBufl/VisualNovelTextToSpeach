@@ -398,7 +398,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Repair current GitHub CI failures
 
 - [ ] Qualify native UI test ownership so discarded tray widgets are destroyed on the GUI thread; obtain a reproducible owner/lifetime sequence before changing it. If native app exit0 after initial UI readiness recurs unexpectedly, capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit remains unconfirmed. Keep that exit investigation separate from the reproduced retired-signal completion and from Rust feeding.
-- [ ] Verify on Windows CI that the watchdog terminates a process held open by a worker after the last test has finished.
 
 ## Follow the system audio output during playback
 

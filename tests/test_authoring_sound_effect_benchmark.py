@@ -567,7 +567,9 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                             ),
                         )
                     self.assertTrue(output.is_symlink())
-                    self.assertEqual(output.resolve(), target.resolve())
+                    link_target = output.readlink()
+                    self.assertTrue(link_target.parent.samefile(target.parent))
+                    self.assertEqual(link_target.name, target.name)
                     self.assertEqual(target.exists(), kind != "missing")
                     if target.exists():
                         self.assertEqual(

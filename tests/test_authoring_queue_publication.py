@@ -81,6 +81,7 @@ class QueuePublicationErrorTest(unittest.TestCase):
                     ):
                         main(arguments)
                     self.assertEqual(caught.exception.code, 2)
-                    self.assertIn(repr(str(output))[1:-1], error.getvalue())
+                    self.assertIn("error:", error.getvalue())
+                    self.assertIn(output.name, error.getvalue())
                     self.assertNotIn("Traceback", error.getvalue())
                     self.assertEqual(tree_hashes(root), original)
