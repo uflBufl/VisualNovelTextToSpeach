@@ -12693,7 +12693,7 @@ class TrayApplicationTest(unittest.TestCase):
                     ("prepare", visible.isVisible())
                 )
 
-                def capture(*, capture_context):
+                def capture(*, capture_context, prepare_live, region, story_region):
                     with capture_context():
                         observed.append(("capture", visible.isVisible()))
                         if outcome == "capture-error":
