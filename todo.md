@@ -1,29 +1,30 @@
 # TODO
 
+## Windows Reading follow-up
+
+- [ ] Fix live Pocket voice selection for Horropedia. The exact story line
+      `reverse1999:303901:7` used `voice:narrator:reference-1` on build
+      `f11f153c`. Identify why the installed reference was skipped or unavailable.
+- [ ] Remember Dialogue and Story areas separately for screen capture and each
+      known game window. Restore both on return and calibrate new targets once.
+- [ ] Integrate output-loss recovery into the fixed Reading transport row.
+      Keep icon-only Start/Stop and Pause/Resume visible beside the capture
+      source. Preserve startup cancellation and prevent duplicate clicks.
+- [ ] Move blocking Pocket worker startup and live-mode activation off the UI
+      thread. Keep Start, cancellation and window switching responsive.
+- [ ] Treat superseded story-caption frames as cancellations in live capture.
+      Continue with the current frame and report actual capture failures.
+
 ## Reader-first desktop experience
 
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
       and returning players. Ask them to choose a window, hear a line, switch
       games, stop, and find the page-turn setting without guidance.
-- [ ] On Windows, start a specific chapter from its preparation screen and
-      verify that Reading keeps that selection. Check keyboard access to the
-      game window picker.
+- [ ] Check keyboard access to the game window picker on Windows.
 - [ ] On macOS, exercise game audio and focus changes with a prepared chapter.
       Verify keyboard access to the window picker and Stop.
-
-## Active - Support 111 Reading holds
-
-Evidence: `111.7z`, nested support bundle, build `579f9a70`, 2026-11-17.
-This run predates the trust-after-admission changes.
-
-- [ ] Qualify completed-dialogue navigation on Windows when uncertain OCR blocks
-      an unsent transition. Gate: fresh confirmation
-      of the current dialogue resumes the unsent transition after audio finishes;
-      uncertainty alone never dispatches a key, and changing dialogue/layout,
-      failed speech or Stop prevents an old request from firing. Check both
-      prepared Reading and direct screen reading, without repeated speech or
-      duplicate keys. Capture a new recording if a hold remains; the latest
-      passage through lines77/80 has uncertainty only after the key was sent.
+- [ ] On macOS, qualify native output recovery after removing and reconnecting
+      headphones during Reading, voice preview and CLI playback.
 
 ## Active - Support 31 Reading and recorder defects
 
@@ -42,36 +43,8 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 ## Active - Support 30 Windows Reading repairs
 
 Evidence: `vntts-support (30).zip` and `reading-diagnostics.7z`, build
-`e7bf2665`, 2026-11-17. Use matching archived source; the local one-time setup
-changes were not part of this run. Recording media is empty, so sword/costume
-identity remains a user observation rather than a verified image.
+`e7bf2665`, 2026-11-17.
 
-Priority: fix Reading correctness first, then recognition latency and progress. Repair diagnostic recording last; missing media must
-not block fixes supported by existing evidence and deterministic regressions.
-Recheck archived findings against current main before implementation.
-
-- [ ] Qualify restored lower-dialogue navigation on Windows after central
-      captions and temporary layout changes. Fresh completion evidence must
-      rearm an unsent advance, while completed/uncertain input attempts, Clear,
-      audio failure and Stop must not produce a second or late key. Repeat the
-      observed holds after lines13 and17 under background generation; deterministic
-      regressions cover the shared occurrence lease but empty media does not
-      establish the exact layout sequence in the archived run.
-- [ ] Qualify dialogue-body priority on Windows with and without a prepared
-      source: visible lower dialogue must keep reading despite outside artwork,
-      multiple blocks or uncertain caption OCR. Verify the ordinary crop remains
-      active through repeated frames, Clear and Stop. With an empty body, a
-      remaining nameplate must neither block nor join a central caption.
-      Repeat the native sword-hilt and Hedone scenes, retaining exact pixels when
-      available; `5 YEARS ESS` does not prove the reported sword's identity.
-      Correlate layout/profile/selected bounds in diagnostic evidence. Detection
-      box false positives/negatives still need qualification on real scenes.
-- [ ] **Speaker crop on character artwork:** capture original/processed speaker
-      images through working Live diagnostics for the reported Hedone costume/name
-      confusion. Current raw evidence
-      includes `Es`, `a EES` and `ESS`; source matching can still restore the
-      correct character. Establish which selected crop/layout admitted artwork
-      before changing name detection. Keep source-derived speaker provenance.
 - [ ] **Pre-OCR latency qualification:** on Windows, correlate capture, layout
       detection, queueing, OCR and canonical admission separately under actual
       background generation. Recheck the same scene with static and changing
@@ -84,32 +57,13 @@ Recheck archived findings against current main before implementation.
 - [ ] On Windows, check screen feedback on uncertain or empty observations and
       copy the recognized fragment during background generation. After Stop and
       restart, confirm a previous fragment is not shown for the new dialogue.
-- [ ] On Windows, verify that cancellation, resume, priority changes and publication
-      retain completed audio during background Reading.
+- [ ] Verify that changing generation priority preserves completed audio.
 
 ## Active - Remaining Windows Reading qualification
 
-- [ ] In full setup, select the Dialogue and Story areas on an ordinary game
-      frame and finish without waiting for centered text. After changing games,
-      confirm setup requires bounds for the new game.
-- [ ] On Windows, switch Settings to Screen region, select Dialogue area and
-      Story area on an ordinary game frame, then cancel an adjustment and
-      confirm the saved bounds are retained. In Reading, start narration
-      without selecting a window, advance manually, and stop. Switch back to
-      window capture and confirm that window selection and focus checks return.
 - [ ] After an unavailable optional announcement, change to a working narrator
       or engine and verify retry. Suppressing repeated failures is not external
       Pocket cloning authorization.
-- [ ] Qualify bounded OCR recovery on an already fully observed current line,
-      while genuinely unreadable frames keep waiting. Keep this separate from
-      the restored-layout readiness defect above.
-
-## Live character voices from installed game references
-
-- [ ] On Windows with Pocket, read the opening of An-an Lee's first anecdote
-      without preparing the chapter or assigning Horropedia a voice. Listen
-      to his dialogue and check that the support export for
-      `reverse1999:303901:7` shows `voice:horropedia:reference-1`.
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
@@ -129,8 +83,8 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Remaining SQLite runtime generation qualification
 
-- [ ] On Windows, verify resume, cancellation, fallback and review, including
-      newly committed audio becoming available to an already active reader.
+- [ ] On Windows, verify fallback, review and newly committed audio becoming
+      available to an already active reader.
       Confirm publication does not replace an open database or require working
       JSON.
 
@@ -160,8 +114,8 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Native chapter UX and prepared-voice trial (2026-10-25)
 
-- [ ] **UX-25-02: прокрутка в Stories.** Проверить прокрутку списка историй
-      и области подробностей физическим колесом мыши или трекпадом.
+- [ ] **UX-25-02: Stories scrolling.** Check the story list and details pane
+      with a physical mouse wheel or trackpad.
 
 ## Active - Windows story import and persistence
 
@@ -278,11 +232,6 @@ Recheck archived findings against current main before implementation.
       containing an extra number/negation must remain unresolved rather than discard
       that content as decoration. Keep raw observations and prepared route identity
       when diagnosing a miss.
-      Include ordinary progressive reading without a sequence plan: a complete
-      exact current line with low OCR confidence must confirm the accepted
-      dialogue during and after playback, without replay or a stalled advance.
-      Preserve the actual confidence; prefixes, other text and retired ownership
-      after Stop/Read or configuration changes must not authorize continuation.
 
 - [ ] Complete only unexercised controls: failed/not-ready policy and
       manual/other punctuation. Prepared Pause/Resume,
@@ -319,9 +268,6 @@ Other remaining defects and native checks:
      retain its query/worker IDs and last parent/native phase. Verify that
      failed playback does not advance the game and that ordinary Stop/Start
      replaces the failed worker and plays the prepared phrase once.
-   - **True Pause/Resume (RUN-29-01), remaining paths:** check output device
-     changes while paused. Keep one native session/clip identity and compare
-     retained audio with the source around the pause boundary.
    - For punctuation-only dialogue encountered in game, preserve the shown
      signs and speaker, suppress duplicate transitions and symbol-only TTS, and
      retain original/prepared audio and approved spoken projections. Unreadable
@@ -407,12 +353,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Repair current GitHub CI failures
 
 - [ ] Qualify native UI test ownership so discarded tray widgets are destroyed on the GUI thread; obtain a reproducible owner/lifetime sequence before changing it. If native app exit0 after initial UI readiness recurs unexpectedly, capture the quit reason and in-flight task/drain order; manual closure versus unexpected exit remains unconfirmed. Keep that exit investigation separate from the reproduced retired-signal completion and from Rust feeding.
-
-## Follow the system audio output during playback
-
-- [ ] On Windows, switch headphones mid-line in Reading. Confirm the game waits
-      and Replay dialogue plays the interrupted line from the start on the new output.
-- [ ] Verify hotplug on real macOS and Windows headphones while Reading, sample playback and headless CLI playback are active, including disconnect/reconnect and recovery after no output is available.
 
 ## Continue regular-file admission through remaining integrity owners
 
@@ -512,29 +452,13 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       canonical `reverse1999` provider without relabelling arbitrary indexes.
       Confirm reopening the existing job enables selected-source ASR
       classification and prepares a sequence plan before stage playback.
-- [ ] **Diagnose Stage 1 auto-advance stalls on Windows:** the September 29
-      archive has 21 `story-line-no-match` routes and seven dispatched keys with
-      no confirmed successor. New bounded frame-gate counters now distinguish
-      fingerprint resets from stable confirmations without retaining dialogue.
-      Reproduce one stall and manual advance in the same stage, classify its
-      cursor/OCR/focus transition, including cases where a short phrase is read
-      but the next dialogue never advances. Check why a manual skip can
-      leave the next line silent or require restarting Reading. Fix the proven
-      boundary, not just the timeout; never blindly resend a key, and preserve
-      one key per dialogue. Identify which unmatched routes are OCR/nameplate errors.
-- [ ] **Validate Stage 1 post-playback skips on Windows:** rerun
-      `reverse1999:314501:10` (Nowa Miedź office) and `:71` (gray-and-white
-      clothing) after the tracker accepts equivalent OCR spelling and line-wrap
-      variants. Confirm each completed playback advances once without extra
-      audio; a genuinely changed line must still remain blocked.
 - [ ] **Complete remaining native acceptance after OCR-cancellation repair.**
       Repeat prepared reading with background MOSS and selected-window/process-audio
       recording. Verify genuine incomplete phrases wait and admitted phrases complete
       without unsolicited interruption. Inspect `observation-invalidated` and
       `queue-cancelled` with confidence/threshold and playback ownership to identify
       any remaining interruption; uncertain OCR must withhold auto-advance without
-      suppressing admitted speech. Retain one-key-per-completion, mid-clip Pause/Resume and Stop/restart
-      as regression gates. Run from a cold worker after the capture-arming repair
+      suppressing admitted speech. Run from a cold worker after the capture-arming repair
       so the first clip is qualified too, and verify a replacement worker arms its
       own process tap before PCM. Explicit recording failure must remain visible
       and mark the measurement incomplete while allowing Reading to continue.
@@ -546,15 +470,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       and known story lines must resolve before live synthesis. Inspect unstable
       nameplate pixels if the visual-successor gate still resets to one candidate
       frame.
-- [ ] **Validate Start/Stop on Windows:** the button now changes to `Cancel start`
-      while chapter identification runs, then `Stopping reading...` and disabled
-      while capture/speech quiesces; all launch surfaces share the transition.
-      Verify a rapid double-click cannot restart reading or duplicate Stop, and
-      that returning to Stories during reading leaves preparation progress and
-      Cancel usable. Compare `live-stop-interrupt` with `live-stop-quiescence`
-      in the next support log to isolate any remaining multi-second delay; the
-      earlier archive recorded `_wait_for_live_reader` at 5021 ms. Keep a
-      stalled start, and investigate any stop timeout before changing limits.
 - [ ] **Validate matching game speech on Windows:** offline preparation now
       measures selected installed clips and classifies exact timed cues with a
       pinned local ASR model before generating; untimed or partial cues remain
