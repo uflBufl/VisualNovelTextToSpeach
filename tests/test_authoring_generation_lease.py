@@ -73,7 +73,7 @@ class ProcessInspectionTests(unittest.TestCase):
                 patch("sys.platform", platform),
                 patch.object(lease_module.os, "kill") as kill,
                 patch.object(lease_module, "_inspect_windows_process") as windows,
-                patch.object(lease_module.subprocess, "run") as ps,
+                patch.object(lease_module, "run_process") as ps,
                 patch("psutil.Process") as psutil_process,
             ):
                 self.assertEqual(inspect_process_status(value), "unknown")
@@ -109,8 +109,8 @@ class ProcessInspectionTests(unittest.TestCase):
                     lease_module, "_inspect_windows_process", return_value="live"
                 ) as windows,
                 patch.object(
-                    lease_module.subprocess,
-                    "run",
+                    lease_module,
+                    "run_process",
                     return_value=Mock(stdout="start identity\n"),
                 ) as ps,
             ):
@@ -197,7 +197,7 @@ class ProcessInspectionTests(unittest.TestCase):
         with (
             patch("vntts.authoring.generation_lease.sys.platform", "win32"),
             patch(
-                "vntts.authoring.generation_lease.subprocess.run",
+                "vntts.authoring.generation_lease.run_process",
                 side_effect=FileNotFoundError,
             ),
             patch("psutil.Process") as process,

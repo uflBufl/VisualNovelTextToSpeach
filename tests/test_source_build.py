@@ -42,9 +42,7 @@ class SourceBuildTest(unittest.TestCase):
                 self.subTest(platform=platform),
                 patch.object(build.sys, "platform", platform),
                 patch.dict(os.environ, {"CARGO_BUILD_TARGET": "another-target"}),
-                patch.object(
-                    build.subprocess, "run", side_effect=self.run_command
-                ) as run,
+                patch.object(build, "run_process", side_effect=self.run_command) as run,
             ):
                 build.build()
                 commands = [entry.args[0] for entry in run.call_args_list]
@@ -116,7 +114,7 @@ class SourceBuildTest(unittest.TestCase):
                     "which",
                     side_effect=lambda name: None if name == missing else "tool",
                 ),
-                patch.object(build.subprocess, "run") as run,
+                patch.object(build, "run_process") as run,
                 self.assertRaises(RuntimeError),
             ):
                 build.build()
@@ -133,7 +131,7 @@ class SourceBuildTest(unittest.TestCase):
             with (
                 self.subTest(stage=stage),
                 patch.object(build.sys, "platform", "darwin"),
-                patch.object(build.subprocess, "run", side_effect=run_stage) as run,
+                patch.object(build, "run_process", side_effect=run_stage) as run,
             ):
                 self.assertEqual(build.main(), 7)
                 self.assertEqual(run.call_args.args[0][0], stage)
@@ -146,8 +144,8 @@ class SourceBuildTest(unittest.TestCase):
                 self.subTest(missing=missing),
                 patch.object(build.sys, "platform", "darwin"),
                 patch.object(
-                    build.subprocess,
-                    "run",
+                    build,
+                    "run_process",
                     return_value=subprocess.CompletedProcess(
                         [],
                         0,

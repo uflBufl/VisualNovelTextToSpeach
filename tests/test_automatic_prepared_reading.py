@@ -7,11 +7,16 @@ from unittest.mock import Mock, patch
 
 from vntts_artifacts.generated_audio import text_sha256
 
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.story_fixtures import write_synthetic_game_pack
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.current_voice import CurrentVoiceSnapshot
-from vntts.generated_audio import GeneratedAudioRoute, LiveTTSRoute
+from vntts.generated_audio import (
+    GeneratedAudioFallbackBackend,
+    GeneratedAudioRoute,
+    LiveTTSRoute,
+)
 from vntts.live import SpeechChunk
 from vntts.ocr import OCRResult
 from vntts.playback import PreparedPlayback
@@ -35,10 +40,13 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         self.snapshot = discover_prepared_audio(game_pack=pack)
         self.voices = Mock(spec=CurrentVoiceSnapshot)
         self.voices.matches.return_value = True
-        self.capture = patch(
-            "vntts.controller.CurrentVoiceSnapshot.capture", return_value=self.voices
-        ).start()
-        self.addCleanup(patch.stopall)
+        self.capture = self.enterContext(
+            patch(
+                "vntts.controller.CurrentVoiceSnapshot.capture",
+                return_value=self.voices,
+            )
+        )
+        self.audio_output = FakeAudioOutput()
         self.discovery = Mock(side_effect=lambda *args, **kwargs: self.snapshot)
         self.controller = AppController(
             AppSettings(
@@ -49,6 +57,11 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
             ),
             voice_library=VoiceLibrary(self.root / "voice-library"),
             prepared_audio_discovery_factory=self.discovery,
+            generated_audio_backend_factory=lambda *args, **options: (
+                GeneratedAudioFallbackBackend(
+                    *args, audio_output=self.audio_output, **options
+                )
+            ),
         )
         self.voices.settings = self.controller.settings
         self.live = Mock()

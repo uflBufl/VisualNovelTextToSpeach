@@ -1,6 +1,7 @@
 """Shared Tesseract settings for native and subprocess OCR."""
 
 import subprocess
+from subprocess import run as run_process
 
 SAUVOLA_PARAMETERS: tuple[tuple[str, str], ...] = (
     ("thresholding_method", "2"),
@@ -21,7 +22,7 @@ def require_sauvola_cli(executable: str, timeout: float | None) -> None:
         return
     remedy = "Install Tesseract 5 or configure a matching Tesseract executable."
     try:
-        result = subprocess.run(
+        result = run_process(
             [executable, "--print-parameters"],
             capture_output=True,
             text=True,

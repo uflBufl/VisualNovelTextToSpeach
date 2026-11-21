@@ -12,6 +12,7 @@ from vntts_artifacts.story_index import (
     write_story_index_document,
 )
 
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.story_fixtures import (
     semantic_evidence_document,
     semantic_evidence_entry,
@@ -171,7 +172,9 @@ class SourceAudioSemanticEvidenceTest(unittest.TestCase):
                 preloader = ChapterVoicePreloader.load_optional(story.path)
                 line = preloader.line_for_id("test:0")
                 self.assertTrue(line.has_full_source_audio)
-                backend = GeneratedAudioFallbackBackend(None, None, preloader)
+                backend = GeneratedAudioFallbackBackend(
+                    None, None, preloader, audio_output=FakeAudioOutput()
+                )
                 backend.set_live_mode_active(True)
                 self.assertIsInstance(
                     backend.prepare_route(line.speaker, expected, line_id=line.line_id),

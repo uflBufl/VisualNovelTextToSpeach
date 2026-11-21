@@ -193,7 +193,7 @@ class TesseractConfigTest(unittest.TestCase):
     def test_supported_cli_is_checked_once_per_executable_with_bounded_timeout(self):
         parameters = "\n".join(f"{name}\t{value}" for name, value in SAUVOLA_PARAMETERS)
         with patch(
-            "vntts.tesseract_config.subprocess.run",
+            "vntts.tesseract_config.run_process",
             return_value=Mock(stdout=parameters),
         ) as run:
             require_sauvola_cli("configured", None)
@@ -218,7 +218,7 @@ class TesseractConfigTest(unittest.TestCase):
                     if name != missing
                 )
                 with patch(
-                    "vntts.tesseract_config.subprocess.run",
+                    "vntts.tesseract_config.run_process",
                     return_value=Mock(stdout=parameters),
                 ) as run:
                     for _attempt in range(2):
@@ -236,7 +236,7 @@ class TesseractConfigTest(unittest.TestCase):
         ):
             with (
                 self.subTest(error=type(error).__name__),
-                patch("vntts.tesseract_config.subprocess.run", side_effect=error),
+                patch("vntts.tesseract_config.run_process", side_effect=error),
             ):
                 with self.assertRaisesRegex(
                     RuntimeError, "Sauvola support.*Tesseract 5"

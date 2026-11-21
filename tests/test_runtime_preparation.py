@@ -23,7 +23,7 @@ class RuntimePreparationTest(unittest.TestCase):
 
         process.communicate.side_effect = wait
         with (
-            patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
+            patch("vntts.runtime_preparation.launch_process", return_value=process),
             patch("vntts.subprocess_utils.terminate_process") as terminate,
             self.assertRaisesRegex(TTSSynthesisError, "cancelled") as caught,
         ):
@@ -39,7 +39,7 @@ class RuntimePreparationTest(unittest.TestCase):
         process = Mock(returncode=0)
         process.poll.return_value = 0
         process.communicate.return_value = (b"stdout\n", b"stderr\n")
-        with patch("vntts.runtime_preparation.subprocess.Popen", return_value=process):
+        with patch("vntts.runtime_preparation.launch_process", return_value=process):
             self.assertEqual(
                 run_runtime_command(["tool"], cancellation=None), b"stdout\n"
             )
@@ -69,7 +69,7 @@ class RuntimePreparationTest(unittest.TestCase):
         process.poll.return_value = None
         use = Mock()
         with (
-            patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
+            patch("vntts.runtime_preparation.launch_process", return_value=process),
             patch("vntts.runtime_preparation.monotonic", side_effect=(0, 2)),
             patch("vntts.subprocess_utils.terminate_process") as terminate,
             self.assertRaisesRegex(TTSConfigurationError, "timed out"),
@@ -89,7 +89,7 @@ class RuntimePreparationTest(unittest.TestCase):
         cleanup_error = ValueError("termination failed")
         cleanup_error.add_note("termination context")
         with (
-            patch("vntts.runtime_preparation.subprocess.Popen", return_value=process),
+            patch("vntts.runtime_preparation.launch_process", return_value=process),
             patch("vntts.runtime_preparation.monotonic") as clock,
             patch(
                 "vntts.subprocess_utils.terminate_process", side_effect=cleanup_error
@@ -126,7 +126,7 @@ class RuntimePreparationTest(unittest.TestCase):
             try:
                 with (
                     patch(
-                        "vntts.runtime_preparation.subprocess.Popen", side_effect=spawn
+                        "vntts.runtime_preparation.launch_process", side_effect=spawn
                     ),
                     patch("vntts.runtime_preparation.monotonic", side_effect=clock),
                     self.assertRaises(OSError) as raised,
@@ -154,7 +154,7 @@ class RuntimePreparationTest(unittest.TestCase):
         use = Mock()
         with (
             patch(
-                "vntts.runtime_preparation.subprocess.Popen",
+                "vntts.runtime_preparation.launch_process",
                 side_effect=OSError("missing"),
             ),
             self.assertRaisesRegex(OSError, "missing"),
@@ -168,7 +168,7 @@ class RuntimePreparationTest(unittest.TestCase):
         use.launched.side_effect = OSError("launch marker unavailable")
         with (
             patch(
-                "vntts.runtime_preparation.subprocess.Popen",
+                "vntts.runtime_preparation.launch_process",
                 side_effect=OSError("missing executable"),
             ),
             self.assertRaisesRegex(OSError, "missing executable") as raised,

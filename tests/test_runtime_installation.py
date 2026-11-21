@@ -737,7 +737,7 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_already_cancelled_preparation_never_launches_a_child(self):
         cancellation = Event()
         cancellation.set()
-        with patch("vntts.runtime_preparation.subprocess.Popen") as popen:
+        with patch("vntts.runtime_preparation.launch_process") as popen:
             with self.assertRaisesRegex(TTSSynthesisError, "cancelled"):
                 ensure_speech_runtime("pocket-tts", cancellation=cancellation)
             popen.assert_not_called()

@@ -6,6 +6,7 @@ from threading import Event, RLock
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
+from tests.audio_output_fixtures import FakeAudioOutput
 from vntts.controller import AppController
 from vntts.controller_components import (
     LiveSessionComponent,
@@ -485,6 +486,7 @@ class RuntimeLifecycleTest(unittest.TestCase):
                         backend,
                         None,
                         controller.chapter_voice_preloader,
+                        audio_output=FakeAudioOutput(),
                         audio_source_policy="prefer-game-audio",
                     )
                 controller.runtime_lifecycle._apply_runtime_audio_settings()

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from subprocess import run as run_process
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -14,11 +15,11 @@ from vntts.path_safety import copy_regular_file  # noqa: E402
 
 def _run(command: list[str]) -> None:
     print(f"Running: {subprocess.list2cmdline(command)}", flush=True)
-    subprocess.run(command, cwd=ROOT, check=True)
+    run_process(command, cwd=ROOT, check=True)
 
 
 def _host_target() -> str:
-    result = subprocess.run(
+    result = run_process(
         ["rustc", "-vV"], cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True
     )
     for line in result.stdout.splitlines():

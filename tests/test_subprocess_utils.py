@@ -182,7 +182,7 @@ class TerminateProcessTest(unittest.TestCase):
                         "success": ValueError,
                     }[outcome]
                     with (
-                        patch("vntts.runtime_preparation.subprocess.Popen", factory),
+                        patch("vntts.runtime_preparation.launch_process", factory),
                         patch(
                             "vntts.subprocess_utils.terminate_process", side_effect=stop
                         ) as terminate,

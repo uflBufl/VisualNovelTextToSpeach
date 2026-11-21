@@ -458,7 +458,7 @@ class LinuxProbeTest(unittest.TestCase):
         ]
         with (
             patch.object(devices.shutil, "which", return_value="pactl"),
-            patch.object(devices.subprocess, "run") as run,
+            patch.object(devices, "run_process") as run,
         ):
 
             def observe(default="headphones"):
@@ -492,7 +492,7 @@ class LinuxProbeTest(unittest.TestCase):
         }
         with (
             patch.object(devices.shutil, "which", return_value="/usr/bin/pactl"),
-            patch.object(devices.subprocess, "run") as run,
+            patch.object(devices, "run_process") as run,
         ):
 
             def observation(default):
@@ -513,8 +513,8 @@ class LinuxProbeTest(unittest.TestCase):
         with (
             patch.object(devices.shutil, "which", return_value="pactl"),
             patch.object(
-                devices.subprocess,
-                "run",
+                devices,
+                "run_process",
                 side_effect=subprocess.TimeoutExpired("pactl", 1),
             ),
         ):

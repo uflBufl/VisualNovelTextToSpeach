@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from subprocess import Popen as launch_process
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
@@ -58,7 +59,7 @@ def run_runtime_command(
     if runtime_use is not None:
         runtime_use.begin_launch()
     try:
-        process = subprocess.Popen(
+        process = launch_process(
             command,
             stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,

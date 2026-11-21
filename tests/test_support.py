@@ -224,7 +224,7 @@ class NativeSpeechLogTest(unittest.TestCase):
         self.assertNotIn("/secret", str(report))
 
     def test_missing_git_does_not_prevent_build_report(self):
-        with patch("vntts.support.subprocess.run", side_effect=FileNotFoundError):
+        with patch("vntts.support.run_process", side_effect=FileNotFoundError):
             report = collect_build_identity()
         self.assertIsNone(report["git_commit"])
         self.assertIn("psutil", report["versions"])

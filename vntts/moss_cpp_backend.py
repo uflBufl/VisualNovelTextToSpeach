@@ -21,6 +21,7 @@ from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from pathlib import Path
+from subprocess import Popen as launch_process
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import TIMEOUT_MAX, Event, Lock, Thread
 from time import monotonic
@@ -268,7 +269,7 @@ def _launch_owned_process(
 ) -> tuple[subprocess.Popen[bytes], _WindowsKillOnCloseJob | None]:
     if sys.platform != "win32":
         return (
-            subprocess.Popen(
+            launch_process(
                 command,
                 stdin=stdin,
                 stdout=stdout,
@@ -278,7 +279,7 @@ def _launch_owned_process(
             ),
             None,
         )
-    process = subprocess.Popen(
+    process = launch_process(
         command,
         stdin=stdin,
         stdout=stdout,

@@ -1008,7 +1008,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
 
     def test_expired_preparation_deadline_never_launches_a_child(self):
-        with patch("vntts.diagnostic_recording.subprocess.Popen") as launch:
+        with patch("vntts.diagnostic_recording.launch_process") as launch:
             with self.assertRaises(TimeoutError):
                 _run_checked(
                     ["compiler"], threading.Event(), 90, deadline=time.monotonic() - 1

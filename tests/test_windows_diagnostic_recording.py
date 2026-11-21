@@ -128,7 +128,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
             patch("vntts.diagnostic_recording.sys.platform", "win32"),
             patch("vntts.diagnostic_recording.RecorderJob", return_value=job),
             patch(
-                "vntts.diagnostic_recording.subprocess.Popen", return_value=process
+                "vntts.diagnostic_recording.launch_process", return_value=process
             ) as spawn,
             patch("vntts.diagnostic_recording._stop_process") as stopped,
         ):
@@ -148,7 +148,7 @@ class WindowsDiagnosticRecordingTest(unittest.TestCase):
         with (
             patch("vntts.diagnostic_recording.sys.platform", "win32"),
             patch("vntts.diagnostic_recording.RecorderJob", return_value=job),
-            patch("vntts.diagnostic_recording.subprocess.Popen", return_value=process),
+            patch("vntts.diagnostic_recording.launch_process", return_value=process),
             patch("vntts.diagnostic_recording._stop_process") as stopped,
         ):
             with self.assertRaisesRegex(

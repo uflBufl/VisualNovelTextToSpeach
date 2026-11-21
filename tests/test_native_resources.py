@@ -67,7 +67,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
             patch("vntts.native_resources.psutil", psutil),
             patch("vntts.native_resources.os.getpid", return_value=1),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run(output),
             ),
         ):
@@ -140,7 +140,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
                         self.fake_psutil(native_samples=samples),
                     ),
                     patch(
-                        "vntts.native_resources.subprocess.run",
+                        "vntts.native_resources.run_process",
                         side_effect=FileNotFoundError(),
                     ),
                 ):
@@ -178,7 +178,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
                 self.subTest(status=status),
                 patch("vntts.native_resources.TemporaryFile", return_value=output),
                 patch.object(output, "close", side_effect=close_then_fail) as close,
-                patch("vntts.native_resources.subprocess.run", side_effect=primary),
+                patch("vntts.native_resources.run_process", side_effect=primary),
             ):
                 sampler = NativeResourceSampler(42)
                 self.assertIsNone(sampler._read_gpu_output())
@@ -199,7 +199,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
                 with (
                     patch("vntts.native_resources.psutil", None),
                     patch(
-                        "vntts.native_resources.subprocess.run", side_effect=failure
+                        "vntts.native_resources.run_process", side_effect=failure
                     ) as run,
                 ):
                     sampler = NativeResourceSampler(42)
@@ -230,7 +230,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", psutil),
             patch(
-                "vntts.native_resources.subprocess.run", side_effect=FileNotFoundError()
+                "vntts.native_resources.run_process", side_effect=FileNotFoundError()
             ),
         ):
             sampler = NativeResourceSampler(42).start()
@@ -245,7 +245,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", self.fake_psutil()),
             patch(
-                "vntts.native_resources.subprocess.run", side_effect=FileNotFoundError()
+                "vntts.native_resources.run_process", side_effect=FileNotFoundError()
             ),
         ):
             sampler = NativeResourceSampler(42)
@@ -279,7 +279,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
                 patch("vntts.native_resources.psutil", psutil),
                 patch("vntts.native_resources.os.getpid", return_value=1),
                 patch(
-                    "vntts.native_resources.subprocess.run",
+                    "vntts.native_resources.run_process",
                     side_effect=FileNotFoundError(),
                 ),
             ):
@@ -321,7 +321,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", psutil),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run(output),
             ) as run,
         ):
@@ -349,7 +349,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", self.fake_psutil()),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run(output),
             ),
         ):
@@ -399,7 +399,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
 
         with (
             patch("vntts.native_resources.psutil", psutil),
-            patch("vntts.native_resources.subprocess.run", side_effect=nvidia_run),
+            patch("vntts.native_resources.run_process", side_effect=nvidia_run),
         ):
             sampler = NativeResourceSampler(42)
             sampler._sample(1.0)
@@ -424,7 +424,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", self.fake_psutil()),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run("x" * 8193),
             ),
         ):
@@ -440,7 +440,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", self.fake_psutil()),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run("0, not-a-version, 10, 1e308, 1e308\n"),
             ),
         ):
@@ -459,7 +459,7 @@ class NativeResourceSamplerTest(unittest.TestCase):
         with (
             patch("vntts.native_resources.psutil", self.fake_psutil()),
             patch(
-                "vntts.native_resources.subprocess.run",
+                "vntts.native_resources.run_process",
                 side_effect=self.nvidia_run(output),
             ),
         ):

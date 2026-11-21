@@ -12,6 +12,7 @@ import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from subprocess import run as run_process
 from types import TracebackType
 from typing import Callable, Literal, SupportsInt, TypedDict, TypeGuard
 
@@ -124,7 +125,7 @@ def process_started_at(pid: object, *, timeout: float | None = None) -> str | No
     if process_id is None:
         return None
     try:
-        completed = subprocess.run(
+        completed = run_process(
             ("ps", "-o", "lstart=", "-p", str(process_id)),
             check=True,
             capture_output=True,

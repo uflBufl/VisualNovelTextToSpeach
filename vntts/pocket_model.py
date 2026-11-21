@@ -11,6 +11,7 @@ import threading
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
+from subprocess import Popen as launch_process
 
 from vntts.runtime_preparation import check_runtime_cancelled
 from vntts.subprocess_utils import terminate_running_process
@@ -198,7 +199,7 @@ def prepare_pocket_model(
     if runtime_use is not None:
         runtime_use.begin_launch()
     try:
-        process = subprocess.Popen(
+        process = launch_process(
             [str(interpreter), "-I", "-B", "-u", "-c", bootstrap, str(source)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

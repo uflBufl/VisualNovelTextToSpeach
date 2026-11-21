@@ -119,7 +119,7 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"VNTTS_AUDIO_WORKER": str(worker)}),
                 patch("vntts.rust_audio.portaudio_library", return_value="library"),
-                patch("vntts.rust_audio.subprocess.Popen") as launch,
+                patch("vntts.rust_audio.launch_process") as launch,
             ):
                 with self.assertRaises(AudioRuntimeUnavailable) as raised:
                     check_audio_runtime()
@@ -143,7 +143,7 @@ class AudioRuntimeAvailabilityTest(unittest.TestCase):
             return process
 
         with (
-            patch("vntts.rust_audio.subprocess.Popen", side_effect=tracked_launch),
+            patch("vntts.rust_audio.launch_process", side_effect=tracked_launch),
             patch.object(RustAudioWorker, "receive", side_effect=queue.Empty),
             self.assertRaisesRegex(RuntimeError, "startup timed out.*scripts/build.py"),
         ):

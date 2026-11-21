@@ -7,11 +7,13 @@ import json
 import select
 import subprocess
 from pathlib import Path
+from subprocess import Popen as launch_process
+from subprocess import run as run_process
 
 
 def run(recorder: Path, fixture: Path, output: Path, *, resize: bool = False) -> None:
-    subprocess.run([str(recorder), "--preflight"], check=True, timeout=5)
-    process = subprocess.Popen(
+    run_process([str(recorder), "--preflight"], check=True, timeout=5)
+    process = launch_process(
         [str(fixture), *(["--resize"] if resize else [])],
         stdout=subprocess.PIPE,
         text=True,
@@ -27,7 +29,7 @@ def run(recorder: Path, fixture: Path, output: Path, *, resize: bool = False) ->
             f"Capturing own generated fixture only: PID {target['pid']}, window {target['window_id']}",
             flush=True,
         )
-        subprocess.run(
+        run_process(
             [
                 str(recorder),
                 "--video-only",

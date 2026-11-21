@@ -17,6 +17,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, field
 from math import isfinite
 from pathlib import Path
+from subprocess import Popen as launch_process
 from threading import Event, Lock, RLock, Thread, current_thread
 from time import monotonic
 from typing import Any, cast
@@ -157,7 +158,7 @@ class RustAudioWorker:
             self.executable_path = str(
                 Path(shutil.which(command[0]) or command[0]).resolve()
             )
-            self.process = subprocess.Popen(
+            self.process = launch_process(
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

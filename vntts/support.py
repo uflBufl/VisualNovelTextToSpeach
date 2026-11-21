@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from statistics import mean
+from subprocess import run as run_process
 from threading import RLock
 from time import monotonic
 from types import TracebackType
@@ -3378,7 +3379,7 @@ def collect_build_identity() -> SupportDocument:
     root = Path(__file__).resolve().parent.parent
     if not getattr(sys, "frozen", False) and (root / ".git").exists():
         try:
-            commit = subprocess.run(
+            commit = run_process(
                 ["git", "rev-parse", "HEAD"],
                 cwd=root,
                 capture_output=True,
@@ -3389,7 +3390,7 @@ def collect_build_identity() -> SupportDocument:
             ).stdout.strip()
             if re.fullmatch(r"[0-9a-f]{40,64}", commit):
                 git_commit = commit
-            diff = subprocess.run(
+            diff = run_process(
                 [
                     "git",
                     "diff",

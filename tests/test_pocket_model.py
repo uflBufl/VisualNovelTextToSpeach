@@ -254,7 +254,7 @@ class PocketSetupProcessTests(unittest.TestCase):
         with (
             patch("vntts.pocket_model.pocket_model_ready", side_effect=[False, True]),
             patch(
-                "vntts.pocket_model.subprocess.Popen", return_value=process
+                "vntts.pocket_model.launch_process", return_value=process
             ) as launched,
         ):
             prepare_pocket_model(
@@ -276,7 +276,7 @@ class PocketSetupProcessTests(unittest.TestCase):
         process = self.process([{"kind": "terms"}])
         with (
             patch("vntts.pocket_model.pocket_model_ready", return_value=False),
-            patch("vntts.pocket_model.subprocess.Popen", return_value=process),
+            patch("vntts.pocket_model.launch_process", return_value=process),
             self.assertRaises(RuntimePreparationCancelled),
         ):
             prepare_pocket_model(
@@ -291,7 +291,7 @@ class PocketSetupProcessTests(unittest.TestCase):
     def test_existing_local_model_does_not_start_setup_process(self):
         with (
             patch("vntts.pocket_model.pocket_model_ready", return_value=True),
-            patch("vntts.pocket_model.subprocess.Popen") as launched,
+            patch("vntts.pocket_model.launch_process") as launched,
         ):
             prepare_pocket_model(
                 cancel_event=self.cancel,
@@ -309,7 +309,7 @@ class PocketSetupProcessTests(unittest.TestCase):
         with (
             patch("vntts.pocket_model.pocket_model_ready", side_effect=[False, True]),
             patch(
-                "vntts.pocket_model.subprocess.Popen", return_value=process
+                "vntts.pocket_model.launch_process", return_value=process
             ) as launched,
         ):
             prepare_pocket_model(

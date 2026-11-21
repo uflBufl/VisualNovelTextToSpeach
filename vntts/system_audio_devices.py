@@ -8,11 +8,11 @@ import os
 import re
 import shutil
 import struct
-import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import run as run_process
 from typing import Any, cast
 from uuid import UUID
 
@@ -513,7 +513,7 @@ def _linux_output_fingerprint() -> OutputDeviceSnapshot:
     if pactl:
 
         def query(*arguments: str) -> Any:
-            result = subprocess.run(
+            result = run_process(
                 [pactl, "--format=json", *arguments],
                 capture_output=True,
                 text=True,

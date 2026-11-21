@@ -2177,7 +2177,9 @@ class GeneratedAudioTest(unittest.TestCase):
             ambiguous = ChapterVoicePreloader(
                 (current, replace(current, line_id="game:1", chapter="archive"))
             )
-            preflight = GeneratedAudioFallbackBackend(None, library, ambiguous)
+            preflight = GeneratedAudioFallbackBackend(
+                None, library, ambiguous, audio_output=FakeAudioOutput()
+            )
             self.assertTrue(preflight.has_resolved_route_in_live_mode("Ada", "Hello."))
             self.assertIsNone(ambiguous.current_match)
             resolver = ChapterVoicePreloader((current,))
@@ -2231,7 +2233,7 @@ class GeneratedAudioTest(unittest.TestCase):
             with self.subTest(controls=controls):
                 live = self.create_live_backend()
                 backend = GeneratedAudioFallbackBackend(
-                    live, None, self.create_resolver()
+                    live, None, self.create_resolver(), audio_output=FakeAudioOutput()
                 )
                 for key, value in controls.items():
                     setattr(backend, key, value)

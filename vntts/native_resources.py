@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from subprocess import run as run_process
 from tempfile import TemporaryFile
 from threading import Event, Lock, Thread, current_thread
 from time import monotonic
@@ -331,7 +332,7 @@ class NativeResourceSampler:
             with cleanup_on_exit(
                 output.close, description="GPU probe transcript cleanup"
             ):
-                result = subprocess.run(
+                result = run_process(
                     [
                         "nvidia-smi",
                         "--query-gpu=index,driver_version,utilization.gpu,memory.used,memory.total",

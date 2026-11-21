@@ -11,6 +11,7 @@ import sys
 import time
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
@@ -41,6 +42,7 @@ from vntts.moss_cpp_backend import (
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.path_safety import open_regular_binary
 from vntts.pregeneration_voices import resolve_pregeneration_settings
+from vntts.runtime_preparation import run_runtime_command
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_worker import create_moss_worker_backend
@@ -307,7 +309,7 @@ class WindowsOwnedServerTest(unittest.TestCase):
                     with (
                         patch("vntts.moss_cpp_backend.sys.platform", "win32"),
                         patch(
-                            "vntts.moss_cpp_backend.subprocess.Popen",
+                            "vntts.moss_cpp_backend.launch_process",
                             return_value=process,
                         ) as popen,
                         patch(
@@ -573,6 +575,10 @@ class MossCppBackendTest(unittest.TestCase):
         self.probes = []
 
         def launch(command, **options):
+            if Path(command[0]).resolve() != Path(sys.executable).resolve() or not any(
+                flag in command for flag in ("--help", "--capabilities-json", "--port")
+            ):
+                return real_popen(command, **options)
             child = real_popen(
                 [sys.executable, str(self.script), *command[1:]], **options
             )
@@ -584,7 +590,30 @@ class MossCppBackendTest(unittest.TestCase):
                 self.children.append(child)
             return child
 
-        patch("vntts.moss_cpp_backend.subprocess.Popen", side_effect=launch).start()
+        patch("vntts.moss_cpp_backend.launch_process", side_effect=launch).start()
+        patch("vntts.runtime_preparation.launch_process", side_effect=launch).start()
+
+    def test_fixture_launchers_leave_foreign_subprocesses_real(self):
+        backend = self.backend()
+        with ThreadPoolExecutor(max_workers=1) as threads:
+            completed = threads.submit(
+                subprocess.run,
+                [sys.executable, "-c", "print('foreign subprocess')"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).result(timeout=15)
+            probe_output = threads.submit(
+                run_runtime_command,
+                [sys.executable, "-c", "print('foreign probe')"],
+                cancellation=None,
+                timeout=10,
+            ).result(timeout=15)
+        self.assertEqual(completed.stdout.strip(), "foreign subprocess")
+        self.assertEqual(probe_output.strip(), b"foreign probe")
+        self.assertEqual(len(self.children), 1)
+        self.assertIsNone(backend.server.poll())
 
     def backend(self, **options):
         backend = create_moss_worker_backend(

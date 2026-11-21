@@ -77,11 +77,11 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
                 return_value=([fixture.stdout], [], []),
             ),
             patch(
-                "scripts.mac_live_recording.run_fixture.subprocess.Popen",
+                "scripts.mac_live_recording.run_fixture.launch_process",
                 return_value=fixture,
             ),
             patch(
-                "scripts.mac_live_recording.run_fixture.subprocess.run",
+                "scripts.mac_live_recording.run_fixture.run_process",
                 side_effect=[None, RuntimeError("failed")],
             ) as command,
         ):
@@ -100,10 +100,10 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
     def test_missing_permission_does_not_launch_fixture(self):
         with (
             patch(
-                "scripts.mac_live_recording.run_fixture.subprocess.run",
+                "scripts.mac_live_recording.run_fixture.run_process",
                 side_effect=RuntimeError("no permission"),
             ),
-            patch("scripts.mac_live_recording.run_fixture.subprocess.Popen") as spawn,
+            patch("scripts.mac_live_recording.run_fixture.launch_process") as spawn,
         ):
             with self.assertRaisesRegex(RuntimeError, "no permission"):
                 run(Path("/recorder"), Path("/fixture"), Path("/output"))
@@ -120,10 +120,10 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
                 return_value=([fixture.stdout], [], []),
             ),
             patch(
-                "scripts.mac_live_recording.run_fixture.subprocess.Popen",
+                "scripts.mac_live_recording.run_fixture.launch_process",
                 return_value=fixture,
             ) as spawn,
-            patch("scripts.mac_live_recording.run_fixture.subprocess.run") as command,
+            patch("scripts.mac_live_recording.run_fixture.run_process") as command,
         ):
             output = Path(directory)
             run(Path("/recorder"), Path("/fixture"), output, resize=True)

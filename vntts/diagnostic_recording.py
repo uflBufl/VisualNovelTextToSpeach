@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable
 from contextlib import ExitStack
 from itertools import islice
 from pathlib import Path
+from subprocess import Popen as launch_process
 from threading import Condition, Event, Lock
 from time import monotonic
 from uuid import uuid4
@@ -109,7 +110,7 @@ def _run_checked(
         job = RecorderJob() if sys.platform == "win32" else None
         if job is not None:
             ownership.callback(job.close)
-        process = subprocess.Popen(
+        process = launch_process(
             command, stdout=log, stderr=subprocess.STDOUT, **_launch_options()
         )
         ownership.callback(_stop_process, process, 2)
@@ -453,7 +454,7 @@ class NativeDiagnosticRecording:
             job = RecorderJob() if sys.platform == "win32" else None
             if job is not None:
                 ownership.callback(job.close)
-            process = subprocess.Popen(
+            process = launch_process(
                 command, stdout=log, stderr=subprocess.STDOUT, **_launch_options()
             )
             ownership.callback(_stop_process, process, 2)
