@@ -12,6 +12,7 @@ import time
 import unittest
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
+from subprocess import run as run_process
 
 from vntts.cleanup import cleanup_on_exit, temporary_directory
 from vntts.cli import cli_message
@@ -272,7 +273,7 @@ def _run_shard(system: str, name: str, inventory: Path) -> int:
     transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     with cleanup_on_exit(transcript.close, description="Unittest transcript cleanup"):
         try:
-            completed = subprocess.run(
+            completed = run_process(
                 command,
                 timeout=SHARD_TIMEOUTS[system][name],
                 stdout=transcript,
@@ -483,7 +484,7 @@ def main(arguments: list[str] | None = None) -> int:
     system = platform.system()
     if system in SHARD_TIMEOUTS and arguments == ["discover", "-s", "tests"]:
         return _run_sharded_full_discovery(system)
-    completed = subprocess.run(
+    completed = run_process(
         [sys.executable, "-u", "-m", "unittest", *arguments],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

@@ -87,6 +87,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             return 1 if shard == "remainder-1" else 0
 
         with (
+            patch.dict(os.environ, {"GITHUB_ACTIONS": ""}),
             patch.object(
                 unittest.defaultTestLoader,
                 "discover",
@@ -117,7 +118,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                     ),
                 ),
                 patch(
-                    "scripts.run_ci_unittests.subprocess.run",
+                    "scripts.run_ci_unittests.run_process",
                     return_value=Mock(returncode=0),
                 ) as run,
             ):
@@ -399,7 +400,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 "scripts.run_ci_unittests.partition_ui_test_ids",
                 return_value=(("app-id",), (), (), ()),
             ),
-            patch("scripts.run_ci_unittests.subprocess.run", side_effect=primary),
+            patch("scripts.run_ci_unittests.run_process", side_effect=primary),
             patch(
                 "scripts.run_ci_unittests.tempfile.TemporaryFile",
                 side_effect=transcript,
@@ -436,7 +437,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 ),
             ),
             patch(
-                "scripts.run_ci_unittests.subprocess.run",
+                "scripts.run_ci_unittests.run_process",
                 run,
             ),
         ):
@@ -462,7 +463,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 1)
 
                 with (
-                    patch("scripts.run_ci_unittests.subprocess.run", side_effect=run),
+                    patch("scripts.run_ci_unittests.run_process", side_effect=run),
                     patch.dict(os.environ, {"GITHUB_ACTIONS": "1"}),
                     redirect_stdout(output),
                     redirect_stderr(errors),
@@ -516,7 +517,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                     return_value=0,
                 ) as sharded,
                 patch(
-                    "scripts.run_ci_unittests.subprocess.run",
+                    "scripts.run_ci_unittests.run_process",
                     return_value=Mock(returncode=0, stdout=""),
                 ) as run,
             ):
@@ -551,7 +552,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                     ),
                 ),
                 patch(
-                    "scripts.run_ci_unittests.subprocess.run",
+                    "scripts.run_ci_unittests.run_process",
                     return_value=Mock(returncode=0),
                 ) as run,
             ):

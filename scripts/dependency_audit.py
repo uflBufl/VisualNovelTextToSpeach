@@ -9,6 +9,7 @@ import sys
 import tomllib
 import urllib.request
 from pathlib import Path
+from subprocess import run as run_process
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,7 +117,7 @@ def main() -> None:
         for advisory in IGNORES.get(label, ()):
             command.extend(("--ignore", advisory))
         try:
-            subprocess.run(command, cwd=ROOT, check=True)
+            run_process(command, cwd=ROOT, check=True)
         except subprocess.CalledProcessError as error:
             package_failures.append(f"{label} (exit status {error.returncode})")
 

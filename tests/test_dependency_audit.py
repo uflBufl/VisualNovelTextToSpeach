@@ -21,7 +21,7 @@ class _Response(BytesIO):
 
 class DependencyAuditTests(unittest.TestCase):
     @patch("scripts.dependency_audit.query_osv", return_value={})
-    @patch("scripts.dependency_audit.subprocess.run")
+    @patch("scripts.dependency_audit.run_process")
     def test_qwen_exceptions_do_not_hide_new_findings_or_other_projects(
         self, run: MagicMock, _osv: MagicMock
     ) -> None:
@@ -49,7 +49,7 @@ class DependencyAuditTests(unittest.TestCase):
     @patch("scripts.dependency_audit.query_osv")
     @patch("scripts.dependency_audit.locked_git_commits")
     @patch("scripts.dependency_audit.projects")
-    @patch("scripts.dependency_audit.subprocess.run")
+    @patch("scripts.dependency_audit.run_process")
     def test_main_audits_projects_and_git_for_all_results(
         self,
         run: MagicMock,
