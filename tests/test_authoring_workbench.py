@@ -4135,7 +4135,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             )
             lease_path.write_bytes(json.dumps(lease, indent=2).encode() + b"\n")
             before = tree_hashes(created.directory)
-            with patch("sys.platform", "darwin"):
+            with patch("vntts.authoring.generation_lease.native_os", "posix"):
                 summary = inspect_workspace(
                     created.directory,
                     process_checker=checker,

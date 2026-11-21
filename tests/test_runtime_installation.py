@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
@@ -205,14 +206,14 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_runtime_claim_rejects_invalid_child_pids_before_recording_and_recovers(
         self,
     ):
-        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
+        for native_os, maximum in (("posix", 0x7FFFFFFF), ("nt", 0xFFFFFFFF)):
             for pid in (True, False, 0, -1, maximum + 1, 42.0, "42", None):
-                with self.subTest(platform=platform, pid=pid):
+                with self.subTest(native_os=native_os, pid=pid):
                     use = RuntimeUse(self.root / "claim-control")
                     use.begin_launch()
                     previous = use.path.read_bytes()
                     child = Mock(pid=pid, poll=Mock(return_value=0))
-                    with patch("sys.platform", platform):
+                    with patch("vntts.authoring.generation_lease.native_os", native_os):
                         with self.assertRaisesRegex(TTSConfigurationError, "malformed"):
                             use.launched(child)
                     self.assertEqual(use.path.read_bytes(), previous)
@@ -228,13 +229,13 @@ class RuntimeInstallationTest(unittest.TestCase):
     def test_runtime_claim_accepts_platform_pid_limits_and_releases_exited_children(
         self,
     ):
-        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
+        for native_os, maximum in (("posix", 0x7FFFFFFF), ("nt", 0xFFFFFFFF)):
             for pid in (1, maximum):
-                with self.subTest(platform=platform, pid=pid):
+                with self.subTest(native_os=native_os, pid=pid):
                     use = RuntimeUse(self.root / "claim-control")
                     use.begin_launch()
                     child = Mock(pid=pid, poll=Mock(return_value=0))
-                    with patch("sys.platform", platform):
+                    with patch("vntts.authoring.generation_lease.native_os", native_os):
                         use.launched(child)
                     self.assertEqual(read_record(use.path)["children"], [pid])
                     self.assertFalse(read_record(use.path)["launching"])
@@ -252,7 +253,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         new = self.prepared_runtime()
 
         with (
-            patch("sys.platform", "win32"),
+            patch("vntts.authoring.generation_lease.native_os", "nt"),
             patch(
                 "vntts.runtime_ownership.inspect_process_status", return_value="dead"
             ),
@@ -398,7 +399,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         (project / "uv.lock").write_text("version = 1\n", encoding="utf-8")
         (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         with (
-            patch("sys.platform", "darwin"),
+            patch("vntts.runtime_installation.sys", SimpleNamespace(platform="darwin")),
             patch("platform.machine", return_value="arm64"),
             patch(
                 "vntts.runtime_installation.run_runtime_command",
@@ -412,7 +413,10 @@ class RuntimeInstallationTest(unittest.TestCase):
             worker.deferred_startup = False
             worker.name = "qwen-tts"
             worker.runtime_root = old[0]
-            with patch.object(IsolatedSpeechBackend, "_launch_worker"):
+            with (
+                patch("vntts.speech_worker.sys", SimpleNamespace(platform="darwin")),
+                patch.object(IsolatedSpeechBackend, "_launch_worker"),
+            ):
                 worker._start_worker()
             self.assertIsNotNone(worker._runtime_use)
 
@@ -434,7 +438,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         worker.runtime_root = Path("/runtime")
         use = Mock()
         with (
-            patch("sys.platform", "darwin"),
+            patch("vntts.speech_worker.sys", SimpleNamespace(platform="darwin")),
             patch("vntts.runtime_ownership.claim_runtime", return_value=use) as claim,
             patch.object(IsolatedSpeechBackend, "_launch_worker"),
         ):
@@ -795,7 +799,7 @@ class RuntimeInstallationTest(unittest.TestCase):
         ):
             with (
                 self.subTest(host=host, machine=machine, backend=backend),
-                patch("vntts.runtime_installation.sys.platform", host),
+                patch("vntts.runtime_installation.sys", SimpleNamespace(platform=host)),
                 patch(
                     "vntts.runtime_installation.platform.machine", return_value=machine
                 ),
@@ -818,7 +822,7 @@ class RuntimeInstallationTest(unittest.TestCase):
 
     def test_nvidia_discovery_is_bounded_and_never_swallows_cancellation(self):
         with (
-            patch("vntts.runtime_installation.sys.platform", "win32"),
+            patch("vntts.runtime_installation.sys", SimpleNamespace(platform="win32")),
             patch(
                 "vntts.runtime_installation.run_runtime_command",
                 return_value=b"580.88\n",

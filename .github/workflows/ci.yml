@@ -166,6 +166,10 @@ jobs:
               Write-Output "::${logToken}::"
             }
             $stage = 'collect-context'
+            $childLog = Join-Path $env:RUNNER_TEMP "windows-unit-test-report.log"
+            if ((Test-Path -LiteralPath $childLog) -and $testOutput -cnotmatch '(?m)^test_[A-Za-z0-9_]+ \(') {
+              $testOutput += "`n" + [string](Get-Content -LiteralPath $childLog -Raw)
+            }
             $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
             $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
             $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+),? in .*$'

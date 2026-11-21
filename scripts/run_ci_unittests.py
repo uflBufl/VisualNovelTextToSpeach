@@ -270,7 +270,18 @@ def _run_shard(system: str, name: str, inventory: Path) -> int:
         name,
         str(inventory),
     ]
-    transcript = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+    # The Windows collector must be able to read the child output if the parent dies.
+    report = os.environ.get("VNTTS_TEST_REPORT")
+    if system == "Windows" and report:
+        transcript = (
+            Path(report)
+            .with_suffix(".log")
+            .open("w+", encoding="utf-8", errors="replace")
+        )
+    else:
+        transcript = tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        )
     with cleanup_on_exit(transcript.close, description="Unittest transcript cleanup"):
         try:
             completed = run_process(

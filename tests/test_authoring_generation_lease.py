@@ -40,8 +40,11 @@ class ProcessInspectionTests(unittest.TestCase):
         for value in (True, False, 0, -1, 0x100000000, 42.0, "42", None, LegacyPid()):
             with self.subTest(value=value):
                 self.assertFalse(is_process_id(value))
-        for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF)):
-            with self.subTest(platform=platform), patch("sys.platform", platform):
+        for platform, maximum in (("posix", 0x7FFFFFFF), ("nt", 0xFFFFFFFF)):
+            with (
+                self.subTest(platform=platform),
+                patch.object(lease_module, "native_os", platform),
+            ):
                 self.assertTrue(is_native_process_id(maximum))
                 self.assertFalse(is_native_process_id(maximum + 1))
                 self.assertFalse(is_native_process_id(True))
@@ -49,7 +52,7 @@ class ProcessInspectionTests(unittest.TestCase):
     def test_invalid_native_pids_never_reach_any_process_lookup(self):
         cases = [
             (platform, value)
-            for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF))
+            for platform, maximum in (("posix", 0x7FFFFFFF), ("nt", 0xFFFFFFFF))
             for value in (
                 True,
                 False,
@@ -70,7 +73,7 @@ class ProcessInspectionTests(unittest.TestCase):
         for platform, value in cases:
             with (
                 self.subTest(platform=platform, value=value),
-                patch("sys.platform", platform),
+                patch.object(lease_module, "native_os", platform),
                 patch.object(lease_module.os, "kill") as kill,
                 patch.object(lease_module, "_inspect_windows_process") as windows,
                 patch.object(lease_module, "run_process") as ps,
@@ -87,7 +90,7 @@ class ProcessInspectionTests(unittest.TestCase):
     def test_native_probes_keep_legacy_pid_normalization_and_maximum_values(self):
         cases = [
             (platform, value, expected)
-            for platform, maximum in (("darwin", 0x7FFFFFFF), ("win32", 0xFFFFFFFF))
+            for platform, maximum in (("posix", 0x7FFFFFFF), ("nt", 0xFFFFFFFF))
             for value, expected in (
                 (1, 1),
                 (maximum, maximum),
@@ -103,7 +106,7 @@ class ProcessInspectionTests(unittest.TestCase):
         for platform, value, expected in cases:
             with (
                 self.subTest(platform=platform, value=value),
-                patch("sys.platform", platform),
+                patch.object(lease_module, "native_os", platform),
                 patch.object(lease_module.os, "kill") as kill,
                 patch.object(
                     lease_module, "_inspect_windows_process", return_value="live"
@@ -118,11 +121,11 @@ class ProcessInspectionTests(unittest.TestCase):
                 self.assertEqual(process_started_at(value), "start identity")
                 self.assertEqual(
                     kill.call_args_list,
-                    {"darwin": [call(expected, 0)], "win32": []}[platform],
+                    {"posix": [call(expected, 0)], "nt": []}[platform],
                 )
                 self.assertEqual(
                     windows.call_args_list,
-                    {"darwin": [], "win32": [call(expected)]}[platform],
+                    {"posix": [], "nt": [call(expected)]}[platform],
                 )
                 self.assertEqual(
                     ps.call_args.args[0], ("ps", "-o", "lstart=", "-p", str(expected))
@@ -181,7 +184,7 @@ class ProcessInspectionTests(unittest.TestCase):
             checker = Mock(return_value=False)
             lease = GenerationLease(output, "1" * 64, process_checker=checker)
             with (
-                patch("sys.platform", "darwin"),
+                patch.object(lease_module, "native_os", "posix"),
                 patch.object(lease_module, "process_started_at") as started,
                 self.assertRaisesRegex(
                     BulkGenerationError, "Another generation process is active"
@@ -195,7 +198,7 @@ class ProcessInspectionTests(unittest.TestCase):
 
     def test_windows_start_identity_survives_missing_ps(self):
         with (
-            patch("vntts.authoring.generation_lease.sys.platform", "win32"),
+            patch.object(lease_module, "native_os", "nt"),
             patch(
                 "vntts.authoring.generation_lease.run_process",
                 side_effect=FileNotFoundError,

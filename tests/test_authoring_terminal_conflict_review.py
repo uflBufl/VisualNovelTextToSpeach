@@ -482,7 +482,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             (output / ".progress.lock.guard").write_bytes(b"\0")
             before = tree_hashes(output)
             with (
-                patch("sys.platform", "darwin"),
+                patch("vntts.authoring.generation_lease.native_os", "posix"),
                 patch.object(terminal_module, "process_is_alive") as alive,
                 patch.object(
                     terminal_module, "process_started_at", return_value="own-start"

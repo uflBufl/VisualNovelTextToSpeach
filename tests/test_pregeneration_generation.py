@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -1386,7 +1387,10 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_generation._state_items",
                     side_effect=AssertionError("full state conversion"),
                 ),
-                patch("vntts.pregeneration_generation.sys.platform", "darwin"),
+                patch(
+                    "vntts.pregeneration_generation.sys",
+                    SimpleNamespace(platform="darwin", executable=sys.executable),
+                ),
                 patch(
                     "vntts.pregeneration_generation._static_ready_line_ids",
                     return_value=("source",),
@@ -1506,7 +1510,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     original = target.stat()
                     worker = OfflineGenerationWorker(backend_factory=Mock())
                     with (
-                        patch("vntts.pregeneration_generation.sys.platform", platform),
+                        patch(
+                            "vntts.pregeneration_generation.sys",
+                            SimpleNamespace(
+                                platform=platform, executable=sys.executable
+                            ),
+                        ),
                         # Model each OS independently of the host's ctime semantics.
                         patch(
                             "vntts.pregeneration_generation._progress_readiness_stamp",
@@ -1558,7 +1567,10 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 symlink_or_skip(linked, target)
                 worker = OfflineGenerationWorker(backend_factory=Mock())
                 with (
-                    patch("vntts.pregeneration_generation.sys.platform", "darwin"),
+                    patch(
+                        "vntts.pregeneration_generation.sys",
+                        SimpleNamespace(platform="darwin", executable=sys.executable),
+                    ),
                     patch(
                         "vntts.pregeneration_generation._static_ready_line_ids",
                         side_effect=[("source",), ()],

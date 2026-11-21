@@ -249,7 +249,9 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
         )
 
     def test_independent_collector_preserves_private_failure_context(self):
-        self.log.write_text(self.payload, encoding="utf-8")
+        self.log.write_text(CANARY, encoding="utf-8")
+        child_log = self.temporary / "windows-unit-test-report.log"
+        child_log.write_text(self.payload + "\nPRIVATE_CHILD_OUTPUT", encoding="utf-8")
         primary = self.primary.replace(
             self.command, "throw 'Primary unexpectedly survived'"
         )
@@ -257,6 +259,7 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         report = self._run(self.collector)
         self.assertEqual(report.returncode, 0)
+        self.assertNotIn("PRIVATE_CHILD_OUTPUT", report.stdout)
         self.assertEqual(self._active_annotation(report.stdout), CONTEXT)
 
     def test_missing_log_reports_only_fixed_collector_failure(self):

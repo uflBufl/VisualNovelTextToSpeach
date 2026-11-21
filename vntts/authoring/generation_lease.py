@@ -8,9 +8,9 @@ import os
 import secrets
 import socket
 import subprocess
-import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from os import name as native_os
 from pathlib import Path
 from subprocess import run as run_process
 from types import TracebackType
@@ -57,7 +57,7 @@ def is_process_id(value: object) -> TypeGuard[int]:
 
 
 def is_native_process_id(value: object) -> TypeGuard[int]:
-    return is_process_id(value) and (sys.platform == "win32" or value <= 0x7FFFFFFF)
+    return is_process_id(value) and (native_os == "nt" or value <= 0x7FFFFFFF)
 
 
 def inspect_process_status(pid: object) -> Literal["live", "dead", "unknown"]:
@@ -65,7 +65,7 @@ def inspect_process_status(pid: object) -> Literal["live", "dead", "unknown"]:
     process_id = _process_id(pid)
     if process_id is None:
         return "unknown"
-    if sys.platform == "win32":
+    if native_os == "nt":
         return _inspect_windows_process(process_id)
     try:
         os.kill(process_id, 0)
@@ -82,8 +82,7 @@ def process_is_alive(pid: object) -> bool:
 
 
 def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
-    # Windows implements os.kill(pid, 0) with TerminateProcess. A read-only
-    # process handle is required for a genuinely non-destructive liveness probe.
+    # On Windows signal zero can send a console control event. Query the handle.
     import ctypes
     from ctypes import wintypes
 
@@ -138,7 +137,7 @@ def process_started_at(pid: object, *, timeout: float | None = None) -> str | No
         output = ""
     else:
         output = completed.stdout.strip()
-    if output or sys.platform != "win32":
+    if output or native_os != "nt":
         return output or None
     # Standard Windows installations have no `ps`; retain its output when
     # available so leases written by older versions keep the same identity.
