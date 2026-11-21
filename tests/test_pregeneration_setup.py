@@ -490,7 +490,7 @@ class PregenerationSetupTest(unittest.TestCase):
                 (retained,),
             )
             self.assertEqual(len(discovered.errors), 1)
-            self.assertIn(str(removed), discovered.errors[0])
+            self.assertIn(repr(str(removed)), discovered.errors[0])
 
     def test_saved_job_queries_skip_damage_and_read_current_sources(self):
         with TemporaryDirectory() as directory:

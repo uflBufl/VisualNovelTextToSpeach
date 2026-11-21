@@ -179,7 +179,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                             publish_failure_reference_binding(audit, output)
                         self.assertFalse(armed)
                         self.assertTrue(output.is_symlink())
-                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(output.resolve(), target.resolve())
                         self.assertEqual(target.exists(), state != "missing")
                         if target.exists():
                             self.assertEqual(

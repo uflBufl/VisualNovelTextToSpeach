@@ -169,7 +169,7 @@ class ReferencePublicationBoundariesTest(unittest.TestCase):
                     self.assertEqual(tree_hashes(root), before)
                     self.assertEqual(set(destination.parent.iterdir()), paths)
                     self.assertTrue(destination.is_symlink())
-                    self.assertEqual(destination.readlink(), target)
+                    self.assertEqual(destination.resolve(), target.resolve())
                     destination.unlink()
             self.assertFalse(destination.with_name("missing-target").exists())
             self.assertEqual(list(empty.iterdir()), [])

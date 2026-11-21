@@ -95,7 +95,7 @@ class AuthoringListeningTest(unittest.TestCase):
                             else:
                                 create_listening_session_from_reports(reports, output)
                         self.assertTrue(output.is_symlink())
-                        self.assertEqual(output.readlink(), target)
+                        self.assertEqual(output.resolve(), target.resolve())
                         self.assertEqual(target.exists(), state != "missing")
                         if target.exists():
                             self.assertEqual(
@@ -1489,8 +1489,8 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             ) as open_url:
                 dialog.open_report.click()
             self.assertEqual(
-                open_url.call_args.args[0].toLocalFile(),
-                str(session.with_name("report.json")),
+                Path(open_url.call_args.args[0].toLocalFile()),
+                session.with_name("report.json"),
             )
             dialog.deleteLater()
 

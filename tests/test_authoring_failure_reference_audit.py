@@ -226,6 +226,12 @@ class FailureReferenceAuditTest(unittest.TestCase):
                     finally:
                         state_path.write_bytes(original_bytes)
 
+    def test_nul_workspace_is_refused_before_filesystem_lookup(self):
+        with patch.object(audit_module, "Path") as path:
+            with self.assertRaisesRegex(FailureReferenceAuditError, "workspace path"):
+                audit_module._audit_workspace_path({"workspace": "bad\x00/workspace"})
+        path.assert_not_called()
+
     def test_audit_rejects_invalid_workspace_paths(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

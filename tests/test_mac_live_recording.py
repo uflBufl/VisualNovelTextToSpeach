@@ -86,13 +86,11 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
             ) as command,
         ):
             with self.assertRaisesRegex(RuntimeError, "failed"):
-                run(Path("/recorder"), Path("/fixture"), Path("/output"))
-        self.assertEqual(
-            command.call_args_list[0].args[0], ["/recorder", "--preflight"]
-        )
+                run(Path("recorder"), Path("fixture"), Path("output"))
+        self.assertEqual(command.call_args_list[0].args[0], ["recorder", "--preflight"])
         self.assertEqual(
             command.call_args.args[0],
-            ["/recorder", "--video-only", "42", "88", "65", "/output"],
+            ["recorder", "--video-only", "42", "88", "65", "output"],
         )
         fixture.terminate.assert_called_once()
         fixture.wait.assert_called_once_with(timeout=3)
@@ -106,7 +104,7 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
             patch("scripts.mac_live_recording.run_fixture.launch_process") as spawn,
         ):
             with self.assertRaisesRegex(RuntimeError, "no permission"):
-                run(Path("/recorder"), Path("/fixture"), Path("/output"))
+                run(Path("recorder"), Path("fixture"), Path("output"))
         spawn.assert_not_called()
 
     def test_resize_fixture_uses_short_capture_and_retains_geometry_after_cleanup(self):
@@ -126,8 +124,8 @@ class NativeRecordingEvidenceTest(unittest.TestCase):
             patch("scripts.mac_live_recording.run_fixture.run_process") as command,
         ):
             output = Path(directory)
-            run(Path("/recorder"), Path("/fixture"), output, resize=True)
-            self.assertEqual(spawn.call_args.args[0], ["/fixture", "--resize"])
+            run(Path("recorder"), Path("fixture"), output, resize=True)
+            self.assertEqual(spawn.call_args.args[0], ["fixture", "--resize"])
             self.assertEqual(command.call_args.args[0][-2:], ["33", directory])
             self.assertEqual(
                 json.loads((output / "fixture.jsonl").read_text())["width"], 320

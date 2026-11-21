@@ -102,6 +102,7 @@ class PrerouteSupportDiagnosticsTests(unittest.TestCase):
                     )
                 )
             log.stop_acquisition()
+            self.assertFalse(log.close()["pending"])
             previous = preserve_previous_session(root)
             bundle = SupportBundleBuilder(
                 AppSettings(ocr_diagnostics_directory=str(root)),

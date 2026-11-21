@@ -923,6 +923,8 @@ def _audit_workspace_path(document: JsonDocument) -> Path:
     workspace = document.get("workspace", "")
     if not isinstance(workspace, str):
         raise FailureReferenceAuditError("Reference audit workspace path must be text")
+    if "\x00" in workspace:
+        raise FailureReferenceAuditError("Reference audit workspace path is invalid")
     try:
         return Path(workspace).expanduser().resolve()
     except (OSError, RuntimeError, ValueError) as error:

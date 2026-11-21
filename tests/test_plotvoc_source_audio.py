@@ -136,10 +136,10 @@ class PlotVocSourceAudioTests(unittest.TestCase):
                 ),
             ):
                 catalog = open_reading_catalog(story.path, game_id="reverse1999")
-                self.addCleanup(catalog.store.catalog.close)
-                line = catalog.store.line_for_id("reverse1999:100631:59")
-                self.assertTrue(line.has_original_speech)
-                self.assertEqual(line.source_audio_id, "610018168")
+                with catalog.store.catalog:
+                    line = catalog.store.line_for_id("reverse1999:100631:59")
+                    self.assertTrue(line.has_original_speech)
+                    self.assertEqual(line.source_audio_id, "610018168")
 
     def test_side_story_plotvoc_requires_asr_before_excluding_tts(self):
         with TemporaryDirectory() as directory:

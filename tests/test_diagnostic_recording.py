@@ -1,6 +1,5 @@
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -980,6 +979,7 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         output = self.root / "rust-123"
         with (
             patch("vntts.diagnostic_recording.sys.platform", "darwin"),
+            patch("vntts.diagnostic_recording.signal") as signals,
             patch("vntts.diagnostic_recording.monotonic", side_effect=[10, 11, 12]),
             patch("vntts.diagnostic_recording.os.killpg", create=True) as kill,
         ):
@@ -989,8 +989,8 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
         self.assertEqual(
             kill.call_args_list,
             [
-                unittest.mock.call(101, signal.SIGTERM),
-                unittest.mock.call(101, signal.SIGKILL),
+                unittest.mock.call(101, signals.SIGTERM),
+                unittest.mock.call(101, signals.SIGKILL),
             ],
         )
         process.wait.assert_not_called()
@@ -1047,13 +1047,17 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
 
         parent = Mock(pid=101)
         parent.poll.return_value = 0
-        with patch("vntts.diagnostic_recording.os.killpg") as kill:
+        with (
+            patch("vntts.diagnostic_recording.sys.platform", "darwin"),
+            patch("vntts.diagnostic_recording.signal") as signals,
+            patch("vntts.diagnostic_recording.os.killpg", create=True) as kill,
+        ):
             _stop_process(parent, 2)
         self.assertEqual(
             kill.call_args_list,
             [
-                unittest.mock.call(101, signal.SIGTERM),
-                unittest.mock.call(101, signal.SIGKILL),
+                unittest.mock.call(101, signals.SIGTERM),
+                unittest.mock.call(101, signals.SIGKILL),
             ],
         )
         parent.wait.assert_called()
@@ -1141,17 +1145,20 @@ class NativeDiagnosticRecordingTest(unittest.TestCase):
 
         def kill(pid, sig):
             events.append((sig, pid))
-            if sig == signal.SIGKILL:
+            if sig == signals.SIGKILL:
                 next(
                     process for process in processes if process.pid == pid
                 ).returncode = -9
 
         with (
             patch("vntts.diagnostic_recording.sys.platform", "darwin"),
+            patch("vntts.diagnostic_recording.signal") as signals,
             patch(
                 "vntts.diagnostic_recording.os.killpg", side_effect=kill, create=True
             ),
         ):
             recording._stop_processes()
-        self.assertEqual(events[:3], [(signal.SIGTERM, pid) for pid in (101, 102, 103)])
+        self.assertEqual(
+            events[:3], [(signals.SIGTERM, pid) for pid in (101, 102, 103)]
+        )
         self.assertTrue(all(process.returncode == -9 for process in processes))

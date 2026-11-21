@@ -3,7 +3,7 @@ import sqlite3
 import subprocess
 import sys
 import unittest
-from contextlib import closing, nullcontext
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1507,13 +1507,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     worker = OfflineGenerationWorker(backend_factory=Mock())
                     with (
                         patch("vntts.pregeneration_generation.sys.platform", platform),
-                        (
-                            patch(
-                                "vntts.pregeneration_generation._progress_readiness_stamp",
-                                return_value=(),
-                            )
+                        # Model each OS independently of the host's ctime semantics.
+                        patch(
+                            "vntts.pregeneration_generation._progress_readiness_stamp",
+                            side_effect=((), (), (), ())
                             if platform == "win32"
-                            else nullcontext()
+                            else (((1,),), ((1,),), ((2,),), ((2,),)),
                         ),
                         patch(
                             "vntts.pregeneration_generation._static_ready_line_ids",

@@ -56,7 +56,10 @@ class QueuePublicationErrorTest(unittest.TestCase):
                 with self.subTest(error=error_type.__name__):
                     with self.assertRaises(error_type) as caught:
                         publish()
-                    self.assertIsInstance(caught.exception.__cause__, IsADirectoryError)
+                    self.assertIsInstance(caught.exception.__cause__, OSError)
+                    self.assertEqual(
+                        Path(caught.exception.__cause__.filename2), output.resolve()
+                    )
                     self.assertEqual(tree_hashes(root), original)
             for arguments in (
                 [
@@ -78,6 +81,6 @@ class QueuePublicationErrorTest(unittest.TestCase):
                     ):
                         main(arguments)
                     self.assertEqual(caught.exception.code, 2)
-                    self.assertIn(str(output), error.getvalue())
+                    self.assertIn(repr(str(output))[1:-1], error.getvalue())
                     self.assertNotIn("Traceback", error.getvalue())
                     self.assertEqual(tree_hashes(root), original)

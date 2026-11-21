@@ -61,7 +61,7 @@ class AuthoringKnownRoleReuseTest(unittest.TestCase):
                             accept_known_role_reuse=accepted,
                         )
                     self.assertTrue(output.is_symlink())
-                    self.assertEqual(output.readlink(), target)
+                    self.assertEqual(output.resolve(), target.resolve())
                     self.assertEqual(target.exists(), state != "missing")
                     if target.exists():
                         self.assertEqual(

@@ -521,7 +521,7 @@ class WorkerResolverTest(unittest.TestCase):
                     patch("vntts.native_capture.Path.is_file", return_value=True),
                     patch("vntts.native_capture.os.access", return_value=True),
                 ):
-                    self.assertTrue(str(worker_executable()).endswith(suffix))
+                    self.assertTrue(worker_executable().as_posix().endswith(suffix))
 
     def test_frozen_bundle_path(self):
         with (

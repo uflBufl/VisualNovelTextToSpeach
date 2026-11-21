@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory, TemporaryFile
 from unittest.mock import Mock, patch
 
 from scripts.run_ci_unittests import (
+    SHARD_TIMEOUTS,
     _flatten_suite,
     _isolate_module,
     _report_test_failures,
@@ -87,7 +88,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             return 1 if shard == "remainder-1" else 0
 
         with (
-            patch.dict(os.environ, {"GITHUB_ACTIONS": ""}),
+            redirect_stdout(StringIO()),
             patch.object(
                 unittest.defaultTestLoader,
                 "discover",
@@ -110,6 +111,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         for system in ("Darwin", "Windows"):
             with (
                 self.subTest(system=system),
+                redirect_stdout(StringIO()),
                 patch.object(
                     unittest.defaultTestLoader,
                     "discover",
@@ -595,7 +597,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 "class ShutdownProbe(unittest.TestCase):\n"
                 "    def test_worker(self):\n"
                 "        threading.Thread(target=blocked_worker, daemon=False).start()\n"
-                "        faulthandler.dump_traceback_later(0.2, exit=True)\n",
+                "        faulthandler.dump_traceback_later(0.2)\n",
                 encoding="utf-8",
             )
             inventory = root / "tests.json"
@@ -606,23 +608,31 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             script = (
                 "import platform, runpy, sys\n"
                 "platform.system = lambda: 'Windows'\n"
-                "sys.argv = ['runner', '--shard', 'qt-assets', sys.argv[1]]\n"
                 "try:\n"
                 "    runpy.run_module('scripts.run_ci_unittests', run_name='__main__')\n"
                 "except SystemExit as result:\n"
                 "    print('SHARD_MAIN_RETURNED:', result.code, flush=True)\n"
             )
-            completed = subprocess.run(
-                [sys.executable, "-u", "-c", script, str(inventory)],
-                cwd=Path(__file__).resolve().parents[1],
-                env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                timeout=10,
-            )
-        output = completed.stdout
-        self.assertEqual(completed.returncode, 1, output)
+
+            def run_child(command, **options):
+                return subprocess.run(
+                    [sys.executable, "-u", "-c", script, *command[4:]],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
+                    **options,
+                )
+
+            transcript = StringIO()
+            with (
+                patch.dict(SHARD_TIMEOUTS["Windows"], {"qt-assets": 4}),
+                patch.dict(os.environ, {"GITHUB_ACTIONS": ""}),
+                patch("scripts.run_ci_unittests.run_process", side_effect=run_child),
+                redirect_stdout(transcript),
+                redirect_stderr(StringIO()),
+            ):
+                status = _run_shard("Windows", "qt-assets", inventory)
+        output = transcript.getvalue()
+        self.assertEqual(status, 124, output)
         self.assertIn("SHARD_MAIN_RETURNED: 0", output)
         self.assertIn("OK", output.splitlines())
         self.assertIn("Timeout (", output)

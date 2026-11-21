@@ -88,7 +88,7 @@ class PathSafetyTest(unittest.TestCase):
                                 owner, "output", "Output", error_type=PathBoundaryError
                             )
                         self.assertTrue(link.is_symlink())
-                        self.assertEqual(link.readlink(), target)
+                        self.assertEqual(link.resolve(), target.resolve())
                         self.assertEqual(target.exists(), state != "missing")
                         if state == "occupied":
                             self.assertEqual(

@@ -421,7 +421,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
             review = json.loads(created.review.read_text(encoding="utf-8"))
             case_id = review["cases"][0]["case_id"]
             lock = output / ".progress.lock"
-            (output / ".progress.lock.guard").touch()
+            (output / ".progress.lock.guard").write_bytes(b"\0")
             for pid in (True, False, 0, -1, 42.0, "42", None, 0x100000000, 10**100):
                 lock.write_bytes(
                     json.dumps(
@@ -479,7 +479,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 ).encode()
                 + b"\n"
             )
-            (output / ".progress.lock.guard").touch()
+            (output / ".progress.lock.guard").write_bytes(b"\0")
             before = tree_hashes(output)
             with (
                 patch("sys.platform", "darwin"),
@@ -563,7 +563,7 @@ class TerminalConflictReviewTest(unittest.TestCase):
                 lock.write_bytes(payload)
                 lock.chmod(0o444)
                 guard = output / ".progress.lock.guard"
-                guard.touch()
+                guard.write_bytes(b"\0")
                 guard_inode = guard.stat().st_ino
                 before = tree_hashes(root)
                 original = terminal_module.read_regular_bytes

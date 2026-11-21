@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from contextlib import ExitStack
 from functools import partial
 from io import StringIO
 from pathlib import Path
@@ -1451,7 +1452,12 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 resolve_reverse1999_installation(temporary_directory)
 
     def test_prepares_candidates_only_for_selected_roles_with_source_audio(self):
-        with TemporaryDirectory() as temporary_directory:
+        with (
+            TemporaryDirectory() as temporary_directory,
+            ExitStack() as claims,
+            patch("vntts.voice_candidate_cache._candidate_claims", claims),
+            patch("vntts.voice_candidate_cache._claimed_paths", set()),
+        ):
             root = Path(temporary_directory)
             content = inspect_story_index(
                 write_content(root / "content"),

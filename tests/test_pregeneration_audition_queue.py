@@ -1,3 +1,4 @@
+import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -650,7 +651,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.assertEqual(len(backend.requests), 1)
             owner.close()
 
-    def test_shared_link_rechecks_ready_once_and_rejects_late_input_changes(self):
+    def test_metadata_change_readmits_ready_once_and_rejects_late_input_changes(self):
         for mutate in (False, True):
             with self.subTest(mutate=mutate), TemporaryDirectory() as directory:
                 plan, group, manifest, backend, owner = self.fixture(Path(directory))
@@ -663,6 +664,12 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                     text=group.alternate_sample_text,
                 )
                 self.assertTrue(first.path.samefile(second.path))
+                metadata = first.path.stat()
+                # Hard-link creation changes ctime only on some filesystems.
+                os.utime(
+                    first.path,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000_000),
+                )
                 lookup = owner.service.lookup
 
                 def recheck(*args, **kwargs):

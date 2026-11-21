@@ -621,13 +621,14 @@ class GameAudioDecoderTest(unittest.TestCase):
         )
         with (
             patch.object(decoder.os, "name", "posix"),
-            patch.object(decoder.os, "killpg") as killpg,
+            patch.object(decoder.os, "killpg", create=True) as killpg,
+            patch.object(decoder, "signal") as signals,
         ):
             decoder._stop_decoder_process(process)
 
         self.assertEqual(
             killpg.call_args_list,
-            [call(42, decoder.signal.SIGTERM), call(42, decoder.signal.SIGKILL)],
+            [call(42, signals.SIGTERM), call(42, signals.SIGKILL)],
         )
         self.assertEqual(
             process.wait.call_args_list,
@@ -635,17 +636,16 @@ class GameAudioDecoderTest(unittest.TestCase):
         )
 
     def test_macos_install_requires_consent_then_checks_the_result(self):
+        brew = self.root / "bin" / "brew"
         with (
             patch.object(
                 decoder,
                 "find_game_decoder",
-                side_effect=[None, None, Path("/opt/homebrew/bin/vgmstream-cli")],
+                side_effect=[None, None, brew.with_name("vgmstream-cli")],
             ),
             patch.object(decoder, "get_bundle_root", return_value=None),
             patch.object(decoder.sys, "platform", "darwin"),
-            patch.object(
-                decoder.shutil, "which", return_value="/opt/homebrew/bin/brew"
-            ),
+            patch.object(decoder.shutil, "which", return_value=str(brew)),
             patch.object(decoder, "_run") as run,
             patch.object(decoder, "probe_game_decoder") as probe,
         ):
@@ -655,9 +655,7 @@ class GameAudioDecoderTest(unittest.TestCase):
             result = decoder.ensure_game_decoder(
                 storage_root=self.root, allow_homebrew=True
             )
-            run.assert_called_once_with(
-                ["/opt/homebrew/bin/brew", "install", "vgmstream"], None
-            )
+            run.assert_called_once_with([str(brew), "install", "vgmstream"], None)
             probe.assert_called_once_with(result, None)
 
     def test_bundle_never_falls_back_to_host_or_download(self):

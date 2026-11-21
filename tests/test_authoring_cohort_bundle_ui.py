@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from copy import deepcopy
 from dataclasses import replace
 from io import StringIO
@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 from tests.generation_state_fixtures import replace_generation_state
 from vntts import generation_database
+from vntts.cleanup import cleanup_on_exit
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -145,6 +146,22 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 return
             time.sleep(0.005)
         self.fail("Timed out waiting for Qt bundle work")
+
+    def finish_dialog_jobs(self, dialog):
+        self.wait_for(
+            lambda: (
+                not (
+                    dialog._load_active
+                    or dialog._decision_active
+                    or dialog._observation_active
+                    or dialog._playback_prepare_active
+                )
+            ),
+            timeout=10,
+        )
+        self.assertTrue(dialog.thread_pool.waitForDone(1000))
+        dialog.close()
+        self.application.processEvents()
 
     def create_bundle(self, root):
         first = create_pending_cohort_workspace(root / "first")[0]
@@ -696,10 +713,16 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(reopened._selected_sample().item.queue_id, pending_id)
 
     def test_one_heard_sample_allows_whole_cohort_rejection_but_not_acceptance(self):
-        with TemporaryDirectory() as directory:
+        with TemporaryDirectory() as directory, ExitStack() as dialogs:
             bundle, state_path = create_multisample_bundle(Path(directory))
             confirmer = Mock(return_value=True)
             dialog = CohortReviewBundleDialog(bundle, confirmer=confirmer)
+            dialogs.enter_context(
+                cleanup_on_exit(
+                    lambda: self.finish_dialog_jobs(dialog),
+                    description="Cohort review dialog jobs",
+                )
+            )
             dialog.show()
             self.wait_for(lambda: dialog.table.rowCount() == 3)
             dialog.play_selected()
@@ -713,7 +736,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("every WAV", dialog.reject_button.toolTip())
             dialog.reject_button.click()
             self.wait_for(
-                lambda: not dialog._decision_active and not dialog._load_active
+                lambda: not dialog._decision_active and not dialog._load_active,
+                timeout=10,
             )
 
             decision, cohort, reviewed_count, bad_count = confirmer.call_args.args
@@ -1575,7 +1599,11 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self,
     ):
         for published in (True, False):
-            with self.subTest(published=published), TemporaryDirectory() as directory:
+            with (
+                self.subTest(published=published),
+                TemporaryDirectory() as directory,
+                ExitStack() as dialogs,
+            ):
                 root = Path(directory)
                 bundle = self.create_bundle(root)
                 publication = root / "bundle.json"
@@ -1583,6 +1611,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 confirmer = Mock(return_value=True)
                 dialog = CohortReviewBundleDialog(
                     publication if published else bundle, confirmer=confirmer
+                )
+                dialogs.enter_context(
+                    cleanup_on_exit(
+                        lambda: self.finish_dialog_jobs(dialog),
+                        description="Cohort review dialog jobs",
+                    )
                 )
                 dialog.show()
                 self.wait_for(lambda: dialog.table.rowCount() == 1)
@@ -1595,7 +1629,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                     side_effect=OSError("successor temporarily unavailable"),
                 ):
                     dialog.apply_decision("accepted")
-                    self.wait_for(lambda: not dialog._decision_active)
+                    self.wait_for(lambda: not dialog._decision_active, timeout=10)
 
                 self.assertTrue(dialog.retry_load.isVisible())
                 self.assertFalse(dialog.accept_button.isEnabled())
