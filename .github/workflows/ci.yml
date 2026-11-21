@@ -141,7 +141,7 @@ jobs:
           $testStatus = $LASTEXITCODE
           if ($testStatus -eq 0) {
             Get-Content -LiteralPath $testLog | Where-Object {
-              $_ -cmatch '^::notice title=Unittest timing::Windows (qt-catalog|remainder) completed in [0-9]+ seconds$'
+              $_ -cmatch '^::notice title=Unittest timing::Windows (qt-catalog|remainder(?:-1)?) completed in [0-9]+ seconds$'
             } | Write-Output
           }
           exit $testStatus
@@ -165,7 +165,7 @@ jobs:
             $repoPythonFiles = @(git -C $env:GITHUB_WORKSPACE ls-files -- '*.py')
             $workspacePattern = [regex]::Escape($env:GITHUB_WORKSPACE.TrimEnd([char[]]'\/'))
             $framePattern = '^\s+File "' + $workspacePattern + '[\\/]([A-Za-z0-9_./\\-]+\.py)", line ([0-9]+),? in .*$'
-            $shardPattern = '(qt-app|qt-app-2|qt-assets|qt-ocr|qt-pregeneration|qt-catalog|remainder)'
+            $shardPattern = '(qt-app|qt-app-2|qt-assets|qt-ocr|qt-pregeneration|qt-catalog|remainder(?:-1)?)'
             $exceptionPattern = '^(AssertionError|AttributeError|FileNotFoundError|ImportError|' +
               'IndexError|KeyError|MemoryError|ModuleNotFoundError|OSError|OverflowError|' +
               'PermissionError|RecursionError|RuntimeError|TimeoutError|TypeError|' +

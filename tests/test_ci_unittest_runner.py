@@ -67,6 +67,37 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(remaining, (values[0], values[4]))
         self.assertCountEqual((*prep, *catalog, *remaining), values)
 
+    def test_windows_remainder_keeps_modules_together_and_runs_both_after_failure(self):
+        grouped = (
+            "tests.test_alpha.Alpha.test_a",
+            "tests.test_beta.Beta.test_b",
+            "tests.test_beta.Beta.test_c",
+            "tests.test_zed.Zed.test_d",
+        )
+        inventory = [
+            "tests.test_app.App.test_ui",
+            "tests.test_asset_ui.Assets.test_ui",
+            "tests.test_ocr_review.Review.test_ui",
+            *grouped,
+        ]
+        ran = {}
+
+        def run(_system, shard, path):
+            ran[shard] = json.loads(path.read_text())
+            return 1 if shard == "remainder-1" else 0
+
+        with (
+            patch.object(
+                unittest.defaultTestLoader,
+                "discover",
+                return_value=[Mock(id=Mock(return_value=name)) for name in inventory],
+            ),
+            patch("scripts.run_ci_unittests._run_shard", side_effect=run),
+        ):
+            self.assertEqual(_run_sharded_full_discovery("Windows"), 1)
+        self.assertEqual(ran["remainder-1"], list(grouped[:1]))
+        self.assertEqual(ran["remainder"], list(grouped[1:]))
+
     def test_selected_pregeneration_runs_only_its_isolated_shard(self):
         test_ids = (
             "tests.test_app.AppTest.test_ui",
@@ -187,7 +218,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 "test_partition_rejects_duplicates_and_missing_app_shard",
             ]
             path.write_text(json.dumps(names), encoding="utf-8")
-            self.assertEqual(_run_exact_test_file(path), 0)
+            with patch("scripts.run_ci_unittests._report_test_failures") as report:
+                self.assertEqual(_run_exact_test_file(path), 0)
+            report.assert_not_called()
             path.write_text(
                 json.dumps([names[0], names[1].rsplit(".", 1)[0]]), encoding="utf-8"
             )
@@ -204,8 +237,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         test_id = f"{case_class.__module__}.CiUnitTestRunnerTest.{method}"
 
         def fail(case):
-            with case.subTest(private=canary):
-                raise ValueError(canary)
+            for _ in range(2):
+                with case.subTest(private=canary):
+                    raise ValueError(canary)
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -221,6 +255,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                         "VNTTS_TEST_REPORT": str(report),
                     },
                 ),
+                patch.object(case_class, "setUp", lambda _case: None),
                 patch.object(case_class, method, fail),
                 redirect_stderr(StringIO()),
             ):
@@ -228,10 +263,61 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             safe = report.read_text("utf-8")
             self.assertEqual(summary.read_text("utf-8"), safe)
             self.assertIn(f"`{test_id}` ValueError", safe)
+            self.assertEqual(safe.count(f"`{test_id}`"), 1)
             self.assertRegex(safe, r"`tests/test_ci_unittest_runner\.py:[1-9][0-9]*`")
             self.assertNotIn(canary, safe)
             self.assertNotIn("private", safe)
             self.assertNotIn(str(root), safe)
+
+    def test_safe_failure_report_exists_before_the_next_case_finishes(self):
+        case_class = importlib.import_module(
+            "tests.test_ci_unittest_runner"
+        ).CiUnitTestRunnerTest
+        first = "test_partition_assigns_every_test_exactly_once"
+        following = "test_partition_rejects_duplicates_and_missing_app_shard"
+        test_id = f"{case_class.__module__}.CiUnitTestRunnerTest.{first}"
+        next_id = f"{case_class.__module__}.CiUnitTestRunnerTest.{following}"
+        canary = "PRIVATE_CANARY_immediate_report"
+        for outcome in ("failure", "error", "subtest", "unexpected-success"):
+            with self.subTest(outcome=outcome), TemporaryDirectory() as directory:
+                root = Path(directory)
+                inventory, artifact = root / "inventory.json", root / "safe.txt"
+                inventory.write_text(json.dumps([test_id, next_id]), encoding="utf-8")
+
+                def fail(case):
+                    if outcome == "failure":
+                        case.fail(canary)
+                    elif outcome == "error":
+                        raise ValueError(canary)
+                    elif outcome == "subtest":
+                        with case.subTest(private=canary):
+                            case.fail(canary)
+
+                if outcome == "unexpected-success":
+                    fail = unittest.expectedFailure(fail)
+
+                def interrupt(_case):
+                    safe = artifact.read_text("utf-8")
+                    self.assertEqual(safe.count(f"`{test_id}`"), 1)
+                    self.assertRegex(
+                        safe, r"`tests/test_ci_unittest_runner\.py:[1-9][0-9]*`"
+                    )
+                    self.assertNotIn(canary, safe)
+                    self.assertNotIn(str(root), safe)
+                    raise KeyboardInterrupt
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {"GITHUB_ACTIONS": "1", "VNTTS_TEST_REPORT": str(artifact)},
+                    ),
+                    patch.object(case_class, "setUp", lambda _case: None),
+                    patch.object(case_class, first, fail),
+                    patch.object(case_class, following, interrupt),
+                    redirect_stderr(StringIO()),
+                    self.assertRaises(KeyboardInterrupt),
+                ):
+                    _run_exact_test_file(inventory)
 
     def test_safe_report_rejects_unknown_test_objects_and_preserves_failure_status(
         self,
@@ -275,6 +361,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                         "VNTTS_TEST_REPORT": directory,
                     },
                 ),
+                patch.object(case_class, "setUp", lambda _case: None),
                 patch.object(case_class, method, fail),
                 redirect_stderr(StringIO()),
             ):

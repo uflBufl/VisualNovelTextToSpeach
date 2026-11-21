@@ -35,6 +35,7 @@ SHARD_TIMEOUTS = {
         "qt-ocr": 60,
         "qt-pregeneration": 300,
         "qt-catalog": 300,
+        "remainder-1": 900,
         "remainder": 900,
     },
 }
@@ -120,7 +121,14 @@ def _write_safe_report(lines: Sequence[str]) -> None:
                 pass
 
 
-def _report_test_failures(result: unittest.TestResult, test_ids: Sequence[str]) -> None:
+def _report_test_failures(
+    result: unittest.TestResult,
+    test_ids: Sequence[str],
+    *,
+    reported: set[str] | None = None,
+) -> None:
+    if reported is not None and len(reported) >= 40:
+        return
     root = Path(__file__).resolve().parents[1]
     inventory = set(test_ids)
     lines: list[str] = []
@@ -173,9 +181,14 @@ def _report_test_failures(result: unittest.TestResult, test_ids: Sequence[str]) 
                 lines.append(record)
             if len(lines) >= 40:
                 break
-    _write_safe_report(
-        lines or ("- Unit tests failed; no source-validated test ID available.",)
-    )
+    records = lines or ["- Unit tests failed; no source-validated test ID available."]
+    pending = [line for line in records if reported is None or line not in reported]
+    if reported is not None:
+        pending = pending[: 40 - len(reported)]
+    if pending:
+        _write_safe_report(pending)
+        if reported is not None:
+            reported.update(pending)
 
 
 def _run_exact_test_file(path: str | Path) -> int:
@@ -200,12 +213,42 @@ def _run_exact_test_file(path: str | Path) -> int:
     if [test.id() for test in _flatten_suite(suite)] != test_ids:
         print("Exact test inventory must name individual test cases", file=sys.stderr)
         return 2
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    if not result.wasSuccessful():
+    reported: set[str] = set()
+    previous = (0, 0, 0)
+
+    def report(result: unittest.TestResult) -> None:
+        nonlocal previous
+        counts = (
+            len(result.failures),
+            len(result.errors),
+            len(result.unexpectedSuccesses),
+        )
+        if counts == previous:
+            return
+        delta = unittest.TestResult()
+        delta.failures = result.failures[previous[0] :]
+        delta.errors = result.errors[previous[1] :]
+        delta.unexpectedSuccesses = result.unexpectedSuccesses[previous[2] :]
+        previous = counts
         try:
-            _report_test_failures(result, test_ids)
+            _report_test_failures(delta, test_ids, reported=reported)
         except Exception:
-            _write_safe_report(("- Unit tests failed; safe test report unavailable.",))
+            fallback = "- Unit tests failed; safe test report unavailable."
+            if fallback not in reported:
+                _write_safe_report((fallback,))
+                reported.add(fallback)
+
+    class ReportingTestResult(unittest.TextTestResult):
+        def stopTest(self, test: unittest.TestCase) -> None:
+            super().stopTest(test)
+            report(self)
+
+    class ReportingTestRunner(unittest.TextTestRunner):
+        def _makeResult(self) -> ReportingTestResult:
+            return ReportingTestResult(self.stream, self.descriptions, self.verbosity)
+
+    result = ReportingTestRunner(verbosity=2).run(suite)
+    report(result)
     if result.testsRun != len(test_ids):
         print(
             f"Exact test inventory expected {len(test_ids)} tests but ran "
@@ -332,12 +375,25 @@ def _run_discovered_shards(
         catalog_ids, remainder_ids = _isolate_module(
             remainder_ids, "tests.test_ui_catalog"
         )
+        early_ids: _TestIds = ()
+        if system == "Windows" and require_all and remainder_ids:
+            middle_module = remainder_ids[len(remainder_ids) // 2].rsplit(".", 2)[0]
+            boundary = next(
+                i
+                for i, test in enumerate(remainder_ids)
+                if test.rsplit(".", 2)[0] == middle_module
+            )
+            early_ids, remainder_ids = (
+                remainder_ids[:boundary],
+                remainder_ids[boundary:],
+            )
         shards = (
             *app_shards,
             ("qt-assets", asset_ids),
             ("qt-ocr", ocr_ids),
             ("qt-pregeneration", pregeneration_ids),
             ("qt-catalog", catalog_ids),
+            ("remainder-1", early_ids),
             ("remainder", remainder_ids),
         )
         if selected_modules is not None:
@@ -350,6 +406,7 @@ def _run_discovered_shards(
         if not shards:
             print("No selected unittest cases were discovered", file=sys.stderr)
             return 2
+        early_status = 0
         for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
@@ -366,9 +423,12 @@ def _run_discovered_shards(
                 print(
                     f"{system} unittest shard {name} exited {status} after {elapsed} seconds"
                 )
+                if name == "remainder-1":
+                    early_status = status
+                    continue
                 return status
             if (
-                name in {"qt-catalog", "remainder"}
+                name in {"qt-catalog", "remainder-1", "remainder"}
                 and require_all
                 and selected_modules is None
                 and os.environ.get("GITHUB_ACTIONS")
@@ -376,6 +436,8 @@ def _run_discovered_shards(
                 print(
                     f"::notice title=Unittest timing::{system} {name} completed in {elapsed} seconds"
                 )
+    if early_status:
+        return early_status
     count = sum(len(ids) for _, ids in shards)
     print(f"Ran {count} exact discovered tests once in {len(shards)} shards")
     return 0
