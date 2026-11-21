@@ -29,7 +29,7 @@ from vntts.prepared_audio_discovery import (
 from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
 from vntts.speech_backend_contract import SpeechBackendCapabilities
-from vntts.speech_worker import IsolatedSpeechBackend
+from vntts.speech_worker import RetainedWorkerRuntime
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
@@ -104,9 +104,13 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
         resolve = self.enterContext(
             patch.object(LiveGameVoiceReferences, "resolve", autospec=True)
         )
+        cloning = self.enterContext(
+            patch("vntts.controller.pocket_model_ready", return_value=True)
+        )
         registry = CharacterVoiceRegistry()
-        pocket = IsolatedSpeechBackend("pocket-tts", registry, defer_startup=True)
-        self.addCleanup(pocket.shutdown)
+        runtime = RetainedWorkerRuntime("pocket-tts")
+        self.addCleanup(runtime.shutdown)
+        pocket = runtime(registry, defer_startup=True)
         self.controller.voice_router = pocket
         self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
         self.controller.prepared_audio_snapshot = PreparedAudioSnapshot(
@@ -149,6 +153,14 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
                 registry.assignments.clear()
                 self.controller._prepare_live_chunk(replace(chunk, line_id=None))
                 resolve.assert_not_called()
+                cloning.return_value = False
+                self.controller._prepare_live_chunk(chunk)
+                self.assertEqual(
+                    self.controller.last_audio_route_trace.voice_reference_id,
+                    "voice:narrator:built-in",
+                )
+                resolve.assert_not_called()
+                cloning.return_value = True
 
     def test_explicit_reload_readmits_sources_while_availability_refresh_reuses_them(
         self,

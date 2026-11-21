@@ -154,7 +154,6 @@ from vntts.speech_backend import (
 )
 from vntts.speech_backend_contract import SpeechBackend
 from vntts.speech_worker import (
-    IsolatedSpeechBackend,
     create_chatterbox_worker_backend,
     create_moss_worker_backend,
     create_pocket_worker_backend,
@@ -1294,18 +1293,23 @@ class AppController:
     ) -> PreparedPlayback:
         snapshot = self.prepared_audio_snapshot
         if (
-            isinstance(backend, (IsolatedSpeechBackend, PocketTTSVoiceRouterBackend))
-            and backend.name == "pocket-tts"
+            backend.name == "pocket-tts"
             and line_id
             and snapshot is not None
             and not is_narrator(character)
         ):
-            registry = backend.registry
+            registry = getattr(backend, "registry", None)
+            prepare_with_voice: (
+                Callable[[str, str, CharacterVoice], PreparedPlayback] | None
+            ) = getattr(backend, "prepare_playback_with_voice", None)
             role = normalize_character_name(character)
             if (
-                role not in self.narrator_fallback_speakers
+                callable(prepare_with_voice)
+                and isinstance(registry, CharacterVoiceRegistry)
+                and role not in self.narrator_fallback_speakers
                 and role not in registry.assignments
                 and role not in registry.voices
+                and pocket_model_ready()
             ):
                 for catalog in snapshot.catalogs:
                     if catalog.game_id != "reverse1999":
@@ -1321,9 +1325,7 @@ class AppController:
                         else self.shutdown_requested,
                     )
                     if voice is not None:
-                        return backend.prepare_playback_with_voice(
-                            character, text, voice
-                        )
+                        return prepare_with_voice(character, text, voice)
                     break
         return backend.prepare_playback(character, text)
 

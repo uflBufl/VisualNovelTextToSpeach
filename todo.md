@@ -2,9 +2,6 @@
 
 ## Windows Reading follow-up
 
-- [ ] Fix live Pocket voice selection for Horropedia. The exact story line
-      `reverse1999:303901:7` used `voice:narrator:reference-1` on build
-      `f11f153c`. Identify why the installed reference was skipped or unavailable.
 - [ ] Remember Dialogue and Story areas separately for screen capture and each
       known game window. Restore both on return and calibrate new targets once.
 - [ ] Move blocking Pocket worker startup and live-mode activation off the UI
