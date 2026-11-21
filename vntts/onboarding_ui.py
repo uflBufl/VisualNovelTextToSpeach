@@ -147,11 +147,8 @@ class ConfigurationPage(QWizardPage):
         )
         self.capture_mode.addItem("Selected game window", "window")
         self.capture_mode.addItem("Screen region (no auto advance)", "screen")
-        initial_capture_mode = (
-            settings.capture_mode if settings.onboarding_completed else "window"
-        )
         self.capture_mode.setCurrentIndex(
-            max(0, self.capture_mode.findData(initial_capture_mode))
+            self.capture_mode.findData(settings.capture_mode)
         )
         self.game_window = QComboBox()
         self.game_window.setEditable(True)
@@ -483,7 +480,7 @@ class ConfigurationPage(QWizardPage):
         self.update_capture_controls()
 
     def initializePage(self) -> None:
-        if self.windows_refreshed:
+        if self.windows_refreshed or self.capture_mode.currentData() != "window":
             return
         self.windows_refreshed = True
         self.refresh_windows(show_error=False)
@@ -1981,7 +1978,7 @@ class OnboardingWizard(QDialog):
         )
         set_action_icon(self.finish_button, "save" if reading_setup else "check")
         self.finish_button.setAccessibleDescription(
-            "Save setup and start narration in the selected game window"
+            "Save setup and start narration from the selected capture source"
             if self.start_live_after_save
             else "Save setup and return to the dashboard without starting playback"
         )

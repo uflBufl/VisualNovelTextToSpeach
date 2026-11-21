@@ -38,7 +38,7 @@ from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E4
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.profiles import GameProfile, GameProfileStore  # noqa: E402
 from vntts.services.tts_engine import TTSSynthesisError  # noqa: E402
-from vntts.settings import AppSettings  # noqa: E402
+from vntts.settings import AppSettings, load_app_settings  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.window_capture import (  # noqa: E402
     WindowCaptureTarget,
@@ -631,6 +631,7 @@ class OnboardingWizardTest(unittest.TestCase):
         for reading_setup in (False, True):
             with self.subTest(reading_setup=reading_setup):
                 settings = AppSettings(
+                    capture_mode="window",
                     onboarding_completed=False,
                     auto_advance_enabled=False,
                     game_window_title="Game",
@@ -648,6 +649,7 @@ class OnboardingWizardTest(unittest.TestCase):
 
     def test_contextual_reading_setup_keeps_selected_voices_and_discovers_windows(self):
         settings = AppSettings(
+            capture_mode="window",
             tts_model=None,
             narrator_speaker=None,
             tts_profile="default",
@@ -790,10 +792,16 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_reading_screen_region_hides_window_and_auto_advance(self):
-        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        windows = Mock()
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="screen", onboarding_completed=False),
+            reading_setup=True,
+            auto_discover_windows=True,
+            window_loader=windows,
+        )
         wizard.show()
         page = wizard.configuration_page
-        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+        windows.assert_not_called()
 
         self.assertEqual(page.title(), "Choose capture source")
         self.assertFalse(page.game_window.isVisibleTo(wizard))
@@ -806,7 +814,7 @@ class OnboardingWizardTest(unittest.TestCase):
 
     def test_back_navigation_preserves_valid_calibration_and_test(self):
         wizard = OnboardingWizard(
-            AppSettings(game_window_title="Game"),
+            AppSettings(capture_mode="window", game_window_title="Game"),
             diagnostics=Mock(),
             reading_setup=True,
         )
@@ -944,7 +952,13 @@ class OnboardingWizardTest(unittest.TestCase):
             wizard.deleteLater()
 
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):
-        wizard = OnboardingWizard(AppSettings())
+        with TemporaryDirectory() as directory:
+            settings = load_app_settings(
+                Path(directory) / "settings.json",
+                environment={},
+                default_capture_mode="window",
+            )
+        wizard = OnboardingWizard(settings)
 
         self.assertEqual(wizard.configuration_page.capture_mode.currentData(), "window")
         self.assertEqual(
@@ -1226,7 +1240,8 @@ class OnboardingWizardTest(unittest.TestCase):
 
     def test_incomplete_game_selection_disables_next_and_highlights_refresh(self):
         wizard = OnboardingWizard(
-            AppSettings(game_window_title="Game"), reading_setup=True
+            AppSettings(capture_mode="window", game_window_title="Game"),
+            reading_setup=True,
         )
         wizard.show()
         self.assertTrue(wizard.next_button.isEnabled())
@@ -1370,7 +1385,7 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_configuration_validation_lists_all_errors_and_focuses_first(self):
-        wizard = OnboardingWizard(AppSettings())
+        wizard = OnboardingWizard(AppSettings(capture_mode="window"))
         page = wizard.configuration_page
         wizard.show_page(1)
         wizard.show()
@@ -1475,7 +1490,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 wizard.deleteLater()
 
     def test_recommended_setup_hides_technical_fields_until_requested(self):
-        wizard = OnboardingWizard(AppSettings())
+        wizard = OnboardingWizard(AppSettings(capture_mode="window"))
         wizard.show_page(1)
         wizard.show()
         self.application.processEvents()
@@ -1499,7 +1514,9 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.deleteLater()
 
     def test_recommended_setup_discloses_auto_advance_before_diagnostics(self):
-        wizard = OnboardingWizard(AppSettings(auto_advance_key="space"))
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="window", auto_advance_key="space")
+        )
         wizard.show_page(1)
         wizard.show()
         self.application.processEvents()
@@ -1531,7 +1548,7 @@ class OnboardingWizardTest(unittest.TestCase):
         for reading_setup in (False, True):
             with self.subTest(reading_setup=reading_setup):
                 wizard = OnboardingWizard(
-                    AppSettings(),
+                    AppSettings(capture_mode="window"),
                     reading_setup=reading_setup,
                     window_loader=lambda: (
                         SimpleNamespace(title="Unrelated window"),
@@ -1571,7 +1588,9 @@ class OnboardingWizardTest(unittest.TestCase):
             )
 
         wizard = OnboardingWizard(
-            AppSettings(game_window_title="My manual game title"),
+            AppSettings(
+                capture_mode="window", game_window_title="My manual game title"
+            ),
             window_loader=windows,
             auto_discover_windows=True,
         )

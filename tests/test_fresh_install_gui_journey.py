@@ -171,6 +171,7 @@ def _wait_until(application, predicate, message, timeout_ms=10_000):
 
 def _complete_fresh_onboarding(application, settings):
     onboarding_controller = Mock(is_ready=False, is_live_running=False)
+    onboarding_controller._story_region.return_value = None
     onboarding_controller.apply_settings.return_value = True
     onboarding_controller.start.return_value = True
     onboarding_controller.test_current_dialog.return_value = ("Narrator", "Ready.")
@@ -259,6 +260,7 @@ def _first_process(root):
         speech_backend="pocket-tts",
         tts_profile="default",
         voice_manifest=str(manifest),
+        capture_mode="window",
         game_window_title="Reverse: 1999",
     )
 

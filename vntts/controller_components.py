@@ -639,7 +639,7 @@ class RuntimeLifecycleComponent:
             shutdown_requested=controller.shutdown_requested,
             interrupt_speech=controller._interrupt_speech,
             dialog_observed=controller._dialog_observed,
-            focus_probe=controller._is_game_focused,
+            focus_probe=controller._is_live_capture_available,
             capture_state_changed=controller._capture_state_changed,
             tracker_factory=IncrementalDialogTracker,
             auto_advance=controller._live_auto_advance_callback(),
@@ -1237,6 +1237,12 @@ class LiveSessionComponent:
             or controller.chapter_voice_preloader is not preloader
         ):
             return "target-changed"
+        if settings.capture_mode == "screen":
+            return (
+                None
+                if controller._is_live_capture_available()
+                else "capture-target-unavailable"
+            )
         if target is None or settings.capture_mode != "window":
             return "capture-target-unavailable"
         focused = controller._is_game_focused()

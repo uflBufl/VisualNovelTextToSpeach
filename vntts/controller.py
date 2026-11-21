@@ -4504,6 +4504,13 @@ class AppController:
             and self.capture_target.is_focused()
         )
 
+    def _is_live_capture_available(self) -> bool:
+        if self.settings.capture_mode == "screen":
+            return isinstance(
+                self.capture_target, DisplayCaptureTarget
+            ) and not isinstance(self.capture_target, WindowCaptureTarget)
+        return self._is_game_focused()
+
     def _live_auto_advance_callback(self) -> Callable[[], object] | None:
         if not self.settings.auto_advance_enabled or not auto_advance_allowed(
             self.settings.capture_mode,

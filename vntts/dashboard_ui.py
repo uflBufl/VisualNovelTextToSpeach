@@ -89,6 +89,7 @@ class RuntimeControlState:
     needs_readiness_check: bool = False
     indexed_current: bool = False
     recover_game_window: bool = False
+    needs_screen_region: bool = False
     waiting_for_game: bool = False
     speaking_character: str = ""
 
@@ -342,6 +343,7 @@ class ControlDashboard(QMainWindow):
         self._sequence_controls_available = False
         self._recover_game_window = False
         self._window_problem = False
+        self._needs_screen_region = False
         self._needs_readiness_check = False
         self._voice_dirty = False
         self._voice_busy = False
@@ -520,17 +522,7 @@ class ControlDashboard(QMainWindow):
         reading_actions.addWidget(self.read_button)
         self.prepare_reading_button = QPushButton("Set up and start")
         set_action_icon(self.prepare_reading_button, "settings")
-        self.prepare_reading_button.clicked.connect(
-            lambda: (
-                self.window_setup_requested.emit()
-                if self._recover_game_window
-                else self.game_window.showPopup()
-                if self._window_problem
-                else self.readiness_requested.emit()
-                if self._needs_readiness_check
-                else self.reading_setup_requested.emit()
-            )
-        )
+        self.prepare_reading_button.clicked.connect(self._request_reading_setup)
         self.prepare_audio_button = QPushButton("Prepare offline audio...")
         set_action_icon(self.prepare_audio_button, "audio-lines")
         self.prepare_audio_button.setAccessibleDescription(
@@ -781,9 +773,9 @@ class ControlDashboard(QMainWindow):
         )
         self.game_window.popup_requested.connect(self.refresh_windows)
         self.game_window.activated.connect(self._request_game_window)
-        game_label = QLabel("Game window")
-        game_label.setBuddy(self.game_window)
-        controls_layout.addWidget(game_label)
+        self.capture_source_label = QLabel("Game window")
+        self.capture_source_label.setBuddy(self.game_window)
+        controls_layout.addWidget(self.capture_source_label)
         primary_actions = QHBoxLayout()
         primary_actions.addWidget(self.game_window, 1)
         primary_actions.addWidget(self.live_button)
@@ -1084,6 +1076,11 @@ class ControlDashboard(QMainWindow):
         self.set_auto_advance_configuration(settings)
 
     def _set_game_window_selection(self, settings: AppSettings) -> None:
+        window_mode = settings.capture_mode == "window"
+        self.game_window.setVisible(window_mode)
+        self.capture_source_label.setText(
+            "Game window" if window_mode else "Screen region"
+        )
         title = self._game_window_title or ""
         was_blocked = self.game_window.blockSignals(True)
         index = self.game_window.findText(title, Qt.MatchFlag.MatchFixedString)
@@ -1091,11 +1088,7 @@ class ControlDashboard(QMainWindow):
             self.game_window.addItem(title)
             index = self.game_window.count() - 1
         self.game_window.setCurrentIndex(index)
-        self.game_window.setPlaceholderText(
-            "Screen region (manual capture)"
-            if settings.capture_mode != "window" and settings.onboarding_completed
-            else "Select game window"
-        )
+        self.game_window.setPlaceholderText("Select game window")
         self.game_window.setToolTip(title or self.game_window.placeholderText())
         self.game_window.blockSignals(was_blocked)
 
@@ -1470,6 +1463,7 @@ class ControlDashboard(QMainWindow):
         window_problem = "window" in (state.unavailable_reason or "").casefold()
         self._recover_game_window = state.recover_game_window
         self._window_problem = state.recover_game_window or window_problem
+        self._needs_screen_region = state.needs_screen_region
         self.prepare_reading_button.setText(self._reading_setup_action())
         self.story_actions.setVisible(state.ready and self._sequence_controls_available)
         self.sequence_resync_button.setEnabled(
@@ -1509,11 +1503,27 @@ class ControlDashboard(QMainWindow):
         self.live_button.setDefault(state.ready or state.active or state.can_initialize)
 
     def _reading_setup_action(self) -> str:
-        if self._window_problem:
+        if self._needs_screen_region:
+            return "Set dialogue area"
+        if self._recover_game_window or (
+            self._window_problem and not self.game_window.isHidden()
+        ):
             return "Select game window"
         if self._needs_readiness_check:
             return "Check readiness"
         return "Set up and start"
+
+    def _request_reading_setup(self) -> None:
+        if self._needs_screen_region:
+            self.calibration_requested.emit()
+        elif self._recover_game_window:
+            self.window_setup_requested.emit()
+        elif self._window_problem and not self.game_window.isHidden():
+            self.game_window.showPopup()
+        elif self._needs_readiness_check:
+            self.readiness_requested.emit()
+        else:
+            self.reading_setup_requested.emit()
 
     def _reading_setup_reason(self) -> str:
         return self._unavailable_reason or (

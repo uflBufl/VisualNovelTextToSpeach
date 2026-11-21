@@ -692,6 +692,7 @@ def load_app_settings(
     on_game_pack_error: Callable[[Exception], None] | None = None,
     on_fallback: Callable[[], None] | None = None,
     on_snapshot: Callable[[AppSettings, bytes | None], None] | None = None,
+    default_capture_mode: str = "screen",
 ) -> AppSettings:
     environment = os.environ if environment is None else environment
     report: WarningHandler = (
@@ -706,7 +707,7 @@ def load_app_settings(
     def fallback() -> AppSettings:
         if on_fallback is not None:
             on_fallback()
-        return AppSettings()
+        return AppSettings(capture_mode=default_capture_mode)
 
     revision: bytes | None = None
 

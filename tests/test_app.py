@@ -5301,11 +5301,12 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(restart_note.isVisibleTo(dialog))
         dialog.section_navigation.setCurrentIndex(1)
         self.assertFalse(restart_note.isVisibleTo(dialog))
+        self.assertFalse(dialog.refresh_windows_button.isEnabled())
+        dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
+        self.application.processEvents()
         self.assertLess(
             dialog.refresh_windows_button.width(), dialog.game_window.width()
         )
-        self.assertFalse(dialog.refresh_windows_button.isEnabled())
-        dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
         self.assertTrue(dialog.refresh_windows_button.isEnabled())
         dialog.section_navigation.setCurrentIndex(2)
         dialog.resize(620, 500)
@@ -9060,6 +9061,42 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertFalse(tray._start_live_after_initial_start)
                 tray.shutdown()
 
+    def test_saved_screen_setup_opens_dialogue_selector_and_enables_reading_on_save(
+        self,
+    ):
+        region = DialogRegion(0.1, 0.65, 0.8, 0.25)
+        path = Path(os.environ["VNTTS_SETTINGS_FILE"])
+        path.write_text(
+            json.dumps({"capture_mode": "screen", "onboarding_completed": False})
+        )
+        controller = Mock(
+            is_ready=False, is_live_running=False, is_one_shot_read_running=False
+        )
+        controller.runtime_control_snapshot.return_value = {}
+        tray = TrayApplication(
+            self.application, controller_factory=Mock(return_value=controller)
+        )
+        self.assertEqual(
+            tray.dashboard.prepare_reading_button.text(), "Set dialogue area"
+        )
+        self.assertTrue(tray.dashboard.game_window.isHidden())
+        with patch.object(tray, "_start_calibration_capture") as start_capture:
+            tray.dashboard.prepare_reading_button.click()
+            self.assertTrue(tray._calibration_capture_pending)
+            tray._cancel_calibration()
+            start_capture.assert_not_called()
+        self.assertFalse(load_app_settings(path).onboarding_completed)
+
+        tray._save_calibration_region(region)
+        saved = load_app_settings(path)
+        self.assertTrue(saved.onboarding_completed)
+        self.assertEqual(saved.capture_mode, "screen")
+        self.assertEqual(
+            load_dialog_region(os.environ["VNTTS_DIALOG_REGION_FILE"]), region
+        )
+        self.assertTrue(tray.dashboard.live_button.isEnabled())
+        self.assertEqual(tray.dashboard.live_button.text(), "Start narration")
+
     def test_missing_window_blocks_cold_reading_before_model_preparation(self):
         for detail in ("Game window is unavailable", "Game window is ambiguous"):
             with self.subTest(detail=detail):
@@ -9681,7 +9718,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         with patch("vntts.app.SettingsDialog") as factory:
             tray._create_settings_dialog()
-            self.assertFalse(factory.call_args.kwargs["story_area_confirmed"])
+            self.assertIsNone(factory.call_args.kwargs["story_region"])
 
     def test_window_calibration_uses_selected_client_geometry(self):
         controller = Mock()
@@ -11318,7 +11355,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller = Mock(is_live_running=False)
         tray = TrayApplication(
             self.application,
-            AppSettings(),
+            AppSettings(capture_mode="window"),
             controller_factory=Mock(return_value=controller),
         )
         self.addCleanup(tray.shutdown)

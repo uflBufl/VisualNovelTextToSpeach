@@ -126,6 +126,7 @@ from vntts.ocr import (
     DialogRegion,
     default_dialog_region,
     get_dialog_region_file,
+    load_dialog_region,
     save_dialog_region,
     save_story_region,
 )
@@ -179,6 +180,7 @@ from vntts.runtime_paths import configure_bundled_dependencies
 from vntts.rust_audio import AudioRuntimeUnavailable, check_audio_runtime
 from vntts.settings import (
     AppSettings,
+    capture_target_identity,
     content_path_import_errors,
     content_path_setting_names,
     get_local_data_directory,
@@ -393,12 +395,15 @@ class SettingsDialog(QDialog):
         parent: QWidget | None = None,
         *,
         voice_library: VoiceLibrary | None = None,
-        story_area_confirmed: bool = False,
+        dialogue_region: DialogRegion | None = None,
+        story_region: DialogRegion | None = None,
     ) -> None:
         super().__init__(parent)
         self.voice_library = voice_library or application_voice_library()
         self.story_area_requested = False
-        self.story_area_confirmed = story_area_confirmed
+        self.dialogue_area_requested = False
+        self.dialogue_region = dialogue_region
+        self.story_region = story_region
         self._voice_binding_rollback = self.voice_library.binding_rollback()
         self._initialize_settings(settings)
         window_layout = self._build_capture_controls(settings)
@@ -578,14 +583,23 @@ class SettingsDialog(QDialog):
             "Requires a confirmed story area; otherwise only the dialogue area is read. "
             "Start reading on a story screen; pause for menus that look like story text."
         )
-        self.story_area_button = QPushButton(
-            "Adjust story area..." if self.story_area_confirmed else "Set story area..."
-        )
+        self.story_area_button = QPushButton()
         self.story_area_button.setToolTip(
             "Save these settings, then select where story text may appear. "
             "Keep game controls and menus outside the area."
         )
         self.story_area_button.clicked.connect(self._request_story_area)
+        self.dialogue_area_button = QPushButton()
+        self.dialogue_area_button.setToolTip(
+            "Save these settings, then select the dialogue text area."
+        )
+        self.dialogue_area_button.clicked.connect(
+            lambda: self.validate_and_accept(dialogue_area=True)
+        )
+        self.dialogue_area_summary = QLabel()
+        self.story_area_summary = QLabel()
+        for summary in (self.dialogue_area_summary, self.story_area_summary):
+            summary.setWordWrap(True)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
         self.narrator_reference.setAccessibleName("Narrator reference")
@@ -819,6 +833,7 @@ class SettingsDialog(QDialog):
         diagnostics_layout: QHBoxLayout,
     ) -> QFormLayout:
         capture_form = QFormLayout()
+        self.capture_form = capture_form
         _add_composite_form_row(
             capture_form,
             "Screenshot directory",
@@ -829,10 +844,18 @@ class SettingsDialog(QDialog):
         _add_composite_form_row(
             capture_form, "Game window", self.game_window, window_layout
         )
+        self.game_window_layout = window_layout
+        for title, button, summary in (
+            ("Dialogue area", self.dialogue_area_button, self.dialogue_area_summary),
+            ("Story area", self.story_area_button, self.story_area_summary),
+        ):
+            area_layout = QVBoxLayout()
+            area_layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+            area_layout.addWidget(summary)
+            _add_composite_form_row(capture_form, title, button, area_layout)
         capture_form.addRow("Minimum OCR confidence", self.ocr_minimum_confidence)
         capture_form.addRow("OCR language", self.ocr_language)
         capture_form.addRow("Text placement", self.discover_text_layouts)
-        capture_form.addRow("Allowed story area", self.story_area_button)
         capture_form.addRow("OCR diagnostics", self.retain_uncertain_frames)
         _add_composite_form_row(
             capture_form,
@@ -1076,6 +1099,7 @@ class SettingsDialog(QDialog):
 
     def _connect_controls(self) -> None:
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
+        self.game_window.currentTextChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(
             self.update_speech_backend_controls
@@ -1301,10 +1325,12 @@ class SettingsDialog(QDialog):
         self._pending_pack_settings = None
         self.save_button.setEnabled(True)
         self.story_area_button.setEnabled(True)
+        self.dialogue_area_button.setEnabled(True)
         if pending is None:
             return
         if error is not None:
             self.story_area_requested = False
+            self.dialogue_area_requested = False
             cause = error.__cause__
             self._game_pack_error = (
                 f"Game pack: invalid JSON at line {cause.lineno}, "
@@ -1316,14 +1342,19 @@ class SettingsDialog(QDialog):
             return
         assert settings is not None
         self._game_pack_validation = self._game_pack_key(pending), settings
-        self.validate_and_accept(story_area=self.story_area_requested)
+        self.validate_and_accept(
+            story_area=self.story_area_requested,
+            dialogue_area=self.dialogue_area_requested,
+        )
 
     def _cancel_pack_check(self) -> None:
         self.game_pack_runner.cancel()
         self._pending_pack_settings = None
         self.save_button.setEnabled(True)
         self.story_area_button.setEnabled(True)
+        self.dialogue_area_button.setEnabled(True)
         self.story_area_requested = False
+        self.dialogue_area_requested = False
 
     def validation_errors(self) -> tuple[ValidationError, ...]:
         errors: list[ValidationError] = []
@@ -1624,8 +1655,37 @@ class SettingsDialog(QDialog):
 
     def update_capture_controls(self) -> None:
         window_capture = self.capture_mode.currentData() == "window"
+        self.capture_form.setRowVisible(self.game_window_layout, window_capture)
         self.game_window.setEnabled(window_capture)
         self.refresh_windows_button.setEnabled(window_capture)
+        same_source = capture_target_identity(
+            self.capture_mode.currentData(), self.game_window.currentText()
+        ) == capture_target_identity(
+            self.original_settings.capture_mode,
+            self.original_settings.game_window_title,
+        )
+        for button, summary, region, name in (
+            (
+                self.dialogue_area_button,
+                self.dialogue_area_summary,
+                self.dialogue_region,
+                "dialogue",
+            ),
+            (
+                self.story_area_button,
+                self.story_area_summary,
+                self.story_region,
+                "story",
+            ),
+        ):
+            selected = same_source and region is not None
+            button.setText(f"{'Adjust' if selected else 'Set'} {name} area...")
+            summary.setText(
+                f"Saved selection: left {region.left:.0%}, top {region.top:.0%}, "
+                f"width {region.width:.0%}, height {region.height:.0%}."
+                if same_source and region is not None
+                else "Not set for this capture source."
+            )
         self.update_auto_advance_controls()
 
     def update_terms_control(self) -> None:
@@ -1721,14 +1781,18 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Newer voice selection kept", str(error))
         super().reject()
 
-    def validate_and_accept(self, *, story_area: bool = False) -> None:
+    def validate_and_accept(
+        self, *, story_area: bool = False, dialogue_area: bool = False
+    ) -> None:
         if self.game_pack_runner.active:
             return
         self.story_area_requested = story_area
+        self.dialogue_area_requested = dialogue_area
         self._game_pack_error = None
         errors = self.update_validation_summary()
         if errors:
             self.story_area_requested = False
+            self.dialogue_area_requested = False
             self._focus_validation_errors(errors)
             return
         settings = self._raw_settings()
@@ -1739,6 +1803,7 @@ class SettingsDialog(QDialog):
             self._pending_pack_settings = settings
             self.save_button.setEnabled(False)
             self.story_area_button.setEnabled(False)
+            self.dialogue_area_button.setEnabled(False)
             self._show_validation_message("Checking game pack before saving...")
             self.game_pack_runner.start(
                 self._apply_game_pack,
@@ -1968,6 +2033,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if settings is None:
             self.settings = load_app_settings(
                 self._settings_path,
+                default_capture_mode="window",
                 on_game_pack_error=self._startup_game_pack_errors.append,
                 on_snapshot=remember_settings_snapshot,
             )
@@ -2138,7 +2204,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> None:
         self._lifecycle_generation = 0
         self._controller_ready = False
-        self._capture_setup_pending = False
+        self._capture_setup_pending = (
+            self._settings_revision is not None
+            and self.settings.capture_mode == "screen"
+            and not self.settings.onboarding_completed
+        )
         self._pocket_model_reload_pending = False
         self._controller_busy = False
         self._start_live_after_initial_start = False
@@ -3302,7 +3372,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Close the dialog before reading")
             return False
         if self._capture_setup_pending and not self.settings.onboarding_completed:
-            self.prepare_reading(start_live=True)
+            if self.settings.capture_mode == "screen":
+                self.calibrate()
+            else:
+                self.prepare_reading(start_live=True)
             return False
         if not state.can_toggle_live:
             return False
@@ -3440,7 +3513,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_scope_target = self.controller.capture_target
         self._live_scope_settings = self.controller.settings
         self._live_scope_observation_serial = self.controller.observation_serial
-        self._live_scope_window = getattr(self._live_scope_target, "last_window", None)
+        self._live_scope_window = (
+            getattr(self._live_scope_target, "last_window", None)
+            if self.controller.settings.capture_mode != "screen"
+            else None
+        )
         self.set_status("Identifying the current story chapter...")
         self.live_scope_runner.start(
             identify, cancellation=self._live_scope_cancellation
@@ -3499,15 +3576,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._live_scope_finished(False, None)
             return
         try:
-            focused = self.controller._is_game_focused()
+            focused = (
+                self.controller.settings.capture_mode == "screen"
+                or self.controller._is_game_focused()
+            )
             refusal = self._live_scope_request_refusal()
             if refusal is not None:
                 self.controller.live_scope_identification_failure = refusal
                 self._live_scope_finished(False, None)
                 return
-            self._live_scope_window = getattr(
-                self._live_scope_target, "last_window", None
-            )
+            if self.controller.settings.capture_mode != "screen":
+                self._live_scope_window = getattr(
+                    self._live_scope_target, "last_window", None
+                )
         except Exception as error:
             self._live_scope_finished(None, error)
             return
@@ -3533,7 +3614,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             refusal = self._live_scope_request_refusal()
             if refusal is not None:
                 identified, failure = False, refusal
-            else:
+            elif self.controller.settings.capture_mode != "screen":
                 try:
                     focused = self.controller._is_game_focused()
                     refusal = self._live_scope_request_refusal()
@@ -3586,7 +3667,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if failure == "no-dialog-text":
             message = (
                 "Live reading could not start: no dialog text was recognized "
-                "in the selected game window"
+                "in the dialogue area"
             )
         elif failure == "ocr-uncertain":
             message = (
@@ -3595,9 +3676,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "or check the capture area."
             )
         elif failure == "capture-target-unavailable":
-            message = "Live reading could not start: select a game window on Reading"
+            message = (
+                "Live reading could not start: check the screen capture source in Settings"
+                if self.settings.capture_mode == "screen"
+                else "Live reading could not start: select a game window on Reading"
+            )
         elif failure == "target-changed":
-            message = "Live reading cancelled: the selected game window changed"
+            message = "Live reading cancelled: the selected capture source changed"
         elif failure == "cancelled":
             message = "Live reading start cancelled"
         elif failure == "story-line-no-match":
@@ -3778,7 +3863,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if self.settings.capture_mode == "screen"
             else None
         )
-        self.set_status("Capturing game window for calibration...")
+        self.set_status(
+            "Capturing screen for calibration..."
+            if self.settings.capture_mode == "screen"
+            else "Capturing game window for calibration..."
+        )
         visibility = self._calibration_visibility
         self._calibration_capture_generation += 1
         generation = self._calibration_capture_generation
@@ -3912,6 +4001,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._calibration_visibility = None
 
     def _save_calibration_region(self, region: DialogRegion) -> None:
+        if (
+            self._capture_setup_pending
+            and self.settings.capture_mode == "screen"
+            and not self.settings.onboarding_completed
+        ):
+            candidate = self.settings.updated(onboarding_completed=True)
+            self._save_settings_candidate(candidate, dialog_region=region)
+            self.settings = candidate
+            self._capture_setup_pending = False
+            self.dashboard.set_configuration(self._runtime_settings())
+            self._apply_controller_action_state()
+            return
         profile_id = self.settings.active_profile_id
         profile = self.profile_store.get(profile_id) if profile_id else None
         if profile is not None:
@@ -4492,13 +4593,35 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _create_settings_dialog(self) -> SettingsDialog:
         try:
-            story_area_confirmed = self.controller._story_region() is not None
+            story_region = self.controller._story_region()
         except CaptureRegionNeedsCalibration:
-            story_area_confirmed = False
+            story_region = None
+        dialogue_region = None
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        if (
+            profile is not None
+            and not profile.needs_recalibration
+            and capture_target_identity(profile.capture_mode, profile.game_window_title)
+            == capture_target_identity(
+                self.settings.capture_mode, self.settings.game_window_title
+            )
+        ):
+            dialogue_region = profile.dialog_region
+        elif (
+            self.settings.active_profile_id is None
+            and self.settings.onboarding_completed
+        ):
+            try:
+                dialogue_region = load_dialog_region(get_dialog_region_file())
+            except OSError, ValueError:
+                pass
         dialog = SettingsDialog(
             self.settings,
             voice_library=self.controller.voice_library,
-            story_area_confirmed=story_area_confirmed,
+            dialogue_region=dialogue_region,
+            story_region=story_region
+            if isinstance(story_region, DialogRegion)
+            else None,
         )
         dialog.pocket_setup.readyChanged.connect(self._remember_pocket_model_setup)
         # Apply or discard the open settings draft before reloading the saved runtime.
@@ -6168,7 +6291,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._capture_setup_pending and not self.settings.onboarding_completed:
             enabled = False
             unavailable_reason = unavailable_reason or (
-                "Set up the dialogue area for the selected game before reading."
+                "Set the dialogue area on the screen before reading."
+                if self.settings.capture_mode == "screen"
+                else "Set up the dialogue area for the selected game before reading."
             )
         loaded = getattr(self.controller, "settings", None)
         if enabled and isinstance(loaded, AppSettings):
@@ -6234,6 +6359,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             speaking=bool(snapshot.get("speaking", False)),
             speaking_character=str(snapshot.get("speaking_character") or ""),
             recover_game_window=self._reading_window_setup_settings is not None,
+            needs_screen_region=(
+                self._capture_setup_pending
+                and not self.settings.onboarding_completed
+                and self.settings.capture_mode == "screen"
+            ),
             waiting_for_game=(
                 self.live_scope_focus_timer.isActive()
                 or (

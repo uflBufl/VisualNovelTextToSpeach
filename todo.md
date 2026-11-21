@@ -89,26 +89,20 @@ Recheck archived findings against current main before implementation.
 
 ## Active - Remaining Windows Reading qualification
 
-- [ ] Qualify the local mandatory one-time Dialogue/Story setup on an ordinary
-      frame without a text check. Cancel must retain prior areas; switching games
-      must require matching bounds. The support30 run predates these UX changes.
+- [ ] In full setup, select the Dialogue and Story areas on an ordinary game
+      frame and finish without waiting for centered text. After changing games,
+      confirm setup requires bounds for the new game.
+- [ ] On Windows, switch Settings to Screen region, select Dialogue area and
+      Story area on an ordinary game frame, then cancel an adjustment and
+      confirm the saved bounds are retained. In Reading, start narration
+      without selecting a window, advance manually, and stop. Switch back to
+      window capture and confirm that window selection and focus checks return.
 - [ ] After an unavailable optional announcement, change to a working narrator
       or engine and verify retry. Suppressing repeated failures is not external
       Pocket cloning authorization.
 - [ ] Qualify bounded OCR recovery on an already fully observed current line,
       while genuinely unreadable frames keep waiting. Keep this separate from
       the restored-layout readiness defect above.
-- [ ] Fix starting Reading after switching from window to screen capture.
-      The November 21 Windows report saved screen mode and both areas, but
-      changing source invalidated setup and the wizard defaulted back to window.
-      Keep the chosen source through setup. In screen mode, start from the saved
-      dialogue region without a window or focus requirement, including when
-      automatic story identification is active. Keep auto advance disabled.
-      Verify switching back restores window selection and focus checks.
-- [ ] Put dialogue and Story area selection beside the capture source in
-      Settings. Show the current selection for each, let the user adjust either
-      on an ordinary frame, and preserve saved areas on Cancel. Reading should
-      identify a missing dialogue area and open its selector directly.
 
 ## Live character voices from installed game references
 

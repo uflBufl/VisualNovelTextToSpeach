@@ -275,7 +275,9 @@ class ControlDashboardTest(unittest.TestCase):
 
     def test_discovery_failure_clears_stale_windows_and_explains_empty_popup(self):
         provider = Mock(return_value=[WindowInfo(7, "Game", 100)])
-        dashboard = ControlDashboard(AppSettings(), window_provider=provider)
+        dashboard = ControlDashboard(
+            AppSettings(capture_mode="window"), window_provider=provider
+        )
         self.assertEqual(dashboard.game_window.placeholderText(), "Select game window")
         dashboard.refresh_windows()
         self.assertTrue(dashboard.game_window_model.item(0).isEnabled())
@@ -297,9 +299,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.game_window.currentIndex(), -1)
         dashboard.set_configuration(AppSettings(onboarding_completed=True))
         self.assertEqual(dashboard.game_window.currentIndex(), -1)
-        self.assertEqual(
-            dashboard.game_window.placeholderText(), "Screen region (manual capture)"
-        )
+        self.assertTrue(dashboard.game_window.isHidden())
+        self.assertEqual(dashboard.capture_source_label.text(), "Screen region")
         dashboard.deleteLater()
 
     def test_compact_show_callback_does_not_outlive_window(self):
@@ -974,7 +975,9 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.deleteLater()
 
     def test_missing_window_opens_reading_window_picker(self):
-        dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
+        dashboard = ControlDashboard(
+            AppSettings(capture_mode="window", onboarding_completed=True)
+        )
         requested = []
         dashboard.window_setup_requested.connect(lambda: requested.append("window"))
         dashboard.settings_requested.connect(lambda: requested.append("settings"))

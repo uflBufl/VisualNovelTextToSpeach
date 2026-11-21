@@ -24,6 +24,33 @@ from vntts.window_capture import WindowCaptureTarget, WindowGeometry, WindowInfo
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_screen_runtime_captures_without_focus_and_never_auto_advances(self):
+        factory = Mock()
+        controller = AppController(
+            AppSettings(capture_mode="screen", auto_advance_enabled=True),
+        )
+        controller.live_reader_factory = factory
+        controller.thread_pool_executor_factory = Mock()
+        lifecycle = RuntimeLifecycleComponent(controller)
+        with (
+            patch.object(RuntimeLifecycleComponent, "_prepare_sparse_ocr"),
+            patch.object(RuntimeLifecycleComponent, "_configure_dialog_read"),
+            patch.object(
+                controller,
+                "_is_game_focused",
+                side_effect=AssertionError("Window focus"),
+            ),
+        ):
+            lifecycle._construct_live_runtime()
+            self.assertTrue(factory.call_args.kwargs["focus_probe"]())
+        self.assertIsNone(factory.call_args.kwargs["auto_advance"])
+        self.assertFalse(controller._is_game_focused())
+        self.assertFalse(controller._auto_advance_dialog())
+        controller.settings = controller.settings.updated(capture_mode="window")
+        with patch.object(controller, "_is_game_focused", return_value=False) as focus:
+            self.assertFalse(factory.call_args.kwargs["focus_probe"]())
+        focus.assert_called_once_with()
+
     def test_explicit_window_binding_survives_runtime_reconfiguration_until_reselected(
         self,
     ):

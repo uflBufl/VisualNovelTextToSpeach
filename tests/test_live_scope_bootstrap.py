@@ -5,11 +5,13 @@ from unittest.mock import Mock, patch
 
 from vntts_artifacts.hashing import text_sha256
 
+from tests.native_capture_fixtures import native_frame
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.live_snapshot import read_live_snapshot
 from vntts.ocr import OCRResult
 from vntts.settings import AppSettings
+from vntts.window_capture import DisplayCaptureTarget, WindowCaptureTarget
 
 
 class LiveScopeBootstrapTest(unittest.TestCase):
@@ -96,6 +98,78 @@ class LiveScopeBootstrapTest(unittest.TestCase):
         self.assertFalse(self.identify())
         self.read.assert_not_called()
         self.assert_outcome("capture-target-unavailable")
+
+    def use_screen_capture(self):
+        self.controller.settings = self.controller.settings.updated(
+            capture_mode="screen", game_window_title=None
+        )
+        self.controller.capture_target = DisplayCaptureTarget()
+        return self.controller.capture_target
+
+    def test_screen_scope_uses_display_capture_without_window_focus(self):
+        target = self.use_screen_capture()
+        self.controller.game_focused = False
+        with patch.object(
+            self.controller,
+            "_is_game_focused",
+            side_effect=AssertionError("Window focus"),
+        ):
+            self.assertTrue(self.identify())
+        self.assertIs(self.read.call_args.args[2], target)
+        self.assert_outcome("matched")
+
+    def test_screen_scope_rejects_a_real_window_target(self):
+        self.use_screen_capture()
+        self.controller.capture_target = WindowCaptureTarget("Game", Mock())
+        self.assertFalse(self.identify())
+        self.read.assert_not_called()
+        self.assert_outcome("capture-target-unavailable")
+
+    def test_screen_scope_keeps_display_provenance_through_real_snapshot_path(self):
+        target = self.use_screen_capture()
+        self.read.side_effect = read_live_snapshot
+        frame = native_frame(window_id=None, pid=None)
+        result = OCRResult(self.line.speaker, self.line.text, 100, "test", 1)
+        with (
+            patch.object(target, "capture_native", return_value=frame),
+            patch("vntts.dialog_capture.ensure_screen_capture_supported"),
+            patch(
+                "vntts.dialog_capture.recognize_screenshot_result", return_value=result
+            ),
+            patch.object(
+                self.controller, "_select_text_layout", side_effect=lambda frame: frame
+            ),
+            patch.object(self.controller, "_publish_diagnostic") as publish,
+        ):
+            self.assertTrue(self.identify())
+        provenance = publish.call_args.args[0].capture_provenance
+        self.assertEqual(provenance["scope"], "display")
+        self.assertIsNone(provenance["window_id"])
+        self.assertIsNone(provenance["window_title"])
+        self.assertIsNone(provenance["owner_pid"])
+        self.assertIsNone(provenance["requested_window_title"])
+
+    def test_screen_scope_rejects_cancellation_and_source_change_during_ocr(self):
+        for change, outcome in (
+            (self.cancellation.set, "cancelled"),
+            (
+                lambda: setattr(
+                    self.controller, "capture_target", DisplayCaptureTarget()
+                ),
+                "target-changed",
+            ),
+        ):
+            with self.subTest(outcome=outcome):
+                self.use_screen_capture()
+                self.cancellation.clear()
+
+                def read(*_args):
+                    change()
+                    return self.line.speaker, self.line.text
+
+                self.read.side_effect = read
+                self.assertFalse(self.identify())
+                self.assert_outcome(outcome)
 
     def test_no_selected_target_never_reads_desktop(self):
         self.controller.capture_target = None
