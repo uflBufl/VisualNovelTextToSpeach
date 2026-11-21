@@ -111,8 +111,8 @@ class MossNativeCompareTest(unittest.TestCase):
             self._download_pair(root)
             options = compare._parser().parse_args(["--downloads", temporary])
             with patch.object(
-                compare.subprocess,
-                "run",
+                compare,
+                "run_process",
                 side_effect=[
                     SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1\n"),
                     SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1-localgpu\n"),
@@ -138,8 +138,8 @@ class MossNativeCompareTest(unittest.TestCase):
                 ["--downloads", temporary, "--experiment", "codec-threads"]
             )
             with patch.object(
-                compare.subprocess,
-                "run",
+                compare,
+                "run_process",
                 side_effect=[
                     SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1-localgpu\n"),
                     SimpleNamespace(
@@ -252,7 +252,7 @@ class MossNativeCompareTest(unittest.TestCase):
             options = compare._parser().parse_args(
                 ["--downloads", temporary, "--experiment", "codec-threads"]
             )
-            with patch.object(compare.subprocess, "run") as execute:
+            with patch.object(compare, "run_process") as execute:
                 with self.assertRaisesRegex(ValueError, "codec-thread settings"):
                     compare.prepare_downloads(options)
                 execute.assert_not_called()
@@ -273,7 +273,7 @@ class MossNativeCompareTest(unittest.TestCase):
                     ) as archive:
                         archive.writestr("../escape.exe", b"bad")
                 options = compare._parser().parse_args(["--downloads", temporary])
-                with patch.object(compare.subprocess, "run") as execute:
+                with patch.object(compare, "run_process") as execute:
                     with self.assertRaises((ValueError, TTSConfigurationError)):
                         compare.prepare_downloads(options)
                     execute.assert_not_called()
@@ -296,7 +296,7 @@ class MossNativeCompareTest(unittest.TestCase):
             with self.subTest(code=code), TemporaryDirectory() as temporary:
                 self._download_pair(Path(temporary))
                 with (
-                    patch.object(compare.subprocess, "run", side_effect=[response]),
+                    patch.object(compare, "run_process", side_effect=[response]),
                     patch.object(compare, "run") as render,
                 ):
                     self.assertEqual(compare.main(["--downloads", temporary]), code)

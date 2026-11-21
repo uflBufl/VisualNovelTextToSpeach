@@ -1,11 +1,11 @@
 """Compare two existing native MOSS builds without changing app settings."""
 
 import argparse
-import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from statistics import median
+from subprocess import run as run_process
 from typing import NotRequired, Protocol, TypedDict
 
 from scripts import moss_native_pause_probe as probe
@@ -291,7 +291,7 @@ def prepare_downloads(options: _ComparisonOptions) -> None:
         _check_builds(builds)
         for label, (_, suffix) in variants.items():
             print(f"Checking {label} executable (no model loaded)...", flush=True)
-            result = subprocess.run(
+            result = run_process(
                 [str(getattr(options, label)), "--version"],
                 capture_output=True,
                 text=True,
