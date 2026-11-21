@@ -5,10 +5,11 @@
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
       and returning players. Ask them to choose a window, hear a line, switch
       games, stop, and find the page-turn setting without guidance.
-- [ ] On Windows, check that returning focus to the game resumes Reading and
-      that starting an explicitly selected chapter keeps that selection.
-      On macOS, exercise game audio and focus changes with a prepared chapter.
-      On both platforms, verify keyboard access to the window picker and Stop.
+- [ ] On Windows, start a specific chapter from its preparation screen and
+      verify that Reading keeps that selection. Check keyboard access to the
+      game window picker.
+- [ ] On macOS, exercise game audio and focus changes with a prepared chapter.
+      Verify keyboard access to the window picker and Stop.
 
 ## Active - Support 111 Reading holds
 
@@ -80,11 +81,9 @@ Recheck archived findings against current main before implementation.
       The layout span still excludes model preparation and is not retained
       separately in the timeline. Preserve Story coverage and current-frame,
       confidence and ownership gates while attributing the remaining delay.
-- [ ] Qualify the separate Reading screen-feedback field on Windows during
-      typewriter dialogue with and without prepared audio. The last recognized
-      fragment must remain distinct from the complete line selected for reading,
-      including uncertain/empty observations; verify copying and Stop/restart
-      while generation runs. Preserve early prepared playback.
+- [ ] On Windows, check screen feedback on uncertain or empty observations and
+      copy the recognized fragment during background generation. After Stop and
+      restart, confirm a previous fragment is not shown for the new dialogue.
 - [ ] On Windows, verify that cancellation, resume, priority changes and publication
       retain completed audio during background Reading.
 
@@ -99,8 +98,32 @@ Recheck archived findings against current main before implementation.
 - [ ] Qualify bounded OCR recovery on an already fully observed current line,
       while genuinely unreadable frames keep waiting. Keep this separate from
       the restored-layout readiness defect above.
-- [ ] Verify explicit display capture on Windows. The supplied recording and
-      support snapshots all identify selected-window capture.
+- [ ] Fix starting Reading after switching from window to screen capture.
+      The November 21 Windows report saved screen mode and both areas, but
+      changing source invalidated setup and the wizard defaulted back to window.
+      Keep the chosen source through setup. In screen mode, start from the saved
+      dialogue region without a window or focus requirement, including when
+      automatic story identification is active. Keep auto advance disabled.
+      Verify switching back restores window selection and focus checks.
+- [ ] Put dialogue and Story area selection beside the capture source in
+      Settings. Show the current selection for each, let the user adjust either
+      on an ordinary frame, and preserve saved areas on Cancel. Reading should
+      identify a missing dialogue area and open its selector directly.
+
+## Live character voices from installed game references
+
+- [ ] In An-an Lee's first anecdote chapter, Horropedia's identified lines
+      (e.g. `reverse1999:303901:7`) use Pocket's narrator fallback when no
+      prepared recording or character binding exists. Resolve an eligible
+      installed-game voice reference for the matched character before automatic
+      narrator fallback. Reuse it on subsequent lines, preserve explicit voice
+      choices, and retain fallback for missing or ambiguous references.
+      Verify the spoken dialogue uses Horropedia's reference on Windows without
+      preparing the chapter; a spoken name announcement is a separate route.
+- [ ] Report the voice reference actually used by the Pocket worker. The
+      November 21 narrator fallback for Horropedia was labeled
+      `voice:horropedia:built-in`. Cover both narrator fallback and a resolved
+      character reference in the exported dialogue route.
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 
@@ -401,6 +424,13 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Follow the system audio output during playback
 
+- [ ] Repair Windows Reading hotplug from the November 21 run. A confirmed
+      output change interrupted the Shure stream during admission and surfaced
+      as a playback error. Preserve device-change interruption through the Rust
+      output path; keep incomplete speech from advancing the game and allow
+      replay on the new output. Also check the Sony stream that stopped before
+      the refresh arrived. Treat it as a device change only if route evidence
+      confirms it; keep genuine stream failures visible.
 - [ ] Verify hotplug on real macOS and Windows headphones while Reading, sample playback and headless CLI playback are active, including disconnect/reconnect and recovery after no output is available.
 
 ## Continue regular-file admission through remaining integrity owners
