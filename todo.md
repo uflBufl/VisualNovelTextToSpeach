@@ -2,8 +2,6 @@
 
 ## Windows Reading follow-up
 
-- [ ] Remember Dialogue and Story areas separately for screen capture and each
-      known game window. Restore both on return and calibrate new targets once.
 - [ ] Move blocking Pocket worker startup and live-mode activation off the UI
       thread. Keep Start, cancellation and window switching responsive.
 - [ ] Treat superseded story-caption frames as cancellations in live capture.

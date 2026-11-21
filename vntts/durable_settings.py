@@ -16,6 +16,7 @@ from vntts.auto_advance_policy import (
 from vntts.ocr import (
     CAPTURE_COORDINATE_SPACE,
     DialogRegion,
+    default_dialog_region,
     get_dialog_region_file,
     save_dialog_region,
     save_story_region,
@@ -68,6 +69,48 @@ def _capture_snapshot(
         )
     except FileNotFoundError:
         return {}, None
+
+
+def _area_history_path() -> Path:
+    path = get_dialog_region_file()
+    return path.with_name(f"{path.stem}.targets.json")
+
+
+def _target_key(mode: str, title: str | None) -> str:
+    _, name = capture_target_identity(mode, title)
+    if mode == "screen":
+        return "screen"
+    return f"window:{name}" if name else ""
+
+
+def remembered_capture_areas(
+    current: AppSettings,
+    dialogue: DialogRegion | None,
+    story: DialogRegion | None,
+) -> Callable[[str, str], tuple[DialogRegion | None, DialogRegion | None]]:
+    try:
+        history, _ = _capture_snapshot(_area_history_path())
+    except OSError, ValueError:
+        history = {}
+    current_key = _target_key(current.capture_mode, current.game_window_title)
+
+    def lookup(
+        mode: str, title: str
+    ) -> tuple[DialogRegion | None, DialogRegion | None]:
+        key = _target_key(mode, title)
+        if key == current_key:
+            return dialogue, story
+        entry = history.get(key)
+        if not isinstance(entry, dict):
+            return None, None
+        try:
+            area = DialogRegion.from_mapping(entry)
+            wide = entry.get("story_region")
+            return area, DialogRegion.from_mapping(wide) if wide else None
+        except ValueError:
+            return None, None
+
+    return lookup
 
 
 def _capture_fields(
@@ -124,10 +167,12 @@ def _capture_write(
     expected: Mapping[str, object],
     write: Callable[[], _WriteResult],
     rollback: list[_CaptureRollback] | None,
+    *,
+    snapshot: tuple[dict[str, object], bytes | None] | None = None,
 ) -> _WriteResult:
     if rollback is None:
         return write()
-    before, revision = _capture_snapshot(path, profile_id=profile_id)
+    before, revision = snapshot or _capture_snapshot(path, profile_id=profile_id)
     previous = _capture_fields(before, profile_id).copy()
     changed = {
         key: value
@@ -147,6 +192,27 @@ def _capture_write(
         if token is not None and not error.publication_started:
             rollback.remove(token)
         raise
+
+
+def _replace_capture_document(
+    path: Path,
+    snapshot: tuple[dict[str, object], bytes | None],
+    updated: dict[str, object],
+    rollback: list[_CaptureRollback],
+) -> None:
+    before, revision = snapshot
+    if before == updated:
+        return
+    _capture_write(
+        path,
+        None,
+        {k: updated.get(k, _MISSING) for k in before.keys() | updated.keys()},
+        lambda: write_json_if_unchanged(
+            path, updated, revision=revision, document_name="Capture areas"
+        ),
+        rollback,
+        snapshot=snapshot,
+    )
 
 
 class _OnboardingWizard(Protocol):
@@ -262,18 +328,18 @@ class DurableSettingsMixin:
                 ) != capture_target_identity(
                     previous.capture_mode, previous.game_window_title
                 ):
-                    _capture_write(
-                        get_dialog_region_file(),
-                        None,
-                        {"story_region": _MISSING, "story_binding": _MISSING},
-                        lambda: save_story_region(
-                            None,
-                            get_dialog_region_file(),
-                            capture_mode=candidate.capture_mode,
-                            game_window_title=candidate.game_window_title,
-                        ),
+                    completed = self._switch_capture_areas(
+                        previous,
+                        saved_settings,
                         rollback,
+                        restore=dialog_region is None
+                        and saved_settings.active_profile_id is None,
                     )
+                    if completed:
+                        saved_settings = saved_settings.updated(
+                            onboarding_completed=True
+                        )
+                        values["onboarding_completed"] = True
                 if dialog_region is not None:
                     self._save_setup_capture_regions(
                         candidate, dialog_region, story_region, rollback=rollback
@@ -296,6 +362,84 @@ class DurableSettingsMixin:
                 raise
             self._last_saved_settings = saved_settings
             return self._settings_path
+
+    def _switch_capture_areas(
+        self,
+        previous: AppSettings,
+        selected: AppSettings,
+        rollback: list[_CaptureRollback],
+        *,
+        restore: bool,
+    ) -> bool:
+        # OCR reads only the active area file. Load saved targets when switching sources.
+        path = get_dialog_region_file()
+        active_snapshot = _capture_snapshot(path)
+        active, _ = active_snapshot
+        history_path = _area_history_path()
+        history_snapshot = _capture_snapshot(history_path)
+        history, _ = history_snapshot
+        key = _target_key(previous.capture_mode, previous.game_window_title)
+        incoming = (
+            history.get(_target_key(selected.capture_mode, selected.game_window_title))
+            if restore
+            else None
+        )
+        fields = (
+            *default_dialog_region.to_json(),
+            "coordinate_space",
+            "ocr_regions",
+            "story_region",
+        )
+        outgoing: dict[str, object] = {}
+        if previous.active_profile_id is None:
+            outgoing = {name: active[name] for name in fields if name in active}
+            if active.get("story_binding") != {
+                "capture_mode": previous.capture_mode,
+                "game_window_title": previous.game_window_title,
+            }:
+                outgoing.pop("story_region", None)
+        else:
+            profile = self.profile_store.get(previous.active_profile_id)
+            if profile is not None and key == _target_key(
+                profile.capture_mode, profile.game_window_title
+            ):
+                outgoing = {
+                    **profile.dialog_region.to_json(),
+                    "coordinate_space": profile.coordinate_space,
+                }
+                if profile.story_region is not None:
+                    outgoing["story_region"] = profile.story_region.to_json()
+                if profile.ocr_regions is not None:
+                    outgoing["ocr_regions"] = profile.ocr_regions.to_json()
+        if (
+            key
+            and "left" in outgoing
+            and (
+                previous.onboarding_completed
+                or outgoing != default_dialog_region.to_json()
+            )
+            and outgoing.get("coordinate_space") in (None, CAPTURE_COORDINATE_SPACE)
+        ):
+            outgoing["completed"] = previous.onboarding_completed
+            _replace_capture_document(
+                history_path, history_snapshot, {**history, key: outgoing}, rollback
+            )
+
+        restored: dict[str, object] = dict(default_dialog_region.to_json())
+        if isinstance(incoming, dict):
+            restored.update({k: incoming[k] for k in fields if k in incoming})
+            if "story_region" in restored:
+                restored["story_binding"] = {
+                    "capture_mode": selected.capture_mode,
+                    "game_window_title": selected.game_window_title,
+                }
+        if active or isinstance(incoming, dict):
+            updated = {
+                k: v for k, v in active.items() if k not in (*fields, "story_binding")
+            }
+            updated.update(restored)
+            _replace_capture_document(path, active_snapshot, updated, rollback)
+        return isinstance(incoming, dict) and incoming.get("completed") is True
 
     def _rollback_setup_writes(
         self, rollback: list[_CaptureRollback], settings_before: dict[str, object]

@@ -7630,6 +7630,89 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(tray.controller.capture_target.selected_window, chosen)
             self.assertEqual(tray.dashboard.game_window.currentText(), chosen.title)
 
+    def test_capture_source_areas_survive_switching_and_reopening(self):
+        first = WindowInfo(42, "First game", 123)
+        second = WindowInfo(43, "Second game", 124)
+        areas = (
+            (first, DialogRegion(0.1, 0.7, 0.8, 0.2), DialogRegion(0, 0.1, 1, 0.9)),
+            (None, DialogRegion(0.2, 0.6, 0.6, 0.3), DialogRegion(0.1, 0.2, 0.8, 0.8)),
+            (
+                second,
+                DialogRegion(0.3, 0.5, 0.4, 0.4),
+                DialogRegion(0.2, 0.3, 0.6, 0.7),
+            ),
+        )
+        path = Path(os.environ["VNTTS_SETTINGS_FILE"])
+
+        def open_tray(settings):
+            tray = TrayApplication(
+                self.application,
+                settings,
+                controller_factory=AppController,
+                profile_store=GameProfileStore.load(path.with_name("profiles.json")),
+            )
+            tray.live_stop_runner.thread_pool = ImmediateTaskPool()
+            tray.configuration_runner.thread_pool = ImmediateTaskPool()
+            return tray
+
+        tray = open_tray(
+            AppSettings(capture_mode="window", game_window_title=first.title)
+        )
+        self.enterContext(patch("vntts.app.list_windows", return_value=[first, second]))
+
+        def select(window, *, in_settings=False):
+            if in_settings:
+                dialog = Mock()
+                dialog.exec.return_value = QDialog.DialogCode.Accepted
+                dialog.settings.return_value = tray.settings.updated(
+                    capture_mode="screen" if window is None else "window",
+                    game_window_title=window.title if window else None,
+                )
+                with patch.object(tray, "_create_settings_dialog", return_value=dialog):
+                    tray.open_settings()
+            else:
+                tray.choose_capture_source(window)
+            self.wait_until(
+                lambda: (
+                    not tray.configuration_runner.active
+                    and not tray.live_stop_runner.active
+                    and tray.controller.settings == tray.settings
+                )
+            )
+
+        for window, dialogue, story in areas:
+            if window is not first:
+                select(window, in_settings=window is None)
+            self.assertFalse(tray.settings.onboarding_completed)
+            self.assertIsNone(tray.controller._story_region())
+            if window is None:
+                tray._save_calibration_region(dialogue)
+                tray._save_story_area(story, tray._story_area_binding())
+            else:
+                candidate = tray.settings.updated(onboarding_completed=True)
+                tray._save_settings_candidate(
+                    candidate, dialog_region=dialogue, story_region=story
+                )
+                tray.settings = candidate
+                tray.controller.apply_settings(candidate)
+
+        def check_areas(dialogue, story):
+            self.assertTrue(tray._runtime_control_state().can_initialize)
+            self.assertTrue(
+                load_app_settings(path, environment={}).onboarding_completed
+            )
+            self.assertEqual(tray.controller._capture_region(), dialogue)
+            self.assertEqual(tray.controller._story_region(), story)
+
+        select(first)
+        check_areas(*areas[0][1:])
+        tray.shutdown()
+        tray = open_tray(load_app_settings(path, environment={}))
+        check_areas(*areas[0][1:])
+        for window, dialogue, story in areas[1:]:
+            select(window, in_settings=True)
+            check_areas(dialogue, story)
+
     def test_window_choice_invalidates_pending_start_and_scope(self):
         controller = Mock(is_ready=False, is_live_running=False)
         tray = TrayApplication(
@@ -12187,9 +12270,14 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIsNotNone(wizard)
         self.assertTrue(wizard.isVisible())
         region = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        page = wizard.calibration_page
+        page._capture_binding = (
+            wizard.draft_settings.capture_mode,
+            wizard.draft_settings.game_window_title,
+        )
         with patch.object(tray_application, "_save_setup_capture_regions") as save:
-            wizard.calibration_page.save_region(region)
-        save.assert_called_once_with(wizard.draft_settings, region, None)
+            page._validate_dialogue_selection(region)
+        save.assert_not_called()
         image = Image.new("RGB", (800, 600))
         story = DialogRegion(0, 0.1, 1, 0.9)
         cancelled = Event()
@@ -12355,6 +12443,43 @@ class TrayApplicationTest(unittest.TestCase):
         pool.run_next()
         self.application.processEvents()
         self.assertFalse(wizard.test_page.running)
+
+    def test_onboarding_preview_uses_draft_areas_without_saving_them(self):
+        saved_dialogue = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        draft_dialogue = DialogRegion(0.2, 0.6, 0.6, 0.3)
+        draft_story = DialogRegion(0.1, 0.2, 0.8, 0.8)
+        path = Path(os.environ["VNTTS_DIALOG_REGION_FILE"])
+        save_dialog_region(saved_dialogue, path)
+        saved_bytes = path.read_bytes()
+        _saved, controller, _tray, pool, wizard = self._onboarding_preview_case(
+            "success"
+        )
+        page = wizard.calibration_page
+        page._capture_binding = (
+            wizard.draft_settings.capture_mode,
+            wizard.draft_settings.game_window_title,
+        )
+        with patch("vntts.onboarding_ui.show_calibration_overlay") as show:
+            page._capture_finished((None, Image.new("RGB", (800, 600))), None)
+        show.call_args.kwargs["save_region"](draft_dialogue)
+        page.story_region = None
+        page.finish_calibration(draft_dialogue)
+        page.finish_story_area(draft_story)
+        self.assertEqual(path.read_bytes(), saved_bytes)
+        wizard.show_page(len(wizard.pages) - 1)
+        wizard.test_page.run_test()
+        page.capture_region = saved_dialogue
+        page.story_region = None
+        pool.run_next()
+        self.application.processEvents()
+        controller.test_current_dialog.assert_called_once_with(
+            capture_context=ANY,
+            prepare_live=None,
+            region=draft_dialogue,
+            story_region=draft_story,
+        )
+        self.assertTrue(wizard.test_page.successful)
+        self.assertEqual(path.read_bytes(), saved_bytes)
 
     def test_explicit_start_intent_runs_once_only_after_setup_is_saved(self):
         for outcome in ("success", "cancel", "save-error"):
@@ -12682,7 +12807,10 @@ class TrayApplicationTest(unittest.TestCase):
                     )
                 )
                 controller.test_current_dialog.assert_called_once_with(
-                    capture_context=ANY, prepare_live=ANY
+                    capture_context=ANY,
+                    prepare_live=ANY,
+                    region=None,
+                    story_region=None,
                 )
                 controller.start.assert_not_called()
                 controller.model_assets.download.assert_not_called()
@@ -12739,7 +12867,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(runtime.audio_source_policy, "prefer-generated")
             self.assertEqual(runtime.game_window_title, "Game")
             controller.test_current_dialog.assert_called_once_with(
-                capture_context=ANY, prepare_live=ANY
+                capture_context=ANY, prepare_live=ANY, region=None, story_region=None
             )
             controller.start.assert_not_called()
             controller.model_assets.download.assert_not_called()

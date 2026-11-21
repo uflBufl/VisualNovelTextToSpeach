@@ -103,6 +103,7 @@ class ConfigurationApplyMixin:
         sequence_resync_action: QAction
         sequence_expected_action: QAction
         _controller_busy: bool
+        _last_saved_settings: AppSettings | None
         _controller_ready: bool
         _capture_setup_pending: bool
         _shutting_down: bool
@@ -305,13 +306,26 @@ class ConfigurationApplyMixin:
             message += f"; restoring the previous voice selection also failed: {error}"
         self.show_error(message)
 
+    def _save_capture_selection(
+        self, candidate: AppSettings
+    ) -> tuple[AppSettings, Path]:
+        candidate, changed = reconcile_capture_target(self.settings, candidate)
+        path = self._save_settings_candidate(candidate)
+        if changed:
+            if self._last_saved_settings is not None:
+                candidate = candidate.updated(
+                    onboarding_completed=self._last_saved_settings.onboarding_completed
+                )
+            self._capture_setup_pending = not candidate.onboarding_completed
+        return candidate, path
+
     def _save_settings_with_login_rollback(
         self,
         updated_settings: AppSettings,
         original_settings: AppSettings,
         *,
         restore_voice_bindings: Callable[[], None],
-    ) -> Path | None:
+    ) -> tuple[AppSettings, Path] | None:
         launch_changed = (
             updated_settings.launch_at_login != original_settings.launch_at_login
         )
@@ -325,8 +339,8 @@ class ConfigurationApplyMixin:
                 )
                 return None
         try:
-            path = self._save_settings_candidate(updated_settings)
-        except OSError as error:
+            return self._save_capture_selection(updated_settings)
+        except (OSError, ValueError) as error:
             rollback_error = None
             if launch_changed:
                 try:
@@ -340,7 +354,6 @@ class ConfigurationApplyMixin:
                 message += f"; launch-at-login rollback also failed: {rollback_error}"
             self._report_settings_failure(message, restore_voice_bindings)
             return None
-        return path
 
     def open_settings(self) -> None:
         if self._controller_busy or self._shutting_down:
@@ -366,23 +379,19 @@ class ConfigurationApplyMixin:
             )
             return
         original_settings = self.settings
-        updated_settings, capture_changed = reconcile_capture_target(
-            original_settings, updated_settings
-        )
-        path = self._save_settings_with_login_rollback(
+        saved = self._save_settings_with_login_rollback(
             updated_settings,
             original_settings,
             restore_voice_bindings=dialog.restore_initial_voice_bindings,
         )
-        if path is None:
+        if saved is None:
             return
+        updated_settings, path = saved
         restart_changes = restart_required_setting_changes(
             self.controller.settings if self._controller_ready else original_settings,
             updated_settings,
         )
         self.settings = updated_settings
-        if capture_changed:
-            self._capture_setup_pending = True
         runtime_settings = self._runtime_settings()
         self.dashboard.set_configuration(runtime_settings)
         self.sequence_resync_action.setVisible(

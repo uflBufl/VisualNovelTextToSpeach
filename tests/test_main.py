@@ -2566,6 +2566,58 @@ class MainTest(unittest.TestCase):
         )
         controller.voice_router.speak.assert_not_called()
 
+    def test_controller_preview_uses_draft_dialogue_and_story_regions(self):
+        dialogue = DialogRegion(0.2, 0.6, 0.6, 0.3)
+        story = DialogRegion(0.1, 0.2, 0.8, 0.8)
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        image = Image.new("RGB", (100, 100))
+        result = OCRResult("Marcus", "Draft dialogue.", 95.0, "balanced", 1)
+        for story_region in (None, story):
+            with (
+                self.subTest(story_region=story_region),
+                patch(
+                    "vntts.controller_components.analyze_dialog_snapshot",
+                    return_value=(image, None, result),
+                ) as analyze,
+                patch.object(type(controller.diagnostics), "_test_audio_route"),
+                patch.object(controller, "_capture_region") as persisted_dialogue,
+                patch.object(controller, "_capture_ocr_regions") as persisted_ocr,
+                patch.object(controller, "_select_text_layout") as select,
+            ):
+                self.assertEqual(
+                    controller.test_current_dialog(
+                        prepare_live=Mock(), region=dialogue, story_region=story_region
+                    ),
+                    ("Marcus", "Draft dialogue."),
+                )
+                options = analyze.call_args.kwargs
+                self.assertEqual(options["region"], dialogue)
+                self.assertIsNone(options["ocr_regions"])
+                persisted_dialogue.assert_not_called()
+                persisted_ocr.assert_not_called()
+                if story_region is None:
+                    self.assertIsNone(options["frame_selector"])
+                else:
+                    options["frame_selector"](image)
+                    select.assert_called_once_with(image, story_region=story)
+
+        controller.settings = controller.settings.updated(discover_text_layouts=True)
+        discovery = Mock()
+        discovery.detect.return_value = SimpleNamespace(dialogue_text_present=True)
+        frame = CapturedDialogFrame(
+            image, 0, canonical_image=image, capture_region=dialogue
+        )
+        with (
+            patch.object(
+                controller, "_prepare_caption_discovery", return_value=discovery
+            ),
+            patch.object(controller, "_story_region") as persisted_story,
+        ):
+            controller._select_text_layout(frame, story_region=story)
+        self.assertEqual(discovery.detect.call_args.kwargs["allowed_region"], story)
+        self.assertEqual(discovery.detect.call_args.kwargs["covered_region"], dialogue)
+        persisted_story.assert_not_called()
+
     def test_controller_exposes_speech_queue_controls(self):
         statuses = []
         controller = AppController(

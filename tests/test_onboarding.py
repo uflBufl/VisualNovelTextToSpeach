@@ -2329,10 +2329,7 @@ class OnboardingWizardTest(unittest.TestCase):
                 window.deleteLater()
 
     def test_calibration_finish_closes_active_overlay_without_restoring_wizard(self):
-        save_region = Mock()
-        wizard = OnboardingWizard(
-            AppSettings(capture_mode="screen"), save_region=save_region
-        )
+        wizard = OnboardingWizard(AppSettings(capture_mode="screen"))
         page = wizard.calibration_page
         overlay = Mock()
         pool = ManualThreadPool()
@@ -2361,7 +2358,6 @@ class OnboardingWizardTest(unittest.TestCase):
                 overlay.deleteLater.assert_called_once_with()
                 self.assertIsNone(page.overlay)
                 self.assertFalse(wizard.isVisible())
-                save_region.assert_not_called()
         finally:
             wizard.deleteLater()
 

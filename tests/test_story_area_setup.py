@@ -68,13 +68,14 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.host._settings_revision = None
         self.host.profile_store = GameProfileStore(self.root / "profiles.json")
 
-    def wizard(self, settings=None):
+    def wizard(self, settings=None, **kwargs):
         wizard = OnboardingWizard(
             settings or self.settings,
             reading_setup=True,
             auto_discover_windows=False,
             diagnostics=Mock(),
             capture_region=self.dialogue,
+            **kwargs,
         )
         wizard.diagnostics_page.runner.start = Mock()
         self.addCleanup(wizard.deleteLater)
@@ -171,6 +172,32 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.assertFalse(wizard.calibration_page.calibrated)
         self.assertIsNone(wizard.draft_settings.active_profile_id)
 
+    def test_saved_areas_are_restored_after_draft_target_changes(self):
+        other_dialogue = DialogRegion(0.2, 0.6, 0.6, 0.2)
+        other_story = DialogRegion(0.1, 0.1, 0.8, 0.8)
+        areas = {
+            "Game": (self.dialogue, self.story),
+            "Other game": (other_dialogue, other_story),
+        }
+        lookup = Mock(side_effect=lambda mode, title: areas.get(title, (None, None)))
+        wizard = self.wizard(story_region=self.story, remembered_capture_areas=lookup)
+        wizard.show_page(0)
+        wizard.configuration_page.game_window.setCurrentText("Other game")
+        wizard.next_page()
+        self.assertEqual(wizard.capture_regions(), (other_dialogue, other_story))
+        self.assertTrue(wizard.calibration_page.isComplete())
+        wizard.resume_after_editor(self.settings.updated(game_window_title="Unknown"))
+        self.assertEqual(wizard.capture_regions(), (None, None))
+        wizard.configuration_page.game_window.setCurrentText("Game")
+        wizard.next_page()
+        self.assertEqual(wizard.capture_regions(), (self.dialogue, self.story))
+        wizard.show_page(0)
+        wizard.configuration_page.game_window.setCurrentText("Unknown")
+        wizard.next_page()
+        self.assertEqual(wizard.capture_regions(), (None, None))
+        self.assertFalse(wizard.calibration_page.calibrated)
+        self.assertFalse(self.region_file.exists())
+
     def test_story_area_must_include_dialogue_and_rejects_stale_capture_target(self):
         wizard = self.wizard()
         page = wizard.calibration_page
@@ -211,6 +238,25 @@ class StoryAreaSetupTest(unittest.TestCase):
         self.assertIsNone(
             get_story_region(capture_mode="window", game_window_title="Game")
         )
+
+    def test_failed_target_switch_keeps_the_active_areas_and_saved_source(self):
+        current = self.settings.updated(onboarding_completed=True)
+        self.host._save_settings_candidate(
+            current, dialog_region=self.dialogue, story_region=self.story
+        )
+        self.host.settings = current
+        before = json.loads(self.region_file.read_text())
+        with patch(
+            "vntts.durable_settings.write_versioned_json_if_unchanged",
+            side_effect=OSError("settings disk full"),
+        ):
+            with self.assertRaisesRegex(OSError, "settings disk full"):
+                self.host._save_settings_candidate(
+                    current.updated(capture_mode="screen", onboarding_completed=False)
+                )
+        self.assertEqual(json.loads(self.region_file.read_text()), before)
+        self.assertEqual(load_app_settings(self.host._settings_path), current)
+        self.assertEqual(self.host._last_saved_settings, current)
 
     def test_region_write_failure_does_not_mark_setup_complete(self):
         with patch(

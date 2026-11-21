@@ -1357,14 +1357,12 @@ class CalibrationPage(QWizardPage):
     def __init__(
         self,
         capture_target_factory: CaptureTargetFactory,
-        save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
         story_recognizer: StoryAreaRecognizer | None = None,
     ) -> None:
         super().__init__()
         self.capture_target_factory = capture_target_factory
-        self.save_region = save_region
         self.capture_region = capture_region
         self.story_region = story_region
         self.story_recognizer = story_recognizer
@@ -1550,9 +1548,7 @@ class CalibrationPage(QWizardPage):
                 overlay = show_calibration_overlay(
                     geometry,
                     background=background,
-                    save_region=self._save_dialogue_selection
-                    if self.save_region
-                    else None,
+                    save_region=self._validate_dialogue_selection,
                     capture_region=self.capture_region,
                 )
         except Exception as error:
@@ -1590,14 +1586,12 @@ class CalibrationPage(QWizardPage):
             self.overlay.close()
         self.restore_wizard()
 
-    def _save_dialogue_selection(self, region: DialogRegion) -> None:
+    def _validate_dialogue_selection(self, _region: DialogRegion) -> None:
         settings = self.flow.draft_settings
         if self._capture_binding != (settings.capture_mode, settings.game_window_title):
             raise ValueError(
                 "The selected game changed. Capture the dialogue area again."
             )
-        if self.save_region is not None:
-            self.save_region(region)
 
     def finish_calibration(self, region: DialogRegion) -> None:
         if region != self.capture_region:
@@ -1817,13 +1811,17 @@ class OnboardingWizard(QDialog):
         auto_discover_windows: bool | None = None,
         reading_setup: bool = False,
         start_live: bool = False,
-        save_region: Callable[[DialogRegion], None] | None = None,
         capture_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
         story_recognizer: StoryAreaRecognizer | None = None,
+        remembered_capture_areas: Callable[
+            [str, str], tuple[DialogRegion | None, DialogRegion | None]
+        ]
+        | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.remembered_capture_areas = remembered_capture_areas
         self.start_live_after_save = bool(reading_setup and start_live)
         settings = settings.updated(discover_text_layouts=True)
         self._initialize_state(settings, auto_discover_windows, reading_setup)
@@ -1833,7 +1831,6 @@ class OnboardingWizard(QDialog):
             capture_target_factory,
             window_loader,
             reading_setup,
-            save_region,
             capture_region,
             story_region,
         )
@@ -1884,7 +1881,6 @@ class OnboardingWizard(QDialog):
         capture_target_factory: CaptureTargetFactory,
         window_loader: WindowLoader,
         reading_setup: bool,
-        save_region: Callable[[DialogRegion], None] | None,
         capture_region: DialogRegion | None,
         story_region: DialogRegion | None,
     ) -> None:
@@ -1909,7 +1905,7 @@ class OnboardingWizard(QDialog):
         )
         self.diagnostics_page = DiagnosticsPage(diagnostics or OnboardingDiagnostics())
         self.calibration_page = CalibrationPage(
-            capture_target_factory, save_region, capture_region, story_region
+            capture_target_factory, capture_region, story_region
         )
         self.test_page = EndToEndTestPage()
         self.test_page.test_requested.connect(self.test_requested.emit)
@@ -2043,7 +2039,7 @@ class OnboardingWizard(QDialog):
                 self.draft_settings.capture_mode,
                 self.draft_settings.game_window_title,
             ) != (prior_settings.capture_mode, prior_settings.game_window_title):
-                self.calibration_page.story_region = None
+                self._restore_capture_areas()
             self.test_page.successful = False
         if self.current_page_index < len(self.pages) - 1:
             self.show_page(self.current_page_index + 1)
@@ -2055,6 +2051,22 @@ class OnboardingWizard(QDialog):
                 and not self.test_page.successful
             ):
                 self.test_page.run_test()
+
+    def _restore_capture_areas(self) -> None:
+        page = self.calibration_page
+        page.capture_region, page.story_region = (
+            self.remembered_capture_areas(
+                self.draft_settings.capture_mode,
+                self.draft_settings.game_window_title or "",
+            )
+            if self.remembered_capture_areas
+            else (None, None)
+        )
+        page.calibrated = page.capture_region is not None
+        if page.calibrated:
+            page.status.setText("Dialogue area saved.")
+        page._refresh_story_area()
+        page.completeChanged.emit()
 
     def update_navigation(self) -> None:
         final = self.current_page_index == len(self.pages) - 1
@@ -2160,8 +2172,7 @@ class OnboardingWizard(QDialog):
             self.draft_settings.capture_mode != draft_before.capture_mode
             or self.draft_settings.game_window_title != draft_before.game_window_title
         ):
-            self.calibration_page.calibrated = False
-            self.calibration_page.story_region = None
+            self._restore_capture_areas()
         self.test_page.successful = False
         self.show_page(0)
         page.update_validation_summary()

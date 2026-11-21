@@ -85,6 +85,30 @@ class SettingsCaptureAreasTest(unittest.TestCase):
         dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("screen"))
         self.assertIn("top 70%", dialog.dialogue_area_summary.text())
 
+    def test_area_summaries_follow_remembered_draft_target(self):
+        remembered = Mock(
+            side_effect=lambda mode, title: (
+                (DialogRegion(0.2, 0.3, 0.4, 0.5), None)
+                if (mode, title) == ("window", "Other game")
+                else (None, None)
+            )
+        )
+        dialog = self.dialog(
+            dialogue_region=DialogRegion(0, 0.7, 1, 0.3),
+            remembered_capture_areas=remembered,
+        )
+        dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
+        dialog.game_window.setCurrentText("Other game")
+        remembered.assert_called_with("window", "Other game")
+        self.assertIn("left 20%", dialog.dialogue_area_summary.text())
+        self.assertEqual(dialog.dialogue_area_button.text(), "Adjust dialogue area...")
+        self.assertIn("Not set", dialog.story_area_summary.text())
+        self.assertEqual(dialog.story_area_button.text(), "Set story area...")
+        dialog.game_window.setCurrentText("Unknown game")
+        self.assertIn("Not set", dialog.dialogue_area_summary.text())
+        dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("screen"))
+        self.assertIn("top 70%", dialog.dialogue_area_summary.text())
+
     def test_both_area_buttons_validate_and_failed_request_does_not_linger(self):
         for name in ("dialogue", "story"):
             with self.subTest(area=name):
@@ -155,7 +179,8 @@ class SettingsCaptureAreasTest(unittest.TestCase):
                 owner._create_settings_dialog.return_value = dialog
                 owner._runtime_settings.return_value = owner.settings
                 owner._save_settings_with_login_rollback.return_value = (
-                    self.root / "settings.json"
+                    owner.settings,
+                    self.root / "settings.json",
                 )
                 with patch.object(
                     dialog, "exec", return_value=QDialog.DialogCode.Accepted

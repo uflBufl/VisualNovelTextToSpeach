@@ -105,7 +105,7 @@ from vntts.diagnostics import (
 )
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
-from vntts.durable_settings import DurableSettingsMixin
+from vntts.durable_settings import DurableSettingsMixin, remembered_capture_areas
 from vntts.fatal_crashes import configure_fatal_crash_log
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import apply_game_pack
@@ -187,7 +187,6 @@ from vntts.settings import (
     get_settings_path,
     is_live_sequence_audio_mode,
     load_app_settings,
-    reconcile_capture_target,
     restart_required_setting_changes,
     user_preferences,
 )
@@ -398,8 +397,13 @@ class SettingsDialog(QDialog):
         voice_library: VoiceLibrary | None = None,
         dialogue_region: DialogRegion | None = None,
         story_region: DialogRegion | None = None,
+        remembered_capture_areas: Callable[
+            [str, str], tuple[DialogRegion | None, DialogRegion | None]
+        ]
+        | None = None,
     ) -> None:
         super().__init__(parent)
+        self.remembered_capture_areas = remembered_capture_areas
         self.voice_library = voice_library or application_voice_library()
         self.story_area_requested = False
         self.dialogue_area_requested = False
@@ -1665,26 +1669,35 @@ class SettingsDialog(QDialog):
             self.original_settings.capture_mode,
             self.original_settings.game_window_title,
         )
+        dialogue_region, story_region = self.dialogue_region, self.story_region
+        if not same_source:
+            dialogue_region, story_region = (
+                self.remembered_capture_areas(
+                    self.capture_mode.currentData(), self.game_window.currentText()
+                )
+                if self.remembered_capture_areas
+                else (None, None)
+            )
         for button, summary, region, name in (
             (
                 self.dialogue_area_button,
                 self.dialogue_area_summary,
-                self.dialogue_region,
+                dialogue_region,
                 "dialogue",
             ),
             (
                 self.story_area_button,
                 self.story_area_summary,
-                self.story_region,
+                story_region,
                 "story",
             ),
         ):
-            selected = same_source and region is not None
+            selected = region is not None
             button.setText(f"{'Adjust' if selected else 'Set'} {name} area...")
             summary.setText(
                 f"Saved selection: left {region.left:.0%}, top {region.top:.0%}, "
                 f"width {region.width:.0%}, height {region.height:.0%}."
-                if same_source and region is not None
+                if region is not None
                 else "Not set for this capture source."
             )
         self.update_auto_advance_controls()
@@ -2586,15 +2599,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         else:
             candidate = self.settings.updated(capture_mode="screen")
-        candidate, _ = reconcile_capture_target(self.settings, candidate)
         try:
-            self._save_settings_candidate(candidate)
+            candidate, _ = self._save_capture_selection(candidate)
         except (OSError, ValueError) as error:
             self.show_error(f"Unable to save the selected capture source: {error}")
             return
         self.settings = candidate
-        if not candidate.onboarding_completed:
-            self._capture_setup_pending = True
+        self._capture_setup_pending = not candidate.onboarding_completed
         if window is not None:
             self.controller.select_game_window(window)
         self.dashboard.set_dialogue(None, None)
@@ -4229,8 +4240,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.onboarding_wizard.activateWindow()
             return
 
+        dialogue_region = self.controller._capture_region()
+        story_region = self.controller._story_region()
         wizard = OnboardingWizard(
             self.settings,
+            remembered_capture_areas=remembered_capture_areas(
+                self.settings,
+                dialogue_region if self.settings.onboarding_completed else None,
+                story_region,
+            ),
             capture_target_factory=(
                 self.controller.window_capture_target
                 if isinstance(self.controller, AppController)
@@ -4238,11 +4256,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             reading_setup=True,
             start_live=start_live,
-            save_region=lambda region: self._save_setup_capture_regions(
-                wizard.draft_settings, region, None
-            ),
-            capture_region=self.controller._capture_region(),
-            story_region=self.controller._story_region(),
+            capture_region=dialogue_region,
+            story_region=story_region,
             story_recognizer=lambda image, story, dialogue, cancelled: (
                 self.controller.preview_story_area(
                     image,
@@ -4332,12 +4347,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         generation = self._begin_controller_lifecycle(cancel_event)
         self._onboarding_test_generation = generation
         self.onboarding_cancel_event = cancel_event
+        capture_regions = (
+            self.onboarding_wizard.capture_regions()
+            if self.onboarding_wizard is not None
+            else None
+        )
         self.onboarding_test_runner.start(
             self._run_owned_onboarding_test,
             generation,
             settings,
             model_name,
             cancel_event,
+            capture_regions,
         )
 
     def _onboarding_runtime_settings(self, settings: AppSettings) -> AppSettings:
@@ -4364,6 +4385,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         model_name: str | None,
         cancel_event: Event,
         generation: int,
+        capture_regions: tuple[DialogRegion | None, DialogRegion | None] | None = None,
     ) -> tuple[bool, str]:
         started = preview_succeeded = False
 
@@ -4393,14 +4415,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             def capture_context() -> AbstractContextManager[None]:
                 return self._onboarding_capture(generation, cancel_event)
 
-            character, text = (
-                self.controller.test_current_dialog(
-                    capture_context=capture_context, prepare_live=prepare_live
-                )
-                if prepared_route_test
-                else self.controller.test_current_dialog(
-                    capture_context=capture_context
-                )
+            region, story_region = capture_regions or (None, None)
+            character, text = self.controller.test_current_dialog(
+                capture_context=capture_context,
+                prepare_live=prepare_live if prepared_route_test else None,
+                region=region,
+                story_region=story_region,
             )
             if cancel_event.is_set():
                 return False, "OCR-to-speech test cancelled."
@@ -4499,6 +4519,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         settings: AppSettings,
         model_name: str | None,
         cancel_event: Event,
+        capture_regions: tuple[DialogRegion | None, DialogRegion | None] | None = None,
     ) -> tuple[bool, str]:
         token = pcm_admission_context.set(
             PcmAdmission(lambda: not cancel_event.is_set())
@@ -4510,7 +4531,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 return self.session_owner.run(
                     generation,
                     lambda _cancellation: self._run_onboarding_check(
-                        settings, model_name, cancel_event, generation
+                        settings, model_name, cancel_event, generation, capture_regions
                     ),
                     (False, "OCR-to-speech test cancelled."),
                 )
@@ -4637,13 +4658,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 dialogue_region = load_dialog_region(get_dialog_region_file())
             except OSError, ValueError:
                 pass
+        story_region = story_region if isinstance(story_region, DialogRegion) else None
         dialog = SettingsDialog(
             self.settings,
             voice_library=self.controller.voice_library,
             dialogue_region=dialogue_region,
-            story_region=story_region
-            if isinstance(story_region, DialogRegion)
-            else None,
+            remembered_capture_areas=remembered_capture_areas(
+                self.settings, dialogue_region, story_region
+            ),
+            story_region=story_region,
         )
         dialog.pocket_setup.readyChanged.connect(self._remember_pocket_model_setup)
         # Apply or discard the open settings draft before reloading the saved runtime.

@@ -306,7 +306,7 @@ class StoryRegionPersistenceTest(unittest.TestCase):
                     CAPTURE_COORDINATE_SPACE,
                 )
 
-    def test_global_binding_change_revokes_permission_even_after_switching_back(self):
+    def test_story_area_is_only_restored_when_returning_to_its_capture_target(self):
         for changed in (
             self.settings.updated(capture_mode="screen"),
             self.settings.updated(game_window_title="Another game"),
@@ -341,12 +341,21 @@ class StoryRegionPersistenceTest(unittest.TestCase):
                         self.story,
                     )
                     owner._save_settings_candidate(changed)
-                    owner.settings = changed
-                    owner._save_settings_candidate(self.settings)
                     self.assertIsNone(
                         get_story_region(
-                            capture_mode="window", game_window_title="Game"
+                            capture_mode=changed.capture_mode,
+                            game_window_title=changed.game_window_title,
                         )
+                    )
+                    owner.settings = changed
+                    owner._save_settings_candidate(
+                        self.settings.updated(game_window_title="GAME")
+                    )
+                    self.assertEqual(
+                        get_story_region(
+                            capture_mode="window", game_window_title="GAME"
+                        ),
+                        self.story,
                     )
 
 

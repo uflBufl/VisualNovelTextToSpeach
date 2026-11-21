@@ -1023,9 +1023,14 @@ class AppController:
         *,
         capture_context: Callable[[], AbstractContextManager[None]] | None = None,
         prepare_live: Callable[[], None] | None = None,
+        region: DialogRegion | None = None,
+        story_region: DialogRegion | None = None,
     ) -> tuple[str, str]:
         return self.diagnostics.test_current_dialog(
-            capture_context=capture_context, prepare_live=prepare_live
+            capture_context=capture_context,
+            prepare_live=prepare_live,
+            region=region,
+            story_region=story_region,
         )
 
     def _resolve_initial_live_sequence_line(
@@ -1662,7 +1667,11 @@ class AppController:
         return self._select_text_layout(frame, cancel_event=cancellation)
 
     def _select_text_layout(
-        self, frame: CapturedDialogFrame, *, cancel_event: Event | None = None
+        self,
+        frame: CapturedDialogFrame,
+        *,
+        cancel_event: Event | None = None,
+        story_region: DialogRegion | None = None,
     ) -> CapturedDialogFrame:
         cancellation = (
             cancel_event if cancel_event is not None else self.shutdown_requested
@@ -1674,7 +1683,9 @@ class AppController:
             or self.caption_discovery_unavailable
         ):
             return frame
-        story_region = self._story_region()
+        story_region = (
+            story_region if story_region is not None else self._story_region()
+        )
         if story_region is None:
             return frame
         with self.caption_discovery_lock:

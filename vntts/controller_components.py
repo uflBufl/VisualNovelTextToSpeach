@@ -55,7 +55,7 @@ from vntts.live import IncrementalDialogTracker, LivePipelineMetrics
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text, raise_playback_failure
 from vntts.model_assets import ModelDownloadCancelled
-from vntts.ocr import OCRPreviewCancelled, OCRResult
+from vntts.ocr import DialogRegion, OCRPreviewCancelled, OCRResult
 from vntts.ocr_worker import (
     cancel_pending_ocr,
     close_ocr_worker,
@@ -1911,10 +1911,17 @@ class DiagnosticsComponent:
         *,
         capture_context: Callable[[], AbstractContextManager[None]] | None = None,
         prepare_live: Callable[[], None] | None = None,
+        region: DialogRegion | None = None,
+        story_region: DialogRegion | None = None,
     ) -> tuple[str, str]:
         controller = self.controller
         if prepare_live is None and not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
+        frame_selector = None if region is not None else controller._select_text_layout
+        if region is not None and story_region is not None:
+            frame_selector = partial(
+                controller._select_text_layout, story_region=story_region
+            )
         voice_router = controller.voice_router
         image, _output, result = analyze_dialog_snapshot(
             get_screenshot_directory(controller.settings),
@@ -1925,11 +1932,13 @@ class DiagnosticsComponent:
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
-            region=controller._capture_region(),
-            ocr_regions=controller._capture_ocr_regions(),
+            region=region if region is not None else controller._capture_region(),
+            ocr_regions=None
+            if region is not None
+            else controller._capture_ocr_regions(),
             result_resolver=controller._resolve_story_ocr_text,
             capture_context=capture_context,
-            frame_selector=controller._select_text_layout,
+            frame_selector=frame_selector,
         )
         if result.text and not result.is_readable(
             controller.settings.ocr_minimum_confidence
