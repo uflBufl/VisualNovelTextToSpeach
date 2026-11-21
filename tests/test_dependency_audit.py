@@ -34,8 +34,9 @@ class DependencyAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "backends/qwen-tts"):
                 dependency_audit.main()
         qwen_command, other_command = (call.args[0] for call in run.call_args_list)
+        self.assertEqual(qwen_command[7:9], ["--python-platform", "windows"])
         self.assertEqual(
-            qwen_command[7:],
+            qwen_command[9:],
             [
                 value
                 for advisory in dependency_audit.IGNORES["backends/qwen-tts"]
@@ -70,11 +71,6 @@ class DependencyAuditTests(unittest.TestCase):
             "--frozen",
             "--preview-features",
             "audit-command",
-            *(
-                item
-                for advisory in dependency_audit.IGNORES["."]
-                for item in ("--ignore", advisory)
-            ),
         ]
         for name, package_result, git_result in (
             (

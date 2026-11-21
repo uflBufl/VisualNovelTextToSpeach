@@ -36,9 +36,7 @@ class RuntimeSmokeTest(unittest.TestCase):
         for backend in ("moss-tts-delay", "moss-soundeffect-v2"):
             torch = FakeTorch(available=False)
             tensor_operation = Mock(
-                side_effect=AssertionError(
-                    "A runtime smoke test must not execute tensors"
-                )
+                side_effect=AssertionError("The CUDA refusal must precede synthesis")
             )
             torch.bfloat16 = "bfloat16"
             torch.float32 = "float32"
@@ -55,8 +53,17 @@ class RuntimeSmokeTest(unittest.TestCase):
                 patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
                 patch.dict("sys.modules", {"torch": torch}),
                 patch("scripts.smoke_speech_runtime._forbid_model_loading") as loading,
+                patch(
+                    "scripts.smoke_speech_runtime._check_sound_effect_text_encoder"
+                ) as encoder,
             ):
-                self.assertIn("no_cuda", check_runtime(backend))
+                report = check_runtime(backend)
+                self.assertIn("no_cuda", report)
+                if backend == "moss-soundeffect-v2":
+                    self.assertEqual(report["text_encoder_transformers"], "0.1.0")
+                    encoder.assert_called_once()
+                else:
+                    encoder.assert_not_called()
                 loading.assert_not_called()
                 tensor_operation.assert_not_called()
                 for torch in (

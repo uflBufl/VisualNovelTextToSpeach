@@ -418,13 +418,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Qualify remaining model dependency risks
 
-- [ ] Clear the Transformers custom-generation advisory that blocks the Chatterbox
-      Nano and MOSS SoundEffect v2 dependency audits. Qualify the upstream fix
-      against their pinned runtimes before changing locks. Commit
-      `cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55` is included in released 5.17.0,
-      and both pinned versions are affected by GHSA-x9r9-c232-4q39
-      (PYSEC-2026-4174). Retain loaded-module provenance and actual model
-      generation/voice checks for any upgrade, backport or replacement.
 - [ ] Qualify Coqui 0.28 with real pinned model weights and generated audio on
       CPU/CUDA. Check persisted voice reuse across upgrade;
       tiny GPT generation and constructor/config checks do not qualify audio
@@ -876,7 +869,8 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       WAV hashes, timing/RTF, quality signals and hardware/model provenance; do not repeat the
       completed Local-4B/XTTS comparison.
 - [ ] **Optional validation:** evaluate typed non-verbal events with official MOSS
-      SoundEffect v2 using a small fixed corpus and multiple checksum-bound seeds.
+      SoundEffect v2 on a CUDA BF16 host using the locked runtime, the pinned
+      checkpoint, a small fixed corpus and multiple checksum-bound seeds.
       Require technical and blinded perceptual approval before adding a provider;
       unsupported effects remain explicit omissions.
 ## Active - Voice-picker accessibility verification

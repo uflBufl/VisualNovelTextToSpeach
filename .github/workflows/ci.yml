@@ -51,7 +51,7 @@ jobs:
       - name: Install locked runtime dependencies
         run: uv sync --project backends/${{ matrix.backend }} --locked --python 3.14 --no-dev
 
-      - name: Check imports and CPU-host refusal without model weights
+      - name: Check runtime compatibility offline without pretrained weights
         timeout-minutes: 5
         run: >-
           uv run --project backends/${{ matrix.backend }} --no-sync

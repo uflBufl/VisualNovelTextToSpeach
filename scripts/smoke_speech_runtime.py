@@ -1,4 +1,4 @@
-"""Check an installed backend environment without loading or downloading models."""
+"""Check an installed backend environment offline, without pretrained weights."""
 
 import argparse
 import json
@@ -26,6 +26,7 @@ class _RuntimeReport(TypedDict, total=False):
     torch: str
     cuda_runtime: str
     no_cuda: str
+    text_encoder_transformers: str
     schema: str
     backend: str
     model_rendered: bool
@@ -36,6 +37,31 @@ class _RuntimeReport(TypedDict, total=False):
 
 def _forbid_model_loading(*_args: object, **_kwargs: object) -> Never:
     raise RuntimeError("A dependency smoke test must never load model weights")
+
+
+def _check_sound_effect_text_encoder(directory: Path) -> None:
+    import torch
+    from moss_soundeffect_v2.diffsynth.models.qwen3_text_encoder import Qwen3TextEncoder
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    config = Qwen3Config(
+        vocab_size=16,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        head_dim=8,
+    )
+    Qwen3ForCausalLM(config).save_pretrained(directory)
+    encoder = Qwen3TextEncoder(str(directory), torch_dtype=torch.float32)
+    tokens = torch.tensor([[1, 2]])
+    with torch.inference_mode():
+        hidden = encoder(tokens, torch.ones_like(tokens))
+    if hidden.shape != (1, 2, config.hidden_size) or not torch.isfinite(hidden).all():
+        raise RuntimeError(
+            "MOSS SoundEffect text encoder returned invalid hidden states"
+        )
 
 
 def _qwen_without_cuda() -> str:
@@ -62,8 +88,6 @@ def check_runtime(
         "python": platform.python_version(),
     }
     if backend == "moss-soundeffect-v2":
-        # The pipeline needs CUDA. Its CPU-host gate checks installed metadata and
-        # real Torch, not GPU-only pipeline imports or model quality.
         report["package_version"] = version("moss-soundeffect-v2")
     else:
         from vntts.services.tts_engine import TTSConfigurationError
@@ -131,6 +155,8 @@ def check_runtime(
                     if "no CUDA device is available" not in str(error):
                         raise
                     report["no_cuda"] = str(error)
+                    _check_sound_effect_text_encoder(Path(directory) / "text_encoder")
+                    report["text_encoder_transformers"] = version("transformers")
         if "no_cuda" not in report:
             raise RuntimeError("CUDA backend failed to refuse model startup")
     return report

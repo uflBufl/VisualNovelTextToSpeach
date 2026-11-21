@@ -17,10 +17,10 @@ BINARY_PACKAGES = (
     "torchcodec",
     "torchvision",
 )
-WHEEL_PLATFORMS = {
-    "moss-soundeffect-v2": {"linux"},
-    "moss-tts": {"darwin"},
-    "qwen-tts": {"win32"},
+RUNTIME_PLATFORMS = {
+    "moss-soundeffect-v2": "linux",
+    "moss-tts": "darwin",
+    "qwen-tts": "win32",
 }
 
 
@@ -62,10 +62,9 @@ def main() -> None:
             )
             continue
         run(["uv", "lock", "--project", str(project), "--check", "--python", "3.14"])
-        if allowed := WHEEL_PLATFORMS.get(project.name):
-            if sys.platform not in allowed:
-                print(f"wheel check skipped: unsupported on {sys.platform}", flush=True)
-                continue
+        if RUNTIME_PLATFORMS.get(project.name, sys.platform) != sys.platform:
+            print(f"wheel check skipped: unsupported on {sys.platform}", flush=True)
+            continue
         command = [
             "uv",
             "sync",

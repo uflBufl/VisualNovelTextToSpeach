@@ -5,10 +5,11 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "vntts-artifacts[audio]",
     "moss-soundeffect-v2 @ git+https://github.com/OpenMOSS/MOSS-TTS.git@c0880299e8b8d0f7119efab17e4e776fffe7b8fa#subdirectory=moss_soundeffect_v2",
-    "torch==2.9.1+cu128 ; sys_platform == 'linux'",
-    "torchaudio==2.9.1+cu128 ; sys_platform == 'linux'",
-    "torchcodec==0.9.1 ; sys_platform == 'linux'",
-    "torchvision==0.24.1+cu128 ; sys_platform == 'linux'",
+    # Upstream decorates its DiT at import; Python 3.14 needs torch.compile >=2.10.
+    "torch==2.10.0+cu128 ; sys_platform == 'linux'",
+    "torchaudio==2.10.0+cu128 ; sys_platform == 'linux'",
+    "torchcodec==0.10.0 ; sys_platform == 'linux'",
+    "torchvision==0.25.0+cu128 ; sys_platform == 'linux'",
 ]
 
 [tool.uv]
@@ -20,6 +21,9 @@ exclude-dependencies = ["gradio"]
 # override when MOSS SoundEffect publishes compatible metadata.
 override-dependencies = [
     "numpy>=2,<3",
+    # The pinned encoder uses native Qwen3 APIs supported by the patched runtime.
+    "transformers==5.21.1",
+    "safetensors>=0.8,<0.9",
     # Keep transitive image/protobuf parsers on patched compatible releases.
     "pillow>=13,<14",
     "protobuf>=5.29.6,<6",

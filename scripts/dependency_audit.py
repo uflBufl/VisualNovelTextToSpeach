@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from scripts.dependency_report import RUNTIME_PLATFORMS  # noqa: E402
 from vntts.path_safety import read_regular_text  # noqa: E402
 
 OSV_QUERY_BATCH = "https://api.osv.dev/v1/querybatch"
@@ -22,47 +23,16 @@ COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 # Legacy exceptions concern paths absent from VNTTS runtime execution. The pinned
 # model stacks cannot yet take fixes without breaking their qualified runtimes.
 IGNORES = {
-    ".": (
-        "GHSA-h35f-9h28-mq5c",  # setuptools sdist creation
-        "GHSA-rrmf-rvhw-rf47",  # torch.jit.script
-        "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
-        "GHSA-69w3-r845-3855",  # Trainer checkpoint loading
-        "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
-        "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
-        "PYSEC-2025-217",  # no fixed release; affected model path unused
-    ),
     "backends/chatterbox-nano": (
         "GHSA-7wx4-6vff-v64p",  # custom DiffusionPipeline loading
         "GHSA-98h9-4798-4q5v",  # custom DiffusionPipeline loading
         "PYSEC-2026-41",  # custom DiffusionPipeline loading
-        "GHSA-h35f-9h28-mq5c",  # setuptools sdist creation
-        "GHSA-rrmf-rvhw-rf47",  # torch.jit.script
-        "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
-        "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
-        "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
     ),
     "backends/moss-soundeffect-v2": (
         "GHSA-7wx4-6vff-v64p",  # custom DiffusionPipeline loading
         "GHSA-98h9-4798-4q5v",  # custom DiffusionPipeline loading
         "PYSEC-2026-41",  # custom DiffusionPipeline loading
-        "GHSA-qfhq-4f3w-5fph",  # torch.lstm_cell
         "GHSA-rrmf-rvhw-rf47",  # torch.jit.script
-        "PYSEC-2026-139",  # no fixed release; affected torch path unused
-        "PYSEC-2026-2286",  # torch.lstm_cell alias not linked by the feed
-        "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
-        "GHSA-69w3-r845-3855",  # Trainer checkpoint loading
-        "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
-        "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
-        "PYSEC-2025-217",  # no fixed release; affected model path unused
-        "PYSEC-2025-218",  # no fixed release; affected model path unused
-    ),
-    "backends/moss-tts-delay": (
-        "GHSA-4j2p-28q2-5m79",  # loading an untrusted sharded checkpoint
-        "GHSA-h35f-9h28-mq5c",  # setuptools sdist creation
-        "GHSA-rrmf-rvhw-rf47",  # torch.jit.script
-        "GHSA-29pf-2h5f-8g72",  # untrusted AutoModel configuration
-        "GHSA-fgcw-684q-jj6r",  # LightGlue model loading
-        "GHSA-xrqw-3rrv-vx5w",  # save_pretrained chat templates
     ),
     # CI audit exceptions for the current pinned Qwen runtime: upstream pins
     # Transformers 4.57.3 / Accelerate 1.12.0; CUDA pins torch 2.11.0 (<82
@@ -140,6 +110,9 @@ def main() -> None:
             "--preview-features",
             "audit-command",
         ]
+        if target := RUNTIME_PLATFORMS.get(project.name):
+            uv_target = {"darwin": "macos", "win32": "windows"}.get(target, target)
+            command.extend(("--python-platform", uv_target))
         for advisory in IGNORES.get(label, ()):
             command.extend(("--ignore", advisory))
         try:
