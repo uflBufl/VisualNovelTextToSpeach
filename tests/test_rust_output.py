@@ -11,7 +11,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from vntts.audio_output import PlaybackPause, playback_pause_context
+from vntts.audio_output import (
+    AudioDeviceChangedError,
+    AudioStreamStoppedError,
+    PlaybackPause,
+    playback_pause_context,
+)
 from vntts.playback_observer import observe_playback_start
 from vntts.rust_audio import RustAudioWorker, notify_audio_discovery_changed
 from vntts.rust_output import RustAudioFormatError, RustAudioModule
@@ -96,6 +101,16 @@ for line in sys.stdin.buffer:
             emit(event="error", id=clip_id, error="unbounded append")
             continue
         digest.update(payload(frames * clip["channels"] * 4))
+        if mode in ("stopped-admission", "failed-admission", "interrupted-admission", "invalid-failure-kind"):
+            emit(event="finished", id=clip_id,
+                 outcome="interrupted" if mode == "interrupted-admission" else "failed",
+                 frames_played=count, total_frames=count + frames,
+                 underflow_count=0, producer_starvation_count=0, callback_count=0,
+                 sample_rate=clip["sample_rate"], channels=clip["channels"],
+                 **({"error":"native stream stopped before end-of-stream", "error_kind":"stream_stopped"} if mode == "stopped-admission"
+                    else {"error":"callback failed"} if mode == "failed-admission"
+                    else {"error":"invalid reason", "error_kind":"unknown"} if mode == "invalid-failure-kind" else {}))
+            continue
         if count == 0:
             emit(event="started", id=clip_id)
             if not clip.get("paused", False):
@@ -115,9 +130,11 @@ for line in sys.stdin.buffer:
             if mode == "drain":
                 while not pathlib.Path(drain_name).exists():
                     time.sleep(.005)
-        emit(event="finished", id=clip_id, outcome="complete", frames_played=count - (mode == "bad-count"),
+        emit(event="finished", id=clip_id, outcome="failed" if mode == "stopped-drain" else "complete",
+             frames_played=count - (mode in ("bad-count", "stopped-drain")),
              total_frames=count, underflow_count=3, producer_starvation_count=2,
-             callback_count=4, sample_rate=clip["sample_rate"], channels=clip["channels"])
+             callback_count=4, sample_rate=clip["sample_rate"], channels=clip["channels"],
+             **({"error":"native stream stopped before all PCM was submitted", "error_kind":"stream_stopped"} if mode == "stopped-drain" else {}))
     elif op in ("pause", "resume"):
         clip["paused"] = op == "pause"
         emit(event="paused" if op == "pause" else "resumed", id=clip_id)
@@ -653,6 +670,75 @@ class RustOutputProtocolTest(unittest.TestCase):
         finally:
             stream.close()
 
+    def test_unexpected_native_stop_keeps_a_distinct_failure_before_admission_and_at_drain(
+        self,
+    ):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        for mode in ("stopped-admission", "stopped-drain"):
+            with self.subTest(mode=mode):
+                module = self.module(pcm, mode)
+                with self.assertRaises(AudioStreamStoppedError):
+                    with self.stream(module) as stream:
+                        stream.write(pcm)
+                self.assertEqual(stream.summary["outcome"], "failed")
+                self.assertFalse(self.workers[-1].device_changed.is_set())
+
+    def test_confirmed_device_change_is_typed_during_admission_and_drain(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        for mode in ("interrupted-admission", "stream"):
+            with self.subTest(mode=mode):
+                module = self.module(pcm, mode)
+                stream = self.stream(module)
+                worker = stream._worker()
+                receive = worker.receive
+
+                def changed(timeout):
+                    event = receive(timeout)
+                    if event["event"] == "finished":
+                        worker.device_changed.set()
+                    return event
+
+                with patch.object(worker, "receive", side_effect=changed):
+                    with self.assertRaises(AudioDeviceChangedError):
+                        with stream:
+                            stream.write(pcm)
+                self.assertIsNotNone(stream.summary)
+
+    def test_confirmed_route_change_does_not_hide_invalid_native_protocol(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        for mode in ("invalid-failure-kind", "bad-count", "failed-admission"):
+            with self.subTest(mode=mode):
+                module = self.module(pcm, mode)
+                stream = self.stream(module)
+                worker = stream._worker()
+                receive = worker.receive
+
+                def changed(timeout):
+                    event = receive(timeout)
+                    if event["event"] == "finished":
+                        worker.device_changed.set()
+                    return event
+
+                with patch.object(worker, "receive", side_effect=changed):
+                    with self.assertRaises(RuntimeError) as raised:
+                        with stream:
+                            stream.write(pcm)
+                self.assertIs(type(raised.exception), RuntimeError)
+
+    def test_native_failure_and_invalid_protocol_are_not_device_changes(self):
+        pcm = np.ones((10, 2), dtype=np.float32)
+        for mode in (
+            "failed-admission",
+            "invalid-failure-kind",
+            "interrupted-admission",
+        ):
+            with self.subTest(mode=mode):
+                module = self.module(pcm, mode)
+                with self.assertRaises(RuntimeError) as raised:
+                    with self.stream(module) as stream:
+                        stream.write(pcm)
+                self.assertIs(type(raised.exception), RuntimeError)
+
     def test_scheduled_cancel_does_not_send_after_worker_ownership_changes(self):
         module = self.module()
         worker = module.acquire()
@@ -711,6 +797,20 @@ class RustOutputProtocolTest(unittest.TestCase):
             module.play(pcm, 24000, latency="low")
         module.wait()
         observed.assert_called_once_with()
+
+    def test_convenience_wait_preserves_native_failure_classification(self):
+        module = self.module()
+        for error_type in (
+            AudioDeviceChangedError,
+            AudioStreamStoppedError,
+            RuntimeError,
+        ):
+            with self.subTest(error_type=error_type):
+                error = error_type("playback failed")
+                module.convenience_error = error
+                with self.assertRaises(error_type) as caught:
+                    module.wait()
+                self.assertIs(caught.exception, error)
 
     def test_failed_open_ack_closes_unacknowledged_worker_instead_of_reusing_it(self):
         pcm = np.ones((10, 2), dtype=np.float32)

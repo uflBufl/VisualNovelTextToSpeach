@@ -15,6 +15,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from vntts.audio_output import (
+    AudioDeviceChangedError,
+    AudioStreamStoppedError,
     PlaybackPause,
     playback_pause_context,
     prepared_output_stream,
@@ -63,6 +65,10 @@ for line in sys.stdin.buffer:
         emit(event="started", id=clip_id)
         if not command.get("paused", False):
             emit(event="first_callback", id=clip_id, frames_written=0 if mode == "zero-first" else 1)
+        if mode in ("stopped", "failed"):
+            emit(event="finished", id=clip_id, outcome="failed", frames_played=1,
+                 underflow_count=0, callback_count=1, sample_rate=clip["sample_rate"], channels=clip["channels"],
+                 error="native failure", **({"error_kind":"stream_stopped"} if mode == "stopped" else {}))
         if mode in ("normal", "bad-count", "stale-id", "zero-first", "bad-outcome", "bad-underflow") or (mode == "pause-first" and clip_id > 1):
             emit(event="finished", id=clip_id + (mode == "stale-id"), outcome="invalid" if mode == "bad-outcome" else "complete",
                  frames_played=clip["frames"] - (mode == "bad-count"),
@@ -554,25 +560,44 @@ class RustAudioProtocolTest(unittest.TestCase):
 
     def test_stop_interrupts_blocked_payload_upload(self):
         pcm = np.zeros((300000, 2), dtype=np.float32)
-        worker = self.worker("blocked-upload", pcm=pcm)
-        stop = threading.Event()
-        timer = threading.Timer(0.05, stop.set)
-        timer.start()
-        started = time.monotonic()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "upload interrupted"):
-                worker.play_buffer(pcm, 24000, 2, "low", lambda: False, None, stop)
-        finally:
-            timer.join()
-        self.assertLess(time.monotonic() - started, 3)
-        self.assertIsNotNone(worker.process.poll())
+        for device_change in (False, True):
+            with self.subTest(device_change=device_change):
+                worker = self.worker("blocked-upload", pcm=pcm)
+                stop = threading.Event()
+                interruption = worker.device_changed if device_change else stop
+                timer = threading.Timer(0.05, interruption.set)
+                timer.start()
+                started = time.monotonic()
+                try:
+                    expected = (
+                        AudioDeviceChangedError if device_change else RuntimeError
+                    )
+                    with self.assertRaises(expected) as raised:
+                        worker.play_buffer(
+                            pcm, 24000, 2, "low", lambda: False, None, stop
+                        )
+                    self.assertIs(type(raised.exception), expected)
+                finally:
+                    timer.join()
+                self.assertLess(time.monotonic() - started, 3)
+                self.assertIsNotNone(worker.process.poll())
+
+    def test_native_stop_and_genuine_failure_keep_distinct_types(self):
+        for mode, expected in (
+            ("stopped", AudioStreamStoppedError),
+            ("failed", RuntimeError),
+        ):
+            with self.subTest(mode=mode):
+                with self.assertRaises(expected) as raised:
+                    self.play(self.worker(mode))
+                self.assertIs(type(raised.exception), expected)
 
     def test_device_change_aborts_and_is_reported_as_failure(self):
         worker = self.worker("wait")
         timer = threading.Timer(0.05, worker.device_changed.set)
         timer.start()
         try:
-            with self.assertRaisesRegex(RuntimeError, "device changed"):
+            with self.assertRaisesRegex(AudioDeviceChangedError, "device changed"):
                 self.play(worker)
         finally:
             timer.join()

@@ -20,6 +20,7 @@ from vntts.audio_output import (
     AudioOutput,
     StreamingAudioStream,
     SynchronousPcmPlaybackMixin,
+    playback_error_status,
     playback_pause_context,
     resolve_audio_output,
     sanitize_playback_audio,
@@ -1611,7 +1612,7 @@ class PocketTTSVoiceRouterBackend:
                     )
                 return outcome_for_prepared(
                     prepared,
-                    PlaybackStatus.FAILED,
+                    playback_error_status(error),
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     error=str(error),
@@ -2472,7 +2473,7 @@ class MossTTSVoiceRouterBackend:
                     )
                 return outcome_for_prepared(
                     prepared,
-                    PlaybackStatus.FAILED,
+                    playback_error_status(error),
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     error=str(error),

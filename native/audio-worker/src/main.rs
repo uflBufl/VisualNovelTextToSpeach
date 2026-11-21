@@ -266,7 +266,12 @@ impl<'a> Active<'a> {
         }
     }
 
-    fn finish(mut self, outcome: &str, error: Option<String>) -> io::Result<Value> {
+    fn finish(
+        mut self,
+        outcome: &str,
+        error: Option<String>,
+        error_kind: Option<&str>,
+    ) -> io::Result<Value> {
         let was_cancelled = self.state.cancelled.load(Ordering::Acquire);
         let seek_generation = self.state.seek_applied.load(Ordering::Acquire);
         let audible = self.status(false, None)["audible_position_frames"].clone();
@@ -292,11 +297,17 @@ impl<'a> Active<'a> {
             "elapsed_ms":self.started.elapsed().as_secs_f64() * 1000.0});
         if let Some(ref error) = error {
             event["error"] = json!(error);
+            if let Some(kind) = error_kind {
+                event["error_kind"] = json!(kind);
+            }
         }
         self.state.timing.add_to(&mut event);
         event["producer_starvation_count"] = json!(self.state.starvations.load(Ordering::Relaxed));
         let mut status = self.status(true, error.clone());
         status["outcome"] = json!(outcome);
+        if let Some(kind) = error_kind {
+            status["error_kind"] = json!(kind);
+        }
         if seek_generation == self.state.seek_applied.load(Ordering::Acquire) {
             status["audible_position_frames"] = json!(audible
                 .as_u64()
@@ -442,6 +453,16 @@ fn admit_pending(
     Ok(())
 }
 
+fn unexpected_stop_error(state: &CallbackState) -> Option<&'static str> {
+    if state.streaming() && !state.eos.load(Ordering::Acquire) {
+        Some("native stream stopped before end-of-stream")
+    } else if state.position.load(Ordering::Acquire) != state.total.load(Ordering::Acquire) {
+        Some("native stream stopped before all PCM was submitted")
+    } else {
+        None
+    }
+}
+
 fn run(pa: &PortAudio) -> io::Result<()> {
     emit(
         json!({"event":"ready", "protocol":2, "pid":std::process::id(), "max_pcm_bytes":MAX_PCM_BYTES,
@@ -458,12 +479,11 @@ fn run(pa: &PortAudio) -> io::Result<()> {
         if let Some(playing) = active.as_mut() {
             if playing.state.streaming() {
                 if let Err(error) = admit_pending(playing, &mut pending, end) {
-                    terminal = Some(
-                        active
-                            .take()
-                            .unwrap()
-                            .finish("failed", Some(error.to_string()))?,
-                    );
+                    terminal = Some(active.take().unwrap().finish(
+                        "failed",
+                        Some(error.to_string()),
+                        None,
+                    )?);
                     pending = None;
                     continue;
                 }
@@ -479,20 +499,23 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                 1
             };
             if status <= 0 {
+                let mut error_kind = None;
                 let error = if status < 0 {
                     Some(pa.error(status))
                 } else if playing.state.failed.load(Ordering::Acquire) {
                     Some("native callback rejected output buffer".into())
-                } else if playing.state.streaming() && !playing.state.eos.load(Ordering::Acquire) {
-                    Some("native stream stopped before end-of-stream".into())
-                } else if playing.state.position.load(Ordering::Acquire)
-                    != playing.state.total.load(Ordering::Acquire)
-                {
-                    Some("native stream stopped before all PCM was submitted".into())
+                } else if let Some(error) = unexpected_stop_error(&playing.state) {
+                    error_kind = Some("stream_stopped");
+                    Some(error.into())
                 } else {
                     None
                 };
-                terminal = Some(active.take().unwrap().finish("complete", error)?);
+                terminal = Some(
+                    active
+                        .take()
+                        .unwrap()
+                        .finish("complete", error, error_kind)?,
+                );
                 pending = None;
             }
         }
@@ -587,7 +610,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     end = true;
                     emit(json!({"event":"ended", "id":id}))?;
                     if !playing.running && pending.is_none() {
-                        terminal = Some(active.take().unwrap().finish("complete", None)?);
+                        terminal = Some(active.take().unwrap().finish("complete", None, None)?);
                     }
                 } else {
                     reject(id, "end requires the current open stream")?;
@@ -618,7 +641,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
             }
             Input::Control(Command::Stop { id } | Command::Close { id }) => {
                 if active.as_ref().is_some_and(|a| a.id == id) {
-                    terminal = Some(active.take().unwrap().finish("interrupted", None)?);
+                    terminal = Some(active.take().unwrap().finish("interrupted", None, None)?);
                     pending = None;
                 } else if loaded.as_ref().is_some_and(|clip| clip.id == id) {
                     terminal = Some(finish_unstarted(&loaded.take().unwrap(), None)?);
@@ -708,7 +731,7 @@ fn run(pa: &PortAudio) -> io::Result<()> {
                     None
                 };
                 if let Some(playing) = active.take() {
-                    playing.finish("interrupted", error.clone())?;
+                    playing.finish("interrupted", error.clone(), None)?;
                 }
                 if let Some(clip) = loaded.take() {
                     finish_unstarted(&clip, error.clone())?;
@@ -786,6 +809,31 @@ mod tests {
         assert_eq!(audible.observe(100, 90), 100);
         assert_eq!(audible.observe(110, 999), 110);
         assert_eq!(AudiblePosition::new(20).observe(20, 0), 20);
+    }
+
+    #[test]
+    fn unexpected_stream_stop_requires_eos_and_every_submitted_frame() {
+        let clip = CallbackState::new(vec![0.; 2], 1);
+        assert_eq!(
+            unexpected_stop_error(&clip),
+            Some("native stream stopped before all PCM was submitted")
+        );
+        clip.position.store(2, Ordering::Release);
+        assert_eq!(unexpected_stop_error(&clip), None);
+        let stream = CallbackState::stream(2, 1);
+        assert_eq!(
+            unexpected_stop_error(&stream),
+            Some("native stream stopped before end-of-stream")
+        );
+        stream.eos.store(true, Ordering::Release);
+        assert_eq!(unexpected_stop_error(&stream), None);
+        stream.total.store(2, Ordering::Release);
+        assert_eq!(
+            unexpected_stop_error(&stream),
+            Some("native stream stopped before all PCM was submitted")
+        );
+        stream.position.store(2, Ordering::Release);
+        assert_eq!(unexpected_stop_error(&stream), None);
     }
 
     #[test]

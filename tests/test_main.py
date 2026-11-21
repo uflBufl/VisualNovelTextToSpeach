@@ -17,6 +17,7 @@ from vntts_artifacts.hashing import text_sha256
 
 from tests.native_capture_fixtures import native_frame
 from tests.pocket_model_fixtures import pocket_model_readiness
+from vntts.audio_output import AudioDeviceChangedError
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
@@ -2587,7 +2588,9 @@ class MainTest(unittest.TestCase):
 
         controller.live_reader.toggle_pause.assert_called_once_with()
         controller.live_reader.skip_current.assert_called_once_with()
-        controller.live_reader.repeat_last.assert_called_once_with()
+        controller.live_reader.repeat_last.assert_called_once_with(
+            interrupted_only=False
+        )
         controller.live_reader.clear_queue.assert_called_once_with()
         controller.live_reader.emergency_stop.assert_called_once_with()
         self.assertEqual(
@@ -4021,6 +4024,29 @@ class MainTest(unittest.TestCase):
                 self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
                 self.assertEqual(controller.sequence_event_terminal_routes, {})
                 self.assertEqual(controller.sequence_advance_leases, set())
+
+    def test_changed_output_keeps_story_position_without_requesting_resync(self):
+        controller, lines, pipeline = self._sequence_controller()
+        controller.story_cursor.anchor_event("event-1")
+        line = lines[0]
+        lease = controller._begin_sequence_playback(
+            SpeechChunk(1, line.speaker, line.text, line_id=line.line_id)
+        )
+        controller._finish_sequence_playback(
+            lease,
+            PlaybackOutcome(
+                PlaybackStatus.INTERRUPTED,
+                50,
+                first_audio_ms=1,
+                error_type=AudioDeviceChangedError,
+            ),
+        )
+        self.assertEqual(controller.story_cursor.current_event_id, "event-1")
+        self.assertFalse(controller.story_cursor.can_auto_advance)
+        status = controller.get_live_sequence_status()
+        self.assertFalse(status.recovery_required)
+        self.assertIn("Audio output changed", status.guidance)
+        self.assertEqual(pipeline.call_args.kwargs["outcome"], "interrupted")
 
     def test_terminal_audio_requires_success_or_actual_first_pcm(self):
         for status, first_audio_ms, sealed in (

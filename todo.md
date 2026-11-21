@@ -410,13 +410,8 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 
 ## Follow the system audio output during playback
 
-- [ ] Repair Windows Reading hotplug from the November 21 run. A confirmed
-      output change interrupted the Shure stream during admission and surfaced
-      as a playback error. Preserve device-change interruption through the Rust
-      output path; keep incomplete speech from advancing the game and allow
-      replay on the new output. Also check the Sony stream that stopped before
-      the refresh arrived. Treat it as a device change only if route evidence
-      confirms it; keep genuine stream failures visible.
+- [ ] On Windows, switch headphones mid-line in Reading. Confirm the game waits
+      and Replay dialogue plays the interrupted line from the start on the new output.
 - [ ] Verify hotplug on real macOS and Windows headphones while Reading, sample playback and headless CLI playback are active, including disconnect/reconnect and recovery after no output is available.
 
 ## Continue regular-file admission through remaining integrity owners

@@ -32,6 +32,7 @@ from vntts.audio_output import (
     AudioOutput,
     StreamingAudioStream,
     playback_cancelled,
+    playback_error_status,
     resolve_audio_output,
     sanitize_playback_audio,
     stream_underflowed,
@@ -1862,7 +1863,7 @@ class IsolatedSpeechBackend:
                     (
                         PlaybackStatus.INTERRUPTED
                         if cancelled
-                        else PlaybackStatus.FAILED
+                        else playback_error_status(error)
                     ),
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,

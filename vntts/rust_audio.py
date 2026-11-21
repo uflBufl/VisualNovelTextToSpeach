@@ -27,7 +27,12 @@ from weakref import WeakSet
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
-from vntts.audio_output import PlaybackPause, playback_pause_context
+from vntts.audio_output import (
+    AudioDeviceChangedError,
+    AudioStreamStoppedError,
+    PlaybackPause,
+    playback_pause_context,
+)
 
 MAX_PCM_BYTES = 128 * 1024 * 1024
 MAX_EVENT_BYTES = 65536
@@ -380,6 +385,10 @@ class RustAudioWorker:
             ):
                 self.close()
                 writer.join(timeout=1)
+                if self.device_changed.is_set():
+                    raise AudioDeviceChangedError(
+                        "System audio device changed during PCM upload"
+                    )
                 raise RuntimeError("Rust PCM upload interrupted or timed out")
         if failure:
             raise RuntimeError("Rust PCM upload failed") from failure[0]
@@ -487,6 +496,17 @@ class RustAudioWorker:
         self.stderr.close()
         self._close_complete = True
 
+    def raise_playback_error(self, event: dict[str, Any]) -> None:
+        stopped = event.get("error_kind") == "stream_stopped"
+        if event["outcome"] == "failed" and not stopped:
+            raise RuntimeError(str(event.get("error", "Rust playback failed")))
+        if self.device_changed.is_set():
+            raise AudioDeviceChangedError(
+                "System audio device changed during Rust playback"
+            )
+        if stopped:
+            raise AudioStreamStoppedError(event["error"])
+
     def play_buffer(
         self,
         samples: np.ndarray,
@@ -514,7 +534,9 @@ class RustAudioWorker:
             )
         with self.lock:
             if self.device_changed.is_set():
-                raise RuntimeError("System audio device changed; retry playback")
+                raise AudioDeviceChangedError(
+                    "System audio device changed; retry playback"
+                )
             if cancelled():
                 return False, False
             return _ClipPlayback(
@@ -584,8 +606,16 @@ class _ClipPlayback:
 
         try:
             if not self.worker._arm_recording(interrupted):
+                if self.worker.device_changed.is_set():
+                    raise AudioDeviceChangedError(
+                        "System audio device changed before Rust playback"
+                    )
                 return False, False
             self._load()
+            if self.worker.device_changed.is_set():
+                raise AudioDeviceChangedError(
+                    "System audio device changed before Rust playback"
+                )
             if (
                 self.stop_requested is not None and self.stop_requested.is_set()
             ) or self.cancelled():
@@ -710,6 +740,7 @@ class _ClipPlayback:
     def _validate_finished(self, event: dict[str, Any]) -> None:
         if event.get("outcome") not in {"complete", "interrupted", "failed"}:
             raise RuntimeError("Rust audio returned an invalid outcome")
+        _validate_failure_kind(event)
         for name in ("frames_played", "underflow_count", "callback_count"):
             count = event.get(name)
             if type(count) is not int or count < 0:
@@ -732,17 +763,23 @@ class _ClipPlayback:
             first_callback_received_ms=self.first_callback_received_ms,
         )
         record_audio_lifecycle("rust-pcm-summary", **details)
-        if self.worker.device_changed.is_set():
-            raise RuntimeError("System audio device changed during Rust playback")
-        if event.get("outcome") == "failed":
-            raise RuntimeError(str(event.get("error", "Rust playback failed")))
         count = event.get("frames_played")
         if type(count) is not int or not 0 <= count <= len(self.pcm):
             raise RuntimeError("Rust audio returned an invalid frame count")
         complete = event.get("outcome") == "complete"
         if complete and count != len(self.pcm):
             raise RuntimeError("Rust audio completed without playing the whole buffer")
+        self.worker.raise_playback_error(event)
         return complete and not self.stop_sent.is_set(), event["underflow_count"] > 0
+
+
+def _validate_failure_kind(event: dict[str, Any]) -> None:
+    if "error_kind" in event and (
+        event["error_kind"] != "stream_stopped"
+        or event.get("outcome") != "failed"
+        or not isinstance(event.get("error"), str)
+    ):
+        raise RuntimeError("Rust audio returned an invalid failure kind")
 
 
 def _validate_clock_diagnostics(metric: object, clock: str) -> None:

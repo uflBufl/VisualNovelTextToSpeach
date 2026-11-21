@@ -229,6 +229,7 @@ CONTINUATION_GATE_REASONS = PREROUTE_DIAGNOSTIC_REASONS | frozenset(
         "playback-started",
         "playback-completed",
         "playback-failed",
+        "audio-output-changed",
         "advance-dispatched",
         "visual-transition-confirmed",
         "transition-confirmed",

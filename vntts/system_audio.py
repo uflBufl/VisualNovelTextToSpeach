@@ -12,12 +12,9 @@ from typing import Any
 import numpy as np
 
 from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
+from vntts.audio_output import AudioDeviceChangedError, AudioStreamStoppedError
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.system_audio_devices import OutputDeviceSnapshot, create_default_output_probe
-
-
-class AudioDeviceChangedError(RuntimeError):
-    pass
 
 
 class _DefaultOutputMonitor:
@@ -33,6 +30,7 @@ class _DefaultOutputMonitor:
         self.probe: Callable[[], OutputDeviceSnapshot] | None = None
         self.snapshot: OutputDeviceSnapshot | None = None
         self.failed = False
+        self.probe_lock = Lock()
         self.ready = Event()
         self.stopping = Event()
         self.wakeup = Event()
@@ -40,24 +38,28 @@ class _DefaultOutputMonitor:
             target=self._run, name="vntts-default-audio-device", daemon=True
         )
 
-    def check(self) -> None:
+    def check(self) -> OutputDeviceSnapshot | None:
+        with self.probe_lock:
+            return self._check()
+
+    def _check(self) -> OutputDeviceSnapshot | None:
         if self.stopping.is_set():
-            return
+            return None
         try:
             if self.probe is None:
                 self.probe = self.probe_factory()
             snapshot = self.probe()
         except Exception as error:
             if self.stopping.is_set():
-                return
+                return None
             if not self.failed:
                 record_audio_lifecycle(
                     "device-probe", outcome="failed", reason=type(error).__name__
                 )
             self.failed = True
-            return
+            return None
         if self.stopping.is_set():
-            return
+            return None
         recovered = self.failed
         if recovered:
             record_audio_lifecycle(
@@ -71,6 +73,7 @@ class _DefaultOutputMonitor:
             self.output.request_discovery_refresh(
                 reason="native-probe-identity-changed"
             )
+        return snapshot
 
     def _run(self) -> None:
         while not self.stopping.is_set():
@@ -193,6 +196,7 @@ class _SystemStream:
         self.started = False
         self.closed = False
         self.resampler: Any = None
+        self.opened_route: OutputDeviceSnapshot | None = None
         self.write_context = dict(audio_lifecycle_context.get() or {})
         self.write_metrics: dict[str, float | int] = {
             "system_write_attempts": 0,
@@ -240,7 +244,18 @@ class _SystemStream:
             self.resampler = ResampleStream(
                 self.options["samplerate"], self.sample_rate, self.channels
             )
+        monitor = self.output.device_monitor
+        self.opened_route = monitor.snapshot if monitor is not None else None
         self.native = self.output.module.OutputStream(**options)
+
+    def _classify_stopped_stream(self, error: AudioStreamStoppedError) -> None:
+        monitor = self.output.device_monitor
+        if monitor is not None and self.opened_route is not None:
+            current = monitor.check()
+            if current is not None and current.selected != self.opened_route.selected:
+                raise AudioDeviceChangedError(
+                    "The system output device changed"
+                ) from error
 
     @property
     def device_changed(self) -> bool:
@@ -291,6 +306,13 @@ class _SystemStream:
         for attempt in range(2):
             try:
                 return self._write(audio, block, attempt + 1)
+            except AudioStreamStoppedError as error:
+                self.write_metrics["system_write_failures"] += 1
+                self._classify_stopped_stream(error)
+                raise
+            except AudioDeviceChangedError:
+                self.write_metrics["system_write_failures"] += 1
+                raise
             except Exception:
                 self.write_metrics["system_write_failures"] += 1
                 with self.output.lock:
@@ -372,6 +394,12 @@ class _SystemStream:
             try:
                 self.output._refresh()
                 if self.native is None:
+                    if not self.closed and block.get(
+                        "input_frame_offset", self.input_frames
+                    ):
+                        raise AudioDeviceChangedError(
+                            "The system output device changed during playback"
+                        )
                     self._open()
                     self.write_metrics["device_reopens"] += 1
                     assert self.native is not None
@@ -446,6 +474,10 @@ class _SystemStream:
         with self.output.lock:
             self.output._refresh()
             native = self.native
+            if native is None and not self.closed:
+                raise AudioDeviceChangedError(
+                    "The system output device changed before playback"
+                )
             if not isinstance(native, RustOutputStream):
                 raise RuntimeError("Prepared output no longer owns a Rust device")
             converted = self._convert_write_samples(samples, {})
@@ -456,12 +488,28 @@ class _SystemStream:
                 self.resampler.clear()
                 converted = np.concatenate((converted, tail), axis=0)
                 np.clip(converted, -0.95, 0.95, out=converted)
-        with self.write_lock:
-            return native.play_buffer(converted, cancelled, first_write, stop_requested)
+        try:
+            with self.write_lock:
+                return native.play_buffer(
+                    converted, cancelled, first_write, stop_requested
+                )
+        except AudioStreamStoppedError as error:
+            self._classify_stopped_stream(error)
+            raise
 
     def stop(self) -> None:
         with self.output.lock:
             native = self.native
+            if (
+                native is None
+                and not self.closed
+                and self.started
+                and self.input_frames
+            ):
+                self.started = False
+                raise AudioDeviceChangedError(
+                    "The system output device changed before playback finished"
+                )
             tail = None
             if native is not None and self.started and self.resampler is not None:
                 tail = self.resampler.resample_chunk(
@@ -471,16 +519,20 @@ class _SystemStream:
             self.started = False
         # Drain without the refresh lock so cancellation can still abort it.
         if native is not None:
-            with self.write_lock:
-                if tail is not None and len(tail):
-                    np.clip(tail, -0.95, 0.95, out=tail)
-                    if native.write(tail):
-                        raise RuntimeError(
-                            "Audio output underflowed while draining converted PCM"
-                        )
-                native.stop()
-                value = getattr(native, "underflowed", False)
-                self.final_underflowed = isinstance(value, bool) and value
+            try:
+                with self.write_lock:
+                    if tail is not None and len(tail):
+                        np.clip(tail, -0.95, 0.95, out=tail)
+                        if native.write(tail):
+                            raise RuntimeError(
+                                "Audio output underflowed while draining converted PCM"
+                            )
+                    native.stop()
+                    value = getattr(native, "underflowed", False)
+                    self.final_underflowed = isinstance(value, bool) and value
+            except AudioStreamStoppedError as error:
+                self._classify_stopped_stream(error)
+                raise
 
     def _release(self) -> None:
         if self.native is None:

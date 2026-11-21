@@ -16,10 +16,13 @@ from weakref import WeakSet
 import numpy as np
 
 from vntts.audio_lifecycle import record_audio_lifecycle
-from vntts.audio_output import playback_pause_context
+from vntts.audio_output import (
+    AudioDeviceChangedError,
+    playback_pause_context,
+)
 from vntts.cleanup import attempt_cleanup
 from vntts.playback_observer import playback_started_context
-from vntts.rust_audio import RustAudioWorker
+from vntts.rust_audio import RustAudioWorker, _validate_failure_kind
 
 _QUERY_PHASES = frozenset(
     {
@@ -286,7 +289,7 @@ class RustAudioModule:
         if self.convenience is not None:
             self.convenience.join()
         if self.convenience_error is not None:
-            raise RuntimeError(str(self.convenience_error)) from self.convenience_error
+            raise self.convenience_error
 
     def stop(self) -> None:
         self.convenience_stop.set()
@@ -379,6 +382,10 @@ class RustOutputStream:
         worker.active_id = self.clip_id
         if not worker._arm_recording(self.aborted.is_set) or self.aborted.is_set():
             worker.active_id = None
+            if worker.device_changed.is_set():
+                raise AudioDeviceChangedError(
+                    "System audio device changed before stream admission"
+                )
             raise RuntimeError("Rust output stream is interrupted")
         initially_paused = self.pause is not None and self.pause.is_paused()
         options = {"paused": initially_paused} if self.pause is not None else {}
@@ -431,8 +438,7 @@ class RustOutputStream:
                 worker_pid=worker.process.pid,
                 **{k: v for k, v in event.items() if k != "event"},
             )
-            if event.get("outcome") == "failed":
-                raise RuntimeError(str(event.get("error", "Rust output failed")))
+            worker.raise_playback_error(event)
         return event
 
     def _first_callback(self, event: dict[str, Any]) -> None:
@@ -446,6 +452,7 @@ class RustOutputStream:
     def _validate_finished(self, event: dict[str, Any]) -> None:
         if event.get("outcome") not in {"complete", "interrupted", "failed"}:
             raise RuntimeError("Rust stream returned an invalid outcome")
+        _validate_failure_kind(event)
         for name in (
             "frames_played",
             "total_frames",
@@ -482,6 +489,10 @@ class RustOutputStream:
             try:
                 event = self._event(min(0.05, max(0.001, deadline - clock())))
             except queue.Empty:
+                if self._worker().device_changed.is_set():
+                    raise AudioDeviceChangedError(
+                        "System audio device changed during stream admission or drain"
+                    ) from None
                 continue
             if event["event"] == kind:
                 return event
@@ -504,13 +515,21 @@ class RustOutputStream:
             return False
         with self.write_lock:
             if not self.started or self.closed or self.aborted.is_set():
+                if self.worker is not None and self.worker.device_changed.is_set():
+                    raise AudioDeviceChangedError(
+                        "System audio device changed during Rust playback"
+                    )
                 raise RuntimeError("Rust output stream is interrupted")
             self._open()
             worker = self._worker()
             before = self.underflow_count
             for offset in range(0, len(samples), self.capacity):
-                if self.aborted.is_set() or worker.device_changed.is_set():
-                    raise RuntimeError("Rust stream interrupted or device changed")
+                if worker.device_changed.is_set():
+                    raise AudioDeviceChangedError(
+                        "System audio device changed during stream admission"
+                    )
+                if self.aborted.is_set():
+                    raise RuntimeError("Rust stream interrupted")
                 chunk = samples[offset : offset + self.capacity]
                 self.sent_frames += len(chunk)
                 worker._send_bounded(

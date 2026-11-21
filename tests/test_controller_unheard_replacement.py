@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 from PIL import Image
 from vntts_artifacts.generated_audio import text_sha256
 
-from vntts.audio_output import PcmAdmissionRejected
+from vntts.audio_output import AudioDeviceChangedError, PcmAdmissionRejected
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.controller import AppController
 from vntts.dialog_capture import CapturedDialogFrame
@@ -187,6 +187,28 @@ class ControllerUnheardReplacementTest(unittest.TestCase):
                     )
                 else:
                     controller.live_reader.allow_unheard_replacement.assert_not_called()
+
+    def test_output_change_after_first_audio_holds_dialogue_for_replay(self):
+        controller = self.controller()
+        reader = controller.live_reader
+        chunk = SpeechChunk(1, "Ada", "Current words.")
+        with patch.object(
+            controller,
+            "_dispatch_live_playback",
+            return_value=PlaybackOutcome(
+                PlaybackStatus.INTERRUPTED,
+                20,
+                first_audio_ms=1,
+                error_type=AudioDeviceChangedError,
+            ),
+        ):
+            self.assertFalse(controller._play_live_chunk(chunk, prepared()))
+        reader.mark_output_interrupted.assert_called_once_with(chunk)
+        reader.block_auto_advance_for_generation.assert_called_once()
+        controller.status_handler.assert_any_call(
+            "Audio output changed. Replay dialogue to hear this line again."
+        )
+        controller.error_handler.assert_not_called()
 
     def test_pcm_admission_rejection_is_interruption_for_dialogue_and_announcement(
         self,

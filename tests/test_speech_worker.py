@@ -17,6 +17,7 @@ import numpy as np
 
 from tests.speech_worker_fixtures import FakeProcess
 from tests.symlink_support import symlink_or_skip
+from vntts.audio_output import AudioDeviceChangedError
 from vntts.model_assets import ModelAssetManager
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
@@ -2255,7 +2256,6 @@ print("worker-import-ready")
     def test_stream_failure_preserves_first_audio_time(self):
         output = MagicMock()
         stream = output.OutputStream.return_value.__enter__.return_value
-        stream.write.side_effect = (False, RuntimeError("device write failed"))
         with (
             patch.object(IsolatedSpeechBackend, "_start_worker"),
             patch(
@@ -2266,7 +2266,6 @@ print("worker-import-ready")
             backend = IsolatedSpeechBackend(
                 "moss-tts", CharacterVoiceRegistry(), audio_output=output
             )
-        backend.clock = iter((1.0, 1.01, 1.02)).__next__
 
         def render(request):
             result = FakeWorkerBackend(backend.registry).render(request).collect()
@@ -2278,15 +2277,23 @@ print("worker-import-ready")
 
             return SynthesisChunkStream(chunks())
 
-        with patch.object(backend, "render", side_effect=render):
-            outcome = backend.play_prepared(
-                backend.prepare_playback("Narrator", "Keep the first write time.")
-            )
-
-        self.assertEqual(outcome.status.value, "failed")
-        self.assertAlmostEqual(outcome.first_audio_ms, 10.0)
-        self.assertIn("device write failed", outcome.error)
-        self.assertEqual(stream.write.call_count, 2)
+        for error, status in (
+            (RuntimeError, "failed"),
+            (AudioDeviceChangedError, "interrupted"),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(backend, "render", side_effect=render),
+            ):
+                stream.write.side_effect = (False, error("device write failed"))
+                backend.clock = iter((1.0, 1.01, 1.02)).__next__
+                outcome = backend.play_prepared(
+                    backend.prepare_playback("Narrator", "Keep the first write time.")
+                )
+                self.assertEqual(outcome.status.value, status)
+                self.assertIs(outcome.error_type, error)
+                self.assertAlmostEqual(outcome.first_audio_ms, 10.0)
+                self.assertIn("device write failed", outcome.error)
 
     def test_pocket_worker_ignores_an_inapplicable_saved_profile(self):
         backend = object.__new__(IsolatedSpeechBackend)

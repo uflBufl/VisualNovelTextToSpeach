@@ -579,6 +579,7 @@ class LiveDialogReader:
         self.pcm_admitted_generations: set[int] = set()
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
+        self.output_interrupted_chunk: SpeechChunk | None = None
         self.cancelled_chunk_ids: set[str] = set()
         self.prepared_chunk_ids: set[str] = set()
         self.sealed_generations: set[int] = set()
@@ -722,6 +723,7 @@ class LiveDialogReader:
                 else "",
                 "queued": queued,
                 "replayable": replayable,
+                "output_interrupted": self._can_replay_output_interruption_locked(),
             }
 
     def start(self) -> bool:
@@ -786,6 +788,7 @@ class LiveDialogReader:
         return True
 
     def _reset_speech_history(self) -> None:
+        self.output_interrupted_chunk = None
         self.prepared_chunk_ids.clear()
         self.cancelled_chunk_ids.clear()
         self.scheduled_playback_ids.clear()
@@ -986,9 +989,34 @@ class LiveDialogReader:
             self._interrupt_speech()
         return has_current_speech
 
-    def repeat_last(self) -> bool:
+    def _can_replay_output_interruption_locked(self) -> bool:
+        chunk = self.output_interrupted_chunk
+        return (
+            chunk is not None
+            and chunk.generation == self.active_generation
+            and self.suppressed_generation != chunk.generation
+            and not self.stop_event.is_set()
+        )
+
+    def mark_output_interrupted(self, chunk: SpeechChunk) -> bool:
         with self.state_lock:
-            chunk = self.last_spoken_chunk
+            if (
+                chunk.generation != self.active_generation
+                or not self.is_playback_current(chunk)
+            ):
+                return False
+            self.output_interrupted_chunk = chunk
+            return True
+
+    def repeat_last(self, *, interrupted_only: bool = False) -> bool:
+        with self.state_lock:
+            if interrupted_only:
+                if not self._can_replay_output_interruption_locked():
+                    return False
+                chunk = self.output_interrupted_chunk
+                self.output_interrupted_chunk = None
+            else:
+                chunk = self.last_spoken_chunk
             generation = self.active_generation
             suppressed = self.suppressed_generation == generation
         if chunk is None or suppressed:
@@ -1015,6 +1043,7 @@ class LiveDialogReader:
     def _clear_queue_locked(
         self, cleanup: ExitStack, *, reason: str = "clear-queue"
     ) -> bool:
+        self.output_interrupted_chunk = None
         chunk = self.current_chunk or next(iter(self.speech_futures.values()), None)
         context = {} if chunk is None else self._chunk_context(chunk)
         context.pop("generation", None)

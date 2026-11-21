@@ -8,7 +8,11 @@ import soxr
 from sounddevice import PortAudioError
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.audio_output import resolve_audio_output, write_pcm_chunks
+from vntts.audio_output import (
+    AudioStreamStoppedError,
+    resolve_audio_output,
+    write_pcm_chunks,
+)
 from vntts.system_audio import (
     AudioDeviceChangedError,
     SystemAudioOutput,
@@ -124,9 +128,54 @@ class SystemAudioTest(unittest.TestCase):
         monitor.check()
         # The background probe requests refresh; only the playback owner closes.
         self.assertIs(stream.native, opened)
-        stream.write(np.zeros((480, 2), np.float32))
-        self.assertIsNot(stream.native, opened)
+        with self.assertRaises(AudioDeviceChangedError):
+            stream.write(np.zeros((480, 2), np.float32))
+        replay = self.open_stream(output)
+        replay.start()
+        replay.write(np.zeros((480, 2), np.float32))
+        self.assertIsNot(replay.native, opened)
         self.assertEqual(module.events.count("terminate"), 2)
+
+    def test_stopped_native_stream_needs_a_changed_selected_output(self):
+        for operation in ("write", "stop"):
+            for selection in ("original", "replacement", None, OSError("probe failed")):
+                with self.subTest(operation=operation, selection=selection):
+                    _module, output = self.create_output()
+                    probe, monitor = self.create_monitor(output)
+                    output.device_monitor = monitor
+                    probe.return_value = OutputDeviceSnapshot("original", ())
+                    monitor.check()
+                    monitor.ready.set()
+                    stream = self.open_stream(output)
+                    stream.start()
+                    failed = AudioStreamStoppedError("native stream stopped")
+                    getattr(stream.native, operation).side_effect = failed
+                    if isinstance(selection, OSError):
+                        probe.side_effect = selection
+                    else:
+                        probe.return_value = OutputDeviceSnapshot(
+                            selection, ("inventory changed",)
+                        )
+                    expected = (
+                        AudioDeviceChangedError
+                        if selection in ("replacement", None)
+                        else AudioStreamStoppedError
+                    )
+                    with self.assertRaises(expected):
+                        if operation == "stop":
+                            stream.stop()
+                        else:
+                            stream.write(np.ones((480, 2), np.float32))
+
+    def test_output_released_before_drain_cannot_complete_the_line(self):
+        _module, output = self.create_output()
+        stream = self.open_stream(output)
+        stream.start()
+        stream.write(np.ones((480, 2), np.float32))
+        output.request_refresh()
+        output.query_devices(kind="output")
+        with self.assertRaises(AudioDeviceChangedError):
+            stream.stop()
 
     def test_probe_failure_preserves_identity_and_recovers_without_logging_ids(self):
         _module, output = self.create_output()

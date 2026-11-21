@@ -1399,7 +1399,7 @@ class LiveSessionComponent:
         )
         return bool(skipped)
 
-    def repeat_last_speech(self) -> bool:
+    def repeat_last_speech(self, *, interrupted_only: bool = False) -> bool:
         controller = self.controller
         with controller.story_cursor_lock:
             controller.sequence_prefix_dispatch_lease = None
@@ -1408,7 +1408,7 @@ class LiveSessionComponent:
         reader = controller.live_reader
         if reader is None:
             return False
-        repeated = reader.repeat_last()
+        repeated = reader.repeat_last(interrupted_only=interrupted_only)
         controller.status_handler(
             "Repeating last speech" if repeated else "No previous speech to repeat"
         )

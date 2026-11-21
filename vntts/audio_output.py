@@ -24,6 +24,20 @@ from vntts.playback_observer import playback_started_context
 AudioData: TypeAlias = NDArray[np.float32]
 
 
+class AudioDeviceChangedError(RuntimeError):
+    """The selected output changed before this playback finished."""
+
+
+class AudioStreamStoppedError(RuntimeError):
+    """The native output stopped before it finished submitting PCM."""
+
+
+def playback_error_status(error: Exception) -> PlaybackStatus:
+    if isinstance(error, AudioDeviceChangedError):
+        return PlaybackStatus.INTERRUPTED
+    return PlaybackStatus.FAILED
+
+
 class PlaybackPause:
     """Keep one playback's pause state and deadlines independent of other outputs."""
 
@@ -750,7 +764,7 @@ class SynchronousPcmPlaybackMixin:
                     )
                 return outcome_for_prepared(
                     prepared,
-                    PlaybackStatus.FAILED,
+                    playback_error_status(error),
                     (self.clock() - started) * 1000,
                     first_audio_ms=first_audio_ms,
                     first_audio_at=first_audio_at,

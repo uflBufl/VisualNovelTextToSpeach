@@ -84,6 +84,7 @@ class RuntimeControlState:
     speaking: bool = False
     queued: bool = False
     replayable: bool = False
+    output_interrupted: bool = False
     transition: str | None = None
     unavailable_reason: str | None = None
     needs_readiness_check: bool = False
@@ -291,6 +292,7 @@ class ControlDashboard(QMainWindow):
     read_requested = Signal()
     live_requested = Signal()
     pause_requested = Signal()
+    replay_requested = Signal()
     auto_advance_requested = Signal(bool)
     sequence_resync_requested = Signal()
     sequence_expected_requested = Signal()
@@ -492,6 +494,12 @@ class ControlDashboard(QMainWindow):
         set_action_icon(self.live_button, "play")
         self.pause_button = QPushButton("")
         set_action_icon(self.pause_button, "pause")
+        self.replay_button = QPushButton("Replay dialogue")
+        self.replay_button.setAccessibleDescription(
+            "Replay the dialogue interrupted by an audio output change"
+        )
+        self.replay_button.clicked.connect(self.replay_requested.emit)
+        self.replay_button.hide()
         self.sequence_resync_button = QPushButton("Set story position / resync")
         set_action_icon(self.sequence_resync_button, "locate-fixed")
         self.sequence_expected_button = QPushButton("Use expected next line")
@@ -783,6 +791,7 @@ class ControlDashboard(QMainWindow):
         controls_layout.addLayout(primary_actions)
         control_status = QHBoxLayout()
         control_status.addWidget(self.reading_state, 1)
+        control_status.addWidget(self.replay_button)
         control_status.addWidget(self.pause_button)
         pause_policy = self.pause_button.sizePolicy()
         pause_policy.setRetainSizeWhenHidden(True)
@@ -1495,6 +1504,8 @@ class ControlDashboard(QMainWindow):
             self.live_button.setAccessibleName("Loading voice")
             self.live_button.setEnabled(False)
         self.pause_button.setVisible(state.active)
+        self.replay_button.setVisible(state.output_interrupted)
+        self.replay_button.setEnabled(state.ready and not state.transition)
         if state.indexed_current:
             self.reading_options_toggle.setChecked(True)
         self.prepare_reading_button.setDefault(

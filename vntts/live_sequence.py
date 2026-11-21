@@ -321,7 +321,9 @@ class StoryCursor:
         self.reason = "playback-started"
         return self.snapshot()
 
-    def finish_playback(self, *, successful: bool = True) -> StoryCursorSnapshot:
+    def finish_playback(
+        self, *, successful: bool = True, failure_reason: str = "playback-failed"
+    ) -> StoryCursorSnapshot:
         event = self._require_current()
         if self.state != StoryCursorState.PLAYING:
             raise StoryCursorError(
@@ -330,7 +332,7 @@ class StoryCursor:
         self.state = self._resting_state(event)
         if successful:
             self.completed_playback_event_id = event.event_id
-        self.reason = "playback-completed" if successful else "playback-failed"
+        self.reason = "playback-completed" if successful else failure_reason
         return self.snapshot()
 
     def deterministic_visual_successor(self) -> LiveSequenceEvent | None:

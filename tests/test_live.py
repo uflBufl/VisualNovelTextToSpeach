@@ -2268,11 +2268,30 @@ class LiveDialogReaderTest(unittest.TestCase):
                 "speaking_character": "Alice",
                 "queued": True,
                 "replayable": True,
+                "output_interrupted": False,
             },
         )
 
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
+
+    def test_output_interruption_replays_once_and_only_on_the_current_line(self):
+        reader = self.create_reader()
+        reader.active_generation = 3
+        chunk = SpeechChunk(3, "Alice", "Interrupted words.", line_id="line-3")
+        self.assertTrue(reader.mark_output_interrupted(chunk))
+        self.assertTrue(reader.runtime_control_snapshot()["output_interrupted"])
+        with patch.object(reader, "_schedule") as schedule:
+            self.assertTrue(reader.repeat_last(interrupted_only=True))
+            (replay,) = schedule.call_args.args[0]
+            self.assertTrue(replay.explicit_replay)
+            self.assertEqual((replay.line_id, replay.text), (chunk.line_id, chunk.text))
+            self.assertFalse(reader.repeat_last(interrupted_only=True))
+            self.assertTrue(reader.mark_output_interrupted(replay))
+            reader.active_generation += 1
+            self.assertFalse(reader.runtime_control_snapshot()["output_interrupted"])
+            self.assertFalse(reader.repeat_last(interrupted_only=True))
+            schedule.assert_called_once()
 
     def test_wait_includes_pending_playback_futures(self):
         reader = self.create_reader()

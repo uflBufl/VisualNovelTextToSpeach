@@ -2475,6 +2475,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self._toggle_presented_reading)
         self.dashboard.pause_requested.connect(self.toggle_speech_pause)
+        self.dashboard.replay_requested.connect(self.replay_interrupted_dialogue)
         self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(
             partial(self.prepare_reading, start_live=True)
@@ -3356,6 +3357,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             return
         self.set_speech_paused(self.controller.toggle_speech_pause())
+
+    def replay_interrupted_dialogue(self) -> None:
+        state = self._runtime_control_state()
+        if (
+            QApplication.activeModalWidget() is not None
+            or not state.ready
+            or state.transition
+            or not state.output_interrupted
+        ):
+            return
+        self.voice_auditions.suspend()
+        self.controller.repeat_last_speech(interrupted_only=True)
+        self._apply_controller_action_state()
 
     def toggle_live(self) -> bool:
         if self._shutting_down:
@@ -6373,6 +6387,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
             queued=bool(snapshot.get("queued", False)),
             replayable=bool(snapshot.get("replayable", False)),
+            output_interrupted=bool(snapshot.get("output_interrupted", False)),
             transition=(
                 "stopping"
                 if self.live_stop_runner.active

@@ -17,7 +17,7 @@ from uuid import uuid4
 from PIL import Image
 
 from vntts.audio_lifecycle import audio_lifecycle_context
-from vntts.audio_output import PcmAdmissionRejected
+from vntts.audio_output import AudioDeviceChangedError, PcmAdmissionRejected
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.caption_layout import select_caption
@@ -309,7 +309,9 @@ class _StoryCursor(Protocol):
         self, event_id: str, reason: str | None = None
     ) -> StoryCursorSnapshot: ...
     def begin_playback(self) -> StoryCursorSnapshot: ...
-    def finish_playback(self, *, successful: bool = True) -> StoryCursorSnapshot: ...
+    def finish_playback(
+        self, *, successful: bool = True, failure_reason: str = "playback-failed"
+    ) -> StoryCursorSnapshot: ...
     def dispatch_advance(self) -> StoryCursorSnapshot: ...
     def observe_line(self, line_id: str) -> StoryCursorSnapshot: ...
     def observe_bounded_line(
@@ -919,8 +921,8 @@ class AppController:
     def skip_current_speech(self) -> bool:
         return self.live_session.skip_current_speech()
 
-    def repeat_last_speech(self) -> bool:
-        return self.live_session.repeat_last_speech()
+    def repeat_last_speech(self, *, interrupted_only: bool = False) -> bool:
+        return self.live_session.repeat_last_speech(interrupted_only=interrupted_only)
 
     def clear_speech_queue(self) -> bool:
         return self.live_session.clear_speech_queue()
@@ -2692,6 +2694,8 @@ class AppController:
             guidance = (
                 "Canonical audio is playing; watching for the next visible dialogue."
             )
+        elif snapshot.reason == "audio-output-changed":
+            guidance = "Audio output changed during this line. Continue manually in the game when ready."
         elif snapshot.reason == "playback-failed":
             recovery_required = True
             guidance = (
@@ -4152,7 +4156,15 @@ class AppController:
                     return False
             if cursor is None or cursor.state != StoryCursorState.PLAYING:
                 return False
-            cursor.finish_playback(successful=successful)
+            output_changed = (
+                outcome is not None and outcome.error_type is AudioDeviceChangedError
+            )
+            cursor.finish_playback(
+                successful=successful,
+                failure_reason="audio-output-changed"
+                if output_changed
+                else "playback-failed",
+            )
             generation = (
                 self.live_reader.active_generation
                 if self.live_reader is not None
@@ -4169,7 +4181,11 @@ class AppController:
                 terminal_route=(
                     self.sequence_event_terminal_routes.get(lease) if terminal else None
                 ),
-                outcome="completed" if successful else "failed",
+                outcome="interrupted"
+                if output_changed
+                else "completed"
+                if successful
+                else "failed",
             )
             self._publish_live_sequence_status()
             return successful
@@ -5090,6 +5106,13 @@ class AppController:
             if outcome.successful and not reader.wait_until_playable(chunk):
                 outcome = replace(outcome, status=PlaybackStatus.INTERRUPTED)
             result = outcome.successful
+            if (
+                outcome.error_type is AudioDeviceChangedError
+                and reader.mark_output_interrupted(chunk)
+            ):
+                self.status_handler(
+                    "Audio output changed. Replay dialogue to hear this line again."
+                )
             audible = isinstance(
                 outcome.first_audio_ms, (int, float)
             ) and not isinstance(outcome.first_audio_ms, bool)

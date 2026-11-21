@@ -33,6 +33,7 @@ from vntts.audio_output import (
     PlaybackAudioOutput,
     match_output_sample_rate,
     playback_cancelled,
+    playback_error_status,
     playback_pause_context,
     prepared_output_stream,
     resolve_audio_output,
@@ -1837,7 +1838,7 @@ class AudioRoutePlaybackOwner:
             except Exception as error:
                 return _route_outcome(
                     route,
-                    PlaybackStatus.FAILED,
+                    playback_error_status(error),
                     (self.router.clock() - started) * 1000,
                     first_audio_ms=(
                         None
@@ -1944,7 +1945,7 @@ class AudioRoutePlaybackOwner:
         except Exception as error:
             return _route_outcome(
                 route,
-                PlaybackStatus.FAILED,
+                playback_error_status(error),
                 None,
                 first_audio_ms=route.first_audio_ms,
                 error=str(error),

@@ -9351,6 +9351,26 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(pool.tasks, [])
         tray.shutdown()
 
+    def test_interrupted_dialogue_replay_is_contextual_and_rechecked(self):
+        tray, controller, _pool = self._cold_reading_tray()
+        tray.set_ready(True)
+        controller.runtime_control_snapshot.return_value = {
+            "replayable": True,
+            "output_interrupted": True,
+        }
+        tray._apply_controller_action_state()
+        self.assertFalse(tray.dashboard.replay_button.isHidden())
+        self.assertEqual(tray.dashboard.replay_button.text(), "Replay dialogue")
+        tray.dashboard.replay_button.click()
+        controller.repeat_last_speech.assert_called_once_with(interrupted_only=True)
+
+        controller.runtime_control_snapshot.return_value = {"replayable": True}
+        tray.replay_interrupted_dialogue()
+        controller.repeat_last_speech.assert_called_once()
+        tray._apply_controller_action_state()
+        self.assertTrue(tray.dashboard.replay_button.isHidden())
+        tray.shutdown()
+
     def test_changed_reading_pack_initializes_before_live_start(self):
         tray, controller, pool = self._cold_reading_tray()
         tray.set_ready(True)
