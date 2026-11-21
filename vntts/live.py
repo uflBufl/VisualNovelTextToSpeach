@@ -1508,7 +1508,8 @@ class LiveDialogReader:
             except Exception as error:
                 if stop_event.is_set() or self.is_shutting_down:
                     break
-                self.report_error(error)
+                if not isinstance(error, OCRPreviewCancelled):
+                    self.report_error(error)
                 interval = self.interval_seconds
             self._notify_capture_state(True, interval)
             with self.pause_condition:

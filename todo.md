@@ -1,10 +1,5 @@
 # TODO
 
-## Windows Reading follow-up
-
-- [ ] Treat superseded story-caption frames as cancellations in live capture.
-      Continue with the current frame and report actual capture failures.
-
 ## Reader-first desktop experience
 
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time

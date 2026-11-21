@@ -10,7 +10,7 @@ from unittest.mock import Mock, call, patch
 
 from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.dialog import ocr_texts_equivalent
-from vntts.dialog_capture import OCRError
+from vntts.dialog_capture import OCRError, ScreenCaptureError
 from vntts.generated_audio import (
     AudioRouteTrace,
     GeneratedAudioReference,
@@ -4125,6 +4125,39 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader._run_capture(stop_event)
         capture_frame.assert_called_once_with()
         self.assertIs(reader.current_chunk, chunk)
+
+    def test_capture_skips_cancelled_caption_and_reports_capture_failure(self):
+        failure = ScreenCaptureError("Window unavailable")
+        capture_frame = Mock(
+            side_effect=[
+                OCRPreviewCancelled("Story caption selection cancelled"),
+                failure,
+                "current frame",
+            ]
+        )
+
+        def stop_after_frame(_focused, _interval):
+            if reader.processed_frame_version:
+                reader.stop()
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as capture,
+            ThreadPoolExecutor(max_workers=1) as ocr,
+        ):
+            reader = self.create_reader(
+                capture_executor=capture,
+                ocr_executor=ocr,
+                capture_frame=capture_frame,
+                capture_state_changed=stop_after_frame,
+            )
+            reader.start()
+            try:
+                reader.wait(timeout_seconds=2)
+            finally:
+                reader.stop()
+        reader.report_error.assert_called_once_with(failure)
+        reader.recognize_frame.assert_called_once_with("current frame")
+        self.assertEqual(reader.get_pipeline_metrics().captured_frames, 1)
 
     def test_capture_waits_for_ocr_and_full_admission_before_next_frame(self):
         operations = []
