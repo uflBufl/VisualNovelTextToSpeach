@@ -138,6 +138,12 @@ class WindowsCiDiagnosticsTest(unittest.TestCase):
                     report = self._run(self.collector)
                     self.assertEqual(report.returncode, 0)
                     self.assertEqual(self._active_annotation(report.stdout), CONTEXT)
+                    saved = (self.temporary / "windows-unit-test-report.txt").read_text(
+                        "utf-8"
+                    )
+                    self.assertIn(f"Test runner exit code: {status}\n", saved)
+                    self.assertIn(CONTEXT.split("::")[-1], saved)
+                    self.assertNotIn(CANARY, saved)
 
     def test_primary_only_replays_fixed_success_timing_notice(self):
         notice = (

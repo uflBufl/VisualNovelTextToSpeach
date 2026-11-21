@@ -143,6 +143,8 @@ jobs:
             Get-Content -LiteralPath $testLog | Where-Object {
               $_ -cmatch '^::notice title=Unittest timing::Windows (qt-catalog|remainder(?:-1)?) completed in [0-9]+ seconds$'
             } | Write-Output
+          } else {
+            Add-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "windows-unit-test-report.txt") -Value "Test runner exit code: ${testStatus}"
           }
           exit $testStatus
 
@@ -174,7 +176,8 @@ jobs:
             $terminalPatterns = @(
               ('^Running Windows unittest shard ' + $shardPattern + ': [0-9]+ tests\r?$'),
               ('^Windows unittest shard ' + $shardPattern + ' exceeded [0-9]+ seconds\r?$'),
-              ('^Windows unittest shard ' + $shardPattern + ' exited -?[0-9]{1,11} after [0-9]{1,10} seconds\r?$')
+              ('^Windows unittest shard ' + $shardPattern + ' exited -?[0-9]{1,11} after [0-9]{1,10} seconds\r?$'),
+              '^Ran [0-9]+ exact discovered tests once in [0-9]+ shards\r?$'
             )
             foreach ($pattern in $terminalPatterns) {
               $states = [regex]::Matches($testOutput, $pattern, [Text.RegularExpressions.RegexOptions]::Multiline, [TimeSpan]::FromSeconds(2))
@@ -230,6 +233,7 @@ jobs:
               }
               $summary = $summary.Substring(0, [Math]::Min(3500, $summary.Length))
               $stage = 'report'
+              Add-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "windows-unit-test-report.txt") -Value $summary
               Write-Output "::error title=Windows unit tests failed::${summary}"
             }
           } catch {
