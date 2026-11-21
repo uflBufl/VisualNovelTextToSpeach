@@ -947,6 +947,66 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
         self.assertEqual(model.stream_calls, [("state:anna", "Embedded voice.")])
 
+    def test_prepared_reference_identity_matches_prompt_for_fresh_and_cached_audio(
+        self,
+    ):
+        reference = Path(self.temporary_directory.name) / "hero.wav"
+        reference.write_bytes(b"reference")
+        backend, model, _audio_output = self.create_backend(
+            CharacterVoiceRegistry(
+                (CharacterVoice("Horropedia", "horropedia-reference", reference),)
+            )
+        )
+        for character, key, source, kind in (
+            ("Unknown", "narrator", "alba", "built-in"),
+            (
+                "Horropedia",
+                "horropedia-reference",
+                str(reference),
+                "reference-1",
+            ),
+        ):
+            with self.subTest(character=character):
+                text = f"Line for {character}."
+                prepared = backend.prepare(character, text)
+                self.assertEqual(prepared.voice_key, key)
+                self.assertEqual(prepared.voice_reference_id, f"voice:{key}:{kind}")
+                backend.play(prepared)
+                self.assertEqual(model.stream_calls[-1], (f"state:{source}", text))
+                cached = backend.prepare(character, text)
+                self.assertIsNotNone(cached.cached_audio)
+                self.assertEqual(cached.voice_reference_id, prepared.voice_reference_id)
+
+    def test_scoped_voice_keeps_reference_caches_and_registry_separate(self):
+        root = Path(self.temporary_directory.name)
+        original, selected = root / "original.wav", root / "selected.wav"
+        original.write_bytes(b"original")
+        selected.write_bytes(b"selected")
+        registry = CharacterVoiceRegistry(
+            (CharacterVoice("Horropedia", "same-speaker", original),)
+        )
+        backend, model, _audio_output = self.create_backend(registry)
+        voice = CharacterVoice("Other role", "same-speaker", selected)
+        scoped = backend.prepare_playback_with_voice("Horropedia", "Same line.", voice)
+        self.assertEqual(
+            scoped.payload.voice_reference_id, "voice:same-speaker:reference-1"
+        )
+        self.assertTrue(backend.play_prepared(scoped).successful)
+        ordinary = backend.prepare_playback("Horropedia", "Same line.")
+        self.assertIsNone(ordinary.payload.cached_audio)
+        self.assertTrue(backend.play_prepared(ordinary).successful)
+        self.assertEqual(
+            model.stream_calls,
+            [(f"state:{selected}", "Same line."), (f"state:{original}", "Same line.")],
+        )
+        self.assertIsNotNone(
+            backend.prepare_playback_with_voice(
+                "Horropedia", "Same line.", voice
+            ).payload.cached_audio
+        )
+        self.assertEqual(registry.resolve("Horropedia").reference, original)
+        self.assertIsNone(registry.resolve("Other role"))
+
     def test_render_returns_typed_pcm_without_opening_output_stream(self):
         backend, model, audio_output = self.create_backend()
 

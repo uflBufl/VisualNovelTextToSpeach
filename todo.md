@@ -106,18 +106,10 @@ Recheck archived findings against current main before implementation.
 
 ## Live character voices from installed game references
 
-- [ ] In An-an Lee's first anecdote chapter, Horropedia's identified lines
-      (e.g. `reverse1999:303901:7`) use Pocket's narrator fallback when no
-      prepared recording or character binding exists. Resolve an eligible
-      installed-game voice reference for the matched character before automatic
-      narrator fallback. Reuse it on subsequent lines, preserve explicit voice
-      choices, and retain fallback for missing or ambiguous references.
-      Verify the spoken dialogue uses Horropedia's reference on Windows without
-      preparing the chapter; a spoken name announcement is a separate route.
-- [ ] Report the voice reference actually used by the Pocket worker. The
-      November 21 narrator fallback for Horropedia was labeled
-      `voice:horropedia:built-in`. Cover both narrator fallback and a resolved
-      character reference in the exported dialogue route.
+- [ ] On Windows with Pocket, read the opening of An-an Lee's first anecdote
+      without preparing the chapter or assigning Horropedia a voice. Listen
+      to his dialogue and check that the support export for
+      `reverse1999:303901:7` shows `voice:horropedia:reference-1`.
 
 ## Active - Remaining dialogue recognition and original-speech qualification
 

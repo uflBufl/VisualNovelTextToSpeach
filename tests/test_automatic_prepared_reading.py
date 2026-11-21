@@ -10,6 +10,7 @@ from vntts_artifacts.generated_audio import text_sha256
 from tests.audio_output_fixtures import FakeAudioOutput
 from tests.story_fixtures import write_synthetic_game_pack
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.content_revision import ContentRevision
 from vntts.controller import AppController
 from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.generated_audio import (
@@ -18,15 +19,19 @@ from vntts.generated_audio import (
     LiveTTSRoute,
 )
 from vntts.live import SpeechChunk
+from vntts.live_game_voice import LiveGameVoiceReferences
 from vntts.ocr import OCRResult
 from vntts.playback import PreparedPlayback
 from vntts.prepared_audio_discovery import (
     PreparedAudioSnapshot,
     discover_prepared_audio,
 )
+from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
 from vntts.speech_backend_contract import SpeechBackendCapabilities
+from vntts.speech_worker import IsolatedSpeechBackend
 from vntts.voice_library import VoiceLibrary
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class AutomaticPreparedReadingTests(unittest.TestCase):
@@ -79,6 +84,71 @@ class AutomaticPreparedReadingTests(unittest.TestCase):
             OCRResult("Ada", text, 95, "fixture", 1)
         )
         return resolution.ocr_result, resolution.line
+
+    def test_matched_live_dialogue_reports_the_selected_game_voice_or_fallback(self):
+        line_id = "reverse1999:303901:7"
+        chunk = SpeechChunk(1, "Horropedia", "What happened?", line_id=line_id)
+        line = ChapterDialogue(
+            line_id, "303901", 7, chunk.character, chunk.text, text_sha256(chunk.text)
+        )
+        catalog = ReadingCatalog(
+            "reverse1999",
+            "Reverse: 1999",
+            Mock(spec=ContentRevision),
+            (line,),
+            self.root,
+        )
+        game_voice = CharacterVoice(
+            "Horropedia", "horropedia", reference=self.root / "intro.wav"
+        )
+        resolve = self.enterContext(
+            patch.object(LiveGameVoiceReferences, "resolve", autospec=True)
+        )
+        registry = CharacterVoiceRegistry()
+        pocket = IsolatedSpeechBackend("pocket-tts", registry, defer_startup=True)
+        self.addCleanup(pocket.shutdown)
+        self.controller.voice_router = pocket
+        self.controller.chapter_voice_preloader = ChapterVoicePreloader((line,))
+        self.controller.prepared_audio_snapshot = PreparedAudioSnapshot(
+            catalogs=(catalog,)
+        )
+        self.backend.live_backend = pocket
+        self.backend.line_resolver = self.controller.chapter_voice_preloader
+        self.backend.library = None
+        for backend in (self.backend, pocket):
+            with self.subTest(backend=type(backend).__name__):
+                self.controller.speech_backend = backend
+                resolve.return_value = game_voice
+                self.controller._prepare_live_chunk(chunk)
+                trace = self.controller.last_audio_route_trace.support_details()
+                self.assertEqual(
+                    trace["voice_reference_id"], "voice:horropedia:reference-1"
+                )
+                self.assertEqual(trace["line_id"], line_id)
+                self.assertNotIn("horropedia", self.controller.pending_unknown_speakers)
+                resolve.return_value = None
+                self.controller._prepare_live_chunk(chunk)
+                self.assertEqual(
+                    self.controller.last_audio_route_trace.voice_reference_id,
+                    "voice:narrator:built-in",
+                )
+                self.controller.pending_unknown_speakers.clear()
+                resolve.reset_mock()
+                registry.set_assignment("Horropedia", "default")
+                self.controller._prepare_live_chunk(chunk)
+                self.assertEqual(
+                    self.controller.last_audio_route_trace.voice_reference_id,
+                    "voice:narrator:built-in",
+                )
+                registry.set_assignment("Horropedia", "preset:anna")
+                self.controller._prepare_live_chunk(chunk)
+                self.assertEqual(
+                    self.controller.last_audio_route_trace.voice_reference_id,
+                    "voice:anna:built-in",
+                )
+                registry.assignments.clear()
+                self.controller._prepare_live_chunk(replace(chunk, line_id=None))
+                resolve.assert_not_called()
 
     def test_explicit_reload_readmits_sources_while_availability_refresh_reuses_them(
         self,

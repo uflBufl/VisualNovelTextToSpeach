@@ -861,6 +861,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     "_run",
                     return_value=(json.dumps({"voice_manifest": str(manifest)}), ""),
                 ) as run,
+                patch.object(importer, "command", return_value=None) as command,
             ):
                 session = listing.return_value
                 session.references = ("line",)
@@ -878,6 +879,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 importer.prepare_voice_roles(
                     ("Centurion",), narrator=True, narrator_line_id="playable:5"
                 )
+                command.assert_not_called()
                 self.assertEqual(
                     session.prepare.call_args.kwargs["line_id"], "playable:5"
                 )

@@ -770,6 +770,9 @@ class GeneratedAudioFallbackBackend:
         self.volume = 1.0
         self.speed = 1.0
         self.voice_override: Callable[[str], bool] | None = None
+        self.prepare_live_dialogue: (
+            Callable[[SpeechBackend, str, str, str | None], PreparedPlayback] | None
+        ) = None
         self.source_audio_resolver: (
             Callable[[ChapterDialogue], ChapterDialogue] | None
         ) = None
@@ -1283,7 +1286,13 @@ class GeneratedAudioFallbackBackend:
         if prepared is None:
             if self.live_backend is None:
                 raise LiveSpeechRequired(trace)
-            prepared = self.live_backend.prepare_playback(character, text)
+            prepared = (
+                self.prepare_live_dialogue(
+                    self.live_backend, character, text, trace.line_id
+                )
+                if self.prepare_live_dialogue is not None
+                else self.live_backend.prepare_playback(character, text)
+            )
         return LiveTTSRoute(
             prepared,
             replace(trace, effective_source=prepared.audio_source),

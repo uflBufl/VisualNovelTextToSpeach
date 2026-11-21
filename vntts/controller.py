@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Event, Lock, RLock
 from time import monotonic
-from typing import Protocol, TypeGuard, runtime_checkable
+from typing import Protocol, TypeGuard, cast, runtime_checkable
 from uuid import uuid4
 
 from PIL import Image
@@ -154,6 +154,7 @@ from vntts.speech_backend import (
 )
 from vntts.speech_backend_contract import SpeechBackend
 from vntts.speech_worker import (
+    IsolatedSpeechBackend,
     create_chatterbox_worker_backend,
     create_moss_worker_backend,
     create_pocket_worker_backend,
@@ -1239,6 +1240,7 @@ class AppController:
             audio_source_policy=policy,
         )
         generated_backend.voice_override = self._has_manual_voice_override
+        generated_backend.prepare_live_dialogue = self._prepare_live_dialogue
         generated_backend.source_audio_resolver = self._prepare_original_speech
         generated_backend.progress_wait_status = self.status_handler
         if policy == "live-tts-only":
@@ -1284,6 +1286,44 @@ class AppController:
                 )
             return measured
         raise RuntimeError("The imported catalog for original speech is unavailable")
+
+    def _prepare_live_dialogue(
+        self, backend: SpeechBackend, character: str, text: str, line_id: str | None
+    ) -> PreparedPlayback:
+        snapshot = self.prepared_audio_snapshot
+        if (
+            isinstance(backend, (IsolatedSpeechBackend, PocketTTSVoiceRouterBackend))
+            and backend.name == "pocket-tts"
+            and line_id
+            and snapshot is not None
+            and not is_narrator(character)
+        ):
+            registry = backend.registry
+            role = normalize_character_name(character)
+            if (
+                role not in self.narrator_fallback_speakers
+                and role not in registry.assignments
+                and role not in registry.voices
+            ):
+                for catalog in snapshot.catalogs:
+                    if catalog.game_id != "reverse1999":
+                        continue
+                    line = catalog.store.line_for_id(line_id)
+                    if line is None or normalize_character_name(line.speaker) != role:
+                        continue
+                    reader = self.live_reader
+                    voice = catalog.live_voice_references.resolve(
+                        line.speaker,
+                        cancellation=reader.stop_event
+                        if reader is not None
+                        else self.shutdown_requested,
+                    )
+                    if voice is not None:
+                        return backend.prepare_playback_with_voice(
+                            character, text, voice
+                        )
+                    break
+        return backend.prepare_playback(character, text)
 
     def _reading_catalog_for(self, line: ChapterDialogue) -> ReadingCatalog | None:
         snapshot = self.prepared_audio_snapshot
@@ -2268,7 +2308,6 @@ class AppController:
                 if voice is not None
                 else self.settings.tts_speaker_wav or "alba"
             )
-            voice_router.voice_states.pop("narrator", None)
         elif isinstance(voice_router, MossTTSVoiceRouterBackend):
             voice_router.narrator_reference = (
                 voice.references[0]
@@ -4041,7 +4080,9 @@ class AppController:
             if prepared is None:
                 if materialize is None:
                     raise TypeError("Live backend cannot materialize prepared audio")
-                prepared = backend.prepare_playback(line.speaker, line.text)
+                prepared = self._prepare_live_dialogue(
+                    backend, line.speaker, line.text, line.line_id
+                )
         audio = _materialize_live_audio(
             prepared, materialize, lambda: not self.game_focused
         )
@@ -4922,7 +4963,12 @@ class AppController:
             elif callable(prepare_playback):
                 prepared = prepare_silent_playback(chunk.text)
                 if prepared is None:
-                    prepared = prepare_playback(chunk.character, chunk.text)
+                    prepared = self._prepare_live_dialogue(
+                        cast(SpeechBackend, self.speech_backend),
+                        chunk.character,
+                        chunk.text,
+                        chunk.line_id,
+                    )
             else:
                 raise TypeError("Speech backend does not implement prepare_playback()")
             prepared = self._materialize_live_route(prepared, chunk)
@@ -4930,7 +4976,8 @@ class AppController:
             if not self.shutdown_requested.is_set() and (
                 reader is None or reader.is_playback_current(chunk)
             ):
-                self._offer_unknown_speaker_mapping(chunk.character, chunk.text)
+                if not self._has_resolved_dialogue_voice(prepared):
+                    self._offer_unknown_speaker_mapping(chunk.character, chunk.text)
             try:
                 announcement, announced_speaker = self._prepare_speaker_announcement(
                     chunk, prepared
@@ -5397,6 +5444,16 @@ class AppController:
             f"Speaker announcement unavailable; continuing dialogue: {error}"
         )
 
+    @staticmethod
+    def _has_resolved_dialogue_voice(route: object) -> bool:
+        prepared = route.prepared if isinstance(route, LiveTTSRoute) else route
+        if not isinstance(prepared, PreparedPlayback):
+            return False
+        reference = getattr(prepared.payload, "voice_reference_id", None)
+        return isinstance(reference, str) and not reference.startswith(
+            "voice:narrator:"
+        )
+
     def _speaker_announcement_candidate(
         self, mode: str, visible_speaker: str, dialogue_route: object
     ) -> str | None:
@@ -5410,6 +5467,8 @@ class AppController:
                     else dialogue_route.decision.requested_voice_character
                 )
             if isinstance(dialogue_route, (LiveTTSRoute, PreparedPlayback)):
+                if self._has_resolved_dialogue_voice(dialogue_route):
+                    return None
                 return (
                     "Unknown"
                     if is_unattributed_speaker(visible_speaker)
@@ -5743,6 +5802,9 @@ class AppController:
     def _voice_reference_identifier(
         self, character: str, prepared: object
     ) -> str | None:
+        resolved = getattr(prepared, "voice_reference_id", None)
+        if isinstance(resolved, str):
+            return resolved
         voice_key = str(getattr(prepared, "voice_key", "")).strip()
         registry = getattr(self.voice_router, "registry", None)
         voice = registry.resolve(character) if registry is not None else None

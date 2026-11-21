@@ -63,7 +63,9 @@ from vntts.synthesis import (
     normalize_short_trailing_ellipsis,
 )
 from vntts.voices import (
+    CharacterVoice,
     CharacterVoiceRegistry,
+    _validate_voice_reference_ownership,
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
@@ -271,12 +273,13 @@ class PocketTTSPreparedSpeech:
     voice_key: str
     voice_state: object
     text: str
-    cache_key: tuple[str, str]
+    cache_key: tuple[str, str, str]
     persistent_cache_key: str | None
     cached_audio: AudioArray | None = None
     cache_source: str = "fresh-generation"
     generation_profile: str = "default"
     cache_policy: SynthesisCachePolicy = SynthesisCachePolicy.USE
+    voice_reference_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1094,6 +1097,33 @@ def _streaming_samples(sample_rate: int, seconds: float, name: str) -> int:
         raise TTSConfigurationError(f"{name} exceeds the sample count range") from error
 
 
+def resolve_pocket_voice_source(
+    registry: CharacterVoiceRegistry,
+    narrator_reference: str | Path,
+    character: str,
+    *,
+    voice: CharacterVoice | None = None,
+) -> tuple[str, str | Path]:
+    if voice is None:
+        voice = registry.resolve(character)
+    else:
+        _validate_voice_reference_ownership(voice)
+    if is_narrator(character) or voice is None:
+        return "narrator", narrator_reference
+    if not voice.references:
+        if voice.speaker in pocket_tts_preset_voices:
+            return voice.speaker, voice.speaker
+        raise TTSConfigurationError(
+            f"Voice {voice.character!r} has no reference recording"
+        )
+    return voice.speaker, voice.references[0]
+
+
+def pocket_voice_reference_identifier(voice_key: str, source: str | Path) -> str:
+    kind = "built-in" if source in pocket_tts_preset_voices else "reference-1"
+    return f"voice:{voice_key}:{kind}"
+
+
 class PocketTTSVoiceRouterBackend:
     """Experimental CPU voice cloning with first-chunk streaming playback."""
 
@@ -1159,7 +1189,7 @@ class PocketTTSVoiceRouterBackend:
         self.stream_prefill_samples = _streaming_samples(
             self.sample_rate, stream_prefill_seconds, "stream_prefill_seconds"
         )
-        self.voice_states: dict[str, object] = {}
+        self.voice_states: dict[tuple[str, str], object] = {}
         self.voice_state_cache_directory = Path(
             voice_state_cache_directory
             or get_local_data_directory() / "models" / "pocket-tts" / "voices"
@@ -1180,7 +1210,7 @@ class PocketTTSVoiceRouterBackend:
         self.last_synthesis_ms: float | None = None
         self.last_first_audio_ms: float | None = None
         self.last_playback_ms: float | None = None
-        self.audio_cache: BoundedCache[tuple[str, str], AudioArray] = BoundedCache(
+        self.audio_cache: BoundedCache[tuple[str, str, str], AudioArray] = BoundedCache(
             audio_cache_size
         )
         self.persistent_audio_cache = PersistentAudioCache(
@@ -1206,12 +1236,26 @@ class PocketTTSVoiceRouterBackend:
         return prepare_playback_payload(self, character, text)
 
     def prepare_playback(self, character: str, text: str) -> PreparedPlayback:
+        return self._prepare_playback(character, text)
+
+    def prepare_playback_with_voice(
+        self, character: str, text: str, voice: CharacterVoice
+    ) -> PreparedPlayback:
+        source = resolve_pocket_voice_source(
+            self.registry, self.narrator_reference, character, voice=voice
+        )
+        return self._prepare_playback(character, text, source=source)
+
+    def _prepare_playback(
+        self, character: str, text: str, *, source: tuple[str, str | Path] | None = None
+    ) -> PreparedPlayback:
         payload = self._prepare_request(
             SynthesisRequest(
                 voice=character,
                 text=text,
                 generation_profile=self.generation_profile,
-            )
+            ),
+            source=source,
         )
         first_audio_ms = 0.0 if payload.cached_audio is not None else None
         return PreparedPlayback(
@@ -1227,6 +1271,13 @@ class PocketTTSVoiceRouterBackend:
         if not isinstance(request, SynthesisRequest):
             raise TTSConfigurationError("Pocket TTS received an invalid render request")
         prepared = self._prepare_request(request)
+        self.playback_stop.clear()
+        return self._render_prepared(prepared, request)
+
+    def render_with_voice_source(
+        self, request: SynthesisRequest, voice_source: tuple[str, str | Path]
+    ) -> SynthesisChunkStream:
+        prepared = self._prepare_request(request, source=voice_source)
         self.playback_stop.clear()
         return self._render_prepared(prepared, request)
 
@@ -1258,12 +1309,14 @@ class PocketTTSVoiceRouterBackend:
         voice_key, source = self._resolve_voice_source(request.voice)
         return self._persistent_cache_key(voice_key, spoken_text, source)
 
-    def _prepare_request(self, request: SynthesisRequest) -> PocketTTSPreparedSpeech:
+    def _prepare_request(
+        self, request: SynthesisRequest, *, source: tuple[str, str | Path] | None = None
+    ) -> PocketTTSPreparedSpeech:
         spoken_text, profile, cache_policy = self._validate_render_request(request)
-        voice_key, source = self._resolve_voice_source(request.voice)
-        cache_key = voice_key, spoken_text
+        voice_key, reference = source or self._resolve_voice_source(request.voice)
+        cache_key = voice_key, str(reference), spoken_text
         persistent_key = (
-            self._persistent_cache_key(voice_key, spoken_text, source)
+            self._persistent_cache_key(voice_key, spoken_text, reference)
             if cache_policy is not SynthesisCachePolicy.BYPASS
             and (
                 self.persistent_audio_cache.max_entries > 0
@@ -1281,12 +1334,8 @@ class PocketTTSVoiceRouterBackend:
         voice_state = None
         if cached_audio is None:
             with self.model_lock:
-                resolved_voice_key, voice_state = self._resolve_voice_state(
-                    request.voice
-                )
-            if resolved_voice_key != voice_key:
-                raise TTSConfigurationError(
-                    "Pocket TTS resolved inconsistent voice state"
+                _voice_key, voice_state = self._resolve_voice_state(
+                    request.voice, source=(voice_key, reference)
                 )
         return PocketTTSPreparedSpeech(
             voice_key,
@@ -1298,6 +1347,7 @@ class PocketTTSVoiceRouterBackend:
             cache_source,
             profile,
             cache_policy,
+            pocket_voice_reference_identifier(voice_key, reference),
         )
 
     def _render_prepared(
@@ -1425,9 +1475,9 @@ class PocketTTSVoiceRouterBackend:
                 self.active_generation_cancel = None
 
     def prime(self, character: str) -> bool:
-        voice_key, _source = self._resolve_voice_source(character)
+        voice_key, source = self._resolve_voice_source(character)
         with self.model_lock:
-            if voice_key in self.voice_states:
+            if (voice_key, str(source)) in self.voice_states:
                 return False
             self._resolve_voice_state(character)
         return True
@@ -1683,24 +1733,27 @@ class PocketTTSVoiceRouterBackend:
             raise TTSSynthesisError("Pocket TTS generated no audio")
         return True, underflowed_any, first_audio_ms
 
-    def _resolve_voice_state(self, character: str) -> tuple[str, object]:
-        voice_key, source = self._resolve_voice_source(character)
-        cached = self.voice_states.get(voice_key)
+    def _resolve_voice_state(
+        self, character: str, *, source: tuple[str, str | Path] | None = None
+    ) -> tuple[str, object]:
+        voice_key, reference = source or self._resolve_voice_source(character)
+        state_key = voice_key, str(reference)
+        cached = self.voice_states.get(state_key)
         if cached is not None:
             return voice_key, cached
 
-        cache_path = self._voice_state_cache_path(voice_key, source)
+        cache_path = self._voice_state_cache_path(voice_key, reference)
         if cache_path.is_file():
             try:
                 state = self.model.get_state_for_audio_prompt(str(cache_path))
             except OSError, RuntimeError, TypeError, ValueError:
                 state = None
             if state is not None:
-                self.voice_states[voice_key] = state
+                self.voice_states[state_key] = state
                 return voice_key, state
 
         try:
-            state = self.model.get_state_for_audio_prompt(str(source))
+            state = self.model.get_state_for_audio_prompt(str(reference))
         except Exception as error:
             message = str(error)
             if "accept the terms" in message and "voice cloning" in message:
@@ -1711,21 +1764,14 @@ class PocketTTSVoiceRouterBackend:
             raise TTSConfigurationError(
                 f"Pocket TTS could not prepare voice {voice_key!r}: {message}"
             ) from error
-        self.voice_states[voice_key] = state
+        self.voice_states[state_key] = state
         self._save_voice_state(state, cache_path)
         return voice_key, state
 
     def _resolve_voice_source(self, character: str) -> tuple[str, str | Path]:
-        voice = self.registry.resolve(character)
-        if is_narrator(character) or voice is None:
-            return "narrator", self.narrator_reference
-        if not voice.references:
-            if voice.speaker in pocket_tts_preset_voices:
-                return voice.speaker, voice.speaker
-            raise TTSConfigurationError(
-                f"Voice {voice.character!r} has no reference recording"
-            )
-        return voice.speaker, voice.references[0]
+        return resolve_pocket_voice_source(
+            self.registry, self.narrator_reference, character
+        )
 
     def _voice_state_cache_path(self, voice_key: str, source: str | Path) -> Path:
         model_identity = (

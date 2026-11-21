@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeAlias, TypedDict
 
 from vntts.synthesis import SynthesisCachePolicy
@@ -15,6 +16,8 @@ class RemotePreparedSpeech:
     text: str
     generation_profile: str
     cache_policy: SynthesisCachePolicy
+    voice_reference_id: str | None = None
+    voice_source: tuple[str, str | Path] | None = None
 
 
 FrameDocument: TypeAlias = dict[str, object]

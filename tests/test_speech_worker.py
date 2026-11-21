@@ -226,8 +226,117 @@ class DeferredWorkerStartupTests(unittest.TestCase):
         self.assertIsNotNone(backend.capabilities)
         self.assertIsInstance(backend.registry, CharacterVoiceRegistry)
         self.assertEqual(prepared.payload.voice, "Bob")
+        self.assertEqual(prepared.payload.voice_key, "narrator")
+        self.assertEqual(prepared.payload.voice_reference_id, "voice:narrator:built-in")
         install.assert_not_called()
         process_factory.assert_not_called()
+
+    def test_pocket_prepared_request_reports_resolved_reference_and_preset(self):
+        backend = self.backend(narrator_reference=Path("narrator.wav"))
+        backend.registry = CharacterVoiceRegistry(
+            (
+                CharacterVoice(
+                    "Horropedia", "horropedia-reference", reference=Path("hero.wav")
+                ),
+                CharacterVoice("Hotelier", "anna"),
+            )
+        )
+        for character, key, identifier in (
+            ("Unknown", "narrator", "voice:narrator:reference-1"),
+            (
+                "Horropedia",
+                "horropedia-reference",
+                "voice:horropedia-reference:reference-1",
+            ),
+            ("Hotelier", "anna", "voice:anna:built-in"),
+        ):
+            with self.subTest(character=character):
+                prepared = backend.prepare_playback(character, "Prepared line")
+                self.assertEqual(prepared.payload.voice_key, key)
+                self.assertEqual(prepared.payload.voice_reference_id, identifier)
+        self.assertIsNone(backend.process)
+
+    def test_scoped_pocket_voice_is_sent_only_for_its_prepared_playback(self):
+        backend = self.backend(audio_output=MagicMock())
+        original = CharacterVoice("Horropedia", "anna")
+        selected = CharacterVoice("Other role", "reference-voice", Path("selected.wav"))
+        backend.registry = CharacterVoiceRegistry((original,))
+        scoped = backend.prepare_playback_with_voice(
+            "Horropedia", "Same line.", selected
+        )
+        self.assertIsNone(backend.registry.resolve("Other role"))
+        self.assertEqual(
+            scoped.payload.voice_reference_id, "voice:reference-voice:reference-1"
+        )
+        ordinary = backend.prepare_playback("Horropedia", "Same line.")
+        result = (
+            FakeWorkerBackend(backend.registry)
+            .render(SynthesisRequest("Horropedia", "Same line."))
+            .collect()
+        )
+        frames = [
+            (
+                {
+                    "type": "chunk",
+                    "shape": list(result.pcm.shape),
+                    "sample_rate": result.sample_rate,
+                    "index": 0,
+                    "elapsed_ms": 0.0,
+                },
+                result.pcm.tobytes(),
+            ),
+            ({"type": "result", "result": _result_document(result)}, b""),
+        ]
+        process = FakeProcess(None)
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send") as send,
+            patch.object(backend, "_next_frame", side_effect=frames * 2),
+        ):
+            self.assertTrue(backend.play_prepared(scoped).successful)
+            self.assertTrue(backend.play_prepared(ordinary).successful)
+        scoped_command = send.call_args_list[0].args[1]
+        normal_command = send.call_args_list[1].args[1]
+        self.assertEqual(
+            scoped_command["pocket_voice_source"],
+            {"voice_key": selected.speaker, "source": str(selected.reference)},
+        )
+        self.assertEqual(
+            normal_command["pocket_voice_source"],
+            {"voice_key": "anna", "source": "anna"},
+        )
+        self.assertEqual(scoped_command["registry"], normal_command["registry"])
+        self.assertIs(backend.registry.resolve("Horropedia"), original)
+
+    def test_prepared_pocket_source_survives_later_default_and_assignment_changes(self):
+        backend = self.backend(audio_output=MagicMock())
+        prepared = backend.prepare_playback("Unknown", "Prepared line")
+        backend.narrator_reference = "bella"
+        backend.registry.set_assignment("Unknown", "preset:anna")
+        result = (
+            FakeWorkerBackend(backend.registry)
+            .render(SynthesisRequest("Unknown", "Prepared line"))
+            .collect()
+        )
+        process = FakeProcess(None)
+        with (
+            patch.object(backend, "_ensure_worker", return_value=process),
+            patch.object(backend, "_send") as send,
+            patch.object(
+                backend,
+                "_next_frame",
+                return_value=(
+                    {"type": "result", "result": _result_document(result)},
+                    b"",
+                ),
+            ),
+        ):
+            backend.play_prepared(prepared)
+        self.assertEqual(
+            send.call_args.args[1]["pocket_voice_source"],
+            {"voice_key": "narrator", "source": "alba"},
+        )
+        self.assertEqual(prepared.payload.voice_reference_id, "voice:narrator:built-in")
 
     def test_background_and_concurrent_demand_share_one_blocked_startup(self):
         backend = self.backend()
@@ -1472,6 +1581,79 @@ print("worker-import-ready")
             if frame[0]["type"] == "result":
                 results.append(frame[0]["request_id"])
         self.assertEqual(results, ["0", "1", "2", "3"])
+
+    def test_worker_reuses_scoped_pocket_sources_across_speaker_switches(self):
+        from tests.test_speech_backend import FakePocketModel
+        from vntts.speech_backend import PocketTTSVoiceRouterBackend
+
+        registry = CharacterVoiceRegistry()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = FakePocketModel()
+            backend = PocketTTSVoiceRouterBackend(
+                registry,
+                model_factory=lambda: model,
+                voice_state_cache_directory=root / "voice-states",
+                persistent_audio_cache_directory=root / "audio",
+            )
+            incoming, outgoing = BytesIO(), BytesIO()
+            _write_frame(
+                incoming,
+                {
+                    "type": "initialize",
+                    "backend": "pocket-tts",
+                    "runtime_site": "/isolated/site-packages",
+                    "registry": _serialize_registry(registry),
+                    "options": {},
+                },
+            )
+            for index, source in enumerate(("anna", "alba", "anna")):
+                _write_frame(
+                    incoming,
+                    {
+                        "type": "render",
+                        "request_id": str(index),
+                        "voice": "Unregistered role",
+                        "text": "Same phrase.",
+                        "seed": None,
+                        "generation_profile": "default",
+                        "cache_policy": "use",
+                        "registry": _serialize_registry(registry),
+                        "narrator_reference": "alba",
+                        "pocket_voice_source": {
+                            "voice_key": "same-speaker",
+                            "source": source,
+                        },
+                    },
+                )
+            _write_frame(incoming, {"type": "shutdown"})
+            incoming.seek(0)
+            with patch("vntts.speech_worker.clear_voice_memory_caches") as clear:
+                self.assertEqual(
+                    worker_main(
+                        input_stream=incoming,
+                        output_stream=outgoing,
+                        backend_classes={"pocket-tts": lambda _registry: backend},
+                        required_modules={"pocket-tts": ()},
+                    ),
+                    0,
+                )
+            clear.assert_not_called()
+            outgoing.seek(0)
+            results = []
+            while (frame := _read_frame(outgoing)) is not None:
+                document, _pcm = frame
+                self.assertNotEqual(document["type"], "error", document)
+                if document["type"] == "result":
+                    results.append(document["result"]["diagnostics"]["cache_source"])
+            self.assertEqual(
+                results, ["fresh-generation", "fresh-generation", "memory-cache"]
+            )
+            self.assertEqual(
+                model.stream_calls,
+                [("state:anna", "Same phrase."), ("state:alba", "Same phrase.")],
+            )
+        self.assertIsNone(registry.resolve("Unregistered role"))
 
     def test_worker_protocol_streams_typed_pcm_and_results(self):
         registry = CharacterVoiceRegistry()

@@ -2057,13 +2057,11 @@ def _eligible_candidates(
         candidate
         for candidate in candidates
         if candidate.source_id == manually_selected_source
-        or candidate.candidate_origin != UNLINKED_BANK_MEDIA
-        and (
-            not is_playable_main_voice_source(
-                candidate.source_bank, candidate.source_line_ids
-            )
-            or candidate.reference_duration_seconds is None
-            or candidate.reference_duration_seconds <= _MAX_AUTOMATIC_REFERENCE_SECONDS
+        or automatic_voice_reference_is_eligible(
+            candidate_origin=candidate.candidate_origin,
+            source_bank=candidate.source_bank,
+            source_line_ids=candidate.source_line_ids,
+            duration_seconds=candidate.reference_duration_seconds,
         )
     )
     if len(candidates) < 2:
@@ -2088,6 +2086,21 @@ def _eligible_candidates(
     if playable is not None and playable not in shortlist:
         shortlist[-1] = playable
     return tuple(shortlist)
+
+
+def automatic_voice_reference_is_eligible(
+    *,
+    candidate_origin: str | None,
+    source_bank: object,
+    source_line_ids: object,
+    duration_seconds: float | None,
+) -> bool:
+    """Apply the same automatic admission rules to prepared and live voices."""
+    return candidate_origin != UNLINKED_BANK_MEDIA and (
+        not is_playable_main_voice_source(source_bank, source_line_ids)
+        or duration_seconds is None
+        or duration_seconds <= _MAX_AUTOMATIC_REFERENCE_SECONDS
+    )
 
 
 def _manifest_queue_bindings(

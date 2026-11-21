@@ -12,6 +12,7 @@ from vntts.dialogue_search import (
     DialogueStore,
     MemoryDialogueStore,
 )
+from vntts.live_game_voice import LiveGameVoiceReferences
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,14 @@ class ReadingCatalog:
     @property
     def story_index(self) -> Path:
         return self.revision.source_path
+
+    @cached_property
+    def live_voice_references(self) -> LiveGameVoiceReferences:
+        from vntts.game_content_importer import Reverse1999GameImporter
+
+        return LiveGameVoiceReferences(
+            Reverse1999GameImporter(output_root=self.audio_root)
+        )
 
     @cached_property
     def store(self) -> DialogueStore:

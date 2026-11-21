@@ -112,6 +112,7 @@ class NarratorReference(Protocol):
     collection_title: str | None
     line_id: str
     text: str
+    source_bank: str
 
 
 class NarratorDecoderRunner(Protocol):
@@ -1257,8 +1258,8 @@ class Reverse1999GameImporter:
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
             raise GameContentImportError("Choose a game character first")
-        command = self.command()
-        if command is None:
+        command = None if narrator else self.command()
+        if not narrator and command is None:
             raise GameContentImportError(self.availability().message)
         decoder = ensure_game_decoder(
             cancellation=cancel_event,
@@ -1269,6 +1270,7 @@ class Reverse1999GameImporter:
             return self._prepare_narrator_voice(
                 roles, decoder, cancel_event, narrator_line_id
             )
+        assert command is not None
         return self._prepare_role_voice_candidates(
             roles,
             command,

@@ -59,6 +59,8 @@ from vntts.speech_backend import (
     PocketTTSVoiceRouterBackend,
     TTSConfigurationError,
     TTSSynthesisError,
+    pocket_voice_reference_identifier,
+    resolve_pocket_voice_source,
     validate_speed,
     validate_volume,
 )
@@ -903,7 +905,25 @@ def worker_main(
                         )
                         continue
                     with redirect_stdout(sys.stderr):
-                        rendered = backend.render(request)
+                        source = command.get("pocket_voice_source")
+                        if source is None:
+                            rendered = backend.render(request)
+                        else:
+                            if backend_name != "pocket-tts":
+                                raise TTSConfigurationError(
+                                    "Only Pocket TTS accepts a resolved voice source"
+                                )
+                            source_document = _document_value(
+                                source, "Pocket voice source"
+                            )
+                            voice_key = _required_text(source_document, "voice_key")
+                            reference = _required_text(source_document, "source")
+                            if not voice_key or not reference:
+                                raise TTSConfigurationError(
+                                    "Pocket voice source is empty"
+                                )
+                            render = getattr(backend, "render_with_voice_source")
+                            rendered = render(request, (voice_key, reference))
                         for chunk in rendered:
                             pcm = np.asarray(chunk.pcm, dtype=np.float32, order="C")
                             _write_frame(
@@ -1535,7 +1555,10 @@ class IsolatedSpeechBackend:
         return value
 
     def _render_chunks(
-        self, request: SynthesisRequest
+        self,
+        request: SynthesisRequest,
+        *,
+        voice_source: tuple[str, str | Path] | None = None,
     ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         with self._request_lock:
             process = self._ensure_worker(
@@ -1561,6 +1584,14 @@ class IsolatedSpeechBackend:
                     "generation_profile": request.generation_profile,
                     "cache_policy": SynthesisCachePolicy(request.cache_policy).value,
                     "registry": _serialize_registry(self.registry),
+                    "pocket_voice_source": (
+                        None
+                        if voice_source is None
+                        else {
+                            "voice_key": voice_source[0],
+                            "source": str(voice_source[1]),
+                        }
+                    ),
                     "narrator_reference": (
                         str(self.narrator_reference)
                         if isinstance(self.narrator_reference, Path)
@@ -1663,12 +1694,38 @@ class IsolatedSpeechBackend:
         self.last_generation_limited = result.completion is SynthesisCompletion.LIMITED
 
     def prepare_playback(self, character: str, text: str) -> PreparedPlayback:
+        return self._prepare_playback(character, text)
+
+    def prepare_playback_with_voice(
+        self, character: str, text: str, voice: CharacterVoice
+    ) -> PreparedPlayback:
+        if self.name != "pocket-tts":
+            raise TTSConfigurationError("Scoped voice preparation requires Pocket TTS")
+        return self._prepare_playback(character, text, voice_override=voice)
+
+    def _prepare_playback(
+        self, character: str, text: str, *, voice_override: CharacterVoice | None = None
+    ) -> PreparedPlayback:
+        voice_key = normalize_character_name(character) or "narrator"
+        voice_reference_id = None
+        voice_source = None
+        if self.name == "pocket-tts":
+            voice_key, source = resolve_pocket_voice_source(
+                self.registry,
+                self.narrator_reference or "alba",
+                character,
+                voice=voice_override,
+            )
+            voice_source = voice_key, source
+            voice_reference_id = pocket_voice_reference_identifier(voice_key, source)
         payload = RemotePreparedSpeech(
             voice=character,
-            voice_key=normalize_character_name(character) or "narrator",
+            voice_key=voice_key,
             text=" ".join(str(text).split()),
             generation_profile=self.generation_profile,
             cache_policy=SynthesisCachePolicy.USE,
+            voice_reference_id=voice_reference_id,
+            voice_source=voice_source,
         )
         return PreparedPlayback(payload, None, None, None, f"live:{self.name}")
 
@@ -1702,16 +1759,23 @@ class IsolatedSpeechBackend:
                 return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
             self._stop_requested.clear()
             started = self.clock()
-            rendered = self.render(
-                SynthesisRequest(
-                    voice=prepared.payload.voice,
-                    text=prepared.payload.text,
-                    generation_profile=prepared.payload.generation_profile,
-                    cancellation=lambda: (
-                        self._stop_requested.is_set()
-                        or (playback_guard is not None and not playback_guard())
-                    ),
-                    cache_policy=prepared.payload.cache_policy,
+            request = SynthesisRequest(
+                voice=prepared.payload.voice,
+                text=prepared.payload.text,
+                generation_profile=prepared.payload.generation_profile,
+                cancellation=lambda: (
+                    self._stop_requested.is_set()
+                    or (playback_guard is not None and not playback_guard())
+                ),
+                cache_policy=prepared.payload.cache_policy,
+            )
+            rendered = (
+                self.render(request)
+                if prepared.payload.voice_source is None
+                else SynthesisChunkStream(
+                    self._render_chunks(
+                        request, voice_source=prepared.payload.voice_source
+                    )
                 )
             )
             underflowed = False
