@@ -17,6 +17,7 @@ from vntts.system_audio import (
     AudioDeviceChangedError,
     SystemAudioOutput,
     _DefaultOutputMonitor,
+    system_output_available,
 )
 from vntts.system_audio_devices import OutputDeviceSnapshot
 
@@ -295,6 +296,22 @@ class SystemAudioTest(unittest.TestCase):
         stale.assert_called_once_with()
         self.assertTrue(monitor.wakeup.is_set())
         self.assertFalse(output.pending.is_set())
+
+    def test_output_availability_reads_the_last_observation_without_a_probe(self):
+        with patch("vntts.system_audio._system_output", None):
+            self.assertTrue(system_output_available())
+        _module, output = self.create_output()
+        probe, monitor = self.create_monitor(output)
+        output.device_monitor = monitor
+        with patch("vntts.system_audio._system_output", output):
+            self.assertTrue(system_output_available())
+            probe.assert_not_called()
+            for device in (None, "headphones"):
+                probe.return_value = OutputDeviceSnapshot(device, ())
+                monitor.check()
+                probe.reset_mock()
+                self.assertEqual(system_output_available(), device is not None)
+                probe.assert_not_called()
 
     def test_no_output_and_its_return_are_real_identity_changes(self):
         _module, output = self.create_output()

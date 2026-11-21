@@ -17,30 +17,26 @@ a quiet link back to its progress without taking over Reading.
 
 ## One Reading window
 
-Keep three things together in a fixed order: the game window picker, the
-Start/Stop button and a short status. A returning player can change the game or
-start with the saved selection from the same row. On first launch the picker
-has a “Choose a game window” placeholder. Opening it lists the running windows.
-Reopening it refreshes the list. The picker and action keep their order and
-remain reachable at a narrow window width.
+Start/Stop and Pause/Resume share a fixed row with the capture source picker.
+Both buttons show icons and have accessible names. The picker offers the running
+game windows and Screen region. Opening it refreshes the window list.
 
 ```text
 Reading
 
-Game window
-[ Reverse: 1999                 v ]   [ Start narration ]
-Ready to read.
+                 Capture source
+[Play] [Pause]   [ Reverse: 1999       v ]
+Reading stopped
 
 > Reading options
 ```
 
-Starting, waiting for focus, speaking, pausing and stopping update the same
-status line. For example, “Return to the game” and “Speaking: Vertin” explain
-what is happening. The action changes in place to Cancel start or Stop
-narration. Keep its position and keyboard focus. A running session stays
-stoppable even when paused. Selecting another window ends the old session and
-its queued speech before binding the new target. The new game waits for Start.
-Opening and dismissing the picker leaves the current session alone.
+Start changes to Cancel start or Stop in place. Pause stays visible while idle.
+During playback a manual pause preserves the current position. If an output
+change interrupts a line, Resume becomes available when an output is present
+and restarts the interrupted line. Stop remains available while paused.
+Selecting another source ends the old session and its queued speech before
+binding the new target. Opening and dismissing the picker keeps reading.
 
 Keep **Reading options** below the controls. Its ordinary setting is whether
 the game should advance after speech. Reflect the saved choice and key binding.

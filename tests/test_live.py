@@ -2,6 +2,7 @@ import sys
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import ExitStack
 from dataclasses import replace
 from queue import Queue
 from threading import Event, Lock, Thread
@@ -2275,23 +2276,127 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
 
-    def test_output_interruption_replays_once_and_only_on_the_current_line(self):
+    def test_output_interruption_pauses_and_resume_restarts_current_line_once(self):
         reader = self.create_reader()
         reader.active_generation = 3
         chunk = SpeechChunk(3, "Alice", "Interrupted words.", line_id="line-3")
         self.assertTrue(reader.mark_output_interrupted(chunk))
         self.assertTrue(reader.runtime_control_snapshot()["output_interrupted"])
+        self.assertTrue(reader.paused)
+        self.assertTrue(reader.playback_pause.is_paused())
         with patch.object(reader, "_schedule") as schedule:
-            self.assertTrue(reader.repeat_last(interrupted_only=True))
+            self.assertFalse(reader.toggle_pause())
             (replay,) = schedule.call_args.args[0]
             self.assertTrue(replay.explicit_replay)
             self.assertEqual((replay.line_id, replay.text), (chunk.line_id, chunk.text))
-            self.assertFalse(reader.repeat_last(interrupted_only=True))
-            self.assertTrue(reader.mark_output_interrupted(replay))
-            reader.active_generation += 1
             self.assertFalse(reader.runtime_control_snapshot()["output_interrupted"])
-            self.assertFalse(reader.repeat_last(interrupted_only=True))
+            self.assertFalse(reader.playback_pause.is_paused())
+            self.assertTrue(reader.toggle_pause())
+            self.assertFalse(reader.toggle_pause())
             schedule.assert_called_once()
+
+    def test_interrupted_resume_does_not_replay_stale_or_cancelled_speech(self):
+        for invalidate in (
+            lambda reader, _chunk: reader._set_generation(4),
+            lambda reader, _chunk: reader.stop(),
+            lambda reader, _chunk: reader.clear_queue(),
+            lambda reader, chunk: reader.cancelled_chunk_ids.add(chunk.playback_id),
+            lambda reader, _chunk: reader.shutdown(),
+        ):
+            with self.subTest(invalidate=invalidate):
+                reader = self.create_reader()
+                reader.capture_future = Future()
+                reader.active_generation = 3
+                chunk = SpeechChunk(3, "Alice", "Interrupted words.")
+                self.assertTrue(reader.mark_output_interrupted(chunk))
+                invalidate(reader, chunk)
+                self.assertFalse(
+                    reader.runtime_control_snapshot()["output_interrupted"]
+                )
+                with patch.object(reader, "_schedule") as schedule:
+                    reader.toggle_pause()
+                schedule.assert_not_called()
+
+    def test_output_interruption_cannot_pause_cancelled_or_stopped_playback(self):
+        for invalidate in (
+            lambda reader, chunk: reader.cancelled_chunk_ids.add(chunk.playback_id),
+            lambda reader, _chunk: reader.stop_event.set(),
+        ):
+            reader = self.create_reader()
+            chunk = SpeechChunk(0, "Alice", "Cancelled words.")
+            invalidate(reader, chunk)
+            self.assertFalse(reader.mark_output_interrupted(chunk))
+            self.assertFalse(reader.paused)
+
+    def test_interrupted_resume_rechecks_control_changes_during_admission(self):
+        for action, paused, scheduled in (
+            (lambda reader: reader.clear_queue(), True, False),
+            (lambda reader: reader.stop(), False, False),
+            (lambda reader: reader.toggle_pause(), False, True),
+            (lambda reader: reader._set_generation(4), True, False),
+        ):
+            with self.subTest(action=action):
+                reader = self.create_reader()
+                reader.capture_future = Future()
+                reader.active_generation = 3
+                chunk = SpeechChunk(3, "Alice", "Interrupted words.")
+                self.assertTrue(reader.mark_output_interrupted(chunk))
+                accepted = []
+
+                def accept(replay):
+                    accepted.append(replay)
+                    if len(accepted) == 1:
+                        action(reader)
+                    return replay
+
+                reader.accept_chunk = accept
+                reader.reject_chunk = Mock(
+                    side_effect=lambda _replay: self.assertFalse(
+                        reader.state_lock._is_owned()
+                    )
+                )
+                with patch.object(reader, "_schedule") as schedule:
+                    self.assertEqual(reader.toggle_pause(), paused)
+                if scheduled:
+                    schedule.assert_called_once()
+                else:
+                    schedule.assert_not_called()
+                self.assertEqual(reader.paused, paused)
+                reader.reject_chunk.assert_called_once()
+
+    def test_repeat_during_output_interruption_does_not_queue_a_duplicate(self):
+        reader = self.create_reader()
+        chunk = SpeechChunk(0, "Alice", "Interrupted words.")
+        reader.last_spoken_chunk = chunk
+        self.assertTrue(reader.mark_output_interrupted(chunk))
+        with patch.object(reader, "_schedule") as schedule:
+            self.assertFalse(reader.repeat_last())
+        schedule.assert_not_called()
+        self.assertTrue(reader.runtime_control_snapshot()["output_interrupted"])
+
+    def test_pause_toggle_cannot_clear_a_new_output_interruption(self):
+        for stale_marker in (False, True):
+            with self.subTest(stale_marker=stale_marker):
+                reader = self.create_reader()
+                if stale_marker:
+                    self.assertTrue(
+                        reader.mark_output_interrupted(SpeechChunk(0, "Alice", "Old."))
+                    )
+                    reader._set_generation(1)
+                chunk = SpeechChunk(reader.active_generation, "Alice", "Interrupted.")
+
+                def interrupt_between_locks():
+                    self.assertTrue(reader.mark_output_interrupted(chunk))
+                    return ExitStack()
+
+                with (
+                    patch("vntts.live.ExitStack", side_effect=interrupt_between_locks),
+                    patch.object(reader, "_schedule") as schedule,
+                ):
+                    self.assertTrue(reader.toggle_pause())
+                self.assertIs(reader.output_interrupted_chunk, chunk)
+                self.assertTrue(reader.playback_pause.is_paused())
+                schedule.assert_not_called()
 
     def test_wait_includes_pending_playback_futures(self):
         reader = self.create_reader()

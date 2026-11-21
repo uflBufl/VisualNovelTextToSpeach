@@ -87,6 +87,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
             )
         )
         self.enterContext(patch("vntts.app.check_audio_runtime"))
+        self.enterContext(patch("vntts.app.system_output_available", return_value=True))
         self.trays = []
         self.panels = []
         self.addCleanup(self._cleanup_qt)

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFocusFrame,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -85,6 +86,7 @@ class RuntimeControlState:
     queued: bool = False
     replayable: bool = False
     output_interrupted: bool = False
+    output_available: bool = True
     transition: str | None = None
     unavailable_reason: str | None = None
     needs_readiness_check: bool = False
@@ -127,23 +129,33 @@ class RuntimeControlState:
     @property
     def can_toggle_live(self) -> bool:
         return (
-            self.ready or self.active or self.can_initialize
+            self.active
+            or self.transition == "starting"
+            or (self.output_available and (self.ready or self.can_initialize))
         ) and self.transition != "stopping"
 
     @property
     def can_pause(self) -> bool:
-        return (
-            not self.starting
-            and self.transition is None
-            and (self.paused or self.live or self.speaking or self.queued)
-        )
+        if self.starting or self.transition is not None:
+            return False
+        if self.output_interrupted:
+            return self.ready and self.output_available
+        if self.paused:
+            return self.output_available
+        return self.live or self.speaking or self.queued
 
     @property
     def pause_label(self) -> str:
-        return "Resume speech" if self.paused else "Pause speech"
+        return (
+            "Resume speech"
+            if self.paused or self.output_interrupted
+            else "Pause speech"
+        )
 
     @property
     def pause_description(self) -> str:
+        if self.output_interrupted:
+            return "Resume the dialogue interrupted by an audio output change."
         return (
             "Resume VNTTS speech and automatic dialogue continuation."
             if self.paused
@@ -157,6 +169,14 @@ class RuntimeControlState:
             )
         if self.transition == "starting":
             return "Reading is starting; choose Cancel start to stop."
+        if (
+            control == "pause"
+            and not self.output_available
+            and (self.paused or self.output_interrupted)
+        ):
+            return "Connect an audio output device before resuming speech."
+        if control == "live" and not self.output_available:
+            return "Connect an audio output device before starting reading."
         if not self.ready:
             return self.unavailable_reason or (
                 _INITIALIZE_READING_REASON
@@ -176,13 +196,15 @@ def _apply_reading_capabilities(
     read_button: QPushButton,
     live_button: QPushButton,
     pause_button: QPushButton,
-    narration: bool = False,
+    icon_only: bool = False,
 ) -> None:
     read_button.setText("Indexed line" if state.indexed_current else "Dialogue")
     read_button.setAccessibleName(state.read_label)
     read_button.setAccessibleDescription(state.read_tooltip)
     read_button.setEnabled(state.can_read)
-    set_action_icon(pause_button, "play" if state.paused else "pause")
+    set_action_icon(
+        pause_button, "play" if state.paused or state.output_interrupted else "pause"
+    )
     pause_button.setText("")
     pause_button.setAccessibleName(state.pause_label)
     pause_button.setEnabled(state.can_pause)
@@ -192,7 +214,7 @@ def _apply_reading_capabilities(
     pause_button.setToolTip(pause_reason)
     pause_button.setAccessibleDescription(pause_reason)
     live_button.setEnabled(state.can_toggle_live)
-    _set_live_button_presentation(live_button, state.active, narration=narration)
+    _set_live_button_presentation(live_button, state.active, icon_only=icon_only)
     live_button.setToolTip(
         state.reason_for("live")
         if not state.can_toggle_live or (state.can_initialize and not state.ready)
@@ -205,7 +227,11 @@ def _apply_reading_capabilities(
             live_button, "x" if state.transition == "starting" else "square"
         )
         live_button.setText(
-            "Cancel" if state.transition == "starting" else "Stopping..."
+            ""
+            if icon_only
+            else "Cancel"
+            if state.transition == "starting"
+            else "Stopping..."
         )
         live_button.setAccessibleName(
             "Cancel start" if state.transition == "starting" else "Stopping reading..."
@@ -228,14 +254,10 @@ def _apply_reading_capabilities(
 
 
 def _set_live_button_presentation(
-    button: QPushButton, running: bool, *, narration: bool = False
+    button: QPushButton, running: bool, *, icon_only: bool = False
 ) -> None:
     set_action_icon(button, "square" if running else "play")
-    button.setText(
-        ("Stop narration" if running else "Start narration")
-        if narration
-        else ("Stop" if running else "Read")
-    )
+    button.setText("" if icon_only else "Stop" if running else "Read")
     button.setAccessibleName("Stop reading" if running else "Start reading")
     button.setToolTip(button.accessibleName())
     button.setDefault(True)
@@ -289,10 +311,10 @@ class ControlDashboard(QMainWindow):
     reading_setup_requested = Signal()
     window_setup_requested = Signal()
     game_window_requested = Signal(object)
+    screen_capture_requested = Signal()
     read_requested = Signal()
     live_requested = Signal()
     pause_requested = Signal()
-    replay_requested = Signal()
     auto_advance_requested = Signal(bool)
     sequence_resync_requested = Signal()
     sequence_expected_requested = Signal()
@@ -318,6 +340,7 @@ class ControlDashboard(QMainWindow):
         super().__init__(parent)
         self._window_provider = window_provider
         self._game_window_title = settings.game_window_title
+        self._capture_mode = settings.capture_mode
         self._initialize_state(settings)
         self._build_status_widgets()
         self._build_detail_widgets()
@@ -451,7 +474,7 @@ class ControlDashboard(QMainWindow):
                 self._fit_text_height(self.dialogue, 4)
             elif watched is self.recognition:
                 self._fit_text_height(self.recognition, 2)
-            elif watched is self.live_button:
+            elif watched in (self.live_button, self.pause_button):
                 self._fit_live_action_width()
         return super().eventFilter(watched, event)
 
@@ -488,18 +511,13 @@ class ControlDashboard(QMainWindow):
     def _build_action_buttons(self) -> QHBoxLayout:
         self.read_button = QPushButton("Dialogue")
         set_action_icon(self.read_button, "volume-2")
-        self.live_button = QPushButton("Start narration")
-        self.live_button.installEventFilter(self)
-        self._fit_live_action_width()
+        self.live_button = QPushButton("")
         set_action_icon(self.live_button, "play")
         self.pause_button = QPushButton("")
         set_action_icon(self.pause_button, "pause")
-        self.replay_button = QPushButton("Replay dialogue")
-        self.replay_button.setAccessibleDescription(
-            "Replay the dialogue interrupted by an audio output change"
-        )
-        self.replay_button.clicked.connect(self.replay_requested.emit)
-        self.replay_button.hide()
+        self._fit_live_action_width()
+        self.live_button.installEventFilter(self)
+        self.pause_button.installEventFilter(self)
         self.sequence_resync_button = QPushButton("Set story position / resync")
         set_action_icon(self.sequence_resync_button, "locate-fixed")
         self.sequence_expected_button = QPushButton("Use expected next line")
@@ -541,11 +559,10 @@ class ControlDashboard(QMainWindow):
         return reading_actions
 
     def _fit_live_action_width(self) -> None:
-        self.live_button.setFixedWidth(
-            self.live_button.fontMetrics().horizontalAdvance("Start narration")
-            + self.live_button.iconSize().width()
-            + 40
-        )
+        for button in (self.live_button, self.pause_button):
+            button.setFixedWidth(
+                max(button.iconSize().width(), button.fontMetrics().height()) + 20
+            )
 
     def _build_sequence_widgets(self) -> None:
         self.sequence_state = QLabel("Unavailable")
@@ -768,9 +785,9 @@ class ControlDashboard(QMainWindow):
         self.game_window = _GameWindowComboBox()
         self.game_window_model = QStandardItemModel(self.game_window)
         self.game_window.setModel(self.game_window_model)
-        self.game_window.setAccessibleName("Game window")
+        self.game_window.setAccessibleName("Capture source")
         self.game_window.setAccessibleDescription(
-            "Select the running game window for dialogue reading; the list refreshes when opened"
+            "Select a running game window or screen region for dialogue reading; the list refreshes when opened"
         )
         self.game_window.setMinimumContentsLength(12)
         self.game_window.setSizeAdjustPolicy(
@@ -781,21 +798,18 @@ class ControlDashboard(QMainWindow):
         )
         self.game_window.popup_requested.connect(self.refresh_windows)
         self.game_window.activated.connect(self._request_game_window)
-        self.capture_source_label = QLabel("Game window")
+        self.capture_source_label = QLabel("Capture source")
         self.capture_source_label.setBuddy(self.game_window)
-        controls_layout.addWidget(self.capture_source_label)
-        primary_actions = QHBoxLayout()
-        primary_actions.addWidget(self.game_window, 1)
-        primary_actions.addWidget(self.live_button)
-        primary_actions.addWidget(self.prepare_reading_button)
+        primary_actions = QGridLayout()
+        primary_actions.addWidget(self.capture_source_label, 0, 2)
+        primary_actions.addWidget(self.live_button, 1, 0)
+        primary_actions.addWidget(self.pause_button, 1, 1)
+        primary_actions.addWidget(self.game_window, 1, 2)
+        primary_actions.setColumnStretch(2, 1)
         controls_layout.addLayout(primary_actions)
         control_status = QHBoxLayout()
+        control_status.addWidget(self.prepare_reading_button)
         control_status.addWidget(self.reading_state, 1)
-        control_status.addWidget(self.replay_button)
-        control_status.addWidget(self.pause_button)
-        pause_policy = self.pause_button.sizePolicy()
-        pause_policy.setRetainSizeWhenHidden(True)
-        self.pause_button.setSizePolicy(pause_policy)
         self.details_layout.addWidget(self.capture_target)
         controls_layout.addLayout(control_status)
         controls_layout.addWidget(self.action_reason)
@@ -930,9 +944,9 @@ class ControlDashboard(QMainWindow):
         self.set_configuration(settings)
         self.set_status("")
         make_text_copyable(self)
-        self.setTabOrder(self.game_window, self.live_button)
         self.setTabOrder(self.live_button, self.pause_button)
-        self.setTabOrder(self.pause_button, self.reading_options_toggle)
+        self.setTabOrder(self.pause_button, self.game_window)
+        self.setTabOrder(self.game_window, self.reading_options_toggle)
         self.setTabOrder(self.reading_options_toggle, self.read_button)
         self.setTabOrder(self.read_button, self.compact_button)
         self.setTabOrder(self.compact_button, self.auto_advance_check)
@@ -1085,20 +1099,32 @@ class ControlDashboard(QMainWindow):
         self.set_auto_advance_configuration(settings)
 
     def _set_game_window_selection(self, settings: AppSettings) -> None:
-        window_mode = settings.capture_mode == "window"
-        self.game_window.setVisible(window_mode)
-        self.capture_source_label.setText(
-            "Game window" if window_mode else "Screen region"
-        )
+        self._capture_mode = settings.capture_mode
         title = self._game_window_title or ""
         was_blocked = self.game_window.blockSignals(True)
-        index = self.game_window.findText(title, Qt.MatchFlag.MatchFixedString)
+        screen_index = self.game_window.findData("screen")
+        if screen_index < 0:
+            self.game_window.addItem("Screen region", "screen")
+            screen_index = self.game_window.count() - 1
+        index = next(
+            (
+                index
+                for index in range(self.game_window.count())
+                if self.game_window.itemText(index) == title
+                and self.game_window.itemData(index) != "screen"
+            ),
+            -1,
+        )
         if title and index < 0:
             self.game_window.addItem(title)
             index = self.game_window.count() - 1
+        if settings.capture_mode != "window":
+            index = screen_index
         self.game_window.setCurrentIndex(index)
-        self.game_window.setPlaceholderText("Select game window")
-        self.game_window.setToolTip(title or self.game_window.placeholderText())
+        self.game_window.setPlaceholderText("Select capture source")
+        self.game_window.setToolTip(
+            self.game_window.currentText() or self.game_window.placeholderText()
+        )
         self.game_window.blockSignals(was_blocked)
 
     def refresh_windows(self) -> None:
@@ -1145,18 +1171,27 @@ class ControlDashboard(QMainWindow):
             item.setEnabled(False)
             selected = self.game_window_model.rowCount()
             self.game_window_model.appendRow(item)
+        screen = QStandardItem("Screen region")
+        screen.setData("screen", Qt.ItemDataRole.UserRole)
+        if self._capture_mode != "window":
+            selected = self.game_window_model.rowCount()
+        self.game_window_model.appendRow(screen)
         self.game_window.setCurrentIndex(selected)
         self.game_window.blockSignals(was_blocked)
         self.game_window.setAccessibleDescription(
             message
-            or "Select the running game window. Duplicate titles cannot be selected."
+            or "Select a running game window or screen region. Duplicate titles cannot be selected."
         )
         self.game_window.setToolTip(self.game_window.accessibleDescription())
 
     def _request_game_window(self, index: int) -> None:
         window = self.game_window.itemData(index)
         item = self.game_window_model.item(index)
-        if isinstance(window, WindowInfo) and item is not None and item.isEnabled():
+        if item is None or not item.isEnabled():
+            return
+        if window == "screen":
+            self.screen_capture_requested.emit()
+        elif isinstance(window, WindowInfo):
             self.game_window_requested.emit(window)
 
     def set_auto_advance_configuration(
@@ -1442,8 +1477,14 @@ class ControlDashboard(QMainWindow):
         self.reading_state.setText(
             "Loading speech engine"
             if loading
-            else "Stopping narration"
+            else "Stopping reading"
             if state.transition == "stopping"
+            else "Output available. Resume to hear this line from the start."
+            if state.output_interrupted and state.output_available
+            else "Audio output disconnected. Reading paused."
+            if not state.output_available and (state.output_interrupted or state.paused)
+            else "Waiting for audio output."
+            if not state.output_available and not state.active
             else "Speech paused"
             if state.paused
             else "Return to the game to continue reading"
@@ -1468,7 +1509,6 @@ class ControlDashboard(QMainWindow):
             state.ready or state.can_initialize or state.active or state.transition
         )
         self.prepare_reading_button.setVisible(needs_setup)
-        self.live_button.setVisible(not needs_setup)
         window_problem = "window" in (state.unavailable_reason or "").casefold()
         self._recover_game_window = state.recover_game_window
         self._window_problem = state.recover_game_window or window_problem
@@ -1497,15 +1537,11 @@ class ControlDashboard(QMainWindow):
             read_button=self.read_button,
             live_button=self.live_button,
             pause_button=self.pause_button,
-            narration=True,
+            icon_only=True,
         )
         if loading and not state.active and not state.transition:
-            self.live_button.setText("Loading voice…")
             self.live_button.setAccessibleName("Loading voice")
             self.live_button.setEnabled(False)
-        self.pause_button.setVisible(state.active)
-        self.replay_button.setVisible(state.output_interrupted)
-        self.replay_button.setEnabled(state.ready and not state.transition)
         if state.indexed_current:
             self.reading_options_toggle.setChecked(True)
         self.prepare_reading_button.setDefault(
@@ -1517,7 +1553,7 @@ class ControlDashboard(QMainWindow):
         if self._needs_screen_region:
             return "Set dialogue area"
         if self._recover_game_window or (
-            self._window_problem and not self.game_window.isHidden()
+            self._window_problem and self._capture_mode == "window"
         ):
             return "Select game window"
         if self._needs_readiness_check:
@@ -1529,7 +1565,7 @@ class ControlDashboard(QMainWindow):
             self.calibration_requested.emit()
         elif self._recover_game_window:
             self.window_setup_requested.emit()
-        elif self._window_problem and not self.game_window.isHidden():
+        elif self._window_problem and self._capture_mode == "window":
             self.game_window.showPopup()
         elif self._needs_readiness_check:
             self.readiness_requested.emit()
@@ -1540,7 +1576,7 @@ class ControlDashboard(QMainWindow):
         return self._unavailable_reason or (
             _INITIALIZE_READING_REASON
             if self._can_initialize
-            else "Set up and start narration for the selected game."
+            else "Set up and start reading for the selected game."
         )
 
     def _set_action_reason(self, message: str) -> None:
@@ -1551,7 +1587,6 @@ class ControlDashboard(QMainWindow):
             and self.loading_panel.isHidden()
         )
         if self._ready:
-            self.live_button.setToolTip("")
             return
         description = message
         for button in (
@@ -1569,8 +1604,7 @@ class ControlDashboard(QMainWindow):
         if running:
             self.show_reading()
         self._update_dialogue_title()
-        _set_live_button_presentation(self.live_button, running, narration=True)
-        self.pause_button.setVisible(running)
+        _set_live_button_presentation(self.live_button, running, icon_only=True)
         if self._ready:
             self._set_action_reason(
                 "Reading is active; Stop reading ends speech immediately."
@@ -1874,6 +1908,12 @@ class CompactController(QWidget):
             if state.transition == "stopping"
             else "Starting reading"
             if state.starting or state.transition == "starting"
+            else "Output ready. Resume restarts this line."
+            if state.output_interrupted and state.output_available
+            else "Audio output disconnected. Paused."
+            if not state.output_available and (state.output_interrupted or state.paused)
+            else "Waiting for audio output."
+            if not state.output_available and not state.active
             else "Paused"
             if state.paused
             else "Return to the game"

@@ -2588,9 +2588,7 @@ class MainTest(unittest.TestCase):
 
         controller.live_reader.toggle_pause.assert_called_once_with()
         controller.live_reader.skip_current.assert_called_once_with()
-        controller.live_reader.repeat_last.assert_called_once_with(
-            interrupted_only=False
-        )
+        controller.live_reader.repeat_last.assert_called_once_with()
         controller.live_reader.clear_queue.assert_called_once_with()
         controller.live_reader.emergency_stop.assert_called_once_with()
         self.assertEqual(

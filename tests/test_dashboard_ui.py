@@ -112,6 +112,9 @@ class ControlDashboardTest(unittest.TestCase):
             dashboard.game_window.currentText(), "Closed game (unavailable)"
         )
         for index in range(dashboard.game_window.count()):
+            if dashboard.game_window.itemData(index) == "screen":
+                self.assertTrue(dashboard.game_window.model().item(index).isEnabled())
+                continue
             self.assertFalse(dashboard.game_window.model().item(index).isEnabled())
             dashboard.game_window.activated.emit(index)
         self.assertEqual(requested, [])
@@ -135,7 +138,7 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.resize(860, 560)
         dashboard.show()
         self.application.processEvents()
-        widgets = (dashboard.game_window, dashboard.live_button)
+        widgets = (dashboard.live_button, dashboard.pause_button, dashboard.game_window)
         positions = [
             widget.mapTo(dashboard, widget.rect().topLeft()) for widget in widgets
         ]
@@ -168,9 +171,9 @@ class ControlDashboardTest(unittest.TestCase):
                 ],
                 positions,
             )
-            self.assertEqual(
-                dashboard.pause_button.isVisibleTo(dashboard), state.active
-            )
+            self.assertTrue(dashboard.pause_button.isVisibleTo(dashboard))
+            self.assertEqual(dashboard.live_button.text(), "")
+            self.assertEqual(dashboard.pause_button.text(), "")
             self.assertFalse(dashboard.read_button.isVisibleTo(dashboard))
             self.assertFalse(dashboard.compact_button.isVisibleTo(dashboard))
             self.assertTrue(dashboard.dialogue_card.isVisibleTo(dashboard))
@@ -200,6 +203,7 @@ class ControlDashboardTest(unittest.TestCase):
         for widget in (
             dashboard.game_window,
             dashboard.live_button,
+            dashboard.pause_button,
             dashboard.read_button,
             dashboard.compact_button,
             dashboard.auto_advance_check,
@@ -210,10 +214,14 @@ class ControlDashboardTest(unittest.TestCase):
                     widget.mapTo(dashboard, widget.rect().bottomRight())
                 )
             )
-        self.assertGreaterEqual(
-            dashboard.live_button.width(),
-            dashboard.live_button.fontMetrics().horizontalAdvance("Start narration")
-            + dashboard.live_button.iconSize().width(),
+        self.assertEqual(dashboard.live_button.width(), dashboard.pause_button.width())
+        self.assertLess(
+            dashboard.live_button.geometry().right(),
+            dashboard.pause_button.geometry().left(),
+        )
+        self.assertLess(
+            dashboard.pause_button.geometry().right(),
+            dashboard.capture_source_label.geometry().left(),
         )
         dashboard._quitting = True
         dashboard.close()
@@ -239,6 +247,130 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard._quitting = True
         dashboard.close()
         dashboard.deleteLater()
+
+    def test_transport_remains_visible_with_setup_and_screen_capture(self):
+        dashboard = ControlDashboard(AppSettings(capture_mode="screen"))
+        dashboard.show_reading()
+        dashboard.resize(480, 440)
+        dashboard.show()
+        dashboard.set_runtime_controls(RuntimeControlState(needs_screen_region=True))
+        self.application.processEvents()
+        self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.live_button.isEnabled())
+        self.assertTrue(dashboard.pause_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.pause_button.isEnabled())
+        self.assertTrue(dashboard.prepare_reading_button.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Set dialogue area")
+        self.assertTrue(dashboard.capture_source_label.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.capture_source_label.text(), "Capture source")
+        self.assertTrue(dashboard.game_window.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.game_window.currentText(), "Screen region")
+        self.assertLess(
+            dashboard.pause_button.geometry().right(),
+            dashboard.capture_source_label.geometry().left(),
+        )
+        for button in (dashboard.live_button, dashboard.pause_button):
+            self.assertEqual(button.text(), "")
+            self.assertTrue(button.accessibleName())
+            self.assertTrue(button.toolTip())
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_capture_source_switches_between_screen_and_window_in_place(self):
+        game = WindowInfo(7, "Game", 100)
+        dashboard = ControlDashboard(
+            AppSettings(capture_mode="screen"), window_provider=lambda: [game]
+        )
+        requested = []
+        dashboard.screen_capture_requested.connect(lambda: requested.append("screen"))
+        dashboard.game_window_requested.connect(requested.append)
+        dashboard.show_reading()
+        dashboard.set_runtime_controls(RuntimeControlState(ready=True))
+        dashboard.show()
+        self.application.processEvents()
+        geometry = dashboard.game_window.geometry()
+        dashboard.refresh_windows()
+        self.assertEqual(dashboard.game_window.currentData(), "screen")
+        dashboard.game_window.activated.emit(dashboard.game_window.findText("Game"))
+        self.assertEqual(requested, [game])
+        dashboard.set_configuration(
+            AppSettings(capture_mode="window", game_window_title="Game")
+        )
+        self.application.processEvents()
+        self.assertEqual(dashboard.game_window.geometry(), geometry)
+        self.assertEqual(dashboard.game_window.currentData(), game)
+        dashboard.game_window.activated.emit(dashboard.game_window.findData("screen"))
+        self.assertEqual(requested, [game, "screen"])
+        dashboard.set_configuration(AppSettings(capture_mode="screen"))
+        self.application.processEvents()
+        self.assertEqual(dashboard.game_window.geometry(), geometry)
+        self.assertEqual(dashboard.game_window.currentText(), "Screen region")
+        self.assertTrue(dashboard.game_window.isVisibleTo(dashboard))
+        dashboard._quitting = True
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_pause_control_resumes_interrupted_audio_after_output_returns(self):
+        dashboard = ControlDashboard(AppSettings())
+        compact = CompactController(platform="win32")
+        for controls in (dashboard, compact):
+            with self.subTest(controls=type(controls).__name__):
+                requested = []
+                controls.pause_requested.connect(lambda: requested.append("pause"))
+                controls.set_runtime_controls(
+                    RuntimeControlState(ready=True, output_available=False)
+                )
+                status = (
+                    controls.reading_state if controls is dashboard else controls.mode
+                )
+                self.assertEqual(status.text(), "Waiting for audio output.")
+                for available in (False, True):
+                    state = RuntimeControlState(
+                        ready=True,
+                        output_interrupted=True,
+                        output_available=available,
+                    )
+                    controls.set_runtime_controls(state)
+                    self.assertEqual(controls.pause_button.text(), "")
+                    self.assertEqual(
+                        controls.pause_button.accessibleName(), "Resume speech"
+                    )
+                    self.assertEqual(
+                        controls.pause_button.property("vnttsActionIcon"), "play"
+                    )
+                    self.assertEqual(controls.pause_button.isEnabled(), available)
+                    expected_status = (
+                        (
+                            "Output available. Resume to hear this line from the start."
+                            if available
+                            else "Audio output disconnected. Reading paused."
+                        )
+                        if controls is dashboard
+                        else (
+                            "Output ready. Resume restarts this line."
+                            if available
+                            else "Audio output disconnected. Paused."
+                        )
+                    )
+                    self.assertEqual(status.text(), expected_status)
+                    self.assertIn(
+                        "interrupted" if available else "Connect an audio output",
+                        controls.pause_button.toolTip(),
+                    )
+                    controls.pause_button.click()
+                self.assertEqual(requested, ["pause"])
+                controls.set_runtime_controls(
+                    RuntimeControlState(ready=True, live=True)
+                )
+                self.assertEqual(controls.pause_button.accessibleName(), "Pause speech")
+                self.assertEqual(
+                    controls.pause_button.property("vnttsActionIcon"), "pause"
+                )
+                controls.pause_button.click()
+                self.assertEqual(requested, ["pause", "pause"])
+        dashboard.deleteLater()
+        compact.deleteLater()
 
     def test_closing_reading_options_keeps_dialogue_and_hides_details(self):
         dashboard = ControlDashboard(AppSettings())
@@ -278,7 +410,9 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard = ControlDashboard(
             AppSettings(capture_mode="window"), window_provider=provider
         )
-        self.assertEqual(dashboard.game_window.placeholderText(), "Select game window")
+        self.assertEqual(
+            dashboard.game_window.placeholderText(), "Select capture source"
+        )
         dashboard.refresh_windows()
         self.assertTrue(dashboard.game_window_model.item(0).isEnabled())
         for error in (
@@ -287,7 +421,7 @@ class ControlDashboardTest(unittest.TestCase):
         ):
             provider.side_effect = error
             dashboard.refresh_windows()
-            self.assertEqual(dashboard.game_window.count(), 1)
+            self.assertEqual(dashboard.game_window.count(), 2)
             self.assertIn(str(error), dashboard.game_window.itemText(0))
             self.assertFalse(dashboard.game_window_model.item(0).isEnabled())
             self.assertIsNone(dashboard.game_window.itemData(0))
@@ -298,9 +432,9 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertFalse(dashboard.game_window_model.item(0).isEnabled())
         self.assertEqual(dashboard.game_window.currentIndex(), -1)
         dashboard.set_configuration(AppSettings(onboarding_completed=True))
-        self.assertEqual(dashboard.game_window.currentIndex(), -1)
-        self.assertTrue(dashboard.game_window.isHidden())
-        self.assertEqual(dashboard.capture_source_label.text(), "Screen region")
+        self.assertEqual(dashboard.game_window.currentData(), "screen")
+        self.assertFalse(dashboard.game_window.isHidden())
+        self.assertEqual(dashboard.capture_source_label.text(), "Capture source")
         dashboard.deleteLater()
 
     def test_compact_show_callback_does_not_outlive_window(self):
@@ -600,7 +734,7 @@ class ControlDashboardTest(unittest.TestCase):
                 self.assertTrue(controls.live_button.isDefault())
                 self.assertEqual(
                     controls.live_button.text(),
-                    "Start narration" if controls is dashboard else "Read",
+                    "" if controls is dashboard else "Read",
                 )
                 self.assertEqual(
                     controls.reading_state.text()
@@ -1283,7 +1417,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.loading_panel.isVisibleTo(dashboard))
         self.assertFalse(dashboard.prepare_reading_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.live_button.text(), "Loading voice…")
+        self.assertEqual(dashboard.live_button.text(), "")
+        self.assertEqual(dashboard.live_button.accessibleName(), "Loading voice")
         self.assertEqual(dashboard.reading_state.text(), "Loading speech engine")
         self.assertFalse(dashboard.action_reason.isVisibleTo(dashboard))
         self.assertIn("unlock", dashboard.action_reason.text())
@@ -1369,7 +1504,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertFalse(dashboard.recognition_area.isVisibleTo(dashboard))
         self.assertFalse(dashboard.current_audio.isVisibleTo(dashboard))
         self.assertTrue(dashboard.prepare_reading_button.isVisibleTo(dashboard))
-        self.assertFalse(dashboard.pause_button.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.pause_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.pause_button.isEnabled())
         self.assertTrue(dashboard.read_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.compact_button.isVisibleTo(dashboard))
         self.assertTrue(dashboard.auto_advance_check.isVisibleTo(dashboard))
@@ -1850,6 +1986,30 @@ class ControlDashboardTest(unittest.TestCase):
                 (True, True, False),
             ),
             (
+                "idle without output",
+                RuntimeControlState(ready=True, output_available=False),
+                (True, False, False),
+            ),
+            (
+                "cold without output",
+                RuntimeControlState(can_initialize=True, output_available=False),
+                (False, False, False),
+            ),
+            (
+                "active without output",
+                RuntimeControlState(ready=True, live=True, output_available=False),
+                (False, True, True),
+            ),
+            (
+                "cancel without output",
+                RuntimeControlState(
+                    ready=True,
+                    transition="starting",
+                    output_available=False,
+                ),
+                (False, True, False),
+            ),
+            (
                 "live",
                 RuntimeControlState(ready=True, live=True),
                 (False, True, True),
@@ -1863,6 +2023,11 @@ class ControlDashboardTest(unittest.TestCase):
                 "paused",
                 RuntimeControlState(ready=True, paused=True),
                 (False, True, True),
+            ),
+            (
+                "unplugged while manually paused",
+                RuntimeControlState(ready=True, paused=True, output_available=False),
+                (False, True, False),
             ),
             (
                 "paused while unavailable",
@@ -1912,13 +2077,10 @@ class ControlDashboardTest(unittest.TestCase):
                 )
                 self.assertEqual(dashboard_state, expected)
                 self.assertEqual(compact_state, expected)
+                self.assertEqual(dashboard.live_button.text(), "")
                 self.assertEqual(
-                    dashboard.live_button.text(),
-                    compact.live_button.text()
-                    if state.transition is not None
-                    else "Stop narration"
-                    if state.active
-                    else "Start narration",
+                    dashboard.live_button.accessibleName(),
+                    compact.live_button.accessibleName(),
                 )
                 for button in (dashboard.pause_button, compact.pause_button):
                     self.assertEqual(button.text(), "")

@@ -921,8 +921,8 @@ class AppController:
     def skip_current_speech(self) -> bool:
         return self.live_session.skip_current_speech()
 
-    def repeat_last_speech(self, *, interrupted_only: bool = False) -> bool:
-        return self.live_session.repeat_last_speech(interrupted_only=interrupted_only)
+    def repeat_last_speech(self) -> bool:
+        return self.live_session.repeat_last_speech()
 
     def clear_speech_queue(self) -> bool:
         return self.live_session.clear_speech_queue()
@@ -5051,21 +5051,30 @@ class AppController:
         )
         if self._live_sequence_playback_suppressed(reader, chunk, sequence_lease):
             return False
+        announcement_interruption = None
         if isinstance(audio, PreparedLiveChunkRoutes):
             if (
                 audio.speaker_announcement is not None
                 and audio.announced_speaker is not None
             ):
                 try:
-                    self._play_speaker_announcement(
+                    announcement_outcome = self._play_speaker_announcement(
                         chunk,
                         audio.speaker_announcement,
                         audio.announced_speaker,
                     )
+                    if announcement_outcome.error_type is AudioDeviceChangedError:
+                        announcement_interruption = PlaybackOutcome(
+                            PlaybackStatus.INTERRUPTED,
+                            None,
+                            error_type=AudioDeviceChangedError,
+                        )
                 except Exception as error:
                     self._report_speaker_announcement_error(error)
             audio = audio.dialogue
-            if not reader.wait_until_playable(chunk):
+            if announcement_interruption is None and not reader.wait_until_playable(
+                chunk
+            ):
                 self._finish_sequence_playback(sequence_lease, None)
                 return False
         source = self._describe_audio_source(audio)
@@ -5102,7 +5111,9 @@ class AppController:
             }
         )
         try:
-            outcome = self._dispatch_live_playback(reader, chunk, audio)
+            outcome = announcement_interruption or self._dispatch_live_playback(
+                reader, chunk, audio
+            )
             if outcome.successful and not reader.wait_until_playable(chunk):
                 outcome = replace(outcome, status=PlaybackStatus.INTERRUPTED)
             result = outcome.successful
@@ -5111,7 +5122,7 @@ class AppController:
                 and reader.mark_output_interrupted(chunk)
             ):
                 self.status_handler(
-                    "Audio output changed. Replay dialogue to hear this line again."
+                    "Audio output changed. Reading paused; resume to restart this line."
                 )
             audible = isinstance(
                 outcome.first_audio_ms, (int, float)

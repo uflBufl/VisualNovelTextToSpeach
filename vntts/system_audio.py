@@ -603,6 +603,13 @@ def get_system_audio_output() -> SystemAudioOutput:
     return _system_output
 
 
+def system_output_available() -> bool:
+    """Allow playback until the device monitor reports a missing output."""
+    monitor = _system_output.device_monitor if _system_output is not None else None
+    snapshot = monitor.snapshot if monitor is not None else None
+    return snapshot is None or snapshot.selected is not None
+
+
 def initialize_audio_device_monitor() -> None:
     """Initialize Qt's native device notifications on the application's thread."""
     global _media_devices
@@ -628,4 +635,5 @@ __all__ = [
     "AudioDeviceChangedError",
     "get_system_audio_output",
     "initialize_audio_device_monitor",
+    "system_output_available",
 ]

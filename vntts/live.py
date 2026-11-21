@@ -580,6 +580,7 @@ class LiveDialogReader:
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
         self.output_interrupted_chunk: SpeechChunk | None = None
+        self.output_interrupted_generation: int | None = None
         self.cancelled_chunk_ids: set[str] = set()
         self.prepared_chunk_ids: set[str] = set()
         self.sealed_generations: set[int] = set()
@@ -923,16 +924,53 @@ class LiveDialogReader:
 
     def toggle_pause(self) -> bool:
         with self.pause_condition:
-            self.paused = not self.paused
-            self.playback_pause.set_paused(self.paused)
-            if self.paused:
-                self.frame_route_epoch += 1
-                self._cancel_auto_advance_locked()
-            else:
-                for chunk in self.paused_chunks:
-                    self._defer_chunk_locked(chunk)
-                self.paused_chunks = []
-            self.pause_condition.notify_all()
+            queue_epoch = self.queue_epoch
+            interruption_marker = self.output_interrupted_chunk
+            interrupted = (
+                self.output_interrupted_chunk
+                if self.paused and self._can_replay_output_interruption_locked()
+                else None
+            )
+        replay = None
+        if interrupted is not None:
+            replay = self._admit_chunk(self._new_replay_chunk(interrupted))
+            if replay is None:
+                with self.state_lock:
+                    return self.paused
+        with ExitStack() as cleanup:
+            with self.pause_condition:
+                if (
+                    self.queue_epoch != queue_epoch
+                    or self.output_interrupted_chunk is not interruption_marker
+                ) or (
+                    interrupted is not None
+                    and (
+                        not self.paused
+                        or not self._can_replay_output_interruption_locked()
+                    )
+                ):
+                    if replay is not None:
+                        self.cancelled_chunk_ids.add(replay.playback_id)
+                        cleanup.callback(self.reject_chunk, replay)
+                    return self.paused
+                if replay is not None:
+                    self.accepted_chunks = {
+                        replay.playback_id: replay,
+                        **self.accepted_chunks,
+                    }
+                self.output_interrupted_chunk = None
+                self.paused = not self.paused
+                self.playback_pause.set_paused(self.paused)
+                if self.paused:
+                    self.frame_route_epoch += 1
+                    self._cancel_auto_advance_locked()
+                else:
+                    for chunk in self.paused_chunks:
+                        self._defer_chunk_locked(chunk)
+                    self.paused_chunks = []
+                self.pause_condition.notify_all()
+        if replay is not None:
+            self._schedule([replay])
         self._schedule_prepared_if_possible()
         self._schedule_deferred_if_possible()
         if not self.paused:
@@ -993,47 +1031,57 @@ class LiveDialogReader:
         chunk = self.output_interrupted_chunk
         return (
             chunk is not None
-            and chunk.generation == self.active_generation
-            and self.suppressed_generation != chunk.generation
+            and self.output_interrupted_generation == self.active_generation
+            and chunk.run_id in (None, self.run_id)
+            and self.suppressed_generation != self.active_generation
+            and chunk.playback_id not in self.cancelled_chunk_ids
+            and not self.emergency_stopped
+            and not self.is_shutting_down
             and not self.stop_event.is_set()
         )
 
     def mark_output_interrupted(self, chunk: SpeechChunk) -> bool:
-        with self.state_lock:
+        with self.pause_condition:
             if (
-                chunk.generation != self.active_generation
+                (
+                    chunk.generation != self.active_generation
+                    and self.current_chunk is not chunk
+                )
+                or self.stop_event.is_set()
                 or not self.is_playback_current(chunk)
             ):
                 return False
             self.output_interrupted_chunk = chunk
+            self.output_interrupted_generation = self.active_generation
+            self.paused = True
+            self.playback_pause.set_paused(True)
+            self.frame_route_epoch += 1
+            self._cancel_auto_advance_locked()
+            self.pause_condition.notify_all()
             return True
 
-    def repeat_last(self, *, interrupted_only: bool = False) -> bool:
+    def repeat_last(self) -> bool:
         with self.state_lock:
-            if interrupted_only:
-                if not self._can_replay_output_interruption_locked():
-                    return False
-                chunk = self.output_interrupted_chunk
-                self.output_interrupted_chunk = None
-            else:
-                chunk = self.last_spoken_chunk
-            generation = self.active_generation
-            suppressed = self.suppressed_generation == generation
-        if chunk is None or suppressed:
-            return False
-        self._schedule(
-            [
-                SpeechChunk(
-                    generation,
-                    chunk.character,
-                    chunk.text,
-                    line_id=chunk.line_id,
-                    explicit_replay=True,
-                    prepared_audio=chunk.prepared_audio,
-                )
-            ]
-        )
+            chunk = self.last_spoken_chunk
+            if (
+                chunk is None
+                or self._can_replay_output_interruption_locked()
+                or self.suppressed_generation == self.active_generation
+            ):
+                return False
+        self._schedule([self._new_replay_chunk(chunk)])
         return True
+
+    def _new_replay_chunk(self, chunk: SpeechChunk) -> SpeechChunk:
+        with self.state_lock:
+            return SpeechChunk(
+                self.active_generation,
+                chunk.character,
+                chunk.text,
+                line_id=chunk.line_id,
+                explicit_replay=True,
+                prepared_audio=chunk.prepared_audio,
+            )
 
     def clear_queue(self, *, reason: str = "clear-queue") -> bool:
         with ExitStack() as cleanup:

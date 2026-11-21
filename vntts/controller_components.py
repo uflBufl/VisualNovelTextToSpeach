@@ -78,6 +78,7 @@ from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.speech_backend_contract import SpeechBackendCapabilities
 from vntts.speech_worker import clear_voice_memory_caches
 from vntts.synthesis import SynthesisCachePolicy
+from vntts.system_audio import system_output_available
 from vntts.voice_library import VoiceLibraryReadSnapshot
 from vntts.voices import (
     CharacterVoice,
@@ -1382,6 +1383,11 @@ class LiveSessionComponent:
         reader = controller.live_reader
         if reader is None:
             return False
+        if reader.paused is True and not system_output_available():
+            controller.status_handler(
+                "No audio output available. Connect an output to resume reading."
+            )
+            return True
         paused = reader.toggle_pause()
         controller.status_handler("Speech paused" if paused else "Speech resumed")
         return bool(paused)
@@ -1399,7 +1405,7 @@ class LiveSessionComponent:
         )
         return bool(skipped)
 
-    def repeat_last_speech(self, *, interrupted_only: bool = False) -> bool:
+    def repeat_last_speech(self) -> bool:
         controller = self.controller
         with controller.story_cursor_lock:
             controller.sequence_prefix_dispatch_lease = None
@@ -1408,7 +1414,9 @@ class LiveSessionComponent:
         reader = controller.live_reader
         if reader is None:
             return False
-        repeated = reader.repeat_last(interrupted_only=interrupted_only)
+        if reader.runtime_control_snapshot().get("output_interrupted") is True:
+            return not self.toggle_speech_pause()
+        repeated = reader.repeat_last()
         controller.status_handler(
             "Repeating last speech" if repeated else "No previous speech to repeat"
         )

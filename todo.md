@@ -7,9 +7,6 @@
       `f11f153c`. Identify why the installed reference was skipped or unavailable.
 - [ ] Remember Dialogue and Story areas separately for screen capture and each
       known game window. Restore both on return and calibrate new targets once.
-- [ ] Integrate output-loss recovery into the fixed Reading transport row.
-      Keep icon-only Start/Stop and Pause/Resume visible beside the capture
-      source. Preserve startup cancellation and prevent duplicate clicks.
 - [ ] Move blocking Pocket worker startup and live-mode activation off the UI
       thread. Keep Start, cancellation and window switching responsive.
 - [ ] Treat superseded story-caption frames as cancellations in live capture.

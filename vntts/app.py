@@ -216,6 +216,7 @@ from vntts.support import (
     record_background_operation,
 )
 from vntts.support_ui import SupportCenterDialog
+from vntts.system_audio import system_output_available
 from vntts.ui_text import add_composite_form_row as _add_composite_form_row
 from vntts.ui_text import make_text_copyable
 from vntts.versioned_json import file_revision
@@ -2471,11 +2472,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.set_sequence_status(sequence_status)
 
     def _connect_dashboard(self) -> None:
-        self.dashboard.game_window_requested.connect(self.choose_game_window)
+        self.dashboard.game_window_requested.connect(self.choose_capture_source)
+        self.dashboard.screen_capture_requested.connect(
+            partial(self.choose_capture_source, None)
+        )
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self._toggle_presented_reading)
         self.dashboard.pause_requested.connect(self.toggle_speech_pause)
-        self.dashboard.replay_requested.connect(self.replay_interrupted_dialogue)
         self.dashboard.auto_advance_requested.connect(self.toggle_auto_advance)
         self.dashboard.reading_setup_requested.connect(
             partial(self.prepare_reading, start_live=True)
@@ -2504,13 +2507,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.compact_controller.full_requested.connect(self.show_dashboard)
 
-    def choose_game_window(self, window: object) -> None:
-        if not isinstance(window, WindowInfo) or not window.title.strip():
+    def choose_capture_source(self, window: object) -> None:
+        if window is not None and (
+            not isinstance(window, WindowInfo) or not window.title.strip()
+        ):
             return
         self.dashboard.set_configuration(self._runtime_settings())
         if self.onboarding_wizard is not None or self.narrator_dialog is not None:
             self.set_status(
-                "Finish or cancel the open setup or voice editor before changing the game window."
+                "Finish or cancel the open setup or voice editor before changing the capture source."
             )
             return
         if (
@@ -2522,12 +2527,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             self.set_status("Reading controls are updating. Try again when ready.")
             return
+        if window is None and self.settings.capture_mode == "screen":
+            return
         target = getattr(self.controller, "capture_target", None)
         selected = (
             target.selected_window if isinstance(target, WindowCaptureTarget) else None
         )
         if (
-            isinstance(selected, WindowInfo)
+            isinstance(window, WindowInfo)
+            and isinstance(selected, WindowInfo)
             and self.settings.capture_mode == "window"
             and self.settings.game_window_title == window.title.strip()
             and selected.title.strip().casefold() == window.title.strip().casefold()
@@ -2548,43 +2556,47 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._controller_busy = False
         self.voice_auditions.suspend()
         self._stop_live_then(
-            partial(self._apply_game_window, window),
-            "Stopping reading before changing the game window...",
+            partial(self._apply_capture_source, window),
+            "Stopping reading before changing the capture source...",
         )
 
-    def _apply_game_window(self, window: WindowInfo) -> None:
-        title = window.title.strip()
-        try:
-            candidates = [
-                item
-                for item in list_windows()
-                if item.title.strip().casefold() == title.casefold()
-            ]
-        except (WindowCaptureError, OSError) as error:
-            self.show_error(f"Unable to select the game window: {error}")
-            return
-        if len(candidates) != 1 or (
-            candidates[0].handle,
-            candidates[0].process_id,
-        ) != (window.handle, window.process_id):
-            self.show_error(
-                "The game window is unavailable or its title is ambiguous. "
-                "Open the window list and select it again."
+    def _apply_capture_source(self, window: WindowInfo | None) -> None:
+        if window is not None:
+            title = window.title.strip()
+            try:
+                candidates = [
+                    item
+                    for item in list_windows()
+                    if item.title.strip().casefold() == title.casefold()
+                ]
+            except (WindowCaptureError, OSError) as error:
+                self.show_error(f"Unable to select the game window: {error}")
+                return
+            if len(candidates) != 1 or (
+                candidates[0].handle,
+                candidates[0].process_id,
+            ) != (window.handle, window.process_id):
+                self.show_error(
+                    "The game window is unavailable or its title is ambiguous. "
+                    "Open the window list and select it again."
+                )
+                return
+            candidate = self.settings.updated(
+                capture_mode="window", game_window_title=title
             )
-            return
-        candidate = self.settings.updated(
-            capture_mode="window", game_window_title=title
-        )
+        else:
+            candidate = self.settings.updated(capture_mode="screen")
         candidate, _ = reconcile_capture_target(self.settings, candidate)
         try:
             self._save_settings_candidate(candidate)
         except (OSError, ValueError) as error:
-            self.show_error(f"Unable to save the selected game window: {error}")
+            self.show_error(f"Unable to save the selected capture source: {error}")
             return
         self.settings = candidate
         if not candidate.onboarding_completed:
             self._capture_setup_pending = True
-        self.controller.select_game_window(window)
+        if window is not None:
+            self.controller.select_game_window(window)
         self.dashboard.set_dialogue(None, None)
         self.dashboard.set_recognition(None)
         self.dashboard.set_configuration(self._runtime_settings())
@@ -2592,9 +2604,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_synced = self._sync_active_profile()
         self._start_configuration_apply(
             self.settings,
-            progress_status="Applying the selected game window...",
+            progress_status="Applying the selected capture source...",
             success_status=(
-                "Game window selected."
+                (
+                    "Game window selected."
+                    if window is not None
+                    else "Screen region selected."
+                )
                 + (
                     " The active profile could not be updated."
                     if not profile_synced
@@ -3202,7 +3218,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if applied is False:
             self.show_error("Unable to connect in-progress prepared audio")
             self._set_reading_status(
-                "Unable to connect prepared audio. Start narration to try again."
+                "Unable to connect prepared audio. Start reading to try again."
             )
             return True
         self._retain_preparation_reading(
@@ -3269,7 +3285,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.ready_changed.emit(ready)
         if ready:
             if settings is not None and not start_live:
-                self._set_reading_status("Reading is ready. Select Start narration.")
+                self._set_reading_status("Reading is ready. Select Start reading.")
             self.schedule_hotkeys()
             if start_live and not self.controller.is_live_running:
                 self.toggle_live()
@@ -3350,26 +3366,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return self.toggle_live()
 
     def toggle_speech_pause(self) -> None:
-        if (
-            QApplication.activeModalWidget() is not None
-            or not self._presented_runtime_state.can_pause
-            or not self._runtime_control_state().can_pause
-        ):
-            return
-        self.set_speech_paused(self.controller.toggle_speech_pause())
-
-    def replay_interrupted_dialogue(self) -> None:
+        presented = self._presented_runtime_state
         state = self._runtime_control_state()
         if (
             QApplication.activeModalWidget() is not None
-            or not state.ready
-            or state.transition
-            or not state.output_interrupted
+            or not presented.can_pause
+            or not state.can_pause
+            or presented.output_interrupted != state.output_interrupted
         ):
             return
-        self.voice_auditions.suspend()
-        self.controller.repeat_last_speech(interrupted_only=True)
-        self._apply_controller_action_state()
+        if state.output_interrupted:
+            self.voice_auditions.suspend()
+        self.set_speech_paused(self.controller.toggle_speech_pause())
 
     def toggle_live(self) -> bool:
         if self._shutting_down:
@@ -5065,7 +5073,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.last_controller_error:
             self.last_controller_error = None
             self._apply_controller_action_state()
-            self.set_status("Select Start narration to try again.")
+            self.set_status("Select Start reading to try again.")
         self.dashboard.show_reading()
         self.show_dashboard()
 
@@ -6388,6 +6396,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             queued=bool(snapshot.get("queued", False)),
             replayable=bool(snapshot.get("replayable", False)),
             output_interrupted=bool(snapshot.get("output_interrupted", False)),
+            output_available=system_output_available(),
             transition=(
                 "stopping"
                 if self.live_stop_runner.active
@@ -6407,7 +6416,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 or (
                     f"{self.last_controller_error} {error_recovery} to recover."
                     if self.last_controller_error
-                    else "Start narration when you are ready."
+                    else "Start reading when you are ready."
                     if not self._controller_ready and self.settings.onboarding_completed
                     else "Choose Set up and start on Reading."
                     if not self._controller_ready
@@ -6433,7 +6442,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             action.setToolTip("" if enabled else state.reason_for(control))
         self.read_action.setText(state.read_label)
         self.pause_action.setText(state.pause_label)
-        set_action_icon(self.pause_action, "play" if state.paused else "pause")
+        set_action_icon(
+            self.pause_action,
+            "play" if state.paused or state.output_interrupted else "pause",
+        )
         if state.can_pause:
             self.pause_action.setToolTip(state.pause_description)
         if state.can_read:

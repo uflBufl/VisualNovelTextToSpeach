@@ -560,10 +560,10 @@ class OnboardingWizardTest(unittest.TestCase):
                 wizard.test_page.set_result(True, "Recognized dialogue.")
                 if start_live:
                     self.assertEqual(
-                        wizard.finish_button.text(), "Save and start narration"
+                        wizard.finish_button.text(), "Save and start reading"
                     )
                     self.assertIn(
-                        "Save and start narration", wizard.test_page.status.text()
+                        "Save and start reading", wizard.test_page.status.text()
                     )
                     self.assertNotIn(
                         "then choose Start reading", wizard.test_page.status.text()

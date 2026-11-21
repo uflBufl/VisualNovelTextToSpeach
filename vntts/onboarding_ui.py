@@ -1783,7 +1783,7 @@ class EndToEndTestPage(QWizardPage):
             f"{message}\n\nTest completed. If you heard no sound, check system "
             "output and read the line again. "
             + (
-                "Save and start narration to begin following the game dialogue."
+                "Save and start reading to begin following the game dialogue."
                 if self.flow.start_live_after_save
                 else "Save setup to return to Reading, then choose Start reading."
             )
@@ -1970,7 +1970,7 @@ class OnboardingWizard(QDialog):
         self.next_button = QPushButton("Next")
         set_action_icon(self.next_button, "chevron-right")
         self.finish_button = QPushButton(
-            "Save and start narration"
+            "Save and start reading"
             if self.start_live_after_save
             else "Save setup"
             if reading_setup
@@ -1978,7 +1978,7 @@ class OnboardingWizard(QDialog):
         )
         set_action_icon(self.finish_button, "save" if reading_setup else "check")
         self.finish_button.setAccessibleDescription(
-            "Save setup and start narration from the selected capture source"
+            "Save setup and start reading from the selected capture source"
             if self.start_live_after_save
             else "Save setup and return to the dashboard without starting playback"
         )

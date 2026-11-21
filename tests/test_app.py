@@ -140,6 +140,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.audio_runtime_check = self.enterContext(
             patch("vntts.app.check_audio_runtime")
         )
+        self.enterContext(patch("vntts.app.system_output_available", return_value=True))
         settings_directory = TemporaryDirectory()
         self.addCleanup(settings_directory.cleanup)
         self.enterContext(isolated_application_error_log())
@@ -7609,6 +7610,26 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertNotIn("after_apply", apply.call_args.kwargs)
         controller.toggle_live.assert_not_called()
 
+    def test_dashboard_can_select_screen_capture_and_switch_back_to_game(self):
+        chosen = WindowInfo(42, "Chosen game", 123)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(capture_mode="window", game_window_title=chosen.title),
+            controller_factory=AppController,
+        )
+        self.addCleanup(tray.shutdown)
+        tray.live_stop_runner.thread_pool = ImmediateTaskPool()
+        tray.configuration_runner.thread_pool = ImmediateTaskPool()
+        with patch("vntts.app.list_windows", return_value=[chosen]) as windows:
+            tray.dashboard.screen_capture_requested.emit()
+            self.wait_until(lambda: tray.controller.settings.capture_mode == "screen")
+            self.assertEqual(tray.dashboard.game_window.currentText(), "Screen region")
+            windows.assert_not_called()
+            tray.dashboard.game_window_requested.emit(chosen)
+            self.wait_until(lambda: tray.controller.settings.capture_mode == "window")
+            self.assertEqual(tray.controller.capture_target.selected_window, chosen)
+            self.assertEqual(tray.dashboard.game_window.currentText(), chosen.title)
+
     def test_window_choice_invalidates_pending_start_and_scope(self):
         controller = Mock(is_ready=False, is_live_running=False)
         tray = TrayApplication(
@@ -7628,7 +7649,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.list_windows", return_value=[chosen]),
             patch.object(tray, "_start_configuration_apply") as apply,
         ):
-            tray.choose_game_window(chosen)
+            tray.choose_capture_source(chosen)
             self.assertTrue(cancellation.is_set())
             self.assertFalse(tray.session_owner.is_current(generation))
             self.assertFalse(tray._start_live_after_initial_start)
@@ -7658,7 +7679,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray.controller, "prepare_startup") as prepare,
             patch.object(tray.controller, "start") as start,
         ):
-            tray.choose_game_window(chosen)
+            tray.choose_capture_source(chosen)
             self.wait_until(
                 lambda: tray.controller.settings.game_window_title == chosen.title
             )
@@ -7722,7 +7743,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray, "_save_settings_candidate", side_effect=OSError("disk")),
             patch.object(tray.controller, "start") as start,
         ):
-            tray.choose_game_window(chosen)
+            tray.choose_capture_source(chosen)
             pool.run_next()
             self.application.processEvents()
             pool.run_next()
@@ -7750,7 +7771,7 @@ class TrayApplicationTest(unittest.TestCase):
                 setattr(tray, editor, Mock())
                 try:
                     with patch.object(tray, "_stop_live_then") as stop:
-                        tray.choose_game_window(chosen)
+                        tray.choose_capture_source(chosen)
                     stop.assert_not_called()
                     self.assertEqual(tray.settings.game_window_title, "Original")
                     self.assertEqual(
@@ -7768,7 +7789,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray._begin_controller_lifecycle()
         with patch.object(tray, "_stop_live_then") as stop:
-            tray.choose_game_window(WindowInfo(42, "Chosen game", 123))
+            tray.choose_capture_source(WindowInfo(42, "Chosen game", 123))
         stop.assert_not_called()
         self.assertEqual(tray.settings.game_window_title, "Original")
         self.assertIn("updating", tray.status_action.text())
@@ -7801,7 +7822,7 @@ class TrayApplicationTest(unittest.TestCase):
                 patch("vntts.app.list_windows", return_value=[chosen]),
                 patch.object(tray, "_start_configuration_apply"),
             ):
-                tray._apply_game_window(chosen)
+                tray._apply_capture_source(chosen)
             saved_profile = GameProfileStore.load(store.path).get(profile.id)
             self.assertEqual(
                 saved_profile.game_window_title, original.game_window_title
@@ -7834,7 +7855,7 @@ class TrayApplicationTest(unittest.TestCase):
                     patch("vntts.app.list_windows", return_value=[chosen]),
                     patch.object(tray, "_start_configuration_apply"),
                 ):
-                    tray._apply_game_window(chosen)
+                    tray._apply_capture_source(chosen)
                 controller.settings = tray.settings
                 tray.set_ready(ready)
                 self.assertFalse(tray.settings.onboarding_completed)
@@ -7900,7 +7921,7 @@ class TrayApplicationTest(unittest.TestCase):
                         if source == "picker":
                             chosen = WindowInfo(42, "GAME", 123)
                             with patch("vntts.app.list_windows", return_value=[chosen]):
-                                tray._apply_game_window(chosen)
+                                tray._apply_capture_source(chosen)
                         else:
                             dialog = Mock()
                             dialog.exec.return_value = QDialog.DialogCode.Accepted
@@ -7975,7 +7996,7 @@ class TrayApplicationTest(unittest.TestCase):
                     patch.object(tray, "_save_settings_candidate") as save,
                     patch.object(tray, "_start_configuration_apply") as apply,
                 ):
-                    tray._apply_game_window(chosen)
+                    tray._apply_capture_source(chosen)
                 save.assert_not_called()
                 apply.assert_not_called()
                 self.assertIsNone(tray.settings.game_window_title)
@@ -7994,7 +8015,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray, "_save_settings_candidate", side_effect=OSError("disk")),
             patch.object(tray, "_start_configuration_apply") as apply,
         ):
-            tray._apply_game_window(chosen)
+            tray._apply_capture_source(chosen)
         self.assertEqual(tray.settings, original)
         apply.assert_not_called()
         self.assertIn("Unable to save", tray.status_action.text())
@@ -8036,7 +8057,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch("vntts.app.list_windows", side_effect=OSError("enumeration failed")),
             patch.object(tray, "_save_settings_candidate") as save,
         ):
-            tray._apply_game_window(WindowInfo(42, "Chosen game", 123))
+            tray._apply_capture_source(WindowInfo(42, "Chosen game", 123))
         save.assert_not_called()
         self.assertEqual(tray.settings.game_window_title, "Original")
         self.assertIn("enumeration failed", tray.status_action.text())
@@ -8945,7 +8966,7 @@ class TrayApplicationTest(unittest.TestCase):
                     AppSettings(onboarding_completed=configured),
                     controller_factory=Mock(return_value=controller),
                 )
-                action = "Start narration" if configured else "Set up and start"
+                action = "Start reading" if configured else "Set up and start"
                 for _ in range(2):
                     tray.set_status("Settings saved")
                     tray._refresh_speech_runtime()
@@ -9079,7 +9100,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray.dashboard.prepare_reading_button.text(), "Set dialogue area"
         )
-        self.assertTrue(tray.dashboard.game_window.isHidden())
+        self.assertFalse(tray.dashboard.game_window.isHidden())
+        self.assertEqual(tray.dashboard.game_window.currentText(), "Screen region")
         with patch.object(tray, "_start_calibration_capture") as start_capture:
             tray.dashboard.prepare_reading_button.click()
             self.assertTrue(tray._calibration_capture_pending)
@@ -9095,7 +9117,7 @@ class TrayApplicationTest(unittest.TestCase):
             load_dialog_region(os.environ["VNTTS_DIALOG_REGION_FILE"]), region
         )
         self.assertTrue(tray.dashboard.live_button.isEnabled())
-        self.assertEqual(tray.dashboard.live_button.text(), "Start narration")
+        self.assertEqual(tray.dashboard.live_button.accessibleName(), "Start reading")
 
     def test_missing_window_blocks_cold_reading_before_model_preparation(self):
         for detail in ("Game window is unavailable", "Game window is ambiguous"):
@@ -9351,25 +9373,37 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(pool.tasks, [])
         tray.shutdown()
 
-    def test_interrupted_dialogue_replay_is_contextual_and_rechecked(self):
+    def test_resume_waits_for_audio_output_and_ignores_a_stale_interruption(self):
         tray, controller, _pool = self._cold_reading_tray()
+        self.addCleanup(tray.shutdown)
         tray.set_ready(True)
         controller.runtime_control_snapshot.return_value = {
-            "replayable": True,
+            "paused": True,
             "output_interrupted": True,
         }
-        tray._apply_controller_action_state()
-        self.assertFalse(tray.dashboard.replay_button.isHidden())
-        self.assertEqual(tray.dashboard.replay_button.text(), "Replay dialogue")
-        tray.dashboard.replay_button.click()
-        controller.repeat_last_speech.assert_called_once_with(interrupted_only=True)
+        pause = tray.dashboard.pause_button
+        with patch(
+            "vntts.app.system_output_available", return_value=False
+        ) as available:
+            tray._refresh_speech_runtime()
+            self.assertFalse(pause.isEnabled())
+            self.assertFalse(tray.pause_action.isEnabled())
+            self.assertIn("Connect", pause.toolTip())
+            available.return_value = True
+            tray._refresh_speech_runtime()
+            self.assertTrue(pause.isEnabled())
+            self.assertEqual(pause.accessibleName(), "Resume speech")
 
-        controller.runtime_control_snapshot.return_value = {"replayable": True}
-        tray.replay_interrupted_dialogue()
-        controller.repeat_last_speech.assert_called_once()
-        tray._apply_controller_action_state()
-        self.assertTrue(tray.dashboard.replay_button.isHidden())
-        tray.shutdown()
+            controller.runtime_control_snapshot.return_value = {"paused": True}
+            pause.click()
+            controller.toggle_speech_pause.assert_not_called()
+
+            controller.runtime_control_snapshot.return_value["output_interrupted"] = (
+                True
+            )
+            controller.toggle_speech_pause.return_value = False
+            pause.click()
+            controller.toggle_speech_pause.assert_called_once_with()
 
     def test_changed_reading_pack_initializes_before_live_start(self):
         tray, controller, pool = self._cold_reading_tray()
@@ -12329,9 +12363,7 @@ class TrayApplicationTest(unittest.TestCase):
                     outcome, start_live=True
                 )
                 self._complete_onboarding_preview(wizard, pool)
-                self.assertEqual(
-                    wizard.finish_button.text(), "Save and start narration"
-                )
+                self.assertEqual(wizard.finish_button.text(), "Save and start reading")
                 with (
                     patch.object(tray, "prepare_reading") as prepare,
                     patch.object(

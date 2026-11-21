@@ -107,6 +107,59 @@ class LiveQueueTransitionsTest(unittest.TestCase):
 
         self.assertEqual(self.played, ["first", "second", "second", "second"])
 
+    def test_interrupted_resume_replays_before_prepared_and_queued_speech(self):
+        attempts = []
+
+        def play(chunk, prepared):
+            self.played.append(prepared)
+            attempts.append(chunk)
+            if len(attempts) == 1:
+                self.assertTrue(reader.mark_output_interrupted(chunk))
+                return False
+            return True
+
+        reader = self.create_reader(play_prepared=play, max_speech_jobs=2)
+        reader.enqueue("Ada", "First.", line_id="first")
+        reader.enqueue("Ada", "Second.", line_id="second")
+        reader.enqueue("Ada", "Third.", line_id="third")
+        reader.auto_advance = Mock()
+        reader.dialog_ready_generation = reader.active_generation
+        self.drain()
+
+        self.assertTrue(reader.paused)
+        self.assertTrue(reader.runtime_control_snapshot()["output_interrupted"])
+        self.assertEqual(self.played, ["First."])
+        reader.auto_advance.assert_not_called()
+        self.assertFalse(reader.toggle_pause())
+        self.drain()
+
+        self.assertEqual(self.played, ["First.", "First.", "Second.", "Third."])
+        self.assertTrue(attempts[1].explicit_replay)
+        self.assertEqual(attempts[1].line_id, "first")
+        reader.report_error.assert_not_called()
+
+    def test_immediate_interrupted_resume_preserves_playback_order(self):
+        attempts = []
+
+        def play(chunk, prepared):
+            self.played.append(prepared)
+            attempts.append(chunk)
+            if len(attempts) == 1:
+                self.assertTrue(reader.mark_output_interrupted(chunk))
+                self.assertFalse(reader.toggle_pause())
+                return False
+            return True
+
+        reader = self.create_reader(play_prepared=play, max_speech_jobs=2)
+        reader.enqueue("Ada", "First.")
+        reader.enqueue("Ada", "Second.")
+        reader.enqueue("Ada", "Third.")
+        self.drain()
+
+        self.assertEqual(self.played, ["First.", "First.", "Second.", "Third."])
+        self.assertFalse(reader.paused)
+        reader.report_error.assert_not_called()
+
     def test_paused_first_line_retains_playback_ahead_of_prepared_second_line(self):
         interrupt = Mock()
         audio = {"First.": b"first recording", "Second.": b"second recording"}

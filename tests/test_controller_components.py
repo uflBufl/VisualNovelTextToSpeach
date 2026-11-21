@@ -24,6 +24,57 @@ from vntts.window_capture import WindowCaptureTarget, WindowGeometry, WindowInfo
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_keyboard_resume_waits_for_available_output(self):
+        for available in (False, True):
+            with self.subTest(available=available):
+                controller = AppController(AppSettings())
+                controller.live_reader = Mock()
+                controller.live_reader.paused = True
+                controller.live_reader.toggle_pause.return_value = False
+                controller.status_handler = Mock()
+                with patch(
+                    "vntts.controller_components.system_output_available",
+                    return_value=available,
+                ):
+                    self.assertEqual(controller.toggle_speech_pause(), not available)
+                if available:
+                    controller.live_reader.toggle_pause.assert_called_once_with()
+                else:
+                    controller.live_reader.toggle_pause.assert_not_called()
+
+    def test_ordinary_pause_does_not_check_output_availability(self):
+        controller = AppController(AppSettings())
+        controller.live_reader = Mock()
+        controller.live_reader.runtime_control_snapshot.return_value = {
+            "output_interrupted": False
+        }
+        with patch("vntts.controller_components.system_output_available") as available:
+            controller.toggle_speech_pause()
+        available.assert_not_called()
+
+    def test_interrupted_repeat_hotkey_uses_guarded_resume_without_a_duplicate(self):
+        for available in (False, True):
+            with self.subTest(available=available):
+                controller = AppController(AppSettings())
+                controller.live_reader = Mock()
+                controller.live_reader.paused = True
+                controller.live_reader.runtime_control_snapshot.return_value = {
+                    "paused": True,
+                    "output_interrupted": True,
+                }
+                controller.live_reader.toggle_pause.return_value = False
+                controller.status_handler = Mock()
+                with patch(
+                    "vntts.controller_components.system_output_available",
+                    return_value=available,
+                ):
+                    self.assertEqual(controller.repeat_last_speech(), available)
+                if available:
+                    controller.live_reader.toggle_pause.assert_called_once_with()
+                else:
+                    controller.live_reader.toggle_pause.assert_not_called()
+                controller.live_reader.repeat_last.assert_not_called()
+
     def test_screen_runtime_captures_without_focus_and_never_auto_advances(self):
         factory = Mock()
         controller = AppController(
