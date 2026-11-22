@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from vntts.path_safety import read_regular_bytes
+from vntts.runtime_layout import generation_environment, valid_generation_name
 from vntts.services.tts_engine import TTSConfigurationError
 
 PathInput: TypeAlias = str | Path
@@ -78,9 +79,9 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
                 else None
             )
         generation = report.get("generation")
-        if not isinstance(generation, str):
+        if not isinstance(generation, str) or not valid_generation_name(generation):
             return None
-        runtime = location / "generations" / generation / "environment"
+        runtime = generation_environment(location / "generations" / generation)
         if owned_generation(backend, runtime) is not None:
             return runtime
     return None

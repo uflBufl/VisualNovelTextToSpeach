@@ -180,10 +180,10 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Adopt Qwen for offline story preparation
 
-- [ ] Reproduce the Windows Qwen preview failure from the November 22 export.
-      Run the isolated worker from a managed-length Windows path and preserve
-      the original SoundFile loader error. Use that evidence to correct the
-      cause and confirm a preview on the affected Windows configuration.
+- [ ] Play one Qwen character voice preview on the affected Windows 10 PC
+      after updating. Confirm that the preview reaches audible playback with
+      the compact managed runtime. If startup still fails, export the logs
+      with the original native loader error.
 
 - [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
       choosing it as the default offline engine. The speaker-only conditioning

@@ -8,7 +8,6 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Literal, TypeAlias
-from uuid import uuid4
 
 from durable_file import atomic_write_json
 
@@ -16,6 +15,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.runtime_layout import create_generation, generation_environment
 from vntts.runtime_ownership import (
     OWNER_SCHEMA,
     RuntimeUse,
@@ -203,8 +203,8 @@ def _install_runtime_generation(
             )
             environment = dict(os.environ)
             environment.pop("VIRTUAL_ENV", None)
-            generation = location / "generations" / uuid4().hex
-            generation.mkdir(parents=True)
+            generation = create_generation(location)
+            runtime = generation_environment(generation)
             atomic_write_json(
                 generation / "owner.json",
                 {
@@ -216,7 +216,7 @@ def _install_runtime_generation(
             )
             use = RuntimeUse(generation)
             published = False
-            environment["UV_PROJECT_ENVIRONMENT"] = str(generation / "environment")
+            environment["UV_PROJECT_ENVIRONMENT"] = str(runtime)
             try:
                 run_runtime_command(
                     [
@@ -235,9 +235,7 @@ def _install_runtime_generation(
                     runtime_use=use,
                 )
                 report(f"Checking {label} dependencies in the isolated worker...")
-                paths = resolve_speech_runtime_paths(
-                    backend, generation / "environment"
-                )
+                paths = resolve_speech_runtime_paths(backend, runtime)
                 health = probe_speech_runtime(
                     backend, paths, cancellation=cancellation, runtime_use=use
                 )

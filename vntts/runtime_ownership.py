@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -21,6 +20,7 @@ from vntts.authoring.generation_lease import (
 from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
+from vntts.runtime_layout import generation_environment, valid_generation_name
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -83,14 +83,14 @@ def owned_generation(backend: str, runtime: PathInput) -> Path | None:
     )
     runtime = Path(runtime).absolute()
     try:
-        recipe, folder, generation, environment = runtime.relative_to(base).parts
+        recipe, folder, generation, _environment = runtime.relative_to(base).parts
     except ValueError:
         return None
     if (
         not is_lowercase_sha256(recipe)
         or folder != "generations"
-        or environment != "environment"
-        or not re.fullmatch(r"[0-9a-f]{32}", generation)
+        or not valid_generation_name(generation)
+        or runtime != generation_environment(runtime.parent)
     ):
         return None
     candidate = base / recipe / folder / generation
@@ -206,9 +206,9 @@ def _in_use(generation: Path) -> bool:
 
 def remove_inactive_generation(backend: str, generation: Path) -> bool:
     """Caller holds this recipe's installation guard."""
-    if owned_generation(backend, generation / "environment") != generation or _in_use(
-        generation
-    ):
+    if owned_generation(
+        backend, generation_environment(generation)
+    ) != generation or _in_use(generation):
         return False
     shutil.rmtree(generation)
     return True

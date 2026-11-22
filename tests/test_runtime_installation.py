@@ -19,6 +19,7 @@ from vntts.runtime_installation import (
     runtime_installation_available,
 )
 from vntts.runtime_ownership import (
+    OWNER_SCHEMA,
     RuntimeUse,
     claim_runtime,
     cleanup_managed_runtimes,
@@ -306,6 +307,70 @@ class RuntimeInstallationTest(unittest.TestCase):
         use.close()
         cleanup_managed_runtimes("pocket-tts", new[0])
         self.assertFalse(old[0].exists())
+
+    def test_windows_compact_repair_preserves_claimed_legacy_v2_generation(self):
+        with (
+            patch("vntts.runtime_layout.sys.platform", "win32"),
+            patch("vntts.runtime_installation.platform.machine", return_value="AMD64"),
+        ):
+            location = managed_runtime_location("pocket-tts")
+            generation = location / "generations" / ("0123456789abcdef" * 2)
+            old = self.make_environment(generation / "environment")
+            owner = {
+                "schema": OWNER_SCHEMA,
+                "backend": "pocket-tts",
+                "recipe": location.name,
+                "generation": generation.name,
+            }
+            (generation / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+            (location / "verified.json").write_text(
+                json.dumps({**owner, "schema": "vntts.speech-runtime-installation-v2"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(find_managed_speech_runtime("pocket-tts"), old[0])
+            self.assertEqual(resolve_speech_runtime_paths("pocket-tts"), old)
+            with (
+                patch("vntts.runtime_installation.run_runtime_command") as run,
+                patch("vntts.speech_worker.probe_speech_runtime", return_value={}),
+            ):
+                self.assertEqual(ensure_speech_runtime("pocket-tts"), old)
+                run.assert_not_called()
+            old_use = claim_runtime("pocket-tts", old[0])
+            self.assertIsNotNone(old_use)
+            self.addCleanup(old_use.close)
+
+            def probe(_backend, paths, **_options):
+                if paths == old:
+                    raise TTSConfigurationError("broken torch import")
+                return {}
+
+            with (
+                patch(
+                    "vntts.runtime_installation.run_runtime_command",
+                    side_effect=self.install,
+                ),
+                patch("vntts.speech_worker.probe_speech_runtime", side_effect=probe),
+            ):
+                new = ensure_speech_runtime("pocket-tts")
+            self.assertEqual(new[0].parent.parent, location / "generations")
+            self.assertRegex(new[0].parent.name, r"^w-[a-z0-9_]{8}$")
+            self.assertEqual(new[0].name, "e")
+            self.assertEqual(find_managed_speech_runtime("pocket-tts"), new[0])
+            new_use = claim_runtime("pocket-tts", new[0])
+            self.assertIsNotNone(new_use)
+            self.addCleanup(new_use.close)
+            self.assertEqual(new_use.path.parent.parent, new[0].parent)
+            self.assertTrue(new_use.path.is_file())
+            cleanup_managed_runtimes("pocket-tts", new[0])
+            self.assertTrue(old[0].is_dir())
+            self.assertTrue(old_use.path.is_file())
+            old_use.close()
+            cleanup_managed_runtimes("pocket-tts", new[0])
+            self.assertFalse(generation.exists())
+            self.assertTrue(new[0].is_dir())
+            self.assertTrue(new_use.path.is_file())
+            new_use.close()
+            self.assertFalse(new_use.path.exists())
 
     def test_cancel_or_publication_failure_preserves_previous_selection(self):
         from vntts_artifacts.atomic_io import atomic_write_json
