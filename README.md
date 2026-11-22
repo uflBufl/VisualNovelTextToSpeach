@@ -57,8 +57,9 @@ your browser; the application downloads the original Kyutai model and remembers
 its local readiness. Other engines have their own model requirements.
 
 **Read once** on **Reading** speaks the visible line once when reading
-is stopped. **Expand** in compact controls returns to the main window. Settings
-and the readiness check are also available through the desktop controls.
+is stopped. The compact panel shows the speaker and the line playing, and keeps
+the last line visible between lines. Use its playback controls to start, stop,
+pause or resume speech. **Open Reading** returns to the Reading tab during playback.
 
 ## Developer setup
 
@@ -520,7 +521,7 @@ Pass `--model` for an offline, reproducible run; otherwise the backend's model
 identifier may trigger a Hugging Face snapshot check. MOSS generation uses a
 text-length-based token and audio-duration budget. If the model misses EOS, the
 audio is stopped at that budget, marked `generation_limited` in the timeline
-and benchmark, shown in the compact/full status, and not cached. This prevents
+and benchmark, shown in the full status, and not cached. This prevents
 a short hesitation such as `I, erhm ...` from repeating for minutes while still
 letting playback completion and auto advance finish normally.
 

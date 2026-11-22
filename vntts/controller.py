@@ -3424,8 +3424,7 @@ class AppController:
             preview = text if len(text) <= 90 else f"{text[:87]}..."
             options.append(
                 (
-                    f"Sequence {event.sequence} - {speaker}: {preview} "
-                    f"[{event.event_id}]",
+                    f"{speaker}: {preview} (line {event.sequence})",
                     event.event_id,
                 )
             )
@@ -4815,13 +4814,33 @@ class AppController:
         self._load_live_sequence_plan()
 
     def _auto_advance_state_changed(
-        self, state: str, _generation: int, _attempt: object
+        self,
+        state: str,
+        _generation: int,
+        _attempt: object,
+        *,
+        session_id: str | None = None,
     ) -> None:
+        if session_id is not None and session_id != self.live_reader_session_id:
+            return
         with self.story_cursor_lock:
             awaiting_manual_boundary = bool(
                 self.story_cursor is not None
                 and self.story_cursor.deterministic_manual_successor() is not None
             )
+        reader = self.live_reader
+        if isinstance(reader, LiveDialogReader):
+            notices = {
+                "failed": (
+                    "Make the in-game choice. Reading resumes with the next dialogue."
+                    if awaiting_manual_boundary
+                    else "The next line was not confirmed. Advance manually in the game."
+                ),
+                "successor-unavailable": "The next line was not identified. Read once or advance manually in the game.",
+                "blocked": "Story position needs attention. Open Reading to resynchronize.",
+            }
+            if state in notices:
+                reader.set_reading_notice(_generation, notices[state])
         messages = {
             "focus-wait": "Auto advance is waiting; focus the selected game window",
             "typing": "The game advanced; waiting for the next line to finish typing",
@@ -4869,6 +4888,10 @@ class AppController:
                 generation == reader.active_generation
                 and generation == reader.auto_advance_blocked_generation
             ):
+                reader.set_reading_notice(
+                    generation,
+                    "This line could not be prepared. Open Reading to check readiness or restart reading.",
+                )
                 self.status_handler(
                     "Audio preparation failed after retry; this dialogue was not played. "
                     "Check Support and logs, or restart reading to retry."
@@ -5209,6 +5232,10 @@ class AppController:
                 chunk.generation,
                 reason,
             ):
+                reader.set_reading_notice(
+                    chunk.generation,
+                    "Wait for the original game voice to finish, then advance manually.",
+                )
                 self.status_handler(reason)
 
     def _live_sequence_playback_suppressed(

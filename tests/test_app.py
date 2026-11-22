@@ -62,7 +62,10 @@ from vntts.dashboard_ui import RuntimeControlState
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.dialog_capture import ScreenCaptureError  # noqa: E402
 from vntts.game_pack import apply_game_pack, import_game_pack  # noqa: E402
-from vntts.generated_audio import AudioRouteTrace  # noqa: E402
+from vntts.generated_audio import (  # noqa: E402
+    AudioRouteTrace,
+    PreparedSourceAudioPassThrough,
+)
 from vntts.hotkeys import macos_hotkey_limitation  # noqa: E402
 from vntts.live import LiveDialogReader, ScreenObservation  # noqa: E402
 from vntts.live_tracking import SpeechChunk  # noqa: E402
@@ -352,8 +355,7 @@ class TrayApplicationTest(unittest.TestCase):
         expected = "The audio component is not installed. Select Audio setup."
         details = f"Audio playback unavailable: {instruction}"
         self.assertEqual(tray.dashboard.status.text(), expected)
-        self.assertEqual(tray.compact_controller.status.toPlainText(), expected)
-        self.assertEqual(tray.compact_controller.status.toolTip(), details)
+        self.assertEqual(tray.compact_controller.action_reason.toPlainText(), expected)
         self.assertFalse(tray.dashboard.audio_setup_button.isHidden())
         tray.dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), details)
@@ -376,6 +378,24 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray.dashboard.status.text(), ready)
         tray.dashboard.copy_status_button.click()
         self.assertEqual(self.application.clipboard().text(), ready)
+
+    def test_audio_recovery_preserves_unrelated_compact_error(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        self.audio_runtime_check.side_effect = AudioRuntimeUnavailable(
+            "Rebuild audio", summary="The audio component is not installed."
+        )
+        tray._audio_runtime_available()
+        tray.show_error("Playback failed. Restart reading to retry.")
+        self.audio_runtime_check.side_effect = None
+        tray._audio_runtime_available()
+        self.assertEqual(
+            tray.compact_controller._warning,
+            "Playback failed. Restart reading to retry.",
+        )
 
     def test_audio_setup_recheck_clears_error_in_existing_readiness_window(self):
         tray = TrayApplication(
@@ -769,8 +789,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn(
             "Diagnostic media recording is incomplete", tray.dashboard.status.text()
         )
-        self.assertIn(
-            "Reading logs continue", tray.compact_controller.status.toPlainText()
+        self.assertNotIn(
+            "Reading logs continue", tray.compact_controller.action_reason.toPlainText()
         )
         tray.set_status("Reading current dialogue")
         tray._refresh_speech_runtime()
@@ -1255,12 +1275,12 @@ class TrayApplicationTest(unittest.TestCase):
                     tray_application.compact_controller.mode.text(),
                     {
                         "idle": "Ready",
-                        "live": "Reading",
+                        "live": "Waiting for next line",
                         "speaking": "Speaking",
                         "paused": "Paused",
                         "unavailable-paused": "Paused",
-                        "starting": "Starting reading",
-                        "queued": "Speaking",
+                        "starting": "Starting",
+                        "queued": "Preparing line",
                         "replayable": "Ready",
                     }[name],
                 )
@@ -1406,18 +1426,19 @@ class TrayApplicationTest(unittest.TestCase):
 
         for controls in (tray.dashboard, tray.compact_controller):
             if controls is tray.compact_controller:
-                status_text = controls.status.toPlainText()
+                status_text = ""
                 reason_text = controls.action_reason.toPlainText()
             else:
                 status_text = controls.status.text()
                 reason_text = controls.action_reason.text()
-            self.assertEqual(status_text, message)
+            if controls is tray.dashboard:
+                self.assertEqual(status_text, message)
             self.assertNotIn(message, reason_text)
             self.assertFalse(controls.live_button.isEnabled())
         self.assertIn("Set up and start", tray.dashboard.action_reason.text())
         self.assertEqual(
             tray.compact_controller.action_reason.toPlainText(),
-            "Reading unavailable: Choose Set up and start on Reading.",
+            "Choose Set up and start on Reading.",
         )
         self.assertNotIn(message, tray.live_action.toolTip())
         tray.shutdown()
@@ -1446,9 +1467,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertIn("Speech model failed to load", reason_text)
             self.assertIn("Check readiness", reason_text)
             self.assertEqual(
-                f"Reading unavailable: {controls.live_button.toolTip()}"
-                if controls is tray.compact_controller
-                else controls.live_button.toolTip(),
+                controls.live_button.toolTip(),
                 reason_text,
             )
         self.assertIn("Speech model failed to load", tray.live_action.toolTip())
@@ -1480,7 +1499,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertIn("Check readiness", reason_text)
         tray.shutdown()
 
-    def test_no_detected_dialogue_keeps_last_compact_speaker(self):
+    def test_detected_dialogue_does_not_replace_compact_playback(self):
         tray = TrayApplication(
             self.application,
             AppSettings(),
@@ -1494,8 +1513,8 @@ class TrayApplicationTest(unittest.TestCase):
         tray.set_dialog("Narrator", "")
 
         self.assertEqual(tray.dialog_action.text(), "No dialogue detected")
-        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Selone")
-        self.assertFalse(tray.compact_controller.speaker.isHidden())
+        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "")
+        self.assertTrue(tray.compact_controller.speaker.isHidden())
         tray.shutdown()
 
     def test_tray_non_action_text_is_bounded_without_losing_full_tooltip(self):
@@ -3073,12 +3092,15 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
+        tray_application.compact_controller.show()
         with patch(
             "vntts.app.QInputDialog.getItem",
             return_value=(options[1][0], True),
-        ):
+        ) as choose:
             self.assertTrue(tray_application.choose_expected_sequence_event())
 
+        self.assertIs(choose.call_args.args[0], tray_application.compact_controller)
+        self.assertEqual(choose.call_args.args[1], "Which line is on screen?")
         controller.select_expected_live_sequence_event.assert_called_once_with("right")
         tray_application.shutdown()
 
@@ -3140,7 +3162,7 @@ class TrayApplicationTest(unittest.TestCase):
         save.assert_called_once_with(tray_application.settings)
         tray_application.shutdown()
 
-    def test_live_status_is_mirrored_from_tray_to_compact_window(self):
+    def test_routine_live_status_stays_out_of_compact_window(self):
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
@@ -3153,15 +3175,14 @@ class TrayApplicationTest(unittest.TestCase):
             "Auto advance paused: source-audio completion is unavailable"
         )
 
-        self.assertEqual(tray_application.compact_controller.mode.text(), "Reading")
         self.assertEqual(
-            tray_application.compact_controller.status.toPlainText(),
-            "Auto advance paused: source-audio completion is unavailable",
+            tray_application.compact_controller.mode.text(), "Waiting for next line"
         )
-        self.assertEqual(
-            tray_application.status_action.text(),
-            tray_application.compact_controller.status.toPlainText(),
+        self.assertNotIn(
+            "source-audio completion",
+            tray_application.compact_controller.action_reason.toPlainText(),
         )
+        self.assertIn("source-audio completion", tray_application.status_action.text())
         tray_application.shutdown()
 
     def test_reading_status_explains_missing_story_permission_and_clears_after_selection(
@@ -3263,7 +3284,9 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 self.assertEqual(tray.dialog_action.text(), menu_dialogue)
                 self.assertEqual(tray.dashboard.status.text(), warning)
-                self.assertEqual(tray.compact_controller.status.toPlainText(), warning)
+                self.assertNotIn(
+                    warning, tray.compact_controller.action_reason.toPlainText()
+                )
                 self.assertEqual(tray.status_action.toolTip(), warning)
                 logged = repr(tray.support_log.snapshot())
                 self.assertNotIn(uncertain.text, logged)
@@ -3277,7 +3300,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray.dashboard.dialogue.toPlainText(), "Next recognized dialogue."
         )
-        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Sonetto")
+        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "")
         tray.shutdown()
 
     def test_routine_playback_status_is_summarized_only_for_display(self):
@@ -3293,8 +3316,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn(summary, tray.tray.toolTip())
         self.assertEqual(tray.status_action.toolTip(), message)
         self.assertEqual(tray.dashboard.status.text(), summary)
-        self.assertEqual(tray.compact_controller.status.toPlainText(), summary)
-        self.assertEqual(tray.compact_controller.status.toolTip(), message)
+        self.assertNotIn(summary, tray.compact_controller.action_reason.toPlainText())
         statuses = [
             event for event in tray.support_log.snapshot() if event["level"] == "status"
         ]
@@ -3327,9 +3349,9 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(event["level"], "audio-route")
         self.assertEqual(event["generation"], 3)
         self.assertEqual(event["line_id"], "reverse1999:3")
-        self.assertEqual(
-            tray_application.compact_controller.status.toPlainText(),
+        self.assertNotIn(
             "Live reading active",
+            tray_application.compact_controller.action_reason.toPlainText(),
         )
         tray_application.shutdown()
 
@@ -3455,9 +3477,9 @@ class TrayApplicationTest(unittest.TestCase):
                     tray_application.status_action.text(),
                 )
                 self.assertIn("after Selone", tray_application.status_action.text())
-                self.assertEqual(
-                    tray_application.compact_controller.status.toPlainText(),
-                    "Using the narrator for Hotelier. Manage its voice after Selone if needed.",
+                self.assertNotIn(
+                    "narrator for Hotelier",
+                    tray_application.compact_controller.action_reason.toPlainText(),
                 )
                 controller.toggle_live.assert_not_called()
                 tray_application.shutdown()
@@ -9070,11 +9092,16 @@ class TrayApplicationTest(unittest.TestCase):
                     self.assertNotIn("Full controls", state.unavailable_reason)
                     self.assertEqual(
                         tray.compact_controller.mode.text(),
-                        "Ready to start" if configured else "Unavailable",
+                        "Ready" if configured else "Not ready",
                     )
-                    self.assertIn(
-                        action, tray.compact_controller.action_reason.toPlainText()
-                    )
+                    if configured:
+                        self.assertEqual(
+                            tray.compact_controller.action_reason.toPlainText(), ""
+                        )
+                    else:
+                        self.assertIn(
+                            action, tray.compact_controller.action_reason.toPlainText()
+                        )
                     self.assertIn(action, tray.dashboard.action_reason.text())
                     self.assertEqual(
                         tray.live_action.toolTip(),
@@ -10088,8 +10115,9 @@ class TrayApplicationTest(unittest.TestCase):
                         self.assertFalse(tray._calibration_capture_pending)
                         self.assertEqual(tray.dashboard.status.text(), expected)
                         self.assertEqual(tray.status_action.text(), expected)
-                        self.assertEqual(
-                            tray.compact_controller.status.toPlainText(), expected
+                        self.assertNotIn(
+                            expected,
+                            tray.compact_controller.action_reason.toPlainText(),
                         )
                         saved = GameProfileStore.load(store.path).get(profile.id)
                         if outcome in ("save", "retry"):
@@ -11227,6 +11255,159 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(tray.dashboard.read_button.isEnabled())
         self.assertTrue(tray.compact_controller.read_button.isEnabled())
 
+    def test_compact_playback_pair_comes_from_snapshot_and_survives_new_ocr(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        snapshot = {
+            "speaking": True,
+            "speaking_character": "Mira",
+            "speaking_text": "The line being spoken.",
+        }
+        controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        tray.set_dialog("Ada", "A later OCR observation.")
+        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Mira")
+        self.assertEqual(
+            tray.compact_controller.dialogue.toPlainText(), snapshot["speaking_text"]
+        )
+        snapshot.update(speaking=False, paused=True, output_interrupted=True)
+        tray._refresh_speech_runtime()
+        self.assertEqual(tray.compact_controller.speaker.toPlainText(), "Mira")
+        self.assertEqual(
+            tray.compact_controller.dialogue.toPlainText(), snapshot["speaking_text"]
+        )
+        snapshot.clear()
+        tray._refresh_speech_runtime()
+        self.assertEqual(
+            tray.compact_controller.dialogue.toPlainText(), "The line being spoken."
+        )
+        tray.compact_controller.reset_session()
+        self.assertEqual(tray.compact_controller.dialogue.toPlainText(), "")
+
+    def test_compact_actionable_notice_uses_typed_generation_bound_state(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=lambda settings, **options: AppController(
+                settings, tts_factory=Mock(), **options
+            ),
+        )
+        controller = tray.controller
+        reader = LiveDialogReader(
+            capture_executor=Mock(),
+            ocr_executor=Mock(),
+            speech_executor=Mock(),
+            playback_executor=Mock(),
+            capture_frame=Mock(),
+            recognize_frame=Mock(),
+            prepare_chunk=Mock(),
+            play_prepared=Mock(),
+            report_error=Mock(),
+        )
+        controller.live_reader = reader
+        tray.set_ready(True)
+        reader.active_generation = 3
+        for event, copy in (
+            ("failed", "Advance manually"),
+            ("successor-unavailable", "Read once or advance manually"),
+            ("blocked", "Open Reading to resynchronize"),
+        ):
+            controller._auto_advance_state_changed(event, 3, 1)
+            tray._refresh_speech_runtime()
+            self.assertIn(copy, tray.compact_controller.action_reason.toPlainText())
+        reader._set_generation(4)
+        controller.live_reader_session_id = "current-session"
+        controller._auto_advance_state_changed(
+            "failed", 4, 1, session_id="previous-session"
+        )
+        tray._refresh_speech_runtime()
+        self.assertEqual(reader.runtime_control_snapshot()["reading_notice"], "")
+        self.assertNotIn(
+            "resynchronize", tray.compact_controller.action_reason.toPlainText()
+        )
+        reader.auto_advance_blocked_generation = 4
+        controller._report_preparation_failure(4)
+        tray._refresh_speech_runtime()
+        self.assertIn(
+            "could not be prepared", tray.compact_controller.action_reason.toPlainText()
+        )
+        reader.clear_queue()
+        tray._refresh_speech_runtime()
+        self.assertNotIn(
+            "could not be prepared", tray.compact_controller.action_reason.toPlainText()
+        )
+        reader._set_generation(5)
+        controller._guard_original_audio_completion(
+            reader,
+            SpeechChunk(5, "Mira", "An original voiced line."),
+            PreparedSourceAudioPassThrough("line-5", "hash", "voice-5"),
+        )
+        tray._refresh_speech_runtime()
+        self.assertIn(
+            "Wait for the original game voice to finish",
+            tray.compact_controller.action_reason.toPlainText(),
+        )
+        controller.live_reader = None
+
+    def test_compact_start_failure_is_actionable_and_next_start_clears_it(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        controller.runtime_control_snapshot.return_value = {}
+        controller.live_scope_identification_match_result = None
+        controller.unresolved_live_speakers.return_value = ()
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        tray.compact_controller.set_runtime_controls(
+            RuntimeControlState(
+                ready=True,
+                speaking=True,
+                speaking_character="Mira",
+                speaking_text="Old source line.",
+            )
+        )
+        for failure, instruction in (
+            ("no-dialog-text", "try Start again"),
+            ("ocr-uncertain", "check its area in Reading"),
+            ("capture-target-unavailable", "check the capture source"),
+            (None, "try Start again"),
+        ):
+            tray._report_live_scope_failure(failure)
+            self.assertIn(
+                instruction, tray.compact_controller.action_reason.toPlainText()
+            )
+        with patch.object(tray, "_toggle_controller_live", return_value=True):
+            tray._start_live_with_available_scope()
+        self.assertEqual(tray.compact_controller._warning, "")
+        self.assertEqual(tray.compact_controller.dialogue.toPlainText(), "")
+
+    def test_compact_open_reading_preserves_active_playback(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        controller.runtime_control_snapshot.return_value = {"speaking": True}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.dashboard.show_voices()
+        tray.show_compact_controls(persist=False)
+        with patch.object(tray, "_save_compact_preference"):
+            tray.compact_controller.full_button.click()
+        self.assertTrue(tray.dashboard.isVisible())
+        self.assertEqual(
+            tray.dashboard.sections.tabText(tray.dashboard.sections.currentIndex()),
+            "Reading",
+        )
+        controller.emergency_stop.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        self.assertTrue(controller.is_live_running)
+
     def test_presented_stop_cannot_start_a_read_that_just_finished(self):
         for control in ("tray", "dashboard", "compact"):
             with self.subTest(control=control):
@@ -12222,7 +12403,9 @@ class TrayApplicationTest(unittest.TestCase):
                     status,
                     "Prepared audio is active.",
                 )
-                self.assertEqual(tray.compact_controller.status.toPlainText(), status)
+                self.assertNotIn(
+                    status, tray.compact_controller.action_reason.toPlainText()
+                )
                 for controls in (tray.dashboard, tray.compact_controller):
                     reason_text = (
                         controls.action_reason.toPlainText()

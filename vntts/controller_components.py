@@ -648,7 +648,9 @@ class RuntimeLifecycleComponent:
             auto_advance_delay_seconds=get_auto_advance_delay_seconds(
                 controller.settings
             ),
-            auto_advance_state_changed=controller._auto_advance_state_changed,
+            auto_advance_state_changed=partial(
+                controller._auto_advance_state_changed, session_id=session_id
+            ),
             pipeline_event_handler=partial(
                 controller.pipeline_event_handler,
                 session_id=session_id,

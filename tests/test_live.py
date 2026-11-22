@@ -2267,6 +2267,8 @@ class LiveDialogReaderTest(unittest.TestCase):
                 "paused": True,
                 "speaking": True,
                 "speaking_character": "Alice",
+                "speaking_text": "Hello.",
+                "reading_notice": "",
                 "queued": True,
                 "replayable": True,
                 "output_interrupted": False,
@@ -2276,12 +2278,74 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
 
+    def test_snapshot_keeps_short_completed_line_between_ui_refreshes(self):
+        reader = self.create_reader(play_prepared=lambda *_: True)
+        reader.active_generation = 1
+        reader._play_if_current(SpeechChunk(1, "Ada", "Oh!"), "prepared")
+        snapshot = reader.runtime_control_snapshot()
+        self.assertFalse(snapshot["speaking"])
+        self.assertEqual(
+            (snapshot["speaking_character"], snapshot["speaking_text"]), ("Ada", "Oh!")
+        )
+        reader.clear_queue()
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_text"], "")
+
+    def test_reading_notice_expires_with_its_generation_run_and_queue(self):
+        reader = self.create_reader()
+        reader.active_generation = 3
+        message = "Advance manually in the game."
+        for expire in (
+            lambda: reader._set_generation(4),
+            lambda: setattr(reader, "run_id", "next-run"),
+            lambda: reader.clear_queue(),
+            lambda: reader.stop_event.set(),
+        ):
+            with self.subTest(expire=expire):
+                reader = self.create_reader()
+                reader.active_generation = 3
+                reader.set_reading_notice(3, message)
+                self.assertEqual(
+                    reader.runtime_control_snapshot()["reading_notice"], message
+                )
+                expire()
+                self.assertEqual(
+                    reader.runtime_control_snapshot()["reading_notice"], ""
+                )
+        reader.set_reading_notice(2, "A stale callback")
+        self.assertEqual(reader.runtime_control_snapshot()["reading_notice"], "")
+
+    def test_late_notice_cannot_restore_cleared_generation_attention(self):
+        reader = self.create_reader()
+        reader.active_generation = 3
+        reader.clear_queue()
+        reader.set_reading_notice(3, "A late auto advance failure")
+        self.assertEqual(reader.runtime_control_snapshot()["reading_notice"], "")
+
+    def test_runtime_snapshot_does_not_expose_cancelled_or_previous_run_text(self):
+        reader = self.create_reader()
+        chunk = SpeechChunk(3, "Alice", "Previous line.", run_id=reader.run_id)
+        reader.active_generation = 3
+        reader.current_chunk = chunk
+        reader.last_spoken_chunk = chunk
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_text"], chunk.text)
+        reader.cancelled_chunk_ids.add(chunk.playback_id)
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_text"], "")
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_character"], "")
+        reader.cancelled_chunk_ids.clear()
+        reader.run_id = "next-run"
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_text"], "")
+        reader.current_chunk = None
+        self.assertEqual(reader.runtime_control_snapshot()["speaking_text"], "")
+
     def test_output_interruption_pauses_and_resume_restarts_current_line_once(self):
         reader = self.create_reader()
         reader.active_generation = 3
         chunk = SpeechChunk(3, "Alice", "Interrupted words.", line_id="line-3")
         self.assertTrue(reader.mark_output_interrupted(chunk))
-        self.assertTrue(reader.runtime_control_snapshot()["output_interrupted"])
+        snapshot = reader.runtime_control_snapshot()
+        self.assertTrue(snapshot["output_interrupted"])
+        self.assertEqual(snapshot["speaking_text"], "Interrupted words.")
+        self.assertEqual(snapshot["speaking_character"], "Alice")
         self.assertTrue(reader.paused)
         self.assertTrue(reader.playback_pause.is_paused())
         with patch.object(reader, "_schedule") as schedule:

@@ -2237,56 +2237,40 @@ def _compact_controller_story(state: str) -> QWidget:
         if state == "warning"
         else "Marcus"
     )
-    reason = "Speech model failed to load. Open Full controls, then Check readiness."
+    reason = "Speech model failed to load. Open Reading to check readiness."
+    playing = RuntimeControlState(
+        ready=True,
+        live=True,
+        speaking=True,
+        speaking_character=speaker,
+        speaking_text="The last train leaves at dawn.",
+    )
     states = {
-        "starting": RuntimeControlState(),
+        "starting": RuntimeControlState(loading_voice=True),
         "starting-reading": RuntimeControlState(
-            ready=True, starting=True, transition="starting"
+            ready=True, starting=True, transition="starting", finding_current_line=True
         ),
         "reading": RuntimeControlState(ready=True, live=True),
-        "paused": RuntimeControlState(ready=True, live=True, paused=True),
-        "speaking": RuntimeControlState(ready=True, speaking=True),
+        "paused": replace(playing, paused=True),
+        "speaking": playing,
         "stopping": RuntimeControlState(ready=True, live=True, transition="stopping"),
         "unavailable": RuntimeControlState(unavailable_reason=reason),
-        "long-error": RuntimeControlState(unavailable_reason=reason),
-        "long-error-end": RuntimeControlState(unavailable_reason=reason),
         "sequence-recovery": RuntimeControlState(ready=True, live=True, paused=True),
         "sequence-choice": RuntimeControlState(ready=True, live=True, paused=True),
-        "warning": RuntimeControlState(ready=True, live=True),
+        "warning": playing,
     }
     dialog = CompactController(platform="win32")
+    if state == "reading":
+        dialog.set_runtime_controls(playing)
     dialog.set_runtime_controls(states.get(state, RuntimeControlState(ready=True)))
-    messages = {
-        "starting": "Loading the speech model...",
-        "ready": "Ready to read the game dialogue.",
-        "reading": "Following dialogue in the game.",
-        "paused": "Waiting for the game window to regain focus.",
-        "speaking": "Speaking the visible dialogue once.",
-        "starting-reading": "Loading the selected story...",
-        "stopping": "Stopping reading and speech...",
-        "unavailable": reason,
-        "sequence-recovery": "Paused at an unmatched story line.",
-        "sequence-choice": "Paused at an unmatched story line.",
-        "warning": f"Narrator used for {speaker}.",
-        "long-error": "Unable to open recording: "
-        + "/very-long-audio-directory" * 30
-        + "/missing.wav",
-        "long-error-end": "Unable to open recording: "
-        + "/very-long-audio-directory" * 30
-        + "/missing.wav",
-    }
-    dialog.set_status(messages[state])
     if state == "warning":
-        dialog.set_warning(messages[state])
-    if state in {
-        "reading",
-        "paused",
-        "speaking",
-        "warning",
-        "sequence-recovery",
-        "sequence-choice",
-    }:
-        dialog.set_dialogue(speaker, "The current dialogue.")
+        dialog.set_warning("Auto advance paused. Continue manually in the game.")
+    if state.startswith("long-error"):
+        dialog.set_warning(
+            "Unable to open recording: "
+            + "/very-long-audio-directory" * 30
+            + "/missing.wav"
+        )
     if state in {"sequence-recovery", "sequence-choice"}:
         dialog.set_sequence_status(
             LiveSequenceStatus(
@@ -2301,7 +2285,7 @@ def _compact_controller_story(state: str) -> QWidget:
         font.setPointSize(22)
         dialog.setFont(font)
     if at_end:
-        bar = dialog.status.verticalScrollBar()
+        bar = dialog.action_reason.verticalScrollBar()
         QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
         speaker_bar = dialog.speaker.verticalScrollBar()
         QTimer.singleShot(0, lambda: speaker_bar.setValue(speaker_bar.maximum()))

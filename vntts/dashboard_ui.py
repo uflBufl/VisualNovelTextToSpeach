@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QFont,
     QFontMetricsF,
     QKeyEvent,
+    QPalette,
     QStandardItem,
     QStandardItemModel,
     QWheelEvent,
@@ -95,6 +96,10 @@ class RuntimeControlState:
     window_hint: str | None = None
     waiting_for_game: bool = False
     speaking_character: str = ""
+    speaking_text: str = ""
+    loading_voice: bool = False
+    finding_current_line: bool = False
+    reading_notice: str = ""
 
     @property
     def can_read(self) -> bool:
@@ -1639,66 +1644,60 @@ class CompactController(QWidget):
 
     def _configure_window(self, platform: str | None) -> None:
         platform = sys.platform if platform is None else platform
-        self._live = False
-        self._ready = False
+        self._state = RuntimeControlState()
+        self._warning = ""
+        self._sequence_notice = ""
         self._sequence_expected_candidate_count = 0
-        self.setWindowTitle("VNTTS controls")
+        self._last_speaker = ""
+        self._last_text = ""
+        self.setWindowTitle("VNTTS Reading")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         if platform == "darwin":
-            # Qt hides tool windows when their application becomes inactive on
-            # macOS unless this is set before the native window is shown. The
-            # game taking focus must not make the in-game controls disappear.
+            # Keep the panel visible when the game takes focus.
             self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(540)
+        self.setMinimumWidth(420)
 
     def _build_status_labels(self) -> None:
         self.message_focus_frame = QFocusFrame(self)
-        self.mode = QLabel("Starting")
+        self.mode = QLabel()
         mode_font = QFont()
         mode_font.setBold(True)
         self.mode.setFont(mode_font)
         self.mode.setAccessibleName("Reading state")
-        self.mode.setContentsMargins(0, 4, 0, 0)
         self.mode.setSizePolicy(
-            QSizePolicy.Policy.Fixed,
-            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
         )
-        self.status = self._message_field("Latest reading message", "Initializing...")
-        self.action_reason = self._message_field("Compact control availability")
-        self.action_reason.setAccessibleDescription(
-            "Explains why compact reading controls are available or unavailable"
-        )
-        self.sequence_recovery = QLabel()
-        self.sequence_recovery.setWordWrap(True)
-        self.sequence_recovery.setAccessibleName("Reading notice")
-        self.sequence_recovery.hide()
-        self.speaker_label = QLabel("Last speaker:")
-        self.speaker_label.setContentsMargins(0, 4, 0, 0)
-        self.speaker = self._message_field("Last dialogue speaker")
-        self.speaker_label.setBuddy(self.speaker)
-        self.speaker_label.hide()
+        self.last_line = QLabel("Last line")
+        self.last_line.hide()
+        self.speaker = self._message_field("Dialogue speaker", lines=1)
+        self.dialogue = self._message_field("Spoken dialogue", lines=3)
         self.speaker.hide()
+        self.dialogue.hide()
+        self.action_reason = self._message_field("Reading notice", lines=2)
+        self.action_reason.hide()
 
-    def _message_field(self, name: str, text: str = "") -> QPlainTextEdit:
-        field = QPlainTextEdit(text, readOnly=True, tabChangesFocus=True)
+    def _message_field(self, name: str, *, lines: int) -> QPlainTextEdit:
+        field = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
         field.setAccessibleName(name)
+        field.setProperty("visible_lines", lines)
         field.setFrameShape(QFrame.Shape.NoFrame)
         field.viewport().setAutoFillBackground(False)
-        field.setFixedHeight(field.fontMetrics().lineSpacing() * 2 + 12)
+        field.setFixedHeight(field.fontMetrics().lineSpacing() * lines + 12)
         field.installEventFilter(self)
         return field
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if (
-            isinstance(watched, QPlainTextEdit)
-            and event.type() == QEvent.Type.FontChange
-        ):
-            watched.setFixedHeight(watched.fontMetrics().lineSpacing() * 2 + 12)
-            QTimer.singleShot(0, self, self._fit_content)
         if isinstance(watched, QPlainTextEdit):
-            if event.type() == QEvent.Type.FocusIn:
+            if event.type() == QEvent.Type.FontChange:
+                watched.setFixedHeight(
+                    watched.fontMetrics().lineSpacing()
+                    * watched.property("visible_lines")
+                    + 12
+                )
+                QTimer.singleShot(0, self, self._fit_content)
+            elif event.type() == QEvent.Type.FocusIn:
                 self.message_focus_frame.setWidget(watched)
                 self.message_focus_frame.show()
             elif event.type() == QEvent.Type.FocusOut:
@@ -1706,21 +1705,23 @@ class CompactController(QWidget):
         return super().eventFilter(watched, event)
 
     def _build_buttons(self) -> None:
-        self.live_button = QPushButton("Read")
+        self.live_button = QPushButton("Start")
         set_action_icon(self.live_button, "play")
-        self.pause_button = QPushButton("")
+        self.pause_button = QPushButton()
         set_action_icon(self.pause_button, "pause")
         self.read_button = QPushButton("Read once")
         set_action_icon(self.read_button, "volume-2")
-        self.sequence_expected_button = QPushButton("Use expected next line")
+        self.sequence_expected_button = QPushButton("Use next line")
         set_action_icon(self.sequence_expected_button, "skip-forward")
-        self.sequence_expected_button.setVisible(False)
-        self.full_button = QPushButton("Expand")
+        self.sequence_expected_button.hide()
+        self.full_button = QPushButton()
         set_action_icon(self.full_button, "expand")
-        self.live_button.setDefault(True)
-        self.live_button.setAccessibleDescription(
-            "Start reading or immediately stop reading and speech"
+        self.full_button.setAccessibleName("Open Reading")
+        self.full_button.setToolTip("Open Reading")
+        self.full_button.setAccessibleDescription(
+            "Open Reading to choose the game window, change settings or recover reading."
         )
+        self.live_button.setDefault(True)
         for button in (
             self.read_button,
             self.live_button,
@@ -1728,10 +1729,7 @@ class CompactController(QWidget):
             self.sequence_expected_button,
             self.full_button,
         ):
-            button.setSizePolicy(
-                QSizePolicy.Policy.Fixed,
-                QSizePolicy.Policy.Fixed,
-            )
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.read_button.clicked.connect(self.read_requested.emit)
         self.live_button.clicked.connect(self.live_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
@@ -1744,61 +1742,70 @@ class CompactController(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
-        information = QHBoxLayout()
-        information.setSpacing(12)
-        information.addWidget(self.mode, 0, Qt.AlignmentFlag.AlignTop)
-        information.addWidget(self.speaker_label, 0, Qt.AlignmentFlag.AlignTop)
-        information.addWidget(self.speaker, 1)
-        information.addStretch()
-        primary_controls = QHBoxLayout()
-        primary_controls.setSpacing(6)
-        primary_controls.addWidget(self.live_button)
-        primary_controls.addWidget(self.pause_button)
-        primary_controls.addWidget(self.read_button)
-        primary_controls.addStretch(1)
-        primary_controls.addWidget(self.full_button)
-        layout.addLayout(information)
-        layout.addWidget(self.status)
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        header.addWidget(self.mode, 1)
+        header.addWidget(self.live_button)
+        header.addWidget(self.pause_button)
+        header.addWidget(self.full_button)
+        layout.addLayout(header)
+        layout.addWidget(self.last_line)
+        layout.addWidget(self.speaker)
+        layout.addWidget(self.dialogue)
         layout.addWidget(self.action_reason)
-        layout.addWidget(self.sequence_recovery)
-        layout.addLayout(primary_controls)
-        layout.addWidget(self.sequence_expected_button, 0, Qt.AlignmentFlag.AlignLeft)
+        secondary = QHBoxLayout()
+        secondary.addWidget(self.read_button)
+        secondary.addWidget(self.sequence_expected_button)
+        secondary.addStretch()
+        layout.addLayout(secondary)
         self.setTabOrder(self.live_button, self.pause_button)
-        self.setTabOrder(self.pause_button, self.read_button)
-        self.setTabOrder(self.read_button, self.full_button)
-        self.setTabOrder(self.full_button, self.sequence_expected_button)
-        self.setTabOrder(self.sequence_expected_button, self.status)
-        self.setTabOrder(self.status, self.action_reason)
-        self.setTabOrder(self.action_reason, self.speaker)
+        self.setTabOrder(self.pause_button, self.full_button)
+        self.setTabOrder(self.full_button, self.speaker)
+        self.setTabOrder(self.speaker, self.dialogue)
+        self.setTabOrder(self.dialogue, self.action_reason)
+        self.setTabOrder(self.action_reason, self.read_button)
+        self.setTabOrder(self.read_button, self.sequence_expected_button)
 
     def set_sequence_status(self, status: LiveSequenceStatus) -> None:
         manual = (
             is_live_sequence_audio_mode(status.mode) and status.state != "unavailable"
         )
-        candidate_count = status.expected_candidate_count
-        recovery = manual and status.recovery_required
-        self.sequence_recovery.setText(
-            status.guidance
-            if not manual and status.reason
-            else "Story position needs attention. Choose an expected line here or "
-            "open Full controls to resync."
-            if candidate_count > 0
-            else "Story position needs attention. Open Full controls to resync."
-        )
-        self.sequence_recovery.setVisible(
-            recovery or bool(not manual and status.reason and status.guidance)
-        )
-        self._sequence_expected_candidate_count = candidate_count
-        self.sequence_expected_button.setVisible(manual and candidate_count > 0)
-        self.sequence_expected_button.setEnabled(
-            self._ready and manual and candidate_count > 0
-        )
+        count = status.expected_candidate_count if manual else 0
+        self._sequence_expected_candidate_count = count
+        self.sequence_expected_button.setVisible(count > 0)
         self.sequence_expected_button.setText(
-            "Use expected next line"
-            if candidate_count == 1
-            else f"Choose among {candidate_count} expected lines..."
+            "Use next line" if count == 1 else "Choose line..."
         )
+        self.sequence_expected_button.setAccessibleDescription(
+            "Use the expected next indexed line."
+            if count == 1
+            else "Choose the indexed line currently on screen."
+        )
+        self._sequence_notice = (
+            "Choose the line on screen."
+            if manual and status.recovery_required and count
+            else "Open Reading to find the current line."
+            if manual and status.recovery_required
+            else status.guidance
+            if status.reason and status.guidance
+            else ""
+        )
+        self._update_notice()
+        self._update_sequence_action()
         self._fit_content()
+
+    def _update_sequence_action(self) -> None:
+        self.sequence_expected_button.setEnabled(
+            self._state.ready
+            and self._state.transition is None
+            and not self._state.starting
+            and self._sequence_expected_candidate_count > 0
+        )
+        self.sequence_expected_button.setToolTip(
+            self.sequence_expected_button.accessibleDescription()
+            if self.sequence_expected_button.isEnabled()
+            else self._state.reason_for("read")
+        )
 
     def show_for_game(self, geometry: WindowGeometry | None = None) -> None:
         self.show()
@@ -1835,107 +1842,141 @@ class CompactController(QWidget):
         if QApplication.platformName() != "cocoa":
             self.raise_()
 
-    def set_status(self, message: str, *, details: str | None = None) -> None:
-        self.status.setPlainText(playback_status_label(message))
-        self.status.setToolTip(message if details is None else details)
-        self.status.setFont(QFont())
-        self._fit_content()
-
     def set_warning(self, message: str) -> None:
-        self.status.setPlainText(message)
-        self.status.setToolTip(message)
-        warning_font = QFont()
-        warning_font.setBold(True)
-        self.status.setFont(warning_font)
+        self._warning = message
+        self._update_notice()
         self._fit_content()
 
-    def set_dialogue(self, speaker: str | None, text: str | None) -> None:
-        if not text:
-            return
-        self.speaker.setPlainText(speaker or "Narrator")
-        self.speaker_label.show()
-        self.speaker.show()
+    def clear_warning(self, expected: str) -> None:
+        if self._warning == expected:
+            self.set_warning("")
+
+    def reset_session(self) -> None:
+        self._last_speaker = ""
+        self._last_text = ""
+        self._warning = ""
+        self._sequence_notice = ""
+        self._sequence_expected_candidate_count = 0
+        self.sequence_expected_button.hide()
+        self.speaker.clear()
+        self.dialogue.clear()
+        self.speaker.hide()
+        self.dialogue.hide()
+        self.last_line.hide()
+        self._update_notice()
         self._fit_content()
 
     def set_ready(self, ready: bool, *, reason: str | None = None) -> None:
         self.set_runtime_controls(
-            RuntimeControlState(
-                ready=bool(ready),
-                unavailable_reason=reason,
-            )
+            RuntimeControlState(ready=bool(ready), unavailable_reason=reason)
         )
 
-    def set_runtime_controls(self, state: RuntimeControlState) -> None:
-        self._ready = state.ready
-        self._live = state.live
-        self.mode.setText(
-            "Stopping"
-            if state.transition == "stopping"
-            else "Starting reading"
-            if state.starting or state.transition == "starting"
-            else "Output ready. Resume restarts this line."
-            if state.output_interrupted and state.output_available
-            else "Audio output disconnected. Paused."
-            if not state.output_available and (state.output_interrupted or state.paused)
-            else "Waiting for audio output."
-            if not state.output_available and not state.active
-            else "Paused"
-            if state.paused
-            else "Return to the game"
-            if state.waiting_for_game
-            else "Reading"
-            if state.live
-            else "Speaking"
-            if state.speaking or state.queued
-            else "Ready"
-            if state.ready
-            else "Ready to start"
-            if state.can_initialize
-            else "Unavailable"
-            if state.unavailable_reason
-            else "Not ready"
+    def _reading_status(self) -> tuple[str, str]:
+        state = self._state
+        if state.transition == "stopping":
+            return "Stopping", ""
+        if state.loading_voice:
+            return "Loading voice", ""
+        if not state.output_available:
+            return "No audio output", "Connect an audio output device to continue."
+        if state.output_interrupted:
+            return "Paused", "Audio output is ready. Resume restarts this line."
+        if state.window_hint:
+            return "Game window unavailable", state.window_hint
+        if state.paused:
+            return "Paused", ""
+        if state.waiting_for_game:
+            return "Return to the game", ""
+        if state.finding_current_line:
+            return "Finding current line", "Keep the dialogue visible in the game."
+        if state.starting or state.transition == "starting":
+            return "Starting", ""
+        if state.speaking:
+            return "Speaking", ""
+        if state.queued:
+            return "Preparing line", ""
+        if state.live:
+            return "Waiting for next line", ""
+        if state.needs_screen_region:
+            return "Not ready", "Open Reading and select the dialogue area."
+        if state.ready or state.can_initialize:
+            return "Ready", ""
+        return "Not ready", state.unavailable_reason or "Open Reading to finish setup."
+
+    def _update_notice(self) -> None:
+        mode, reason = self._reading_status()
+        self.mode.setText(mode)
+        text = (
+            reason
+            or self._warning
+            or self._state.reading_notice
+            or self._sequence_notice
         )
+        if self.action_reason.toPlainText() != text:
+            self.action_reason.setPlainText(text)
+        self.action_reason.setToolTip(text)
+        font = QFont(self.font())
+        font.setBold(bool(text and text == self._warning))
+        self.action_reason.setFont(font)
+        self.action_reason.setVisible(bool(text))
+
+    def set_runtime_controls(self, state: RuntimeControlState) -> None:
+        self._state = state
         _apply_reading_capabilities(
             state,
             read_button=self.read_button,
             live_button=self.live_button,
             pause_button=self.pause_button,
+            icon_only=True,
         )
-        self.sequence_expected_button.setEnabled(
-            state.ready
-            and not self.sequence_expected_button.isHidden()
-            and self._sequence_expected_candidate_count > 0
-        )
-        reason = (
-            state.unavailable_reason
-            or "VNTTS is not ready. Select Full controls, then Check readiness."
-        )
-        self.action_reason.setPlainText(
-            state.reason_for("live")
-            if state.can_initialize
-            else f"Reading unavailable: {reason}"
-        )
-        self.sequence_expected_button.setToolTip("" if state.ready else reason)
-        self._fit_content()
-
-    def set_live(self, running: bool) -> None:
-        self._live = bool(running)
-        self.mode.setText("Reading" if running else "Stopped")
-        _set_live_button_presentation(self.live_button, running)
-        self._fit_content()
-
-    def set_paused(self, paused: bool) -> None:
-        self.mode.setText(
-            "Paused" if paused else ("Reading" if self._live else "Stopped")
-        )
+        self.live_button.setDefault(False)
+        self.live_button.setAutoDefault(False)
+        self.read_button.setVisible(state.can_read)
+        self._update_sequence_action()
+        if state.speaking_text:
+            self._last_speaker = state.speaking_character or "Narrator"
+            self._last_text = state.speaking_text
+        has_line = bool(self._last_text)
+        current = state.speaking or state.output_interrupted
+        self.speaker.setVisible(has_line)
+        self.dialogue.setVisible(has_line)
+        self.last_line.setVisible(has_line and not current)
+        if self.speaker.toPlainText() != self._last_speaker:
+            self.speaker.setPlainText(self._last_speaker)
+        if self.dialogue.toPlainText() != self._last_text:
+            self.dialogue.setPlainText(self._last_text)
+        for field in (self.speaker, self.dialogue):
+            palette = QPalette(field.palette())
+            palette.setColor(
+                QPalette.ColorRole.Text,
+                self.palette().color(
+                    QPalette.ColorGroup.Active
+                    if current
+                    else QPalette.ColorGroup.Disabled,
+                    QPalette.ColorRole.WindowText,
+                ),
+            )
+            field.setPalette(palette)
+        self._update_notice()
         self._fit_content()
 
     def _fit_content(self) -> None:
-        self.action_reason.setVisible(
-            not self._ready
-            and self.action_reason.toPlainText().removeprefix("Reading unavailable: ")
-            != self.status.toPlainText()
-        )
+        side = max(self.fontMetrics().lineSpacing() + 16, 32)
+        for button in (self.live_button, self.pause_button, self.full_button):
+            button.setFixedSize(side, side)
+        speaker_font = QFont(self.font())
+        speaker_font.setBold(True)
+        self.speaker.setFont(speaker_font)
+        dialogue_font = QFont(self.font())
+        if dialogue_font.pointSizeF() > 0:
+            dialogue_font.setPointSizeF(dialogue_font.pointSizeF() * 1.08)
+        self.dialogue.setFont(dialogue_font)
+        for field in (self.speaker, self.dialogue, self.action_reason):
+            lines = min(
+                max(1, ceil(field.document().size().height())),
+                field.property("visible_lines"),
+            )
+            field.setFixedHeight(field.fontMetrics().lineSpacing() * lines + 12)
         right = self.x() + self.width()
         top = self.y()
         self.adjustSize()

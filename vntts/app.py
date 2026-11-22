@@ -2063,6 +2063,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._connect_application_signals()
         self._connect_dashboard()
         self._audio_runtime_error: str | None = None
+        self._audio_runtime_warning = ""
         self._start_runtime_timer()
 
     def _initialize_runtime(
@@ -2575,7 +2576,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.compact_controller.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
         )
-        self.compact_controller.full_requested.connect(self.show_dashboard)
+        self.compact_controller.full_requested.connect(self._open_compact_reading)
 
     def choose_capture_source(self, window: object) -> None:
         if window is not None and (
@@ -2666,6 +2667,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._capture_setup_pending = not candidate.onboarding_completed
         if window is not None:
             self.controller.select_game_window(window)
+        self.compact_controller.reset_session()
         self.dashboard.set_dialogue(None, None)
         self.dashboard.set_recognition(None)
         self.dashboard.set_configuration(self._runtime_settings())
@@ -2891,15 +2893,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else "Audio playback is unavailable."
             )
             self.dashboard.audio_setup_button.show()
+            self._audio_runtime_warning = f"{summary} Select Audio setup."
             self.show_error(
                 self._audio_runtime_error,
-                summary=f"{summary} Select Audio setup.",
+                summary=self._audio_runtime_warning,
                 recovery="audio-setup",
             )
             return False
         if self._audio_runtime_error is not None:
             self._audio_runtime_error = None
             self.dashboard.audio_setup_button.hide()
+            self.compact_controller.clear_warning(self._audio_runtime_warning)
+            self._audio_runtime_warning = ""
             self.set_status("Audio playback is available. Retry playback to continue.")
         return True
 
@@ -3232,6 +3237,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "automatically when ready"
         )
         self._initial_start_generation = generation
+        self._apply_runtime_control_state(self._runtime_control_state())
         self.initial_start_runner.start(
             self._initialize_controller,
             generation,
@@ -3545,10 +3551,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return self.controller.select_expected_live_sequence_event(options[0][1])
         labels = [label for label, _event_id in options]
         selected, accepted = QInputDialog.getItem(
-            self.dashboard,
-            "Choose expected story event",
-            "Choose only the dialogue box currently visible. Candidates are limited "
-            "to the current explicit sequence path.",
+            self.compact_controller
+            if self.compact_controller.isVisible()
+            else self.dashboard,
+            "Which line is on screen?",
+            "Choose the line currently visible in the game. Only nearby story "
+            "lines are offered.",
             labels,
             0,
             False,
@@ -3597,6 +3605,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _start_live_with_available_scope(
         self, *, allow_scope_bootstrap: bool = True
     ) -> bool:
+        if allow_scope_bootstrap:
+            self.compact_controller.reset_session()
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
         if result is None:
@@ -3604,10 +3614,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if allow_scope_bootstrap:
                 self._identify_live_scope_then_start()
             else:
-                self.set_status(
-                    "Live reading could not start: the current story line was "
-                    "not identified"
-                )
+                message = "Current line not found. Keep the dialogue visible and try Start again."
+                self.compact_controller.set_warning(message)
+                self.set_status(message)
             return False
         return self._toggle_controller_live()
 
@@ -3617,10 +3626,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         identify = getattr(self.controller, "identify_live_scope", None)
         if not callable(identify):
-            self.set_status(
-                "Live reading could not start: automatic story identification "
-                "is unavailable"
+            message = (
+                "Story identification is unavailable. Open Reading to check readiness."
             )
+            self.compact_controller.set_warning(message)
+            self.set_status(message)
             return False
         self.voice_auditions.suspend()
         self._live_scope_generation = self._lifecycle_generation
@@ -3810,6 +3820,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             message = (
                 "Live reading could not start: keep a complete dialog line "
                 "visible and try again"
+            )
+        if failure not in ("cancelled", "target-changed"):
+            self.compact_controller.set_warning(
+                {
+                    "no-dialog-text": "No dialogue found. Keep a full line visible and try Start again.",
+                    "ocr-uncertain": "The line is hard to read. Wait for the full dialogue or check its area in Reading.",
+                    "capture-target-unavailable": (
+                        "Capture is unavailable. Open Reading to check the capture source."
+                    ),
+                }.get(
+                    failure if isinstance(failure, str) else "",
+                    "Current line not found. Keep the dialogue visible and try Start again.",
+                )
             )
         self.set_status(message)
         self.signals.live_changed.emit(False)
@@ -4895,6 +4918,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _configure_macos_launch_at_login(self, enabled: bool) -> None:
         configure_macos_launch_at_login(enabled)
 
+    def _open_compact_reading(self) -> None:
+        self.dashboard.show_reading()
+        self.show_dashboard()
+
     def show_dashboard(self) -> None:
         self.compact_controller.hide()
         self.dashboard.show()
@@ -5914,7 +5941,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.set_status(
             f"Using the narrator for {speaker}. Manage the voice later if needed."
         )
-        self.compact_controller.set_warning(f"Narrator used for {speaker}")
 
     def _show_unknown_speaker_prompt(self, speaker: str) -> None:
         if self._shutting_down or not self.resume_live_after_unknown_mapping:
@@ -6404,7 +6430,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.tray.setToolTip(f"{application_name}\n{bounded}")
         self.dashboard.set_status(message, details=details)
         self._refresh_speech_runtime()
-        self.compact_controller.set_status(message, details=details)
         self._apply_runtime_control_state(self._runtime_control_state())
 
     def record_audio_route(self, trace: AudioRouteTrace) -> None:
@@ -6429,13 +6454,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not text:
             self.dialog_action.setText("No dialogue detected")
             self.dialog_action.setToolTip("")
-            self.compact_controller.set_dialogue(character, "")
             return
         dialogue = f"{character}: {text}"
         self.dialog_action.setText(self._bounded_menu_text(dialogue))
         self.dialog_action.setToolTip(dialogue)
         self.dashboard.set_dialogue(character, text)
-        self.compact_controller.set_dialogue(character, text)
         self._apply_runtime_control_state(self._runtime_control_state())
 
     @staticmethod
@@ -6574,6 +6597,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             paused=bool(snapshot.get("paused", self._reported_speech_paused)),
             speaking=bool(snapshot.get("speaking", False)),
             speaking_character=str(snapshot.get("speaking_character") or ""),
+            speaking_text=str(snapshot.get("speaking_text") or ""),
+            reading_notice=str(snapshot.get("reading_notice") or ""),
+            loading_voice=bool(
+                self._controller_busy
+                and (
+                    self._initial_start_generation is not None
+                    or self._configuration_restart
+                )
+            ),
+            finding_current_line=self._live_scope_generation is not None,
             needs_screen_region=(
                 self._capture_setup_pending
                 and not self.settings.onboarding_completed
@@ -6814,6 +6847,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._pregeneration_activation_restore_runtime.clear()
         if self.readiness_dialog is not None:
             self.readiness_dialog.suspend_checks()
+        self.compact_controller.reset_session()
         self._lifecycle_generation = self.session_owner.begin(cancellation)
         self.last_controller_error = None
         self._reading_window_retry_settings = None
@@ -6866,7 +6900,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_action.setText("Stop reading" if running else "Start reading")
         set_action_icon(self.live_action, "square" if running else "play")
         self.dashboard.set_live(running)
-        self.compact_controller.set_live(running)
         if running:
             self._apply_runtime_control_state(self._runtime_control_state())
         else:
@@ -6874,7 +6907,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
-        self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())
 
     def show_error(
@@ -6884,6 +6916,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "Application action failed: %s", message, exc_info=sys.exception()
         )
         self.support_log.add("error", message)
+        self.compact_controller.set_warning(summary or message)
         if summary is None:
             self.set_status(message)
         else:
