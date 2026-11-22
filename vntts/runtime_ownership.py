@@ -17,10 +17,13 @@ from vntts.authoring.generation_lease import (
     inspect_process_status,
     is_native_process_id,
 )
-from vntts.document_identity import is_lowercase_sha256
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary
-from vntts.runtime_layout import generation_environment, valid_generation_name
+from vntts.runtime_layout import (
+    generation_environment,
+    valid_generation_name,
+    valid_recipe_directory,
+)
 from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
@@ -87,7 +90,7 @@ def owned_generation(backend: str, runtime: PathInput) -> Path | None:
     except ValueError:
         return None
     if (
-        not is_lowercase_sha256(recipe)
+        not valid_recipe_directory(recipe)
         or folder != "generations"
         or not valid_generation_name(generation)
         or runtime != generation_environment(runtime.parent)
@@ -244,7 +247,7 @@ def _cleanup_managed_runtimes(
     removed = 0
     for location in base.iterdir():
         if (
-            not is_lowercase_sha256(location.name)
+            not valid_recipe_directory(location.name)
             or location.is_symlink()
             or location.is_junction()
         ):

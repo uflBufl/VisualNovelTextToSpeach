@@ -15,7 +15,11 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
-from vntts.runtime_layout import create_generation, generation_environment
+from vntts.runtime_layout import (
+    create_generation,
+    generation_environment,
+    runtime_storage_location,
+)
 from vntts.runtime_ownership import (
     OWNER_SCHEMA,
     RuntimeUse,
@@ -157,7 +161,7 @@ def _ensure_speech_runtime(
 
 def _install_runtime_generation(
     backend: str,
-    location: Path,
+    recipe: Path,
     project: Path,
     uv: str,
     *,
@@ -167,6 +171,7 @@ def _install_runtime_generation(
     """Install and publish one verified generation under the recipe lock."""
     from vntts.speech_worker import probe_speech_runtime, resolve_speech_runtime_paths
 
+    location = runtime_storage_location(recipe)
     try:
         with exclusive_advisory_lock(location / "installation.lock"):
             check_runtime_cancelled(cancellation)
@@ -240,7 +245,7 @@ def _install_runtime_generation(
                     backend, paths, cancellation=cancellation, runtime_use=use
                 )
                 check_runtime_cancelled(cancellation)
-                if managed_runtime_location(backend) != location:
+                if managed_runtime_location(backend) != recipe:
                     raise TTSConfigurationError(
                         "Runtime recipe changed during installation. Retry to use the new version."
                     )
@@ -249,7 +254,7 @@ def _install_runtime_generation(
                     {
                         "schema": "vntts.speech-runtime-installation-v2",
                         "backend": backend,
-                        "recipe": location.name,
+                        "recipe": recipe.name,
                         "generation": generation.name,
                         "health": health,
                         "hardware": hardware,

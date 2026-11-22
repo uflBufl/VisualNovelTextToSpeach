@@ -7,6 +7,15 @@ from tempfile import mkdtemp
 from uuid import uuid4
 
 
+def runtime_storage_location(recipe: Path) -> Path:
+    # Keep the full digest in verified.json. CUDA appends long DLL names here.
+    return recipe.with_name(recipe.name[:24]) if sys.platform == "win32" else recipe
+
+
+def valid_recipe_directory(name: str) -> bool:
+    return re.fullmatch(r"(?:[0-9a-f]{24}|[0-9a-f]{64})", name) is not None
+
+
 def create_generation(location: Path) -> Path:
     generations = location / "generations"
     if sys.platform == "win32":

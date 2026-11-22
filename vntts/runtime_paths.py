@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import TypeAlias
 
 from vntts.path_safety import read_regular_bytes
-from vntts.runtime_layout import generation_environment, valid_generation_name
+from vntts.runtime_layout import (
+    generation_environment,
+    runtime_storage_location,
+    valid_generation_name,
+)
 from vntts.services.tts_engine import TTSConfigurationError
 
 PathInput: TypeAlias = str | Path
@@ -47,11 +51,19 @@ def managed_runtime_location(backend: str) -> Path | None:
 
 
 def find_managed_speech_runtime(backend: str) -> Path | None:
+    recipe = managed_runtime_location(backend)
+    if recipe is None:
+        return None
+    location = runtime_storage_location(recipe)
+    runtime = _verified_runtime(backend, location, recipe.name)
+    if runtime is None and location != recipe:
+        return _verified_runtime(backend, recipe, recipe.name)
+    return runtime
+
+
+def _verified_runtime(backend: str, location: Path, digest: str) -> Path | None:
     from vntts.runtime_ownership import owned_generation, read_record
 
-    location = managed_runtime_location(backend)
-    if location is None:
-        return None
     report = read_record(location / "verified.json")
     if (
         report.get("schema")
@@ -60,7 +72,7 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
             "vntts.speech-runtime-installation-v2",
         }
         and report.get("backend") == backend
-        and report.get("recipe") == location.name
+        and report.get("recipe") == digest
     ):
         if report["schema"] == "vntts.speech-runtime-installation-v1":
             runtime = location / "environment"

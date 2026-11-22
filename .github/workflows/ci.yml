@@ -56,11 +56,11 @@ jobs:
           import sys
           from pathlib import Path
           sys.path.insert(0, str(Path.cwd()))
-          from vntts.runtime_layout import create_generation, generation_environment
+          from vntts.runtime_layout import create_generation, generation_environment, runtime_storage_location
 
           root = Path(os.environ["LOCALAPPDATA"]) / "Preview тест" / "VisualNovelTextToSpeech"
           recipe = root / "speech-runtimes" / "qwen-tts" / "${{ hashFiles('backends/qwen-tts/pyproject.toml', 'backends/qwen-tts/uv.lock') }}"
-          runtime = generation_environment(create_generation(recipe))
+          runtime = generation_environment(create_generation(runtime_storage_location(recipe)))
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               print(f"UV_PROJECT_ENVIRONMENT={runtime}", file=env)
 

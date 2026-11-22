@@ -18,6 +18,7 @@ from vntts.runtime_installation import (
     ensure_speech_runtime,
     runtime_installation_available,
 )
+from vntts.runtime_layout import runtime_storage_location
 from vntts.runtime_ownership import (
     OWNER_SCHEMA,
     RuntimeUse,
@@ -352,9 +353,29 @@ class RuntimeInstallationTest(unittest.TestCase):
                 patch("vntts.speech_worker.probe_speech_runtime", side_effect=probe),
             ):
                 new = ensure_speech_runtime("pocket-tts")
-            self.assertEqual(new[0].parent.parent, location / "generations")
+            storage = runtime_storage_location(location)
+            self.assertEqual(storage, location.with_name(location.name[:24]))
+            self.assertEqual(new[0].parent.parent, storage / "generations")
             self.assertRegex(new[0].parent.name, r"^w-[a-z0-9_]{8}$")
             self.assertEqual(new[0].name, "e")
+            marker = storage / "verified.json"
+            verified = marker.read_bytes()
+            receipt = read_record(marker)
+            self.assertEqual(receipt["recipe"], location.name)
+            self.assertEqual(
+                read_record(new[0].parent / "owner.json")["recipe"], storage.name
+            )
+            self.assertEqual(find_managed_speech_runtime("pocket-tts"), new[0])
+            suffix = "0" if location.name[-1] != "0" else "1"
+            receipt["recipe"] = location.name[:-1] + suffix
+            marker.write_text(json.dumps(receipt), encoding="utf-8")
+            self.assertEqual(find_managed_speech_runtime("pocket-tts"), old[0])
+            legacy_marker = location / "verified.json"
+            legacy_verified = legacy_marker.read_bytes()
+            legacy_marker.unlink()
+            self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
+            legacy_marker.write_bytes(legacy_verified)
+            marker.write_bytes(verified)
             self.assertEqual(find_managed_speech_runtime("pocket-tts"), new[0])
             new_use = claim_runtime("pocket-tts", new[0])
             self.assertIsNotNone(new_use)
@@ -365,6 +386,9 @@ class RuntimeInstallationTest(unittest.TestCase):
             self.assertTrue(old[0].is_dir())
             self.assertTrue(old_use.path.is_file())
             old_use.close()
+            cleanup_managed_runtimes("pocket-tts", new[0])
+            self.assertTrue(generation.is_dir())
+            legacy_marker.unlink()
             cleanup_managed_runtimes("pocket-tts", new[0])
             self.assertFalse(generation.exists())
             self.assertTrue(new[0].is_dir())
@@ -776,7 +800,7 @@ class RuntimeInstallationTest(unittest.TestCase):
             self.install(*args, **kwargs)
             (self.project / "uv.lock").write_text("version = 3\n", encoding="utf-8")
 
-        location = managed_runtime_location("pocket-tts")
+        location = runtime_storage_location(managed_runtime_location("pocket-tts"))
         with (
             patch(
                 "vntts.runtime_installation.run_runtime_command", side_effect=changed
@@ -876,7 +900,7 @@ class RuntimeInstallationTest(unittest.TestCase):
                 self.assertEqual(runtime_installation_available(backend), expected)
 
     def test_concurrent_installation_does_not_start_another_sync(self):
-        location = managed_runtime_location("pocket-tts")
+        location = runtime_storage_location(managed_runtime_location("pocket-tts"))
         with (
             exclusive_advisory_lock(location / "installation.lock"),
             patch("vntts.runtime_installation.run_runtime_command") as run,
