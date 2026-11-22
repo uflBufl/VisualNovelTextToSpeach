@@ -1174,6 +1174,59 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_destroyed, [True])
         controller.shutdown.assert_called_once_with()
 
+    def test_window_menus_expose_every_tray_command_using_the_same_actions(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+
+        def commands(actions):
+            for action in actions:
+                if action.menu() is not None:
+                    yield from commands(action.menu().actions())
+                elif not action.isSeparator():
+                    yield action
+
+        menu_bar = tray.dashboard.menuBar()
+        self.assertFalse(menu_bar.isNativeMenuBar())
+        self.assertTrue(
+            {"Reading", "Setup", "Support"}.issubset(
+                {action.text() for action in menu_bar.actions()}
+            )
+        )
+        window_commands = set(commands(menu_bar.actions()))
+        passive_actions = {
+            tray.status_action,
+            tray.dialog_action,
+            tray.auto_advance_reason_action,
+            tray.show_dashboard_action,
+        }
+        expected = set(commands(tray.menu.actions())) - passive_actions
+        self.assertIn(tray.cancel_configuration_action, expected)
+        self.assertTrue(expected.issubset(window_commands))
+        self.assertNotIn(tray.show_dashboard_action, window_commands)
+        self.assertIs(
+            tray.dashboard.history_button.defaultAction(), tray.history_action
+        )
+
+    def test_dashboard_history_button_uses_the_existing_history_handler(self):
+        with patch.object(TrayApplication, "open_history") as open_history:
+            tray = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=Mock()),
+            )
+            history = tray.dashboard.history_button
+            tray._set_modal_launchers_enabled(False)
+            self.assertFalse(history.isEnabled())
+            history.click()
+            open_history.assert_not_called()
+            tray._set_modal_launchers_enabled(True)
+            self.assertTrue(history.isEnabled())
+            history.click()
+        open_history.assert_called_once_with()
+
     def test_runtime_capabilities_match_all_three_control_surfaces(self):
         controller = Mock()
         controller.is_live_running = False

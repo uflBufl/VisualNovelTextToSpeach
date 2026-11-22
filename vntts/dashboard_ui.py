@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -550,6 +551,13 @@ class ControlDashboard(QMainWindow):
 
         reading_actions = QHBoxLayout()
         reading_actions.addWidget(self.read_button)
+        self.history_button = QToolButton()
+        self.history_button.setText("Dialogue history")
+        self.history_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.history_button.setEnabled(False)
+        reading_actions.addWidget(self.history_button)
         self.prepare_reading_button = QPushButton("Set up and start")
         set_action_icon(self.prepare_reading_button, "settings")
         self.prepare_reading_button.clicked.connect(self._request_reading_setup)
@@ -919,7 +927,8 @@ class ControlDashboard(QMainWindow):
         self.setTabOrder(self.live_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.game_window)
         self.setTabOrder(self.game_window, self.read_button)
-        self.setTabOrder(self.read_button, self.compact_button)
+        self.setTabOrder(self.read_button, self.history_button)
+        self.setTabOrder(self.history_button, self.compact_button)
         self.setTabOrder(self.compact_button, self.auto_advance_check)
         self.setTabOrder(self.auto_advance_check, self.details_toggle)
         self.setTabOrder(self.settings_button, self.setup_more_button)

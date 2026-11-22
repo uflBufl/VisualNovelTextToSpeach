@@ -2059,6 +2059,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._build_actions()
         self._build_main_menu()
         self._build_setup_and_support_menus()
+        self._build_dashboard_menus()
         self._connect_actions()
         self._connect_application_signals()
         self._connect_dashboard()
@@ -2447,10 +2448,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.setup_menu.addAction(self.story_area_action)
         self.setup_menu.addAction(self.settings_action)
         self.setup_menu.addAction(self.profiles_action)
+        self.setup_menu.addSeparator()
         self.setup_menu.addAction(self.assets_action)
         self.setup_menu.addAction(self.moss_runtime_action)
         self.setup_menu.addAction(self.voice_preview_action)
         self.setup_menu.addAction(self.speaker_mapping_action)
+        self.setup_menu.addSeparator()
         self.setup_menu.addAction(self.corrections_action)
         self.setup_menu.addAction(self.ocr_review_action)
         self.support_menu = self.menu.addMenu("Support")
@@ -2464,6 +2467,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.menu.addAction(self.quit_action)
         self.tray.setContextMenu(self.menu)
         self.tray.setToolTip(application_name)
+
+    def _build_dashboard_menus(self) -> None:
+        bar = self.dashboard.menuBar()
+        bar.setNativeMenuBar(False)
+        application_menu = bar.addMenu("Application")
+        application_menu.addAction(self.show_compact_action)
+        application_menu.addSeparator()
+        application_menu.addAction(self.quit_action)
+        # Qt native menus need separate menu owners. Share the commands themselves
+        # so labels, availability and checked state follow the same QAction.
+        for shortcuts in (self.playback_menu, self.setup_menu, self.support_menu):
+            menu = bar.addMenu(shortcuts.title())
+            if shortcuts is self.playback_menu:
+                menu.addActions([self.read_action, self.live_action, self.pause_action])
+                menu.addSeparator()
+            menu.addActions(shortcuts.actions())
+        self.dashboard.history_button.setDefaultAction(self.history_action)
 
     def _connect_actions(self) -> None:
         self.read_action.triggered.connect(self.read_once)

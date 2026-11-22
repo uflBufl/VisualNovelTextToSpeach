@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QObject, SignalInstance
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QDialog, QPushButton, QTabWidget
+from PySide6.QtWidgets import QDialog, QMenu, QPushButton, QTabWidget
 
 from vntts.action_icons import set_action_icon
 from vntts.async_ui import LatestTaskRunner
@@ -81,10 +81,6 @@ class _Signals(Protocol):
     hotkeys_requested: SignalInstance
 
 
-class _Menu(Protocol):
-    def insertAction(self, before: QAction, action: QAction) -> object: ...
-
-
 class ConfigurationApplyMixin:
     cancel_configuration_action: QAction
     configuration_runner: LatestTaskRunner
@@ -102,8 +98,8 @@ class ConfigurationApplyMixin:
         dashboard: _Dashboard
         signals: _Signals
         pregeneration_dialog: OfflineAudioPreparationDialog | None
-        menu: _Menu
-        voice_preview_action: QAction
+        setup_menu: QMenu
+        settings_action: QAction
         sequence_resync_action: QAction
         sequence_expected_action: QAction
         _controller_busy: bool
@@ -187,8 +183,8 @@ class ConfigurationApplyMixin:
         self.cancel_configuration_action.triggered.connect(
             self.cancel_configuration_apply
         )
-        self.menu.insertAction(
-            self.voice_preview_action,
+        self.setup_menu.insertAction(
+            self.settings_action,
             self.cancel_configuration_action,
         )
         self.configuration_runner = LatestTaskRunner(self)
