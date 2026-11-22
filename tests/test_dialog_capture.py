@@ -142,6 +142,21 @@ class CaptureProvenanceTest(unittest.TestCase):
         self.assertNotEqual(first.provenance.capture_id, second.provenance.capture_id)
         self.assertEqual(first.provenance.run_id, second.provenance.run_id)
 
+    def test_snapshot_releases_idle_capture_before_ocr_and_preserves_live_capture(self):
+        def recognize(*args, **kwargs):
+            self.source.close.assert_called_once()
+            return OCRResult("Ada", "Hello.", 99, "balanced", 1)
+
+        with patch("vntts.dialog_capture.recognize_screenshot_result", recognize):
+            analyze_dialog_snapshot("unused", capture_target=self.target)
+        capture_live_frame("unused", self.target)
+        capture_dialog("unused", capture_target=self.target, save_screenshot=False)
+        capture_live_frame("unused", self.target)
+        self.assertEqual(self.factory.call_count, 2)
+        self.source.close.assert_called_once()
+        self.target.close()
+        self.assertEqual(self.source.close.call_count, 2)
+
     def test_missing_or_minimized_target_records_failure_without_desktop_fallback(self):
         for windows, error_type in (
             ([], "WindowNotFoundError"),

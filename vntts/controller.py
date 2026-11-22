@@ -1528,10 +1528,7 @@ class AppController:
             return DisplayCaptureTarget()
         selected = self.selected_game_window
         if selected is not None:
-            if (
-                selected.title.strip().casefold()
-                == (self.settings.game_window_title or "").strip().casefold()
-            ):
+            if self._selected_window_matches_title(self.settings.game_window_title):
                 return self.window_capture_target(self.settings.game_window_title)
             self.selected_game_window = None
             self._selected_capture_target = None
@@ -1539,10 +1536,7 @@ class AppController:
 
     def window_capture_target(self, title: str | None) -> WindowCaptureTarget:
         selected = self.selected_game_window
-        if (
-            selected is None
-            or selected.title.strip().casefold() != (title or "").strip().casefold()
-        ):
+        if selected is None or not self._selected_window_matches_title(title):
             return WindowCaptureTarget(title)
         if self._selected_capture_target is None:
             target = self.capture_target_factory(title)
@@ -1554,9 +1548,59 @@ class AppController:
             self._selected_capture_target = target
         return self._selected_capture_target
 
+    def _selected_window_matches_title(self, title: str | None) -> bool:
+        selected = self.selected_game_window
+        if selected is None:
+            return False
+        expected = (title or "").strip().casefold()
+        if selected.title.strip().casefold() == expected:
+            return True
+        target = self._selected_capture_target
+        return (
+            target is not None
+            and target.selected_window == selected
+            and target.window_title.casefold() == expected
+        )
+
     def select_game_window(self, window: WindowInfo) -> None:
         self.selected_game_window = window
         self._selected_capture_target = None
+
+    def check_reading_window(self, title: str | None, *, retry: bool = False) -> None:
+        """Validate the selected window and refresh its owner only on explicit retry."""
+        use_runtime_target = (
+            self.settings.capture_mode == "window"
+            and (self.settings.game_window_title or "").strip().casefold()
+            == (title or "").strip().casefold()
+        )
+        if use_runtime_target and (
+            self.is_live_running or self.is_one_shot_read_running
+        ):
+            if self.capture_target is not None:
+                self.capture_target.get_geometry()
+            return
+        target: _CaptureTarget | None
+        if self._selected_window_matches_title(title):
+            target = self.window_capture_target(title)
+        else:
+            target = (
+                self.capture_target
+                if use_runtime_target
+                else self.capture_target_factory(title)
+            )
+        if isinstance(target, WindowCaptureTarget):
+            if retry:
+                target.retry_geometry()
+            else:
+                target.get_geometry()
+            if target.selected_window is not None:
+                self.selected_game_window = target.selected_window
+                self._selected_capture_target = target
+        elif target is not None:
+            target.get_geometry()
+        if use_runtime_target and target is not self.capture_target:
+            self._close_capture_source()
+            self.capture_target = target
 
     def _close_capture_source(self) -> None:
         if isinstance(self.capture_target, DisplayCaptureTarget):

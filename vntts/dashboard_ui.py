@@ -92,7 +92,6 @@ class RuntimeControlState:
     unavailable_reason: str | None = None
     needs_readiness_check: bool = False
     indexed_current: bool = False
-    needs_screen_region: bool = False
     window_hint: str | None = None
     waiting_for_game: bool = False
     speaking_character: str = ""
@@ -329,7 +328,6 @@ class ControlDashboard(QMainWindow):
     pregeneration_requested = Signal()
     readiness_requested = Signal()
     audio_setup_requested = Signal()
-    calibration_requested = Signal()
     voices_requested = Signal()
     diagnostics_requested = Signal()
     settings_requested = Signal()
@@ -374,7 +372,6 @@ class ControlDashboard(QMainWindow):
         self._unavailable_reason: str | None = None
         self._sequence_expected_candidate_count = 0
         self._sequence_controls_available = False
-        self._needs_screen_region = False
         self._window_hint: str | None = None
         self._needs_readiness_check = False
         self._voice_dirty = False
@@ -616,7 +613,7 @@ class ControlDashboard(QMainWindow):
         set_action_icon(self.setup_more_button, "list")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
-            "Show or hide calibration, support and logs, and quit actions"
+            "Show or hide Check readiness, Support and logs, and Quit"
         )
         setup_primary.addWidget(self.setup_more_button)
         setup_primary.addStretch()
@@ -627,7 +624,6 @@ class ControlDashboard(QMainWindow):
         setup_secondary.addWidget(self.setup_primary_button)
         self.setup_buttons = [self.setup_primary_button, self.setup_more_button]
         for label, icon, signal in (
-            ("Calibrate capture", "locate-fixed", self.calibration_requested),
             ("Narrator voice", "audio-lines", self.voices_requested),
             ("Support and logs", "circle-help", self.diagnostics_requested),
             ("Settings", "settings", self.settings_requested),
@@ -644,8 +640,6 @@ class ControlDashboard(QMainWindow):
                 self.loading_blocked_buttons.append(button)
             if label == "Narrator voice":
                 self.narrator_voice_button = button
-            elif label == "Calibrate capture":
-                self.calibrate_button = button
             elif label == "Settings":
                 self.settings_button = button
         self.quit_button = QPushButton("Quit VNTTS")
@@ -1491,7 +1485,6 @@ class ControlDashboard(QMainWindow):
             state.ready or state.can_initialize or state.active or state.transition
         )
         self.prepare_reading_button.setVisible(needs_setup)
-        self._needs_screen_region = state.needs_screen_region
         self.prepare_reading_button.setText(self._reading_setup_action())
         self.story_actions.setVisible(state.ready and self._sequence_controls_available)
         self.sequence_resync_button.setEnabled(
@@ -1527,16 +1520,12 @@ class ControlDashboard(QMainWindow):
         self.live_button.setDefault(state.ready or state.active or state.can_initialize)
 
     def _reading_setup_action(self) -> str:
-        if self._needs_screen_region:
-            return "Set dialogue area"
         if self._needs_readiness_check:
             return "Check readiness"
         return "Set up and start"
 
     def _request_reading_setup(self) -> None:
-        if self._needs_screen_region:
-            self.calibration_requested.emit()
-        elif self._needs_readiness_check:
+        if self._needs_readiness_check:
             self.readiness_requested.emit()
         else:
             self.reading_setup_requested.emit()
@@ -1897,8 +1886,6 @@ class CompactController(QWidget):
             return "Preparing line", ""
         if state.live:
             return "Waiting for next line", ""
-        if state.needs_screen_region:
-            return "Not ready", "Open Reading and select the dialogue area."
         if state.ready or state.can_initialize:
             return "Ready", ""
         return "Not ready", state.unavailable_reason or "Open Reading to finish setup."

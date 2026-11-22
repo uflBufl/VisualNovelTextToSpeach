@@ -56,10 +56,10 @@ entry points. The launch screen does not need copies of their controls.
   speech or sends a game key.
 - Reuse verified capture areas and voice choices. If a required area is
   missing, offer **Set up and start** beside the picker. Carry the chosen
-  window into setup. Mark the dialogue box and choose **Read this line** to
-  preview it. The wider Story area is optional for Reading and can be added
-  later in Settings for captions elsewhere in the scene. A preview never
-  advances the game.
+  window into setup. In **Reading areas**, confirm the dialogue box, then the
+  wider area where central captions can appear. Use the current dialogue scene
+  for both. Choose **Read this line** to preview the dialogue without advancing
+  the game. Both areas can be adjusted later in Settings.
 - Show one relevant repair at a time. For example, offer the system capture
   permission when capture is blocked. On a frame timeout, offer **Retry capture**
   for the selected window. Request macOS Accessibility permission

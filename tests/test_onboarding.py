@@ -807,7 +807,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.game_window.isVisibleTo(wizard))
         self.assertFalse(page.auto_advance.isVisibleTo(wizard))
         self.assertFalse(page.auto_advance_reason.isVisibleTo(wizard))
-        self.assertIn("dialogue area in step 3", page.subTitle())
+        self.assertIn("Reading areas in step 3", page.subTitle())
         self.assertTrue(page.validatePage())
         wizard.close()
         wizard.deleteLater()
@@ -847,6 +847,26 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(wizard.calibration_page.calibrated)
         self.assertFalse(wizard.test_page.successful)
         wizard.deleteLater()
+
+    def test_preference_edit_keeps_confirmed_areas_but_invalidates_preview(self):
+        wizard = OnboardingWizard(
+            AppSettings(capture_mode="window", game_window_title="Game"),
+            reading_setup=True,
+        )
+        self.addCleanup(wizard.deleteLater)
+        wizard.diagnostics_page.runner.start = Mock()
+        dialogue = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        story = DialogRegion(0.05, 0.1, 0.9, 0.85)
+        wizard.calibration_page.finish_calibration(dialogue)
+        wizard.calibration_page.finish_story_area(story)
+        wizard.test_page.set_result(True, "Read the dialogue")
+        wizard.configuration_page.auto_advance.toggle()
+
+        wizard.next_page()
+
+        self.assertTrue(wizard.calibration_page.isComplete())
+        self.assertEqual(wizard.capture_regions(), (dialogue, story))
+        self.assertFalse(wizard.test_page.successful)
 
     def test_calibration_capture_failure_restores_context_and_allows_retry(self):
         wizard = OnboardingWizard(
@@ -983,7 +1003,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.live_hotkey.isEnabled())
         wizard.deleteLater()
 
-    def test_reading_dialogue_selection_runs_first_line_without_story_area(self):
+    def test_reading_requires_both_areas_before_running_first_line(self):
         wizard = OnboardingWizard(AppSettings(), reading_setup=True)
         self.addCleanup(wizard.deleteLater)
         wizard.show_page(wizard.pages.index(wizard.calibration_page))
@@ -994,9 +1014,22 @@ class OnboardingWizardTest(unittest.TestCase):
 
         wizard.calibration_page.finish_calibration(region)
 
-        self.assertTrue(wizard.calibration_page.isComplete())
+        self.assertFalse(wizard.calibration_page.isComplete())
         self.assertIsNone(wizard.calibration_page.story_region)
-        self.assertIn("Optional", wizard.calibration_page.story_status.text())
+        self.assertIn("not been confirmed", wizard.calibration_page.story_status.text())
+        self.assertIn(
+            "before a caption appears",
+            wizard.calibration_page.story_instructions.text(),
+        )
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertTrue(wizard.calibration_page.story_button.isDefault())
+        wizard.next_page(read_line=True)
+        self.assertIs(wizard.pages[wizard.current_page_index], wizard.calibration_page)
+        self.assertEqual(requests, [])
+        story = DialogRegion(0.05, 0.1, 0.9, 0.85)
+        wizard.calibration_page.finish_story_area(story)
+
+        self.assertTrue(wizard.calibration_page.isComplete())
         self.assertEqual(wizard.next_button.text(), "Read this line")
         self.assertTrue(wizard.next_button.isDefault())
         wizard.next_button.click()
@@ -1014,7 +1047,48 @@ class OnboardingWizardTest(unittest.TestCase):
         wizard.test_page.set_result(True, "Read the dialogue")
         wizard.accept()
         self.assertTrue(wizard.settings().onboarding_completed)
-        self.assertEqual(wizard.capture_regions(), (region, None))
+        self.assertEqual(wizard.capture_regions(), (region, story))
+
+    def test_new_setup_requires_confirmation_of_suggested_areas(self):
+        dialogue = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        story = DialogRegion(0.05, 0.1, 0.9, 0.85)
+        wizard = OnboardingWizard(
+            AppSettings(),
+            reading_setup=True,
+            capture_region=dialogue,
+            story_region=story,
+        )
+        self.addCleanup(wizard.deleteLater)
+        page = wizard.calibration_page
+
+        self.assertFalse(page.isComplete())
+        self.assertEqual(wizard.capture_regions(), (None, None))
+        page.finish_story_area(story)
+        self.assertFalse(page.story_calibrated)
+        page.finish_calibration(dialogue)
+        self.assertFalse(page.isComplete())
+        self.assertEqual(wizard.capture_regions(), (dialogue, None))
+        wizard.test_page.set_result(True, "Old result")
+        wizard.accept()
+        self.assertIsNone(wizard.completed_settings)
+        page.finish_story_area(story)
+        self.assertTrue(page.isComplete())
+        self.assertFalse(wizard.test_page.successful)
+
+    def test_setup_reuses_confirmed_areas_for_remembered_source(self):
+        dialogue = DialogRegion(0.1, 0.7, 0.8, 0.2)
+        story = DialogRegion(0.05, 0.1, 0.9, 0.85)
+        wizard = OnboardingWizard(
+            AppSettings(),
+            reading_setup=True,
+            remembered_capture_areas=lambda _mode, _title: (dialogue, story),
+        )
+        self.addCleanup(wizard.deleteLater)
+
+        wizard._restore_capture_areas()
+
+        self.assertTrue(wizard.calibration_page.isComplete())
+        self.assertEqual(wizard.capture_regions(), (dialogue, story))
 
     def test_finish_requires_successful_end_to_end_test(self):
         wizard = OnboardingWizard(AppSettings(discover_text_layouts=False))
@@ -1279,6 +1353,9 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIs(wizard.pages[wizard.current_page_index], wizard.calibration_page)
         self.assertTrue(wizard.calibration_page.button.isDefault())
         wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.2, 0.4, 0.16))
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertTrue(wizard.calibration_page.story_button.isDefault())
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.8))
         self.assertTrue(wizard.next_button.isEnabled())
         self.assertTrue(wizard.next_button.isDefault())
         self.assertEqual(wizard.next_button.text(), "Read this line")

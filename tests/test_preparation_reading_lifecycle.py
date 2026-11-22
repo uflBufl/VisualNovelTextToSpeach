@@ -163,7 +163,7 @@ class PreparationReadingLifecycleTest(unittest.TestCase):
                 pool.run_next()
                 self.application.processEvents()
         self.assertEqual(pool.tasks, [])
-        start.assert_called_once_with()
+        start.assert_called_once_with(window_checked=True)
         controller.is_live_running = True
 
     def _close(self, tray, panel):

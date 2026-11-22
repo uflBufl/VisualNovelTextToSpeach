@@ -135,7 +135,7 @@ class WindowCaptureTargetTest(unittest.TestCase):
         backend.get_client_geometry.return_value = WindowGeometry(0, 0, 1920, 1080)
         target = WindowCaptureTarget("Reverse: 1999", backend)
         self.assertEqual(target.get_geometry().width, 1920)
-        with self.assertRaisesRegex(WindowNotFoundError, "select it again"):
+        with self.assertRaisesRegex(WindowNotFoundError, "unavailable"):
             target.get_geometry()
         backend.get_client_geometry.assert_called_once_with(100)
 
@@ -166,14 +166,56 @@ class WindowCaptureTargetTest(unittest.TestCase):
             target.get_geometry()
 
     def test_duplicate_windows_report_ambiguity_before_reading_geometry(self):
+        for retry in (False, True):
+            with self.subTest(retry=retry):
+                backend = Mock()
+                backend.list_windows.return_value = [
+                    WindowInfo(100, "Game", 42),
+                    WindowInfo(200, "Game", 84),
+                ]
+                target = WindowCaptureTarget("Game", backend)
+                with self.assertRaisesRegex(
+                    WindowAmbiguousError, "Multiple game windows"
+                ):
+                    if retry:
+                        target.retry_geometry()
+                    else:
+                        target.get_geometry()
+                backend.get_client_geometry.assert_not_called()
+
+    def test_absent_saved_title_is_enumerated_only_once_at_explicit_retry(self):
         backend = Mock()
+        backend.list_windows.return_value = []
+        target = WindowCaptureTarget("Game", backend)
+
+        with self.assertRaisesRegex(WindowNotFoundError, "unavailable"):
+            target.retry_geometry()
+        backend.list_windows.assert_called_once_with()
+
+    def test_explicit_retry_rebinds_stale_title_only_target_and_pins_new_window(self):
+        original = WindowInfo(100, "Game - Story", 42)
+        reopened = WindowInfo(200, "Game - Story", 84)
+        backend = Mock()
+        backend.list_windows.return_value = [original]
+        backend.get_window.return_value = original
+        target = WindowCaptureTarget("Game", backend)
+        target.get_geometry()
+        backend.get_window.side_effect = lambda handle: (
+            reopened if handle == reopened.handle else None
+        )
         backend.list_windows.return_value = [
-            WindowInfo(100, "Game", 42),
-            WindowInfo(200, "Game", 84),
+            reopened,
+            WindowInfo(300, "Game clone", 85),
         ]
-        with self.assertRaisesRegex(WindowAmbiguousError, "Multiple game windows"):
-            WindowCaptureTarget("Game", backend).get_geometry()
-        backend.get_client_geometry.assert_not_called()
+
+        target.retry_geometry()
+
+        self.assertEqual(target.selected_window, reopened)
+        backend.get_client_geometry.assert_called_with(reopened.handle)
+        backend.get_window.side_effect = None
+        backend.get_window.return_value = None
+        with self.assertRaises(WindowNotFoundError):
+            target.get_geometry()
 
     def test_reports_whether_selected_window_is_foreground(self):
         window = WindowInfo(100, "Reverse: 1999", 42)
@@ -314,6 +356,72 @@ class WindowCaptureIdentityTest(unittest.TestCase):
                         action()
         self.backend.list_windows.assert_not_called()
         self.create.assert_not_called()
+
+    def test_explicit_retry_rebinds_reopened_window_and_resets_native_identity(self):
+        self.target.bind_window(self.window)
+        self.target.capture_native()
+        reopened = WindowInfo(200, "Game", 84)
+        self.backend.get_window.side_effect = lambda handle: (
+            reopened if handle == reopened.handle else None
+        )
+        self.backend.list_windows.return_value = [reopened]
+        self.fingerprint.return_value = {"scheme": "test", "token": "new-process"}
+
+        self.target.retry_geometry()
+        self.worker.close.assert_called_once_with()
+        self.target.capture_native()
+
+        self.assertEqual(self.target.selected_window, reopened)
+        self.assertEqual(
+            self.create.call_args.args[0],
+            {
+                "kind": "window",
+                "window_id": reopened.handle,
+                "pid": reopened.process_id,
+            },
+        )
+
+    def test_explicit_retry_keeps_valid_selection_despite_duplicate_titles(self):
+        self.target.bind_window(self.window)
+        self.target.retry_geometry()
+        self.assertEqual(self.target.selected_window, self.window)
+        self.backend.list_windows.assert_not_called()
+
+    def test_rebind_requires_one_exact_title_and_a_visible_client_area(self):
+        self.target.bind_window(self.window)
+        self.backend.get_window.return_value = None
+        for windows, error in (
+            ([], WindowNotFoundError),
+            ([WindowInfo(200, "Game clone", 84)], WindowNotFoundError),
+            (
+                [WindowInfo(200, "Game", 84), WindowInfo(300, "Game", 85)],
+                WindowAmbiguousError,
+            ),
+            ([WindowInfo(200, "Game", 84, minimized=True)], WindowMinimizedError),
+        ):
+            with self.subTest(windows=windows):
+                self.backend.list_windows.return_value = windows
+                with self.assertRaises(error):
+                    self.target.retry_geometry()
+                self.assertEqual(self.target.selected_window, self.window)
+        self.backend.get_client_geometry.assert_not_called()
+        self.create.assert_not_called()
+
+    def test_failed_replacement_geometry_preserves_selected_owner_and_capture(self):
+        self.target.bind_window(self.window)
+        self.target.capture_native()
+        self.backend.get_window.return_value = None
+        self.backend.list_windows.return_value = [WindowInfo(200, "Game", 84)]
+        self.backend.get_client_geometry.side_effect = WindowNotFoundError(
+            "Replacement closed"
+        )
+
+        with self.assertRaisesRegex(WindowNotFoundError, "Replacement closed"):
+            self.target.retry_geometry()
+
+        self.assertEqual(self.target.selected_window, self.window)
+        self.assertIs(self.target._source, self.worker)
+        self.worker.close.assert_not_called()
 
     def test_wall_clock_adjustment_keeps_selected_process_across_source_reopen(self):
         self.process.return_value.create_time.return_value = 1000.0

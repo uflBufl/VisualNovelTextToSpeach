@@ -265,6 +265,7 @@ def capture_dialog(
     save_screenshot: bool = True,
     region: DialogRegion | None = None,
     capture_target: object | None = None,
+    keep_open: bool = False,
     run_id: str | None = None,
     provenance_handler: Callable[[CaptureProvenance], object] | None = None,
     canonical_handler: Callable[[Image.Image], None] | None = None,
@@ -272,8 +273,7 @@ def capture_dialog(
     capture_id = uuid4().hex
     started = monotonic()
     frame = None
-    owned = capture_target is None
-    target = DisplayCaptureTarget() if owned else capture_target
+    target = DisplayCaptureTarget() if capture_target is None else capture_target
     dialog_box = None
     image = None
 
@@ -299,7 +299,9 @@ def capture_dialog(
 
         if not isinstance(target, DisplayCaptureTarget):
             raise WindowCaptureError("Unsupported native capture source")
-        frame = target.capture_native()
+        frame = target.capture_native(
+            keep_open=keep_open and capture_target is not None
+        )
         x, y, width, height = frame.content_rect
         canonical = frame.to_image().crop((x, y, x + width, y + height))
         if canonical_handler is not None:
@@ -309,9 +311,6 @@ def capture_dialog(
         image = region.crop(canonical)
     except Exception as error:
         raise _capture_failure(error, provenance(error), provenance_handler) from error
-    finally:
-        if owned and isinstance(target, DisplayCaptureTarget):
-            target.close()
 
     record = provenance()
     image.info["capture_provenance"] = record.as_dict()
@@ -451,6 +450,7 @@ def capture_live_frame(
         save_screenshot=False,
         region=region,
         capture_target=capture_target,
+        keep_open=True,
         run_id=run_id,
         provenance_handler=captured,
         canonical_handler=canonical_frames.append,

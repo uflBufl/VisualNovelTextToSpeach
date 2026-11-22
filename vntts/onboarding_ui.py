@@ -610,7 +610,7 @@ class ConfigurationPage(QWizardPage):
             subtitle = (
                 "Select the running game."
                 if window_capture
-                else "Select the dialogue area in step 3; automatic advance is unavailable."
+                else "Set Reading areas in step 3; automatic advance is unavailable."
             )
             self.setSubTitle(subtitle)
             if (
@@ -1265,7 +1265,7 @@ class DiagnosticsPage(QWizardPage):
         self.remediation_reason.setText(result.message)
         labels = {
             "retry-capture": "Retry capture",
-            "story-area": "Select reading areas",
+            "story-area": "Set Reading areas",
             "settings": "Open setup options",
             "voices": "Manage models and voices",
             "permissions": "Open macOS permissions",
@@ -1370,6 +1370,7 @@ class CalibrationPage(QWizardPage):
         self._capture_binding: tuple[str, str | None] | None = None
         self.flow: OnboardingWizard
         self.calibrated = False
+        self.story_calibrated = False
         self.overlay: DialogRegionOverlay | None = None
         self.pending_capture_target: WindowCaptureTarget | None = None
         self._calibration_cancelled = False
@@ -1380,34 +1381,32 @@ class CalibrationPage(QWizardPage):
         self.capture_timer = QTimer(self)
         self.capture_timer.setSingleShot(True)
         self.capture_timer.timeout.connect(self.open_overlay)
-        self.setTitle("Select reading areas")
+        self.setTitle("Reading areas")
         self.instructions = QLabel(
-            "Open a fully displayed multiline dialogue, click Calibrate, then select "
-            "the whole dialogue area, including the speaker name and continue indicator. "
+            "First, open a fully displayed multiline dialogue, click Set dialogue area, "
+            "then select the whole dialogue area, including the speaker name and continue indicator. "
             + DIALOG_REGION_GUIDANCE
             + " Keyboard: press Enter for a "
             "suggested region, use arrows to move it, Shift plus arrows to "
             "resize it, and Enter again to review. Press Escape to cancel."
         )
         self.instructions.setWordWrap(True)
-        self.button = QPushButton("Calibrate...")
+        self.button = QPushButton("Set dialogue area...")
         set_action_icon(self.button, "scan")
         self.button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.button.clicked.connect(self.calibrate)
         self.story_instructions = QLabel(
-            "Select the Story area once on any game frame: include the game scene, "
-            "the centre and the entire dialogue area. Keep menus, buttons and other "
-            "controls outside it. No central phrase needs to be visible: future story "
-            "captions will be found automatically inside this area. The dialogue area "
-            "stays a separate selection."
+            "Reading looks here for story captions when the dialogue box is empty. "
+            "On any game frame, include the centre of the scene and the whole dialogue box. "
+            "Leave menus and buttons outside. You can select it before a caption appears."
         )
         self.story_instructions.setWordWrap(True)
-        self.story_button = QPushButton("Select story area...")
+        self.story_button = QPushButton("Set story area...")
         set_action_icon(self.story_button, "scan")
         self.story_button.clicked.connect(lambda: self.calibrate(story_area=True))
         self.story_status = QLabel()
         self.story_status.setWordWrap(True)
-        self.status = QLabel("Calibration has not been completed.")
+        self.status = QLabel("Dialogue area has not been confirmed.")
         self.status.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(self.instructions)
@@ -1423,20 +1422,15 @@ class CalibrationPage(QWizardPage):
         if self.calibrated:
             return
         self.calibrated = False
-        self.status.setText("Calibration has not been completed.")
+        self.status.setText("Dialogue area has not been confirmed.")
         self.completeChanged.emit()
 
     def _refresh_story_area(self) -> None:
         self.story_button.setEnabled(self.calibrated)
         self.story_status.setText(
-            "Story area selected. It will be saved with Reading setup."
-            if self.story_region is not None
-            else (
-                "Optional: add a Story area now or later from Settings to read text "
-                "outside the dialogue area."
-                if self.flow.reading_setup
-                else "Select the Story area to finish setup. Any game frame will do."
-            )
+            "Story area confirmed. It will be saved with Reading setup."
+            if self.story_calibrated
+            else "Story area has not been confirmed. Set it after Dialogue area to finish setup."
         )
 
     def calibrate(self, *, story_area: bool = False) -> None:
@@ -1594,13 +1588,16 @@ class CalibrationPage(QWizardPage):
             )
 
     def finish_calibration(self, region: DialogRegion) -> None:
-        if region != self.capture_region:
+        if region != self.capture_region or not self.calibrated:
             self.flow.test_page.successful = False
         self.capture_region = region
         self.calibrated = True
         if self.story_region is not None and not self.story_region.contains(region):
             self.story_region = None
-        self.status.setText("Dialogue area saved.")
+            self.story_calibrated = False
+        self.status.setText(
+            "Dialogue area confirmed. It will be saved with Reading setup."
+        )
         self._refresh_story_area()
         self.completeChanged.emit()
 
@@ -1614,14 +1611,18 @@ class CalibrationPage(QWizardPage):
                 "The selected game changed. Select the story area again."
             )
             return
-        if self.capture_region is None or not region.contains(self.capture_region):
+        if not self.calibrated or self.capture_region is None:
+            self.story_status.setText("Set Dialogue area before Story area.")
+            return
+        if not region.contains(self.capture_region):
             self.story_status.setText(
                 "The story area must include the entire dialogue area."
             )
             return
-        if region != self.story_region:
+        if region != self.story_region or not self.story_calibrated:
             self.flow.test_page.successful = False
         self.story_region = region
+        self.story_calibrated = True
         self._refresh_story_area()
         self.completeChanged.emit()
 
@@ -1635,12 +1636,13 @@ class CalibrationPage(QWizardPage):
         return (
             self.calibrated
             and self.capture_region is not None
-            and (
-                self.flow.reading_setup
-                if self.story_region is None
-                else self.story_region.contains(self.capture_region)
-            )
+            and self.story_calibrated
+            and self.story_region is not None
+            and self.story_region.contains(self.capture_region)
         )
+
+    def validatePage(self) -> bool:
+        return self.isComplete()
 
 
 class EndToEndTestPage(QWizardPage):
@@ -1913,12 +1915,6 @@ class OnboardingWizard(QDialog):
         if reading_setup:
             self.diagnostics_page.setTitle("Get Reading ready")
             self.diagnostics_page.setSubTitle("")
-            self.calibration_page.setTitle("Select dialogue area")
-            self.calibration_page.story_instructions.setText(
-                "For captions outside the dialogue box, select the Story area on any game frame. "
-                "Include the centre of the scene and the whole dialogue box. Leave menus and "
-                "controls outside. You can add this later in Settings."
-            )
             self.test_page.setTitle("Try one dialogue line")
             self.test_page.button.setText("Read this line")
 
@@ -2034,7 +2030,6 @@ class OnboardingWizard(QDialog):
             return
         if page is self.configuration_page and self.draft_settings != prior_settings:
             self.diagnostics_page.complete = False
-            self.calibration_page.calibrated = False
             if (
                 self.draft_settings.capture_mode,
                 self.draft_settings.game_window_title,
@@ -2063,8 +2058,16 @@ class OnboardingWizard(QDialog):
             else (None, None)
         )
         page.calibrated = page.capture_region is not None
-        if page.calibrated:
-            page.status.setText("Dialogue area saved.")
+        page.story_calibrated = (
+            page.capture_region is not None
+            and page.story_region is not None
+            and page.story_region.contains(page.capture_region)
+        )
+        page.status.setText(
+            "Dialogue area confirmed. It will be saved with Reading setup."
+            if page.calibrated
+            else "Dialogue area has not been confirmed."
+        )
         page._refresh_story_area()
         page.completeChanged.emit()
 
@@ -2094,7 +2097,7 @@ class OnboardingWizard(QDialog):
             self.calibration_page: (
                 self.calibration_page.story_button
                 if self.calibration_page.calibrated
-                and self.calibration_page.story_region is None
+                and not self.calibration_page.story_calibrated
                 else self.calibration_page.button
             ),
             self.test_page: self.test_page.button,
@@ -2147,7 +2150,7 @@ class OnboardingWizard(QDialog):
         page = self.calibration_page
         return (
             page.capture_region if page.calibrated else None,
-            page.story_region,
+            page.story_region if page.story_calibrated else None,
         )
 
     def resume_after_editor(self, settings: AppSettings) -> None:

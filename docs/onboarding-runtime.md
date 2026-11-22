@@ -14,7 +14,7 @@ engines, model identifiers, manifests or sequence plans:
 4. Let diagnostics verify capture, OCR, audio and speech. The first blocking
    result is selected and exposes one direct remediation action. External tools
    that cannot be repaired in-app point to the Requirements documentation.
-5. Calibrate the dialogue region, run one explicit OCR-to-speech test, then
+5. Confirm the dialogue region and the wider story area, run one OCR-to-speech test, then
    choose `Finish setup`.
 
 Pocket TTS is the recommended default. Hotkeys, backend/model selection,

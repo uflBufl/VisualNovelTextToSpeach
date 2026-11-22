@@ -2641,7 +2641,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.application.processEvents()
         preparation.prioritize_line.assert_called_once_with("line", "digest")
         preparation.readingLineObserved.emit.assert_called_once_with("line", "digest")
-        start_reading.assert_called_once_with()
+        start_reading.assert_called_once_with(window_checked=True)
         self.assertEqual(tray.settings, saved)
         tray.pregeneration_dialog = None
         tray.shutdown()
@@ -2825,7 +2825,6 @@ class TrayApplicationTest(unittest.TestCase):
         for control in (
             tray.calibrate_action,
             tray.settings_action,
-            tray.dashboard.calibrate_button,
             tray.dashboard.settings_button,
         ):
             self.assertTrue(control.isEnabled())
@@ -2840,7 +2839,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray._controller_busy = True
         tray._apply_controller_action_state()
         self.assertFalse(tray.settings_action.isEnabled())
-        self.assertFalse(tray.dashboard.calibrate_button.isEnabled())
+        self.assertFalse(tray.dashboard.settings_button.isEnabled())
         tray._controller_busy = False
         tray.pregeneration_dialog = None
         tray.shutdown()
@@ -9199,10 +9198,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertFalse(tray._start_live_after_initial_start)
                 tray.shutdown()
 
-    def test_saved_screen_setup_opens_dialogue_selector_and_enables_reading_on_save(
-        self,
-    ):
-        region = DialogRegion(0.1, 0.65, 0.8, 0.25)
+    def test_unconfigured_screen_source_opens_reading_setup_for_both_areas(self):
         path = Path(os.environ["VNTTS_SETTINGS_FILE"])
         path.write_text(
             json.dumps({"capture_mode": "screen", "onboarding_completed": False})
@@ -9215,26 +9211,17 @@ class TrayApplicationTest(unittest.TestCase):
             self.application, controller_factory=Mock(return_value=controller)
         )
         self.assertEqual(
-            tray.dashboard.prepare_reading_button.text(), "Set dialogue area"
+            tray.dashboard.prepare_reading_button.text(), "Set up and start"
         )
-        self.assertFalse(tray.dashboard.game_window.isHidden())
         self.assertEqual(tray.dashboard.game_window.currentText(), "Screen region")
-        with patch.object(tray, "_start_calibration_capture") as start_capture:
-            tray.dashboard.prepare_reading_button.click()
-            self.assertTrue(tray._calibration_capture_pending)
-            tray._cancel_calibration()
-            start_capture.assert_not_called()
+        tray.dashboard.prepare_reading_button.click()
+        wizard = tray.onboarding_wizard
+        self.assertIsNotNone(wizard)
+        self.assertTrue(wizard.reading_setup)
+        self.assertEqual(wizard.draft_settings.capture_mode, "screen")
+        wizard.reject()
         self.assertFalse(load_app_settings(path).onboarding_completed)
-
-        tray._save_calibration_region(region)
-        saved = load_app_settings(path)
-        self.assertTrue(saved.onboarding_completed)
-        self.assertEqual(saved.capture_mode, "screen")
-        self.assertEqual(
-            load_dialog_region(os.environ["VNTTS_DIALOG_REGION_FILE"]), region
-        )
-        self.assertTrue(tray.dashboard.live_button.isEnabled())
-        self.assertEqual(tray.dashboard.live_button.accessibleName(), "Start reading")
+        tray.shutdown()
 
     def test_unavailable_window_keeps_start_available_to_retry_without_setup(self):
         for error, hint in (
@@ -9255,7 +9242,7 @@ class TrayApplicationTest(unittest.TestCase):
                 )
                 tray.show_dashboard()
                 tray.dashboard.show_reading()
-                controller.capture_target.get_geometry.side_effect = error
+                controller.check_reading_window.side_effect = error
                 with (
                     patch.object(tray, "run_onboarding") as setup,
                     patch.object(tray, "_show_tray_notification") as notify,
@@ -9270,7 +9257,7 @@ class TrayApplicationTest(unittest.TestCase):
                         self.assertEqual(tray.dashboard.reading_state.text(), hint)
                         self.assertEqual(tray.status_action.text(), "")
                     notify.assert_not_called()
-                    controller.capture_target.get_geometry.side_effect = None
+                    controller.check_reading_window.side_effect = None
                     tray.dashboard.live_button.click()
                     self.assertEqual(len(pool.tasks), 1)
                     self.assertIsNone(tray._runtime_control_state().window_hint)
@@ -9281,6 +9268,30 @@ class TrayApplicationTest(unittest.TestCase):
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 
+    def test_ready_window_retry_does_not_reload_model_or_repeat_validation(self):
+        tray, controller, pool = self._cold_reading_tray()
+        tray.settings = controller.settings = tray.settings.updated(
+            capture_mode="window", game_window_title="Game"
+        )
+        tray.set_ready(True)
+        controller.check_reading_window.side_effect = [WindowNotFoundError(), None]
+        with patch.object(tray, "run_onboarding") as setup:
+            tray.dashboard.live_button.click()
+            self.assertTrue(tray.dashboard.live_button.isEnabled())
+            self.assertFalse(tray.live_scope_focus_timer.isActive())
+            controller.toggle_live.assert_not_called()
+            tray.dashboard.live_button.click()
+            self.assertEqual(
+                controller.check_reading_window.call_args_list,
+                [call("Game", retry=False), call("Game", retry=True)],
+            )
+            controller.toggle_live.assert_called_once_with()
+            controller.start.assert_not_called()
+            self.assertEqual(pool.tasks, [])
+            self.assertIsNone(tray.last_controller_error)
+            setup.assert_not_called()
+        tray.shutdown()
+
     def test_cold_reading_checks_requested_window_and_leaves_engine_only_setup_available(
         self,
     ):
@@ -9288,21 +9299,18 @@ class TrayApplicationTest(unittest.TestCase):
         requested = tray.settings.updated(
             capture_mode="window", game_window_title="New game"
         )
-        target = Mock()
-        controller.capture_target_factory.return_value = target
         with patch.object(tray.initial_start_runner, "start") as initialize:
             tray.prepare_reading(start_live=True, reading_settings=requested)
-            controller.capture_target_factory.assert_called_once_with("New game")
-            target.get_geometry.assert_called_once_with()
-            controller.capture_target.get_geometry.assert_not_called()
+            controller.check_reading_window.assert_called_once_with(
+                "New game", retry=False
+            )
             initialize.assert_called_once()
         tray._finish_controller_lifecycle()
-        controller.capture_target_factory.reset_mock()
-        controller.capture_target.get_geometry.side_effect = WindowNotFoundError("Gone")
+        controller.check_reading_window.reset_mock()
+        controller.check_reading_window.side_effect = WindowNotFoundError("Gone")
         with patch.object(tray.initial_start_runner, "start") as initialize:
             tray.prepare_reading()
-            controller.capture_target.get_geometry.assert_not_called()
-            controller.capture_target_factory.assert_not_called()
+            controller.check_reading_window.assert_not_called()
             initialize.assert_called_once()
         self.assertEqual(pool.tasks, [])
         tray.shutdown()
@@ -9368,13 +9376,13 @@ class TrayApplicationTest(unittest.TestCase):
             capture_mode="window", game_window_title="Game"
         )
         selected = tray.settings.updated(story_index="selected-story.jsonl")
-        controller.capture_target.get_geometry.side_effect = WindowNotFoundError(
+        controller.check_reading_window.side_effect = WindowNotFoundError(
             "Game window is unavailable"
         )
         tray.prepare_reading(start_live=True, reading_settings=selected)
         self.assertEqual(tray._reading_window_retry_settings, selected)
         self.assertEqual(pool.tasks, [])
-        controller.capture_target.get_geometry.side_effect = None
+        controller.check_reading_window.side_effect = None
         with patch.object(tray, "run_onboarding") as setup:
             tray.dashboard.live_button.click()
             setup.assert_not_called()
@@ -9596,7 +9604,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray._initial_start_generation = tray._begin_controller_lifecycle()
         tray._start_live_after_initial_start = True
 
-        def initialize_again():
+        def initialize_again(*, window_checked):
             tray._initial_start_generation = tray._begin_controller_lifecycle()
             tray._start_live_after_initial_start = True
 

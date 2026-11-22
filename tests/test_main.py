@@ -534,7 +534,7 @@ class MainTest(unittest.TestCase):
             self.assertEqual(image.getpixel((0, 0)), (0, 0, 128))
             self.assertEqual(output.parent, screenshot_directory)
             self.assertTrue(output.is_file())
-            capture.assert_called_once_with()
+            capture.assert_called_once_with(keep_open=False)
 
     def test_capture_crops_selected_native_content_without_desktop_coordinates(self):
         image = Image.new("RGB", (220, 120), "red")
@@ -553,7 +553,7 @@ class MainTest(unittest.TestCase):
                 )
         self.assertEqual(result.size, (160, 30))
         self.assertEqual(result.getcolors(), [(4800, (0, 0, 128))])
-        capture.assert_called_once_with()
+        capture.assert_called_once_with(keep_open=False)
         target.backend.get_client_geometry.assert_not_called()
 
     def test_capture_without_saving_does_not_create_screenshot_directory(self):

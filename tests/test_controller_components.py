@@ -20,7 +20,12 @@ from vntts.playback_observer import observe_playback_start, playback_started_con
 from vntts.settings import AppSettings
 from vntts.speech_backend import XTTSVoiceRouterBackend
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, CharacterVoiceRouter
-from vntts.window_capture import WindowCaptureTarget, WindowGeometry, WindowInfo
+from vntts.window_capture import (
+    WindowCaptureTarget,
+    WindowGeometry,
+    WindowInfo,
+    WindowNotFoundError,
+)
 
 
 class ControllerComponentsTest(unittest.TestCase):
@@ -135,6 +140,73 @@ class ControllerComponentsTest(unittest.TestCase):
         backend.get_client_geometry.assert_called_with(replacement.handle)
         controller.apply_settings(controller.settings.updated(capture_mode="screen"))
         self.assertIsNone(controller.selected_game_window)
+
+    def test_explicit_retry_refreshes_runtime_and_cached_binding_after_reopen(self):
+        for explicit_selection in (False, True):
+            with self.subTest(explicit_selection=explicit_selection):
+                title = "Game" if explicit_selection else "Game - Story"
+                original = WindowInfo(100, title, 42)
+                reopened = WindowInfo(200, title, 84)
+                backend = Mock()
+                backend.list_windows.return_value = [original]
+                backend.get_window.return_value = original
+                backend.get_client_geometry.return_value = WindowGeometry(
+                    0, 0, 1280, 720
+                )
+                controller = AppController(
+                    AppSettings(capture_mode="window", game_window_title="Game"),
+                    capture_target_factory=lambda title: WindowCaptureTarget(
+                        title, backend
+                    ),
+                )
+                self.addCleanup(controller.shutdown)
+                if explicit_selection:
+                    controller.select_game_window(original)
+                controller.check_reading_window("Game")
+                runtime_target = controller.capture_target
+                backend.get_window.side_effect = lambda handle: (
+                    reopened if handle == reopened.handle else None
+                )
+                backend.list_windows.return_value = [reopened]
+
+                with (
+                    patch.object(controller, "live_reader", Mock(is_running=True)),
+                    self.assertRaises(WindowNotFoundError),
+                ):
+                    controller.check_reading_window("Game", retry=True)
+                with self.assertRaises(WindowNotFoundError):
+                    controller.check_reading_window("Game")
+                controller.check_reading_window("Game", retry=True)
+
+                self.assertIs(controller.capture_target, runtime_target)
+                self.assertEqual(controller.selected_game_window, reopened)
+                self.assertIs(controller.window_capture_target("Game"), runtime_target)
+                self.assertIs(controller._create_capture_target(), runtime_target)
+                controller.capture_target.get_geometry()
+                backend.get_client_geometry.assert_called_with(reopened.handle)
+
+    def test_explicit_start_honors_reselection_before_runtime_settings_are_applied(
+        self,
+    ):
+        selected = WindowInfo(200, "Game", 84)
+        backend = Mock()
+        backend.get_window.return_value = selected
+        controller = AppController(
+            AppSettings(capture_mode="window", game_window_title="Game"),
+            capture_target_factory=lambda title: WindowCaptureTarget(title, backend),
+        )
+        self.addCleanup(controller.shutdown)
+        previous = controller.capture_target
+        controller.select_game_window(selected)
+
+        with patch.object(previous, "close") as close:
+            controller.check_reading_window("Game")
+
+        close.assert_called_once_with()
+        self.assertEqual(controller.capture_target.selected_window, selected)
+        self.assertIs(
+            controller.window_capture_target("Game"), controller.capture_target
+        )
 
     def test_automatic_start_uses_prepared_metadata_without_reading_recordings(self):
         routed = Mock(spec=GeneratedAudioFallbackBackend)

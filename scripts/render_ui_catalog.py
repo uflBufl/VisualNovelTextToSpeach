@@ -2383,7 +2383,6 @@ def _onboarding_diagnostics_story(
 def _onboarding_test_story(
     wizard: OnboardingWizard, state: str, long_error: str
 ) -> None:
-    wizard.calibration_page.calibrated = True
     wizard.show_page(len(wizard.pages) - 1)
     if state == "test":
         return
@@ -2433,6 +2432,9 @@ def _onboarding_story(state: str) -> QWidget:
         auto_discover_windows=False,
         reading_setup=not first_run,
     )
+    if state == "calibration-complete" or state.startswith("test"):
+        wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.6, 0.8, 0.3))
+        wizard.calibration_page.finish_story_area(DialogRegion(0.05, 0.1, 0.9, 0.85))
     if state.startswith("game-window-error"):
         wizard.configuration_page.game_window.setCurrentText("")
         wizard.configuration_page.update_validation_summary()
@@ -2443,8 +2445,6 @@ def _onboarding_story(state: str) -> QWidget:
         _onboarding_diagnostics_story(wizard, state, long_error)
     elif state.startswith("calibration"):
         wizard.show_page(wizard.pages.index(wizard.calibration_page))
-        if state == "calibration-complete":
-            wizard.calibration_page.finish_calibration(DialogRegion(0.1, 0.6, 0.8, 0.3))
     elif state.startswith("test"):
         _onboarding_test_story(wizard, state, long_error)
     if state in {

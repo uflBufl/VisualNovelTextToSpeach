@@ -259,14 +259,14 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.show_reading()
         dashboard.resize(480, 440)
         dashboard.show()
-        dashboard.set_runtime_controls(RuntimeControlState(needs_screen_region=True))
+        dashboard.set_runtime_controls(RuntimeControlState())
         self.application.processEvents()
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.live_button.isEnabled())
         self.assertTrue(dashboard.pause_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.pause_button.isEnabled())
         self.assertTrue(dashboard.prepare_reading_button.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.prepare_reading_button.text(), "Set dialogue area")
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Set up and start")
         self.assertTrue(dashboard.capture_source_label.isVisibleTo(dashboard))
         self.assertEqual(dashboard.capture_source_label.text(), "Capture source")
         self.assertTrue(dashboard.game_window.isVisibleTo(dashboard))
@@ -1566,6 +1566,9 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
         dashboard.setup_more_button.click()
         self.assertTrue(dashboard.setup_primary_button.isVisibleTo(dashboard))
+        self.assertNotIn(
+            "Calibrate capture", [button.text() for button in dashboard.setup_buttons]
+        )
         dashboard.setup_primary_button.click()
 
         self.assertEqual(requests, ["settings", "readiness"])

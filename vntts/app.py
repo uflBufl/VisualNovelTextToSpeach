@@ -2562,7 +2562,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.pregeneration_requested.connect(self.open_pregeneration)
         self.dashboard.readiness_requested.connect(self.open_readiness)
         self.dashboard.audio_setup_requested.connect(self._open_audio_setup)
-        self.dashboard.calibration_requested.connect(self.calibrate)
         self.dashboard.voices_requested.connect(self.open_voice_previews)
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
@@ -3250,27 +3249,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._reading_window_hint = None
             return True
         try:
-            loaded = self.controller.settings
-            target = (
-                self.controller.capture_target
-                if loaded.capture_mode == "window"
-                and loaded.game_window_title == settings.game_window_title
-                else self.controller.capture_target_factory(settings.game_window_title)
+            self.controller.check_reading_window(
+                settings.game_window_title,
+                retry=self._reading_window_retry_settings is not None,
             )
-            if target is not None:
-                if self._reading_window_retry_settings is not None and isinstance(
-                    target, WindowCaptureTarget
-                ):
-                    previous_selection = target.selected_window
-                    target.retry_geometry()
-                    if (
-                        target.selected_window is not None
-                        and target.selected_window != previous_selection
-                        and isinstance(self.controller, AppController)
-                    ):
-                        self.controller.select_game_window(target.selected_window)
-                else:
-                    target.get_geometry()
         except (WindowNotFoundError, WindowMinimizedError) as error:
             self._reading_window_retry_settings = settings
             self.report_controller_error(error)
@@ -3333,7 +3315,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "a second TTS generation."
             )
             if start_live and not self.controller.is_live_running:
-                self.toggle_live()
+                self.toggle_live(window_checked=True)
             return True
         return False
 
@@ -3387,7 +3369,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self._set_reading_status("Reading is ready. Select Start reading.")
             self.schedule_hotkeys()
             if start_live and not self.controller.is_live_running:
-                self.toggle_live()
+                self.toggle_live(window_checked=True)
 
     def _refresh_hotkeys(self) -> None:
         if sys.platform != "darwin":
@@ -3478,7 +3460,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.voice_auditions.suspend()
         self.set_speech_paused(self.controller.toggle_speech_pause())
 
-    def toggle_live(self) -> bool:
+    def toggle_live(self, *, window_checked: bool = False) -> bool:
         if self._shutting_down:
             return False
         state = self._runtime_control_state()
@@ -3493,17 +3475,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status("Close the dialog before reading")
             return False
         if self._capture_setup_pending and not self.settings.onboarding_completed:
-            if self.settings.capture_mode == "screen":
-                self.calibrate()
-            else:
-                self.prepare_reading(start_live=True)
+            self.prepare_reading(start_live=True)
             return False
         if not state.can_toggle_live:
             return False
-        if state.can_initialize:
-            self.prepare_reading(start_live=True)
+        pending = self._reading_window_retry_settings
+        if state.can_initialize and not (
+            self._controller_ready and pending == self.controller.settings
+        ):
+            self.prepare_reading(start_live=True, reading_settings=pending)
             return False
         if not self._audio_runtime_available():
+            return False
+        if not window_checked and not self._reading_window_available(
+            self.controller.settings
+        ):
             return False
         return self._start_live_with_available_scope()
 
@@ -3804,7 +3790,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             message = (
                 "Live reading could not start: check the screen capture source in Settings"
                 if self.settings.capture_mode == "screen"
-                else "Live reading could not start: select a game window on Reading"
+                else "Open or restore the selected game window, then press Start reading again."
             )
         elif failure == "target-changed":
             message = "Live reading cancelled: the selected capture source changed"
@@ -6531,10 +6517,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         if self._capture_setup_pending and not self.settings.onboarding_completed:
             enabled = False
-            unavailable_reason = unavailable_reason or (
-                "Set the dialogue area on the screen before reading."
-                if self.settings.capture_mode == "screen"
-                else "Set up the dialogue area for the selected game before reading."
+            unavailable_reason = (
+                unavailable_reason or "Set the dialogue and story areas before reading."
             )
         loaded = getattr(self.controller, "settings", None)
         if enabled and isinstance(loaded, AppSettings):
@@ -6607,11 +6591,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             ),
             finding_current_line=self._live_scope_generation is not None,
-            needs_screen_region=(
-                self._capture_setup_pending
-                and not self.settings.onboarding_completed
-                and self.settings.capture_mode == "screen"
-            ),
             window_hint=(
                 self._reading_window_hint
                 if not unavailable_reason
@@ -6733,11 +6712,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     preparing
                     and not choosing_voice
                     and (
-                        button
-                        in (
-                            self.dashboard.calibrate_button,
-                            self.dashboard.settings_button,
-                        )
+                        button is self.dashboard.settings_button
                         or (
                             button is self.dashboard.narrator_voice_button
                             and not self._preparation_blocks_voice_changes()
@@ -6831,7 +6806,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.calibrate_action.setEnabled(available)
         self.story_area_action.setEnabled(available)
         self.settings_action.setEnabled(available)
-        self.dashboard.calibrate_button.setEnabled(available)
         self.dashboard.settings_button.setEnabled(available)
 
     def _begin_controller_lifecycle(self, cancellation: Event | None = None) -> int:

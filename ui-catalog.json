@@ -45,7 +45,7 @@
         {"id": "dashboard.reading-long-capture", "title": "Long capture title at compact size", "state": "Long speaker, dialogue and selected capture title remain readable together at larger text size"},
         {"id": "dashboard.reading-long-values-scrolled", "title": "Long source details after scrolling", "state": "Voice and audio source remain readable below long dialogue, and the long capture title wraps beside the controls"},
         {"id": "dashboard.story-position-manual", "title": "Manual story position available", "state": "The position override remains available before a mismatch in manual mode"},
-        {"id": "dashboard.setup-expanded", "title": "Tools expanded", "state": "Settings opens directly while Tools discloses calibration, support and quit actions"}
+        {"id": "dashboard.setup-expanded", "title": "Tools expanded", "state": "Settings opens directly while Tools shows readiness, support and quit actions"}
       ]
     },
     {
@@ -178,7 +178,7 @@
       "title": "Reading setup",
       "family": "Setup and recovery",
       "audience": "Player",
-      "mission": "Set the game window, prepare required components, calibrate dialogue and test one line before Reading.",
+      "mission": "Set the game window, prepare required components, select the dialogue and story areas and test one line before Reading.",
       "canonical_owner": "onboarding",
       "related": ["readiness", "settings", "calibration", "asset-manager"],
       "contracts": ["single-mission", "responsive-form", "global-settings"],
@@ -189,10 +189,10 @@
         {"id": "onboarding.game-window-error", "title": "Missing game window", "state": "An unavailable game has a visible next step"},
         {"id": "onboarding.diagnostics-loading", "title": "Prepare and check", "state": "Runtime provisioning and checks are in progress"},
         {"id": "onboarding.diagnostics-error", "title": "Component error", "state": "Blocking error and recovery are visible without hiding manual controls"},
-        {"id": "onboarding.calibration-complete", "title": "Dialogue area saved", "state": "A confirmed area enables Next without requiring another calibration"},
+        {"id": "onboarding.calibration-complete", "title": "Reading areas confirmed", "state": "Confirming both areas enables the dialogue preview"},
         {"id": "onboarding.diagnostics-multiple", "title": "Several failed checks", "state": "The first blocking component is selected and its guidance shown"},
         {"id": "onboarding.diagnostics-multiple-last", "title": "Inspect another failed check", "state": "Selecting a different component shows its full message and relevant recovery action"},
-        {"id": "onboarding.calibration", "title": "Calibrate dialogue", "state": "Overlay instructions and progress are clear"},
+        {"id": "onboarding.calibration", "title": "Select reading areas", "state": "Instructions explain where dialogue and central captions are read"},
         {"id": "onboarding.test", "title": "Try one line", "state": "The test is pending and saving is gated"},
         {"id": "onboarding.test-success", "title": "Test succeeded", "state": "The successful test leads to saving setup"},
         {"id": "onboarding.test-prepared-success", "title": "Prepared recording tested", "state": "A completed prepared recording test enables Save and names its source without requiring live generation"},

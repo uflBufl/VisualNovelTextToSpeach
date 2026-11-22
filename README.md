@@ -13,9 +13,11 @@ For a source checkout, use the developer instructions below.
    **Capture source** to choose the game window or **Screen region**. Opening
    the list refreshes the available windows.
 2. Click the play icon (**Start reading**). If the game needs setup, choose
-   **Set up and start**, mark the dialogue box and preview it with **Read this line**.
-   Choose **Save and start reading**, then return to the game. You can add
-   a **Story area** later in Settings for captions outside the dialogue box.
+   **Set up and start**. In **Reading areas**, mark the dialogue box and speaker
+   name, then select a wider **Story area** covering the centre of the scene and
+   the whole dialogue box. You can use the same scene before a central caption
+   appears. Choose **Read this line**, then **Save and start reading** and return
+   to the game.
 3. On **Reading**, choose whether to advance after speech or open
    **Compact** controls. Keep the game focused for automatic advancement.
    The stop icon ends capture and queued speech. Use the adjacent button to

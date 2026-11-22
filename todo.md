@@ -30,11 +30,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       or engine and verify retry. Suppressing repeated failures is not external
       Pocket cloning authorization.
 
-## Active - Remaining dialogue recognition and original-speech qualification
-
-- [ ] Verify genuinely partial originals separately in anecdotes/character
-      stories, which retain ASR.
-
 ## Active - Windows story preparation ASR compatibility
 
 - [ ] On Windows, verify cancellation and retry during duration, semantics,
@@ -98,8 +93,7 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       and full 300s/180s exact-window recordings; do not repeat it as an untested
       prerequisite. Keep explicit PID/path/start time/HAL ownership and no parent,
       desktop or global-audio fallback. Investigate ScreenCaptureKit -3805 lifetime
-      interference only if serialized ownership reproduces it. See R12 for the
-      remaining source/output discontinuities; positive capture is not gap removal.
+      interference only if serialized ownership reproduces it.
 
 ## Reading setup blockers found during persistent-OCR preflight
 
@@ -125,20 +119,17 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Remaining Reading and deferred layout work
 
-- [ ] **RUN-17-01 - Qualify catalog rebuild progress and Windows indexed search.**
-      During the next actual content update, verify visible progress for rebuilding
-      an already imported catalog on its existing background path. Initial index
-      construction belongs to admission/update and must not repeat on Read.
+- [ ] **RUN-17-01 - Qualify Windows indexed search.**
       On Windows10, exercise FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **REC-12-01 - Qualify native Windows recording after the resize fix.** On a Windows test host, record
-      shrink/grow, odd sizes, aspect changes and fullscreen/window transitions.
-      Decode the fixed-resolution MP4: require the entire selected window, fresh
-      black borders and no desktop/covering-window pixels. Verify timestamps,
-      Stop and cleanup. Compare calibration and decoded video against a reference
-      SDR frame. Record the display HDR setting and SDR white level when testing
-      HDR-to-SDR conversion.
+- [ ] **REC-12-01 - Locate and fix the brightness gain in Windows SDR recording.**
+      Matching static patches in a game screenshot and decoded MP4 show about
+      1.9x linear-light gain with Windows HDR reported off. On the game's
+      display, run `uv run python -m scripts.windows_sdr_probe` and collect
+      `report.json`. Compare the expected ramp, captured RGB, and decoded
+      MP4 values. If the ramp matches at both stages, compare a static game
+      scene before encoding. Verify the fix against the reproducing source.
 
 - [ ] **Deferred document and new-game reading layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
@@ -253,16 +244,6 @@ Other remaining defects and native checks:
      Checks must wait for the current operation, discard obsolete results and
      probe the effective configuration once; no false OCR installation error.
 
-## Investigate reported audio interruptions
-
-- [ ] **R12 - Investigate if audible interruptions recur.**
-      If reported again, match the affected line to its source WAV and recording
-      to distinguish playback loss from a capture issue.
-      Compare historical Python evidence only with matched source/device/rate;
-      no GIL-only attribution, launcher monkeypatch, WAV editing or buffer inflation.
-      Disambiguate repeated identical WAV occurrences before treating an NCC peak
-      as an authoritative onset; a matching source alone does not identify playback.
-
 ## Deferred - Windows support archive (20): defects and diagnostic gaps
 
 Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, Windows build `4bad9c73`; code paths rechecked on `1f4caa46`. Times below are archive UTC. Keep the already-fixed Settings/selection/original-playback delays separate from these remaining items.
@@ -296,10 +277,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 - [ ] Once native UI can be launched without interrupting the desktop, check saved OCR corrections on macOS and Windows: put the narrow editor near screen edges, hover both long source/replacement cells and inspect each with F2/Escape. Confirm full values remain readable, hover stays usable, native tooltips remain on screen, and exiting inspection leaves Save disabled. Retain full-window/tooltip captures and keyboard evidence. Offscreen tests and cropped tooltips verify content, not native placement or focus.
 
 - [ ] With verified background workspace isolation or an explicitly approved native session, review a captured uncertain line on macOS and Windows. Check Tab/arrow access to every footer action, literal-text copying and tooltips near screen edges. Save a scoped correction, reopen after an external rule edit, then Read Once on a real game and confirm the updated correction is used. Retain native focus and capture evidence; offscreen tests do not qualify OS routing.
-
-## Investigate reported slow-sounding voice playback
-
-- [ ] Identify and retain an actually slowed audible sample from the original/preview/reading paths, then compare its native DAC duration with its PCM frame count and rate before changing playback or synthesis speed. The current Mac reproduction plays Centurion original 12.51 s and MOSS preview 3.84 s at matching DAC durations, with 100% configured speed and no underflow; this does not explain the user's earlier report.
 
 ## Active - Faster voice auditions and qualified reference selection
 
@@ -368,26 +345,18 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
 ## Validate game voice provenance on Windows
 
 - [ ] In Stories, choose a different reference through `Use this voice` and confirm the voice plan returns promptly without checking all saved audio. Then start generation and confirm the deferred audio check succeeds; attach a support archive if either step still takes over a second before generation starts.
-- [ ] On Windows, confirm a character receives a game voice automatically when equally ranked story recordings are available, and genuinely unresolved roles show the review action prominently before generation.
-- [ ] Validate the repaired mid-preparation game-index refresh on Windows without deleting the import or choosing Centurion again. After voice discovery updates `story-index.jsonl`, confirm Step 2 resumes with the same story selection and saved narrator. If a selected story disappears, confirm the saved voice remains and Stories asks for a new selection; Cancel during refresh must close the dialog.
-- [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text, unlinked bank clips are explicitly labelled and available only for manual choice, and a manually selected reference stays selected after reopening. Old candidate catalogs should refresh without deleting the game import.
+- [ ] Test automatic voice routing with equally ranked story recordings and verify that unresolved roles expose the review action before generation.
+- [ ] Validate the repaired mid-preparation game-index refresh on Windows without deleting the import or choosing Centurion again. After voice discovery updates `story-index.jsonl`, confirm Step 2 resumes with the same story selection and saved narrator. Use a test catalog with the selected story removed to exercise reselection with the saved narrator and cancellation during refresh.
+- [ ] Open Voice plan and Voices with a fresh installed-game import. Confirm known game dialogue displays its original text and unlinked bank clips are labelled and available only for manual choice. Old candidate catalogs should refresh without deleting the game import.
 - [ ] On Windows, refresh an existing Centurion candidate catalog from the installed game. Confirm Voices and Story inspection show all usable character references (not just the three automatic recommendations), each original transcript contains spoken words once without labels such as `Greeting` or `Night`, and distinct in-game line IDs still resolve to the shared audio. No game-import deletion should be needed.
 
-## P0 - Validate automatic game-update refresh on Windows
+## Qualify the existing audio-bank index migration on macOS
 
 - [ ] On the current Mac, reopen Stories after updating the app and confirm the
       stale English audio-bank index triggers visible automatic import, preserves
       prepared audio, and no longer reaches `Saved audio needs attention`. The
       importer and background UI route are covered by automated tests; do not
       overwrite the user's game-content cache merely for this validation.
-- [ ] After a real Reverse: 1999 update, open Stories without using Add or import
-      content. Confirm that the update is detected, the cancellable import has a
-      visible status, new stories appear in the existing Game content source,
-      previously selected stories and voice choices remain, and an unchanged
-      second opening starts no import. If the import fails, confirm the old story
-      catalog remains usable and the import can be retried. Check that obsolete
-      story-candidate caches are reclaimed without touching saved jobs or narrator
-      references.
 
 ## P0 - Play while offline audio is still preparing
 
@@ -492,12 +461,8 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       which exhaust the synthesis duration limit fall back to live speech
       without aborting publication of the remaining recordings.
 
-## P0 - Validate the non-blocking Voice plan
+## P0 - Validate Windows voice preview startup
 
-- [ ] **Validate changed-story edge cases on Windows:** if a previously selected
-      story disappears after a game update, the saved Centurion choice must remain
-      while Stories requests a new selection. Cancel during content refresh must
-      close the dialog. The normal same-story refresh already passed player review.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
@@ -505,19 +470,6 @@ Evidence summary: Windows support archive (20), exported 2026-10-21 22:07 UTC, W
       Job Object. Gate: `Inspect selected voice` loads MOSS, produces a preview,
       remains reusable for a second preview, and forced VNTTS termination leaves no
       owned `moss-tts-server.exe` process.
-- [ ] **Needs player validation:** prepare one story with an automatically matched
-      character, one ambiguous character and one narrator fallback. Confirm that
-      generation can start without reviewing them; the Voice plan lists all roles
-      in useful order; `Inspect selected voice` plays the original and the exact
-      production preview; voice-reference and preview-phrase selectors can move
-      backward and forward independently; returning to a previously generated pair
-      reuses only that pair's preview; `Use <voice>`, narrator fallback, automatic
-      choice and `Change selected voice...` are clear; and an explicit choice
-      survives reopening while an untouched recommendation remains automatic.
-- [ ] **Validate the no-choice voice route on Windows:** in a real story, return
-      from Inspect selected voice before playback, during a preview and after a
-      failed save. Confirm Back becomes enabled, no reference is silently saved,
-      and the player can pick narrator fallback or return later.
 
 ## P0 - Stabilize Windows audio and the OpenMOSS runtime
 

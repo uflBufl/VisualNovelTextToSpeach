@@ -569,7 +569,10 @@ class DisplayCaptureTarget:
         return {"kind": "display", "display_id": 0}
 
     def capture_native(
-        self, *, cancel: Event | Callable[[], bool] | None = None
+        self,
+        *,
+        cancel: Event | Callable[[], bool] | None = None,
+        keep_open: bool = True,
     ) -> NativeFrame:
         with self._source_lock:
             cancelled = self._capture_cancelled
@@ -588,6 +591,7 @@ class DisplayCaptureTarget:
                 if source is not None and target != self._source_target:
                     source.close()
                     source = None
+                release_after_frame = source is None and not keep_open
                 if source is None:
                     source = NativeCaptureSession(target, cancel=interrupted)
                     with self._source_lock:
@@ -599,6 +603,12 @@ class DisplayCaptureTarget:
                 frame = source.capture(cancel=interrupted)
                 self.clock_offset = source.clock_offset
                 self.clock_uncertainty = source.clock_uncertainty
+                if release_after_frame:
+                    with self._source_lock:
+                        source, self._source = self._source, None
+                        self._source_target = None
+                    if source is not None:
+                        source.close()
                 return frame
             except BaseException:
                 with self._source_lock:
@@ -642,6 +652,9 @@ class WindowCaptureTarget(DisplayCaptureTarget):
     def bind_window(self, window: WindowInfo) -> None:
         if window.title.strip().casefold() != self.window_title.casefold():
             raise ValueError("Selected window does not match the configured title")
+        self._bind_resolved_window(window)
+
+    def _bind_resolved_window(self, window: WindowInfo) -> None:
         self._selected_window = window
         self._handle = window.handle
         self.last_window = window
@@ -655,41 +668,56 @@ class WindowCaptureTarget(DisplayCaptureTarget):
     def list_windows(self) -> list[WindowInfo]:
         return self.backend.list_windows()
 
-    def get_geometry(self) -> WindowGeometry:
+    def _visible_window(self) -> WindowInfo:
         window = self._resolve_window()
         if window.minimized:
             raise WindowMinimizedError(
                 f"Selected game window {window.title!r} is minimized"
             )
-        return self.backend.get_client_geometry(window.handle)
+        return window
+
+    def get_geometry(self) -> WindowGeometry:
+        return self.backend.get_client_geometry(self._visible_window().handle)
 
     def retry_geometry(self) -> WindowGeometry:
         """On an explicit retry, allow a unique exact title to acquire a new owner."""
-        if self._selected_window is not None:
+        previous_window = self._selected_window or self.last_window
+        if previous_window is not None:
             try:
+                window = self._visible_window()
                 if self._process_identity is not None:
-                    self._native_target()
-                return self.get_geometry()
+                    self._check_process_identity(window)
+                return self.backend.get_client_geometry(window.handle)
+            except WindowAmbiguousError:
+                raise
             except WindowNotFoundError:
                 pass
 
+        title = (
+            previous_window.title if previous_window is not None else self.window_title
+        )
         matches = [
             window
             for window in self.list_windows()
-            if window.title.strip().casefold() == self.window_title.casefold()
+            if window.title.strip().casefold() == title.strip().casefold()
         ]
         replacement = self._unique_window(matches)
+        if replacement.minimized:
+            raise WindowMinimizedError(
+                f"Selected game window {replacement.title!r} is minimized"
+            )
+        geometry = self.backend.get_client_geometry(replacement.handle)
         self.close()
         self._process_identity = None
-        self.bind_window(replacement)
-        return self.get_geometry()
+        self._bind_resolved_window(replacement)
+        return geometry
 
     def _native_target(self) -> dict[str, object]:
-        window = self._resolve_window()
-        if window.minimized:
-            raise WindowMinimizedError(
-                f"Selected game window {window.title!r} is minimized"
-            )
+        window = self._visible_window()
+        self._check_process_identity(window)
+        return {"kind": "window", "window_id": window.handle, "pid": window.process_id}
+
+    def _check_process_identity(self, window: WindowInfo) -> None:
         try:
             identity = (
                 window.process_id,
@@ -702,7 +730,6 @@ class WindowCaptureTarget(DisplayCaptureTarget):
                 "Selected game process changed; select its window again"
             )
         self._process_identity = identity
-        return {"kind": "window", "window_id": window.handle, "pid": window.process_id}
 
     def is_focused(self) -> bool:
         window = self._resolve_window()
