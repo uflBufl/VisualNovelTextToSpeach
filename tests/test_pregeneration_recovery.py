@@ -9,11 +9,16 @@ from unittest.mock import Mock, patch
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 
-from tests.pregeneration_fixtures import fixture
+from tests.generation_state_fixtures import replace_generation_state
+from tests.pregeneration_fixtures import InProcessPocketGenerator, fixture
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from vntts.authoring import generation_state
+from vntts.authoring.generation_failures import failure_record
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.speech_quality import SpeechQuality, SpeechSilenceValidationError
+from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.generation_database import measure_generation_phase, measure_generation_run
+from vntts.pregeneration_contract import PlannedLiveFallback
 from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
@@ -94,10 +99,19 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 (before.generated, before.failed, before.other_terminal), (1, 1, 0)
             )
 
+            plan_root = Path(temporary_directory) / "plan"
+            plan_root.mkdir()
+            _input, _result, voice_plan = inputs(plan_root)
+            plan = plan_automatic_recovery(generation_input, voice_plan, first)
+            stale = replace(plan.live_fallbacks[0], source_result_sha256="0" * 64)
+            with self.assertRaisesRegex(OfflineRecoveryError, "no longer matches"):
+                _terminalize_exhausted_failures(
+                    generation_input, first, (stale,), None, generator=generator
+                )
             result = _terminalize_exhausted_failures(
                 generation_input,
                 first,
-                (items[1]["queue_id"],),
+                plan.live_fallbacks,
                 None,
                 generator=generator,
             )
@@ -245,22 +259,30 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     {
                         "queue_id": "d",
                         "action": "reference_comparison",
+                        "source_result_sha256": "f" * 64,
                         "provider": "moss-tts",
+                        "failure_kind": "speech_silence",
                     },
                     {
                         "queue_id": "b",
                         "action": "edge_silence_trim",
+                        "source_result_sha256": "f" * 64,
                         "provider": "moss-tts",
+                        "failure_kind": "speech_silence",
                     },
                     {
                         "queue_id": "c",
                         "action": "bounded_seed_retry",
+                        "source_result_sha256": "f" * 64,
                         "provider": "moss-tts",
+                        "failure_kind": "missed_eos_audio_limit",
                     },
                     {
                         "queue_id": "a",
                         "action": "edge_silence_trim",
+                        "source_result_sha256": "f" * 64,
                         "provider": "moss-tts",
+                        "failure_kind": "speech_silence",
                     },
                 ],
             }
@@ -283,7 +305,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             plan.deferred_batches,
             (OfflineRecoveryBatch("reference_comparison", ("d",)),),
         )
-        self.assertEqual(plan.live_fallback_queue_ids, ("d",))
+        self.assertEqual(tuple(d.queue_id for d in plan.live_fallbacks), ("d",))
 
     def test_unknown_actions_and_providerless_failures_remain_deferred(self):
         with TemporaryDirectory() as directory:
@@ -296,14 +318,24 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     {
                         "queue_id": "a",
                         "action": "reference_comparison",
+                        "source_result_sha256": "f" * 64,
                         "provider": None,
+                        "failure_kind": "speech_silence",
                     },
                     {
                         "queue_id": "b",
                         "action": "future_action",
+                        "source_result_sha256": "f" * 64,
                         "provider": "moss-tts",
+                        "failure_kind": "backend_error",
                     },
-                    {"queue_id": "c", "action": "safe_resume", "provider": None},
+                    {
+                        "queue_id": "c",
+                        "action": "safe_resume",
+                        "source_result_sha256": "f" * 64,
+                        "provider": None,
+                        "failure_kind": "cancelled",
+                    },
                 ],
             }
             with patch(
@@ -325,7 +357,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                 OfflineRecoveryBatch("reference_comparison", ("a",)),
             ),
         )
-        self.assertEqual(plan.live_fallback_queue_ids, ())
+        self.assertEqual(tuple(d.queue_id for d in plan.live_fallbacks), ())
 
     def test_pocket_runs_safe_repairs_before_deferring_real_failures(self):
         with TemporaryDirectory() as temporary_directory:
@@ -343,27 +375,37 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                     {
                         "queue_id": "b",
                         "action": "bounded_seed_retry",
+                        "source_result_sha256": "f" * 64,
                         "provider": "pocket-tts",
+                        "failure_kind": "missed_eos_audio_limit",
                     },
                     {
                         "queue_id": "c",
                         "action": "offline_fallback_backend",
+                        "source_result_sha256": "f" * 64,
                         "provider": "pocket-tts",
+                        "failure_kind": "missed_eos_audio_limit",
                     },
                     {
                         "queue_id": "a",
                         "action": "safe_resume",
+                        "source_result_sha256": "f" * 64,
                         "provider": "pocket-tts",
+                        "failure_kind": "cancelled",
                     },
                     {
                         "queue_id": "d",
                         "action": "sentence_boundary_segmentation",
+                        "source_result_sha256": "f" * 64,
                         "provider": "pocket-tts",
+                        "failure_kind": "speech_silence",
                     },
                     {
                         "queue_id": "e",
                         "action": "edge_silence_trim",
+                        "source_result_sha256": "f" * 64,
                         "provider": "pocket-tts",
+                        "failure_kind": "speech_silence",
                     },
                 ],
             }
@@ -386,10 +428,100 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             plan.deferred_action_counts,
             (("bounded_seed_retry", 1), ("offline_fallback_backend", 1)),
         )
-        self.assertEqual(plan.live_fallback_queue_ids, ("b", "c"))
+        self.assertEqual(tuple(d.queue_id for d in plan.live_fallbacks), ("b", "c"))
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
+    def test_terminal_silence_falls_back_and_generation_continues_for_any_engine(self):
+        for provider in ("qwen-tts", "future-tts"):
+            with self.subTest(provider=provider), TemporaryDirectory() as directory:
+                root = Path(directory)
+                _job, generation_input, saved, items = fixture(root)
+                generation_input = replace(
+                    generation_input, narrator_fallback_roles=("Narrator",)
+                )
+                failed_id, next_id = (item["queue_id"] for item in items)
+                state = generation_state.load_generation_state(
+                    saved.state, generation_input.queue
+                )
+                error = SpeechSilenceValidationError(
+                    SpeechQuality(
+                        silence_ratio=0.7,
+                        leading_silence_seconds=0.0,
+                        trailing_silence_seconds=0.0,
+                        longest_internal_silence_seconds=2.0,
+                    ),
+                    ("internal silence exceeded the limit",),
+                )
+                failure = {
+                    "status": "failed",
+                    "line_id": items[0]["line_id"],
+                    "text_sha256": items[0]["text_sha256"],
+                    "speaker": "Narrator",
+                    "requested_voice_character": "Narrator",
+                    "voice_character": "Narrator",
+                    "attempts": 3,
+                    "attempts_by_provider": {provider: 3},
+                    "seed": 0,
+                    "seed_applied": True,
+                    "provider": provider,
+                    "model": "fixture-model",
+                    "generation_profile": "default",
+                    "synthesis_provenance_sha256": "e" * 64,
+                    "last_error": str(error),
+                    "failure": failure_record(error, text=items[0]["text"]),
+                }
+                state["items"] = {failed_id: failure}
+                replace_generation_state(saved.state, state)
+                plan_root = root / "plan"
+                plan_root.mkdir()
+                _unused, _unused_result, voice_plan = inputs(plan_root)
+                voice_plan = replace(voice_plan, synthesis_backend="pocket-tts")
+                generator = InProcessPocketGenerator()
+
+                plan = plan_automatic_recovery(
+                    generation_input, voice_plan, generator.inspect(generation_input)
+                )
+                self.assertEqual(plan.automatic_batches, ())
+                self.assertEqual(
+                    tuple(d.queue_id for d in plan.live_fallbacks), (failed_id,)
+                )
+                self.assertEqual(
+                    plan.deferred_action_counts, (("reference_comparison", 1),)
+                )
+
+                result = OfflineRecoveryWorker(generator).generate_and_recover(
+                    generation_input, voice_plan
+                )
+
+                persisted = generation_state.load_generation_state(
+                    result.generation.state, generation_input.queue
+                )["items"]
+                fallback = persisted[failed_id]
+                self.assertEqual(fallback["status"], "live_fallback")
+                self.assertEqual(fallback["provider"], provider)
+                self.assertEqual(fallback["failure"], failure["failure"])
+                decision = fallback["live_fallback"]
+                self.assertEqual(decision["reason"], "automatic_recovery_exhausted")
+                self.assertEqual(decision["provider"], "pocket-tts")
+                self.assertEqual(decision["evidence"]["base_result"], failure)
+                self.assertEqual(persisted[next_id]["status"], "approved")
+                self.assertEqual(generator.calls, 1)
+                self.assertEqual(result.live_fallbacks, 1)
+                self.assertEqual(result.remaining_failed, 0)
+                self.assertEqual(result.generation.failed, 0)
+                self.assertEqual(result.remaining_action_counts, ())
+                library = GeneratedAudioLibrary.load_optional(result.generation.state)
+                self.assertIsNotNone(library)
+                self.assertIsNotNone(
+                    library.find_live_fallback(
+                        items[0]["line_id"], items[0]["text_sha256"]
+                    )
+                )
+                self.assertIsNotNone(
+                    library.find(items[1]["line_id"], items[1]["text_sha256"])
+                )
+
     def test_successful_partial_generation_trusts_result_without_reopening_state(self):
         with TemporaryDirectory() as directory:
             generation_input, base, voice_plan = inputs(Path(directory))
@@ -406,6 +538,29 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
 
         self.assertIs(result.generation, completed_line)
         statuses.assert_not_called()
+
+    def test_engine_start_failure_stops_the_queue_before_line_recovery(self):
+        with TemporaryDirectory() as directory:
+            generation_input, _, voice_plan = inputs(Path(directory))
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError("No saved state")
+            startup_error = OfflineGenerationError("Model failed to load")
+            generator.generate.side_effect = startup_error
+            planner = Mock()
+            worker = OfflineRecoveryWorker(generator, planner=planner)
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(("first", "next"), {}),
+                ),
+                self.assertRaises(OfflineGenerationError) as caught,
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+            self.assertIs(caught.exception, startup_error)
+            generator.generate.assert_called_once_with(
+                generation_input, voice_plan, None, queue_ids=("first",)
+            )
+            planner.assert_not_called()
         planner.assert_not_called()
 
     def test_real_generation_scope_covers_per_line_recovery_and_priority(self):
@@ -915,7 +1070,10 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                         (),
                         (("backend_diagnosis", 2),),
                         (OfflineRecoveryBatch("backend_diagnosis", ("a", "b")),),
-                        ("a", "b"),
+                        tuple(
+                            PlannedLiveFallback(key, "backend_diagnosis", "f" * 64)
+                            for key in ("a", "b")
+                        ),
                     ),
                     OfflineRecoveryPlan(
                         "3" * 64,
@@ -935,7 +1093,9 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             ).recover(generation_input, voice_plan, first)
 
         terminalizer.assert_called_once()
-        self.assertEqual(terminalizer.call_args.args[2], ("a", "b"))
+        self.assertEqual(
+            tuple(d.queue_id for d in terminalizer.call_args.args[2]), ("a", "b")
+        )
         self.assertEqual(result.recovered, 0)
         self.assertEqual(result.live_fallbacks, 2)
         self.assertEqual(result.remaining_failed, 0)

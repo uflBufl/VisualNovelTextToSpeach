@@ -241,13 +241,14 @@ class CurrentVoiceTests(unittest.TestCase):
         ):
             self.assertEqual(getattr(controller.voice_router, name), {})
 
-    def test_generation_engine_model_and_profile_must_match_current_controls(self):
+    def test_generation_controls_do_not_invalidate_a_recorded_current_voice(self):
         reference = self.bind("Ada", b"\0\0" * 10)
         entry = recording("Ada", (reference,))
         for changes in (
             {"offline_speech_backend": "moss-tts"},
             {
                 "offline_speech_backend": "coqui-xtts",
+                "offline_tts_model": "chosen-model",
                 "offline_tts_profile": "natural",
             },
         ):
@@ -255,20 +256,36 @@ class CurrentVoiceTests(unittest.TestCase):
                 snapshot = CurrentVoiceSnapshot.capture(
                     self.library, self.settings.updated(**changes)
                 )
-                self.assertFalse(snapshot.matches(entry))
+                self.assertTrue(snapshot.matches(entry))
+                self.assertFalse(snapshot.matches(recording("Ada", ("c" * 64,))))
+
+    def test_implicit_narrator_preset_survives_offline_engine_changes(self):
+        self.library.select("Unknown", route="narrator")
         settings = self.settings.updated(
-            offline_speech_backend="coqui-xtts", offline_tts_model="chosen-model"
+            narrator_speaker="marius",
+            offline_speech_backend="coqui-xtts",
+            offline_tts_model="chosen-model",
+            offline_tts_profile="natural",
         )
-        entry["provider"] = "coqui-xtts"
-        entry["generation_profile"] = settings.offline_tts_profile
-        entry["vntts.recorded_voice"]["provider"] = "coqui-xtts"
         snapshot = CurrentVoiceSnapshot.capture(self.library, settings)
-        self.assertFalse(snapshot.matches(entry))
-        entry["model"] = "chosen-model"
-        entry["vntts.recorded_voice"]["model"] = "chosen-model"
+        for role in ("Narrator", "Unknown", "Unbound role"):
+            with self.subTest(role=role):
+                self.assertTrue(snapshot.matches(recording(role, (), speaker="marius")))
+                self.assertFalse(snapshot.matches(recording(role, (), speaker="alba")))
+        self.library.select("Narrator", route="live-fallback")
+        fallback = CurrentVoiceSnapshot.capture(self.library, settings, snapshot)
+        self.assertFalse(fallback.matches(recording("Unknown", (), speaker="marius")))
+
+    def test_explicit_preset_survives_offline_changes_and_rejects_another_preset(self):
+        self.library.select("Ada", route="voice", source_id="preset:alba")
+        settings = self.settings.updated(offline_speech_backend="moss-tts")
+        snapshot = CurrentVoiceSnapshot.capture(self.library, settings)
+        entry = recording("Ada", (), speaker="alba")
         self.assertTrue(snapshot.matches(entry))
-        entry["generation_profile"] = "natural"
-        self.assertFalse(snapshot.matches(entry))
+        self.library.select("Ada", route="voice", source_id="preset:marius")
+        changed = CurrentVoiceSnapshot.capture(self.library, settings, snapshot)
+        self.assertFalse(changed.matches(entry))
+        self.assertTrue(changed.matches(recording("Ada", (), speaker="marius")))
 
     def test_offline_controls_are_independent_of_live_engine_preferences(self):
         reference = self.bind("Ada", b"\0\0" * 10)

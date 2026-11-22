@@ -20,6 +20,7 @@ from tests.symlink_support import symlink_or_skip
 from vntts.audio_output import AudioDeviceChangedError
 from vntts.model_assets import ModelAssetManager
 from vntts.playback import replay_audio_capture_context
+from vntts.playback_observer import playback_preparation_context
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
     _REQUIRED_MODULES,
@@ -233,6 +234,157 @@ class DeferredWorkerStartupTests(unittest.TestCase):
         self.assertEqual(prepared.payload.voice_reference_id, "voice:narrator:built-in")
         install.assert_not_called()
         process_factory.assert_not_called()
+
+    def test_observed_worker_load_reports_only_actual_cold_start(self):
+        backend = self.backend()
+        phases = []
+        token = playback_preparation_context.set(phases.append)
+        try:
+            with (
+                patch.object(backend, "_prepare_runtime"),
+                patch.object(
+                    backend,
+                    "_start_worker",
+                    side_effect=lambda **_: self.ready(backend),
+                ),
+            ):
+                backend._ensure_worker()
+                self.assertEqual(phases, ["loading-model", "worker-ready"])
+                phases.clear()
+                backend._ensure_worker()
+                self.assertEqual(phases, [])
+        finally:
+            playback_preparation_context.reset(token)
+
+    def test_parent_forwards_only_scoped_preparation_before_first_pcm(self):
+        backend = self.backend()
+        phases = []
+        result = (
+            FakeWorkerBackend(backend.registry)
+            .render(SynthesisRequest("Narrator", "Private line."))
+            .collect()
+        )
+        process = FakeProcess(None)
+        for observed in (True, False):
+            with self.subTest(observed=observed):
+                index = 0
+
+                def next_frame(*_args, **_kwargs):
+                    nonlocal index
+                    request_id = send.call_args.args[1]["request_id"]
+                    documents = [
+                        {
+                            "type": "preparation-phase",
+                            "request_id": "other",
+                            "phase": "preparing-voice",
+                        },
+                        {
+                            "type": "preparation-phase",
+                            "request_id": request_id,
+                            "phase": ["invalid"],
+                        },
+                        {
+                            "type": "preparation-phase",
+                            "request_id": request_id,
+                            "phase": "preparing-voice",
+                        },
+                        {
+                            "type": "preparation-phase",
+                            "request_id": request_id,
+                            "phase": "generating-first-chunk",
+                        },
+                        {
+                            "type": "chunk",
+                            "shape": list(result.pcm.shape),
+                            "sample_rate": result.sample_rate,
+                            "index": 0,
+                            "elapsed_ms": 0.0,
+                        },
+                        {
+                            "type": "preparation-phase",
+                            "request_id": request_id,
+                            "phase": "preparing-voice",
+                        },
+                        {"type": "result", "result": _result_document(result)},
+                    ]
+                    document = documents[index]
+                    index += 1
+                    return document, result.pcm.tobytes() if document[
+                        "type"
+                    ] == "chunk" else b""
+
+                token = playback_preparation_context.set(
+                    phases.append if observed else None
+                )
+                try:
+                    with (
+                        patch.object(backend, "_ensure_worker", return_value=process),
+                        patch.object(backend, "_send") as send,
+                        patch.object(backend, "_next_frame", side_effect=next_frame),
+                    ):
+                        rendered = backend.render(
+                            SynthesisRequest("Narrator", "Private line.")
+                        ).collect()
+                        send.assert_called_once()
+                        self.assertIs(
+                            send.call_args.args[1].get("observe_preparation", False),
+                            observed,
+                        )
+                    np.testing.assert_array_equal(rendered.pcm, result.pcm)
+                finally:
+                    playback_preparation_context.reset(token)
+        self.assertEqual(
+            phases,
+            ["preparing-voice", "generating-first-chunk", "first-chunk-ready"],
+        )
+
+    def test_request_lock_wait_keeps_cold_load_before_worker_ready(self):
+        for warm in (False, True):
+            with self.subTest(warm=warm):
+                backend = self.backend()
+                if warm:
+                    self.ready(backend)
+                phases = []
+
+                def report(phase):
+                    phases.append(phase)
+                    if phase == "waiting-for-worker":
+                        backend._request_lock.release()
+
+                backend._request_lock.acquire()
+                result = (
+                    FakeWorkerBackend(backend.registry)
+                    .render(SynthesisRequest("Narrator", "Line."))
+                    .collect()
+                )
+                token = playback_preparation_context.set(report)
+                try:
+                    with (
+                        patch.object(backend, "_prepare_runtime"),
+                        patch.object(
+                            backend,
+                            "_start_worker",
+                            side_effect=lambda **_: self.ready(backend),
+                        ),
+                        patch.object(backend, "_send"),
+                        patch.object(
+                            backend,
+                            "_next_frame",
+                            return_value=(
+                                {"type": "result", "result": _result_document(result)},
+                                b"",
+                            ),
+                        ),
+                    ):
+                        backend.render(SynthesisRequest("Narrator", "Line.")).collect()
+                finally:
+                    playback_preparation_context.reset(token)
+                self.assertEqual(
+                    phases,
+                    ["waiting-for-worker", "worker-ready"]
+                    if warm
+                    else ["waiting-for-worker", "loading-model", "worker-ready"],
+                )
 
     def test_pocket_prepared_request_reports_resolved_reference_and_preset(self):
         backend = self.backend(narrator_reference=Path("narrator.wav"))
@@ -1872,6 +2024,7 @@ print("worker-import-ready")
                     {
                         "type": "render",
                         "request_id": str(index),
+                        "observe_preparation": index != 1,
                         "voice": "Unregistered role",
                         "text": "Same phrase.",
                         "seed": None,
@@ -1900,13 +2053,22 @@ print("worker-import-ready")
             clear.assert_not_called()
             outgoing.seek(0)
             results = []
+            phases = []
             while (frame := _read_frame(outgoing)) is not None:
                 document, _pcm = frame
                 self.assertNotEqual(document["type"], "error", document)
+                if document["type"] == "preparation-phase":
+                    self.assertEqual(set(document), {"type", "request_id", "phase"})
+                    self.assertEqual(_pcm, b"")
+                    phases.append((document["request_id"], document["phase"]))
                 if document["type"] == "result":
                     results.append(document["result"]["diagnostics"]["cache_source"])
             self.assertEqual(
                 results, ["fresh-generation", "fresh-generation", "memory-cache"]
+            )
+            self.assertEqual(
+                phases,
+                [("0", "preparing-voice"), ("0", "generating-first-chunk")],
             )
             self.assertEqual(
                 model.stream_calls,

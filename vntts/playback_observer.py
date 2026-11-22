@@ -8,6 +8,9 @@ from threading import Lock
 playback_started_context: ContextVar[Callable[[], None] | None] = ContextVar(
     "playback_started_context", default=None
 )
+playback_preparation_context: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "playback_preparation_context", default=None
+)
 
 
 @contextmanager

@@ -61,6 +61,7 @@ from vntts.document_identity import (
 from vntts.json_types import decode_json
 from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.pocket_model import pocket_model_ready
+from vntts.pregeneration_contract import supports_generation_seed
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
@@ -1136,7 +1137,7 @@ def preview_identity(
         "model": model,
         "language": language,
         "profile": profile,
-        "seed": None if backend == "pocket-tts" else 0,
+        "seed": 0 if supports_generation_seed(backend) else None,
     }
     from vntts.runtime_paths import (
         RUNTIME_ENVIRONMENT_VARIABLES,
@@ -1311,7 +1312,7 @@ def _cached_preview_metadata(
         or not is_lowercase_sha256(document.get("audio_sha256"))
         or document["audio_sha256"] != audio_sha256
         or (seed is not None and (type(seed) is not int or not 0 <= seed < 2**64))
-        or (seed is None) != (plan.synthesis_backend == "pocket-tts")
+        or (seed is not None) != supports_generation_seed(plan.synthesis_backend)
     ):
         raise VoiceAuditionError(
             "Cached voice preview manifest does not match its input"

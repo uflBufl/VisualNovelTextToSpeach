@@ -1961,7 +1961,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._refresh_narrator_status()
         self._selection_changed()
         if return_to_confirmation:
-            self.preparationRequested.emit()
             self._save_selection()
 
     def _engine_changed(self) -> None:
@@ -5039,7 +5038,6 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if self.has_pending_work() or not self._save_story_selection_drafts():
             return
-        self.preparationRequested.emit()
         self._save_selection()
 
     def _continue_requested(self) -> None:
@@ -5053,7 +5051,6 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._pack_result is None and self._can_start_reading():
             self.readingRequested.emit(False)
             return
-        self.preparationRequested.emit()
         manifest = self._saved_manifest_for_selection()
         if (
             manifest is not None
@@ -5118,6 +5115,7 @@ class OfflineAudioPreparationDialog(QDialog):
         except (OSError, PregenerationSetupError) as error:
             self._set_resume_error("Unable to save preparation", error)
             return
+        self.preparationRequested.emit()
         self._generation_configuration = None
         self._story_job_statuses = self.job_store.story_statuses(content)
         for selection_id in self._job.selected_story_ids:

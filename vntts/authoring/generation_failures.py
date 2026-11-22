@@ -9,6 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TypeAlias, TypedDict
 
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
+
 from vntts.authoring.authority import canonical_document_sha256 as _canonical_sha256
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
@@ -56,6 +58,7 @@ JsonDocument: TypeAlias = dict[str, object]
 
 class _FailureReportRecord(TypedDict):
     queue_id: str
+    source_result_sha256: str | None
     line_id: str
     speaker: str
     text: str
@@ -201,6 +204,40 @@ def normalized_failure_record(item: object, *, text: str = "") -> JsonDocument:
     }
 
 
+def failure_report_record(
+    item: VoiceGenerationQueueItem,
+    result: JsonDocument,
+    source_result_sha256: str | None,
+) -> _FailureReportRecord:
+    requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    failure = normalized_failure_record(result, text=item.text)
+    attempts = _nonnegative_int(
+        result.get("attempts", 0), f"State item {item.queue_id!r} attempts"
+    )
+    return {
+        "queue_id": item.queue_id,
+        "source_result_sha256": source_result_sha256,
+        "line_id": item.line_id,
+        "speaker": item.speaker,
+        "text": item.text,
+        "requested_voice_character": result.get("requested_voice_character", requested),
+        "synthesis_voice_character": result.get("voice_character", requested),
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "generation_profile": result.get("generation_profile"),
+        "synthesis_control_digest": result.get("synthesis_provenance_sha256"),
+        "attempts": completed_generation_attempts(result),
+        "attempts_by_provider": _provider_attempts(
+            result, attempts, default_provider=result.get("provider")
+        ),
+        "seed": result.get("seed"),
+        "last_error": result.get("last_error"),
+        "failure": failure,
+        "failure_repair": copy.deepcopy(result.get("failure_repair")),
+        "failure_repair_history": failure_repair_history(result),
+    }
+
+
 def generation_failure_report(
     state_path: str | Path, queue_path: str | Path
 ) -> _GenerationFailureReport:
@@ -218,36 +255,8 @@ def generation_failure_report(
         if result.get("status") != "failed":
             continue
         item = queue_by_id[queue_id]
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
-        failure = normalized_failure_record(result, text=item.text)
-        attempts = _nonnegative_int(
-            result.get("attempts", 0), f"State item {queue_id!r} attempts"
-        )
-        records.append(
-            {
-                "queue_id": queue_id,
-                "line_id": item.line_id,
-                "speaker": item.speaker,
-                "text": item.text,
-                "requested_voice_character": result.get(
-                    "requested_voice_character", requested
-                ),
-                "synthesis_voice_character": result.get("voice_character", requested),
-                "provider": result.get("provider"),
-                "model": result.get("model"),
-                "generation_profile": result.get("generation_profile"),
-                "synthesis_control_digest": result.get("synthesis_provenance_sha256"),
-                "attempts": completed_generation_attempts(result),
-                "attempts_by_provider": _provider_attempts(
-                    result, attempts, default_provider=result.get("provider")
-                ),
-                "seed": result.get("seed"),
-                "last_error": result.get("last_error"),
-                "failure": failure,
-                "failure_repair": copy.deepcopy(result.get("failure_repair")),
-                "failure_repair_history": failure_repair_history(result),
-            }
-        )
+        source_digest = _canonical_sha256(result) if "failure" in result else None
+        records.append(failure_report_record(item, result, source_digest))
     records.sort(key=lambda value: value["queue_id"])
 
     def counts(
@@ -317,10 +326,11 @@ def generation_failure_repair_plan(
     report = generation_failure_report(state_path, queue_path)
     planned: list[JsonDocument] = []
     for record in report["records"]:
-        action, reason, previous_strategy = _failure_repair_action(record)
+        action, reason, previous_strategy = failure_repair_action(record)
         planned.append(
             {
                 "queue_id": record["queue_id"],
+                "source_result_sha256": record["source_result_sha256"],
                 "line_id": record["line_id"],
                 "speaker": record["speaker"],
                 "requested_voice_character": record["requested_voice_character"],
@@ -351,7 +361,7 @@ def generation_failure_repair_plan(
     }
 
 
-def _failure_repair_action(record: _FailureReportRecord) -> tuple[str, str, object]:
+def failure_repair_action(record: _FailureReportRecord) -> tuple[str, str, object]:
     previous_repair = record.get("failure_repair")
     previous_strategy = (
         previous_repair.get("strategy") if isinstance(previous_repair, dict) else None

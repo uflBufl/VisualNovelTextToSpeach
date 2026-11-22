@@ -58,6 +58,12 @@ from vntts.json_types import has_schema_version as _has_exact_schema_version
 from vntts.json_types import is_json_object
 from vntts.numeric_values import optional_finite_number
 from vntts.path_safety import read_regular_bytes
+from vntts.pregeneration_contract import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
+    TERMINAL_LINE_FAILURE_KINDS,
+    is_terminal_line_failure,
+    supports_generation_seed,
+)
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
 
@@ -105,14 +111,7 @@ LIVE_FALLBACK_REASONS = frozenset(
         LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     }
 )
-FAILURE_KINDS = {
-    "missed_eos_audio_limit",
-    "speech_silence",
-    "reference_unavailable",
-    "backend_error",
-    "cancelled",
-    "interrupted",
-}
+FAILURE_KINDS = TERMINAL_LINE_FAILURE_KINDS | {"cancelled", "interrupted"}
 
 StateObject: TypeAlias = dict[str, object]
 StateItems: TypeAlias = dict[str, StateObject]
@@ -1476,15 +1475,6 @@ def _validate_automatic_recovery_live_fallback_evidence(
     }
     base_result = evidence.get("base_result") if isinstance(evidence, dict) else None
     failure = base_result.get("failure") if isinstance(base_result, dict) else None
-    allowed_actions = {
-        "bounded_seed_retry",
-        "offline_fallback_backend",
-        "inline_pause_marker_comparison",
-        "reference_comparison",
-        "reference_discovery",
-        "backend_diagnosis",
-        "provenance_recovery_or_regeneration",
-    }
     if (
         not isinstance(evidence, dict)
         or set(evidence) != fields
@@ -1494,13 +1484,15 @@ def _validate_automatic_recovery_live_fallback_evidence(
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not isinstance(base_result, dict)
         or base_result.get("status") != "failed"
-        or not _automatic_recovery_source_backend(base_result, failure)
         or isinstance(base_result.get("live_fallback"), dict)
         or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
-        or evidence.get("recovery_action") not in allowed_actions
+        or evidence.get("recovery_action")
+        not in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
         or not isinstance(failure, dict)
         or failure.get("kind") != evidence.get("failure_kind")
-        or failure.get("kind") in {"cancelled", "interrupted"}
+        or not is_terminal_line_failure(
+            base_result.get("provider"), failure.get("kind")
+        )
     ):
         raise BulkGenerationError(
             f"State item {queue_id!r} automatic-recovery evidence is malformed"
@@ -1516,18 +1508,6 @@ def _validate_automatic_recovery_live_fallback_evidence(
     _validate_failure_record(failure, queue_id, result=base_result)
     _validate_synthesis_identity(base_result, queue_id)
     _validate_seed_application(base_result, queue_id)
-
-
-def _automatic_recovery_source_backend(result: StateObject, failure: object) -> bool:
-    provider = result.get("provider")
-    return bool(
-        provider == "pocket-tts"
-        and result.get("model") == "pocket-tts"
-        and result.get("generation_profile") == "default"
-        or provider == "moss-tts"
-        and isinstance(failure, dict)
-        and failure.get("kind") in {"missed_eos_audio_limit", "speech_silence"}
-    )
 
 
 def _validate_synthesis_identity(
@@ -2219,7 +2199,7 @@ def _validate_seed_application(result: StateObject, queue_id: str) -> None:
         raise BulkGenerationError(
             f"State item {queue_id!r} seed_applied must be boolean"
         )
-    expected = result.get("provider") != "pocket-tts"
+    expected = supports_generation_seed(result.get("provider"))
     if applied != expected:
         raise BulkGenerationError(
             f"State item {queue_id!r} seed application conflicts with its backend"

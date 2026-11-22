@@ -27,7 +27,11 @@ from vntts.audio_output import PcmAdmissionRejected, resolve_audio_output  # noq
 from vntts.history import DialogueHistory  # noqa: E402
 from vntts.history_ui import DialogueHistoryDialog  # noqa: E402
 from vntts.playback import ReplayAudio  # noqa: E402
-from vntts.playback_observer import playback_started_context  # noqa: E402
+from vntts.playback_observer import (  # noqa: E402
+    playback_preparation_context,
+    playback_started_context,
+)
+from vntts.support import PerformanceLog  # noqa: E402
 
 
 class DialogueHistoryTest(unittest.TestCase):
@@ -146,22 +150,24 @@ class DialogueHistoryDialogTest(unittest.TestCase):
     def test_search_and_details_expose_accessible_names_and_label_buddies(self):
         dialog = self.create_dialog(DialogueHistory(), Mock())
 
-        self.assertEqual(dialog.search.accessibleName(), "Search dialogue history")
+        self.assertEqual(dialog.search.accessibleName(), "Search history")
         self.assertEqual(dialog.search_label.buddy(), dialog.search)
         self.assertEqual(dialog.details.accessibleName(), "Selected dialogue details")
         self.assertEqual(dialog.details_label.buddy(), dialog.details)
         self.assertFalse(dialog.replay_button.isEnabled())
-        self.assertEqual(dialog.replay_button.text(), "Current voice")
+        self.assertTrue(dialog.replay_button.isHidden())
+        self.assertEqual(dialog.replay_button.text(), "Original")
+        self.assertEqual(dialog.replay_button.accessibleName(), "Play original")
+        self.assertFalse(dialog.current_voice_button.isEnabled())
+        self.assertFalse(dialog.current_voice_button.isHidden())
+        self.assertEqual(dialog.current_voice_button.text(), "With current settings")
         self.assertEqual(
-            dialog.replay_button.accessibleName(),
-            "Play current voice",
+            dialog.current_voice_button.accessibleName(),
+            "Speak with current settings",
         )
-        self.assertEqual(dialog.stop_button.text(), "Stop")
-        self.assertEqual(dialog.stop_button.accessibleName(), "Stop current speech")
+        self.assertFalse(hasattr(dialog, "stop_button"))
         self.assertEqual(dialog.export_button.text(), "Export...")
-        self.assertEqual(
-            dialog.export_button.accessibleName(), "Export dialogue history"
-        )
+        self.assertEqual(dialog.export_button.accessibleName(), "Export history")
         self.assertFalse(dialog.export_button.isEnabled())
         self.assertIn("No dialogue has played", dialog.empty_message.text())
         self.assertEqual(dialog.status.toPlainText(), "")
@@ -183,7 +189,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog = self.create_dialog(history, replay)
 
         dialog.search.setText("SUITCASE")
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.replay_runner.active)
 
         self.assertEqual(dialog.entries.count(), 1)
@@ -207,11 +213,11 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog = self.create_dialog(
             history, voice, stop_handler=stop_voice, play_recording=play
         )
-        self.assertEqual(dialog.replay_button.text(), "Replay excerpt")
+        self.assertEqual(dialog.replay_button.text(), "Original (excerpt)")
         dialog.replay_button.click()
         self.wait_for(started.is_set)
-        self.assertIn("available portion", dialog.status.toPlainText())
-        dialog.stop_button.click()
+        self.assertIn("original excerpt", dialog.status.toPlainText())
+        dialog.replay_button.click()
         self.wait_for(lambda: not dialog.replay_runner.active)
         self.assertIn("stopped", dialog.status.toPlainText())
         stop_voice.assert_not_called()
@@ -219,6 +225,148 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.replay_runner.active)
         voice.assert_called_once_with("Marcus", "Hello.")
+
+    def test_line_without_recording_can_only_be_read_aloud(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        voice = Mock()
+        dialog = self.create_dialog(history, voice, play_recording=Mock())
+
+        self.assertTrue(dialog.replay_button.isHidden())
+        self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertFalse(dialog.current_voice_button.isHidden())
+        self.assertTrue(dialog.current_voice_button.isEnabled())
+        dialog.replay_button.click()
+        self.application.processEvents()
+        voice.assert_not_called()
+
+        dialog.current_voice_button.click()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        voice.assert_called_once_with("Marcus", "Hello.")
+
+    def test_each_action_keeps_its_stop_control_when_search_hides_selection(self):
+        for recorded in (False, True):
+            with self.subTest(recorded=recorded):
+                history = DialogueHistory()
+                entry = history.add("Marcus", "Hello.")
+                history.retain_audio(
+                    entry.id, None, ReplayAudio(np.ones(3, np.float32), 24000)
+                )
+                started, release = Event(), Event()
+                self.addCleanup(release.set)
+
+                def replay(*_args):
+                    started.set()
+                    release.wait(3)
+
+                def stop():
+                    release.wait(3)
+                    return True
+
+                voice = Mock(side_effect=replay)
+                recording = Mock(side_effect=replay)
+                dialog = self.create_dialog(
+                    history, voice, stop_handler=stop, play_recording=recording
+                )
+                origin = (
+                    dialog.replay_button if recorded else dialog.current_voice_button
+                )
+                other = (
+                    dialog.current_voice_button if recorded else dialog.replay_button
+                )
+                self.assertEqual(dialog.replay_button.text(), "Original")
+                self.assertTrue(dialog.replay_button.isEnabled())
+                self.assertTrue(dialog.current_voice_button.isEnabled())
+                dialog.show()
+                self.application.processEvents()
+                idle_geometry = origin.geometry()
+                origin.click()
+                self.application.processEvents()
+                self.assertGreaterEqual(origin.width(), idle_geometry.width())
+                self.assertEqual(origin.x(), idle_geometry.x())
+                self.assertEqual(origin.text(), "Stop")
+                self.assertEqual(origin.property("playbackState"), "preparing")
+                self.wait_for(started.is_set)
+                self.assertTrue(origin.isEnabled())
+                self.assertFalse(other.isEnabled())
+                (voice if recorded else recording).assert_not_called()
+                dialog.set_playing(True)
+                self.assertEqual(origin.property("playbackState"), "playing")
+                self.assertEqual(other.property("playbackState"), "idle")
+
+                dialog.search.setText("missing")
+                self.assertIsNone(dialog.current_entry())
+                self.assertFalse(origin.isHidden())
+                self.assertFalse(other.isHidden())
+                self.assertTrue(origin.isEnabled())
+                self.assertFalse(other.isEnabled())
+                self.assertEqual(origin.text(), "Stop")
+                origin.click()
+                self.assertEqual(origin.text(), "Stopping...")
+                self.assertEqual(origin.property("playbackState"), "preparing")
+                self.assertFalse(origin.isEnabled())
+                self.assertFalse(other.isEnabled())
+                self.assertFalse(origin.isHidden())
+                self.assertFalse(other.isHidden())
+                release.set()
+                self.wait_for(
+                    lambda: (
+                        not dialog.replay_runner.active
+                        and not dialog.stop_runner.active
+                    )
+                )
+                self.assertEqual(origin.property("playbackState"), "idle")
+                self.assertTrue(dialog.replay_button.isHidden())
+                self.assertFalse(dialog.current_voice_button.isHidden())
+                self.assertFalse(dialog.current_voice_button.isEnabled())
+                self.assertEqual(
+                    dialog.current_voice_button.text(), "With current settings"
+                )
+                self.assertEqual(dialog.replay_button.text(), "Original")
+
+    def test_current_voice_stop_failure_can_be_retried_on_the_same_button(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def replay(*_args):
+            started.set()
+            release.wait(3)
+
+        stop = Mock(side_effect=(OSError("stop failed"), True))
+        dialog = self.create_dialog(history, replay, stop_handler=stop)
+        dialog.current_voice_button.click()
+        self.wait_for(started.is_set)
+        dialog.current_voice_button.click()
+        self.wait_for(lambda: not dialog.stop_runner.active)
+
+        self.assertIn("stop failed", dialog.status.toPlainText())
+        self.assertEqual(dialog.current_voice_button.text(), "Stop")
+        self.assertTrue(dialog.current_voice_button.isEnabled())
+        self.assertFalse(dialog.replay_button.isEnabled())
+        dialog.current_voice_button.click()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertEqual(stop.call_count, 2)
+        self.assertEqual(dialog.current_voice_button.text(), "With current settings")
+        release.set()
+
+    def test_current_voice_without_stop_handler_stays_disabled_until_finished(self):
+        history = DialogueHistory()
+        history.add("Marcus", "Hello.")
+        release = Event()
+        self.addCleanup(release.set)
+        dialog = self.create_dialog(history, lambda *_args: release.wait(3))
+
+        dialog.current_voice_button.click()
+        self.assertFalse(dialog.current_voice_button.isEnabled())
+        self.assertEqual(dialog.current_voice_button.text(), "Preparing...")
+        dialog.set_playing(True)
+        self.assertEqual(dialog.current_voice_button.text(), "Playing...")
+        self.assertFalse(dialog.replay_button.isEnabled())
+        release.set()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertTrue(dialog.current_voice_button.isEnabled())
 
     def test_slow_replay_keeps_qt_responsive_and_reports_completion(self):
         history = DialogueHistory()
@@ -237,14 +385,14 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         heartbeat = []
         QTimer.singleShot(0, lambda: heartbeat.append("painted"))
 
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: started.is_set() and bool(heartbeat))
 
         self.assertFalse(finished.is_set())
         self.assertTrue(dialog.replay_runner.active)
-        self.assertTrue(dialog.replay_button.isEnabled())
-        self.assertTrue(dialog.stop_button.isEnabled())
-        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+        self.assertTrue(dialog.current_voice_button.isEnabled())
+        self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertIn("Preparing speech for Marcus", dialog.status.toPlainText())
         close_event = QCloseEvent()
         dialog.closeEvent(close_event)
         self.assertFalse(close_event.isAccepted())
@@ -252,11 +400,71 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
         self.wait_for(lambda: not dialog.replay_runner.active)
         stop.assert_called_once_with()
-        self.assertTrue(dialog.replay_button.isEnabled())
+        self.assertTrue(dialog.current_voice_button.isEnabled())
         self.assertEqual(dialog.status.toPlainText(), "Speech stopped for Marcus.")
         release.set()
 
-    def test_primary_button_prepares_until_playback_and_stops_active_speech(self):
+    def test_cold_preview_reports_real_stages_until_audio_starts(self):
+        history = DialogueHistory()
+        history.add("Hedone", "Private story text.")
+        release = Event()
+        self.addCleanup(release.set)
+        observers = []
+
+        def replay(*_args):
+            observers.append(
+                (playback_preparation_context.get(), playback_started_context.get())
+            )
+            release.wait(3)
+
+        performance = PerformanceLog()
+        dialog = self.create_dialog(history, replay)
+        with patch("vntts.support.performance_log", performance):
+            dialog.current_voice_button.click()
+            self.wait_for(lambda: bool(observers))
+            prepare, onset = observers[0]
+            for phase, label in (
+                ("loading-model", "Loading Pocket TTS..."),
+                ("worker-ready", "Preparing speech for Hedone..."),
+                ("preparing-voice", "Preparing the voice for Hedone..."),
+                ("generating-first-chunk", "Generating speech for Hedone..."),
+                ("first-chunk-ready", "Starting audio for Hedone..."),
+            ):
+                prepare(phase)
+                self.wait_for(lambda: dialog.status.toPlainText() == label)
+            onset()
+            self.wait_for(
+                lambda: dialog.status.toPlainText() == "Speaking as Hedone..."
+            )
+            prepare("loading-model")
+            self.application.processEvents()
+            self.assertEqual(dialog.status.toPlainText(), "Speaking as Hedone...")
+            release.set()
+            self.wait_for(lambda: not dialog.replay_runner.active)
+
+        events = performance.report()["events"]
+        (replay_event,) = (
+            e for e in events if e["operation"] == "history-current-voice"
+        )
+        offsets = [
+            replay_event[key]
+            for key in (
+                "task_started_at_ms",
+                "loading_model_at_ms",
+                "worker_ready_at_ms",
+                "preparing_voice_at_ms",
+                "generating_first_chunk_at_ms",
+                "first_chunk_ready_at_ms",
+                "first_audio_ms",
+                "elapsed_ms",
+            )
+        ]
+        self.assertEqual(offsets, sorted(offsets))
+        self.assertNotIn("waiting_for_worker_at_ms", replay_event)
+        self.assertNotIn("Hedone", str(replay_event))
+        self.assertNotIn("Private story text", str(replay_event))
+
+    def test_current_voice_button_prepares_until_playback_and_stops_active_speech(self):
         history = DialogueHistory()
         history.add("Marcus", "Hello.")
         release = Event()
@@ -266,20 +474,23 @@ class DialogueHistoryDialogTest(unittest.TestCase):
             lambda *_args: release.wait(3),
             stop_handler=Mock(return_value=True),
         )
-        caption = dialog.replay_button.text()
-        size = dialog.replay_button.sizeHint()
-        dialog.replay_button.click()
-        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        dialog.current_voice_button.click()
+        self.assertEqual(
+            dialog.current_voice_button.property("playbackState"), "preparing"
+        )
         dialog.set_playing(True)
-        self.assertEqual(dialog.replay_button.property("playbackState"), "playing")
-        self.assertEqual(dialog.replay_button.text(), caption)
-        self.assertEqual(dialog.replay_button.sizeHint(), size)
-        dialog.replay_button.click()
-        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        self.assertEqual(
+            dialog.current_voice_button.property("playbackState"), "playing"
+        )
+        self.assertEqual(dialog.current_voice_button.text(), "Stop")
+        dialog.current_voice_button.click()
+        self.assertEqual(
+            dialog.current_voice_button.property("playbackState"), "preparing"
+        )
         self.wait_for(lambda: not dialog.stop_runner.active)
-        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        self.assertEqual(dialog.current_voice_button.property("playbackState"), "idle")
         dialog.set_playing(True)
-        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        self.assertEqual(dialog.current_voice_button.property("playbackState"), "idle")
         self.assertIn("Speech stopped", dialog.status.toPlainText())
 
     def test_late_onset_from_stopped_replay_cannot_mark_retry_playing(self):
@@ -296,22 +507,24 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog = self.create_dialog(
             history, replay, stop_handler=Mock(return_value=True)
         )
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: len(onsets) == 1)
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.stop_runner.active)
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: len(onsets) == 2)
         onsets[0]()
         self.application.processEvents()
-        self.assertEqual(dialog.replay_button.property("playbackState"), "preparing")
+        self.assertEqual(
+            dialog.current_voice_button.property("playbackState"), "preparing"
+        )
         onsets[1]()
         self.wait_for(
-            lambda: dialog.replay_button.property("playbackState") == "playing"
+            lambda: dialog.current_voice_button.property("playbackState") == "playing"
         )
         release.set()
         self.wait_for(lambda: not dialog.replay_runner.active)
-        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        self.assertEqual(dialog.current_voice_button.property("playbackState"), "idle")
 
     def test_stopping_during_synthesis_prevents_late_first_pcm(self):
         history = DialogueHistory()
@@ -337,15 +550,15 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog = self.create_dialog(
             history, replay, stop_handler=Mock(return_value=True)
         )
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(started.is_set)
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.stop_runner.active)
         release.set()
         self.assertTrue(self.thread_pool.waitForDone(3000))
         self.assertTrue(rejected.is_set(), "Stopped replay did not reject late audio")
         native.write.assert_not_called()
-        self.assertEqual(dialog.replay_button.property("playbackState"), "idle")
+        self.assertEqual(dialog.current_voice_button.property("playbackState"), "idle")
 
     def test_speech_keeps_its_subject_when_selection_and_search_change(self):
         for fails in (False, True):
@@ -366,18 +579,22 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
                 dialog = self.create_dialog(history, replay, stop_handler=Mock())
                 dialog.entries.setCurrentRow(0)
-                dialog.replay_selected()
+                dialog.current_voice_button.click()
                 self.wait_for(started.is_set)
                 dialog.entries.setCurrentRow(1)
 
                 self.assertEqual(dialog.current_entry().character, "Lucy")
-                self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+                self.assertIn(
+                    "Preparing speech for Marcus", dialog.status.toPlainText()
+                )
                 self.assertIn(text, dialog.status.toolTip())
                 dialog.search.setText("missing")
 
                 self.assertIn("No matching lines", dialog.empty_message.text())
-                self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
-                self.assertTrue(dialog.stop_button.isEnabled())
+                self.assertIn(
+                    "Preparing speech for Marcus", dialog.status.toPlainText()
+                )
+                self.assertTrue(dialog.current_voice_button.isEnabled())
                 release.set()
                 self.wait_for(lambda: not dialog.replay_runner.active)
 
@@ -395,8 +612,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 speech_status = dialog.status.toPlainText()
                 dialog.search.clear()
                 self.assertEqual(dialog.status.toPlainText(), speech_status)
-                self.assertTrue(dialog.replay_button.isEnabled())
-                self.assertFalse(dialog.stop_button.isEnabled())
+                self.assertTrue(dialog.current_voice_button.isEnabled())
+                self.assertFalse(dialog.replay_button.isEnabled())
 
     def test_stop_confirmation_closes_even_if_replay_future_is_unresponsive(self):
         history = DialogueHistory()
@@ -412,7 +629,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         stop = Mock(return_value=True)
         dialog = self.create_dialog(history, replay, stop_handler=stop)
         dialog.show()
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(started.is_set)
 
         dialog.close()
@@ -453,7 +670,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 self.addCleanup(replay_release.set)
                 dialog = self.create_dialog(history, replay, stop_handler=stop)
                 dialog.show()
-                dialog.replay_selected()
+                dialog.current_voice_button.click()
                 if outcome == "late-close":
                     dialog.stop_replay()
                 else:
@@ -478,8 +695,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 if outcome == "failed-stop":
                     self.assertTrue(dialog.isVisible())
                     self.assertIn("stop failed", dialog.status.toPlainText())
-                    self.assertTrue(dialog.replay_button.isEnabled())
-                    self.assertFalse(dialog.stop_button.isEnabled())
+                    self.assertTrue(dialog.current_voice_button.isEnabled())
+                    self.assertFalse(dialog.replay_button.isEnabled())
                     dialog.close()
                 elif outcome == "unsupported-after-finish":
                     self.assertEqual(
@@ -508,7 +725,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         stop = Mock(return_value=True)
         dialog = self.create_dialog(history, replay, stop_handler=stop)
         dialog.show()
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(started.is_set)
 
         QTest.keyClick(dialog, Qt.Key.Key_Escape)
@@ -532,7 +749,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         stop = Mock(return_value=False)
         dialog = self.create_dialog(history, replay, stop_handler=stop)
         dialog.show()
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(started.is_set)
 
         dialog.close()
@@ -541,6 +758,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertTrue(dialog.isVisible())
         self.assertTrue(dialog.replay_runner.active)
         self.assertIn("cannot stop playback", dialog.status.toPlainText())
+        self.assertFalse(dialog.current_voice_button.isEnabled())
+        self.assertFalse(dialog.replay_button.isEnabled())
         dialog.close()
         self.assertEqual(stop.call_count, 1)
         release.set()
@@ -580,18 +799,18 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.current_entry().character, "Marcus")
         self.tab_to(dialog.details)
         self.assert_details_copy_and_scroll(dialog)
-        self.tab_to(dialog.replay_button)
-        QTest.keyClick(dialog.replay_button, Qt.Key.Key_Space)
+        self.tab_to(dialog.current_voice_button)
+        QTest.keyClick(dialog.current_voice_button, Qt.Key.Key_Space)
         self.wait_for(replay_started.is_set)
         replay_handler.assert_called_once_with("Marcus", text)
 
         self.tab_to(dialog.entries)
         QTest.keyClick(dialog.entries, Qt.Key.Key_Down)
         self.assertEqual(dialog.current_entry().character, "Lucy")
-        self.assertIn("Speaking as Marcus", dialog.status.toPlainText())
+        self.assertIn("Preparing speech for Marcus", dialog.status.toPlainText())
         self.assertIn(text, dialog.status.toolTip())
-        self.tab_to(dialog.stop_button)
-        QTest.keyClick(dialog.stop_button, Qt.Key.Key_Space)
+        self.tab_to(dialog.current_voice_button)
+        QTest.keyClick(dialog.current_voice_button, Qt.Key.Key_Space)
         self.wait_for(stop_started.is_set)
         QTest.keyClick(dialog, Qt.Key.Key_Escape)
         self.assertTrue(dialog.isVisible())
@@ -631,7 +850,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         dialog.setFont(font)
         dialog.resize(520, 400)
         dialog.show()
-        dialog.replay_selected()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.replay_runner.active)
 
         self.assertTrue(dialog.status.isReadOnly())
@@ -647,7 +866,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         )
 
         self.assertIn("try again", dialog.status.toPlainText())
-        dialog.replay_button.click()
+        dialog.current_voice_button.click()
         self.wait_for(lambda: not dialog.replay_runner.active)
         self.assertEqual(dialog.status.toPlainText(), "Speech finished for Marcus.")
         self.assertEqual(replay.call_count, 2)
@@ -674,7 +893,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 dialog.export_button.click()
                 dialog.search.setText("missing")
                 self.assertEqual(dialog.entries.count(), 0)
-                self.assertFalse(dialog.replay_button.isEnabled())
+                self.assertFalse(dialog.current_voice_button.isEnabled())
                 self.assertIn("No matching lines", dialog.empty_message.text())
                 self.assertEqual(dialog.status.toPlainText(), "")
                 dialog.export_button.click()

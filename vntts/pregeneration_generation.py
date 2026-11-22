@@ -58,6 +58,9 @@ from vntts.pregeneration_contract import (
 from vntts.pregeneration_contract import (
     OfflineGenerationResult as OfflineGenerationResult,
 )
+from vntts.pregeneration_contract import (
+    supports_generation_seed,
+)
 from vntts.pregeneration_queue import PregenerationInput, _recording_fingerprint
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
@@ -567,7 +570,7 @@ class OfflineGenerationWorker:
         if not generation_input.directory.name.endswith(generation_input.identity[:16]):
             raise OfflineGenerationError("Offline generation input identity changed")
         if retries is None:
-            retries = 0 if voice_plan.synthesis_backend == "pocket-tts" else 2
+            retries = 2 if supports_generation_seed(voice_plan.synthesis_backend) else 0
         generation_profile = (
             "default"
             if voice_plan.synthesis_backend == "pocket-tts"

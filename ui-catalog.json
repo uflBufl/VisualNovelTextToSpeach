@@ -516,10 +516,10 @@
     },
     {
       "id": "dialogue-history",
-      "title": "Dialogue history",
+      "title": "History",
       "family": "Evidence and support",
       "audience": "Player",
-      "mission": "Find a captured line and speak its text again with the current voice assignment.",
+      "mission": "Find a line, play its saved audio, or read its text aloud with the current voice.",
       "canonical_owner": "dialogue-history",
       "related": ["dashboard"],
       "contracts": ["single-mission", "playback-evidence"],
@@ -534,7 +534,7 @@
         {"id": "dialogue-history.failure", "title": "Speech preview failed", "state": "The selected text and a retry remain available after failure"},
         {"id": "dialogue-history.long-text", "title": "Long dialogue", "state": "A long speaker and paragraph can be inspected and searched"},
         {"id": "dialogue-history.compact-failure", "title": "Enlarged text with a long speech error", "state": "Long speaker, dialogue and failure remain readable with larger text in a narrow window"},
-        {"id": "dialogue-history.compact", "title": "Compact dialogue history", "state": "Search, selected line and speech actions remain usable with larger text"}
+        {"id": "dialogue-history.compact", "title": "Compact history", "state": "Search, selected line and speech actions remain usable with larger text"}
       ]
     },
     {

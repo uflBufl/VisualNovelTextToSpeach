@@ -16,21 +16,9 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import GeneratedAudioEntryLike, recorded_voice_identity
 from vntts.json_types import decode_json
 from vntts.path_safety import read_regular_bytes
-from vntts.pregeneration_voices import resolve_pregeneration_settings
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary, VoiceLibraryReadSnapshot
 from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
-
-
-def generation_controls_match(
-    document: Mapping[str, object], *, backend: str, model: str | None, profile: str
-) -> bool:
-    """Compare controls published with the recording, independently of narrator routing."""
-    return (
-        document.get("provider") == backend
-        and document.get("generation_profile") == profile
-        and (model is None or document.get("model") == model)
-    )
 
 
 @dataclass(frozen=True)
@@ -107,7 +95,6 @@ class CurrentVoiceSnapshot:
         settings: AppSettings,
         previous: CurrentVoiceSnapshot | None = None,
     ) -> CurrentVoiceSnapshot:
-        settings = resolve_pregeneration_settings(settings)
         snapshot = library.read_snapshot(previous.library if previous else None)
         if previous and snapshot is previous.library and settings == previous.settings:
             return previous
@@ -136,11 +123,7 @@ class CurrentVoiceSnapshot:
                 )
             else:
                 identity = None
-        elif (
-            binding is None
-            and key == "narrator"
-            and self.settings.speech_backend == "pocket-tts"
-        ):
+        elif binding is None and key == "narrator":
             speaker = next(
                 (
                     value
@@ -171,13 +154,6 @@ class CurrentVoiceSnapshot:
         recorded = recorded_voice_identity(entry)
         document = getattr(entry, "document", entry)
         if recorded is None or not isinstance(document, dict):
-            return False
-        if not generation_controls_match(
-            document,
-            backend=self.settings.speech_backend,
-            model=self.settings.tts_model,
-            profile=self.settings.tts_profile,
-        ):
             return False
         if role is None:
             requested = document.get("requested_voice_character")

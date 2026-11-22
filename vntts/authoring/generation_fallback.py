@@ -7,7 +7,7 @@ import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeAlias, TypeGuard
+from typing import TypeAlias
 
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
@@ -19,7 +19,10 @@ from vntts.authoring.failure_repair import (
     OFFLINE_FALLBACK_BACKEND,
     SENTENCE_BOUNDARY_SEGMENTATION,
 )
-from vntts.authoring.generation_failures import generation_failure_repair_plan
+from vntts.authoring.generation_failures import (
+    failure_repair_action,
+    failure_report_record,
+)
 from vntts.authoring.generation_lease import (
     BulkGenerationError,
     BulkGenerationSourceChangedError,
@@ -76,28 +79,15 @@ from vntts.generation_database import snapshot_sha256
 from vntts.json_types import decode_json, has_schema_version
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
+from vntts.pregeneration_contract import (
+    PlannedLiveFallback,
+    use_automatic_live_fallback,
+)
 from vntts.voices import synthesis_character_for_line
 
 JsonDocument: TypeAlias = dict[str, object]
 
 _GenerationLease = GenerationLease
-
-
-def _is_object_list(value: object) -> TypeGuard[list[object]]:
-    return isinstance(value, list)
-
-
-AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS = frozenset(
-    {
-        "backend_diagnosis",
-        "bounded_seed_retry",
-        "inline_pause_marker_comparison",
-        "offline_fallback_backend",
-        "provenance_recovery_or_regeneration",
-        "reference_comparison",
-        "reference_discovery",
-    }
-)
 
 
 def authorize_live_fallback(
@@ -111,6 +101,7 @@ def authorize_live_fallback(
     generation_profile: object = "default",
     evidence_workspaces: Sequence[str | Path] = (),
     evidence_reviews: Sequence[str | Path] = (),
+    planned: PlannedLiveFallback | None = None,
 ) -> JsonDocument:
     """Record one exact terminal live-Pocket decision without publishing audio."""
     provider, model, generation_profile = _live_fallback_backend(
@@ -131,7 +122,6 @@ def authorize_live_fallback(
         state, state_sha256, _payload = generation_state_snapshot(state_path)
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = _state_items(state).get(queue_id)
-        _validate_live_fallback_source(existing, queue_item, reason)
         if (
             reason
             in {
@@ -148,11 +138,11 @@ def authorize_live_fallback(
             reason,
             state_path,
             queue_path,
-            state_sha256,
             queue_sha256,
-            queue_id,
             queue_item,
             existing,
+            previous_sha256,
+            planned,
             evidence_workspaces,
             evidence_reviews,
         )
@@ -227,14 +217,31 @@ def _live_fallback_evidence(
     reason: str,
     state_path: Path,
     queue_path: Path,
-    state_sha256: str,
     queue_sha256: str,
-    queue_id: str,
     queue_item: VoiceGenerationQueueItem,
     existing: JsonDocument | None,
+    previous_sha256: str | None,
+    planned: PlannedLiveFallback | None,
     workspaces: Sequence[str | Path],
     reviews: Sequence[str | Path],
 ) -> tuple[JsonDocument | None, tuple[tuple[Path, str], ...]]:
+    if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+        if tuple(workspaces) or tuple(reviews):
+            raise BulkGenerationError(
+                "Automatic-recovery fallback derives its evidence from the current generation state"
+            )
+        if (
+            existing is None
+            or existing.get("status") != "failed"
+            or previous_sha256 is None
+        ):
+            raise BulkGenerationError(
+                "Automatic-recovery fallback requires a failed generation result"
+            )
+        return _automatic_recovery_fallback_evidence(
+            queue_sha256, queue_item, existing, previous_sha256, planned
+        ), ()
+    _validate_live_fallback_source(existing, reason)
     if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
         if tuple(workspaces) and tuple(reviews):
             raise BulkGenerationError(
@@ -247,18 +254,6 @@ def _live_fallback_evidence(
         return _capture_live_fallback_evidence(
             state_path, queue_path, queue_sha256, queue_item, existing, workspaces
         )
-    if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
-        if tuple(workspaces) or tuple(reviews):
-            raise BulkGenerationError(
-                "Automatic-recovery fallback derives its evidence from the current generation state"
-            )
-        if existing is None:
-            raise BulkGenerationError(
-                "Automatic-recovery fallback requires an exact terminal Pocket failure"
-            )
-        return _automatic_recovery_fallback_evidence(
-            state_path, queue_path, state_sha256, queue_sha256, queue_id, existing
-        ), ()
     if tuple(workspaces) or tuple(reviews):
         raise BulkGenerationError(
             "Live fallback evidence sources require the generation_hypotheses_exhausted reason"
@@ -378,41 +373,16 @@ def _assert_live_fallback_commit_sources(
 
 def _validate_live_fallback_source(
     existing: JsonDocument | None,
-    queue_item: VoiceGenerationQueueItem,
     reason: str,
 ) -> None:
     failure = existing.get("failure") if existing is not None else None
     validators = {
-        LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED: _validate_automatic_recovery_fallback_source,
         "reference_unavailable_after_audit": _validate_reference_unavailable_fallback_source,
         LIVE_FALLBACK_HYPOTHESES_EXHAUSTED: _validate_hypotheses_fallback_source,
         "generated_audio_rejected": _validate_rejected_audio_fallback_source,
     }
     validator = validators.get(reason, _validate_offline_exhausted_fallback_source)
     validator(existing, failure)
-
-
-def _validate_automatic_recovery_fallback_source(
-    existing: JsonDocument | None, failure: object
-) -> None:
-    provider = existing.get("provider") if isinstance(existing, dict) else None
-    if (
-        not isinstance(existing, dict)
-        or existing.get("status") != "failed"
-        or not _is_json_document(failure)
-        or failure.get("kind") in {"cancelled", "interrupted"}
-        or provider == "pocket-tts"
-        and (
-            existing.get("model") != "pocket-tts"
-            or existing.get("generation_profile") != "default"
-        )
-        or provider == "moss-tts"
-        and failure.get("kind") not in {"missed_eos_audio_limit", "speech_silence"}
-        or provider not in {"moss-tts", "pocket-tts"}
-    ):
-        raise BulkGenerationError(
-            "Automatic-recovery fallback requires an exact terminal speech failure"
-        )
 
 
 def _validate_reference_unavailable_fallback_source(
@@ -477,48 +447,40 @@ def _validate_offline_exhausted_fallback_source(
 
 
 def _automatic_recovery_fallback_evidence(
-    state_path: Path,
-    queue_path: Path,
-    state_sha256: str,
     queue_sha256: str,
-    queue_id: str,
+    item: VoiceGenerationQueueItem,
     existing: JsonDocument,
+    previous_sha256: str,
+    planned: PlannedLiveFallback | None,
 ) -> JsonDocument:
-    plan = generation_failure_repair_plan(state_path, queue_path)
-    if (
-        plan.get("state_sha256") != state_sha256
-        or plan.get("queue_sha256") != queue_sha256
-    ):
-        raise BulkGenerationSourceChangedError(
-            "Generation evidence changed while automatic fallback was planned"
-        )
-    records = plan.get("records")
-    if not _is_object_list(records):
-        raise BulkGenerationError("Automatic recovery evidence records are malformed")
-    record = next(
-        (
-            value
-            for value in records
-            if _is_json_document(value) and value.get("queue_id") == queue_id
-        ),
-        None,
-    )
-    action = record.get("action") if record is not None else None
-    if action not in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS:
-        raise BulkGenerationError(
-            "Automatic live fallback cannot replace a remaining safe repair"
-        )
     existing_failure = existing.get("failure")
     if not _is_json_document(existing_failure):
-        raise BulkGenerationError(
-            "Automatic-recovery fallback requires an exact terminal speech failure"
-        )
+        raise BulkGenerationError("Automatic live fallback requires a typed failure")
+    if planned is None:
+        # Direct authoring commands have no queue plan.
+        record = failure_report_record(item, existing, previous_sha256)
+        action, _, _ = failure_repair_action(record)
+        if not use_automatic_live_fallback(
+            action, record["provider"], existing_failure.get("kind")
+        ):
+            raise BulkGenerationError(
+                "Automatic live fallback cannot replace a remaining safe repair"
+            )
+    else:
+        if (
+            planned.queue_id != item.queue_id
+            or planned.source_result_sha256 != previous_sha256
+        ):
+            raise BulkGenerationSourceChangedError(
+                "Planned live fallback no longer matches the failed line"
+            )
+        action = planned.action
     return {
         "schema": AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
         "schema_version": 1,
         "queue_sha256": queue_sha256,
-        "queue_id": queue_id,
-        "base_result_sha256": _canonical_sha256(existing),
+        "queue_id": item.queue_id,
+        "base_result_sha256": previous_sha256,
         "base_result": copy.deepcopy(existing),
         "recovery_action": action,
         "failure_kind": _generation_text(existing_failure.get("kind"), "Failure kind"),

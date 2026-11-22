@@ -93,9 +93,6 @@ from vntts.authoring.generation_failures import (
 )
 from vntts.authoring.generation_failures import silence_durations as _silence_durations
 from vntts.authoring.generation_fallback import (
-    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS as AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
-)
-from vntts.authoring.generation_fallback import (
     authorize_live_fallback as authorize_live_fallback,
 )
 from vntts.authoring.generation_lease import LEASE_SCHEMA as LEASE_SCHEMA
@@ -297,6 +294,12 @@ from vntts.generation_database import state_path as generation_state_path
 from vntts.json_types import decode_json
 from vntts.json_types import is_json_object as _is_json_document
 from vntts.path_safety import read_regular_bytes
+from vntts.pregeneration_contract import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS as AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
+)
+from vntts.pregeneration_contract import (
+    supports_generation_seed,
+)
 from vntts.reading_diagnostics import record_diagnostic_event
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
@@ -1673,7 +1676,7 @@ def _begin_generation_attempt(
     plan.attempts_by_provider[run.provider] = provider_attempts
     run_attempts += 1
     attempt_seed = run.seed + provider_attempts - 1
-    request_seed = None if run.provider == "pocket-tts" else attempt_seed
+    request_seed = attempt_seed if supports_generation_seed(run.provider) else None
     attempt_repair: JsonDocument | None = None
     if plan.repair_document is not None:
         attempt_repair = copy.deepcopy(plan.repair_document)
@@ -2222,7 +2225,7 @@ def _validated_generation_backend(
         raise BulkGenerationError(
             "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
         )
-    if provider == "pocket-tts" and retries != 0:
+    if not supports_generation_seed(provider) and retries != 0:
         raise BulkGenerationError(
             "Pocket TTS generation is unseeded and permits exactly one attempt; "
             "set retries to 0"

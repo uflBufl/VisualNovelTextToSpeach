@@ -1693,8 +1693,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool = ManualThreadPool()
             planner = Mock()
             generator = Mock()
+            # The selected engine cannot generate until its terms are accepted.
+            settings = AppSettings(
+                offline_speech_backend="coqui-xtts", xtts_terms_accepted=False
+            )
             reopened = OfflineAudioPreparationDialog(
-                AppSettings(),
+                settings,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=jobs,
                 voice_plan_store=planner,
@@ -1710,7 +1714,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(reopened.continue_button.text(), "Use prepared audio")
             self.assertIsNone(reopened.job())
             self.assertIsNone(reopened.voice_plan())
+            prepare_model = Mock()
+            reopened.preparationRequested.connect(prepare_model)
             reopened.continue_button.click()
+            prepare_model.assert_not_called()
             self.assertTrue(reopened.activating_saved)
             self.assertEqual(len(pool.tasks), 1)
             pool.tasks.pop().run()
@@ -1725,7 +1732,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             active_pool = ManualThreadPool()
             active = OfflineAudioPreparationDialog(
-                AppSettings(
+                settings.updated(
                     game_pack=str(pack.manifest),
                     audio_source_policy="prefer-game-audio",
                 ),

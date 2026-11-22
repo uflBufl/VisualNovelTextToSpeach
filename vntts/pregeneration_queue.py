@@ -65,7 +65,6 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
-from vntts.current_voice import generation_controls_match
 from vntts.document_identity import canonical_document_sha256, sha256_file
 from vntts.generation_database import (
     read_state,
@@ -490,6 +489,17 @@ def _reuse_completed_audio(
         )
 
 
+def _generation_controls_match(document: Mapping[str, object], plan: VoicePlan) -> bool:
+    return (
+        document.get("provider") == plan.synthesis_backend
+        and document.get("generation_profile") == plan.synthesis_profile
+        and (
+            plan.synthesis_model is None
+            or document.get("model") == plan.synthesis_model
+        )
+    )
+
+
 def _select_reusable_recordings(
     current: PregenerationInput,
     plan: VoicePlan,
@@ -595,12 +605,7 @@ def _select_reusable_recordings(
                     or not isinstance(result, dict)
                     or result.get("status") not in {"generated", "approved"}
                     or "audio_event_composition" in result
-                    or not generation_controls_match(
-                        result,
-                        backend=plan.synthesis_backend,
-                        model=plan.synthesis_model,
-                        profile=plan.synthesis_profile,
-                    )
+                    or not _generation_controls_match(result, plan)
                 ):
                     continue
                 requested = synthesis_character_for_line(

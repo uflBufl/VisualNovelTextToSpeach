@@ -15,6 +15,7 @@ from vntts.playback import (
     PreparedPlayback,
     replay_audio_capture_context,
 )
+from vntts.playback_observer import playback_preparation_context
 from vntts.services.tts_engine import AudioPlaybackError, TTSConfigurationError
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -928,6 +929,35 @@ class PocketTTSBackendTest(unittest.TestCase):
 
             with self.assertRaisesRegex(TTSConfigurationError, "uv sync --project"):
                 activate_pocket_tts_runtime(missing_runtime)
+
+    def test_preparation_phases_follow_real_voice_and_audio_cache_misses(self):
+        backend, model, _output = self.create_backend()
+        phases = []
+        token = playback_preparation_context.set(phases.append)
+        try:
+            backend.render(
+                SynthesisRequest(
+                    "Narrator", "First line.", generation_profile="default"
+                )
+            ).collect()
+            self.assertEqual(phases, ["preparing-voice", "generating-first-chunk"])
+            phases.clear()
+            backend.render(
+                SynthesisRequest(
+                    "Narrator", "First line.", generation_profile="default"
+                )
+            ).collect()
+            self.assertEqual(phases, [])
+            backend.render(
+                SynthesisRequest(
+                    "Narrator", "Another line.", generation_profile="default"
+                )
+            ).collect()
+            self.assertEqual(phases, ["generating-first-chunk"])
+        finally:
+            playback_preparation_context.reset(token)
+        self.assertEqual(len(model.prompt_calls), 1)
+        self.assertEqual(len(model.stream_calls), 2)
 
     def test_private_pocket_latent_loop_stops_before_next_generation_step(self):
         model = FakePrivatePocketModel()

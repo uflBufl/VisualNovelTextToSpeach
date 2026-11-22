@@ -58,6 +58,10 @@ from vntts.playback import (
 from vntts.playback import (
     PlaybackStatus as PlaybackStatus,
 )
+from vntts.pregeneration_contract import (
+    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
+    is_terminal_line_failure,
+)
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import validate_speed, validate_volume
@@ -2201,27 +2205,13 @@ def _validate_automatic_recovery_fallback_evidence(
         or not is_lowercase_sha256(evidence.get("base_result_sha256"))
         or not isinstance(base_result, dict)
         or base_result.get("status") != "failed"
-        or not (
-            base_result.get("provider") == "pocket-tts"
-            and base_result.get("model") == "pocket-tts"
-            and base_result.get("generation_profile") == "default"
-            or base_result.get("provider") == "moss-tts"
-            and isinstance(failure, dict)
-            and failure.get("kind") in {"missed_eos_audio_limit", "speech_silence"}
-        )
         or not isinstance(failure, dict)
         or failure.get("kind") != evidence.get("failure_kind")
-        or failure.get("kind") in {"cancelled", "interrupted"}
+        or not is_terminal_line_failure(
+            base_result.get("provider"), failure.get("kind")
+        )
         or evidence.get("recovery_action")
-        not in {
-            "bounded_seed_retry",
-            "offline_fallback_backend",
-            "inline_pause_marker_comparison",
-            "reference_comparison",
-            "reference_discovery",
-            "backend_diagnosis",
-            "provenance_recovery_or_regeneration",
-        }
+        not in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
     ):
         raise ValueError("Generated-audio automatic recovery evidence is malformed")
     if canonical_document_sha256(base_result) != evidence["base_result_sha256"]:

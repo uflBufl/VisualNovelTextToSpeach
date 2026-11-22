@@ -1517,6 +1517,14 @@ performance_operation_id: ContextVar[str | None] = ContextVar(
 
 performance_fields = (
     "operation_id",
+    "task_started_at_ms",
+    "waiting_for_worker_at_ms",
+    "loading_model_at_ms",
+    "worker_ready_at_ms",
+    "preparing_voice_at_ms",
+    "generating_first_chunk_at_ms",
+    "first_chunk_ready_at_ms",
+    "first_audio_ms",
     "parent_operation",
     "timing_scope",
     "count",

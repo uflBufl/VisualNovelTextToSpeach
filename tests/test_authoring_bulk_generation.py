@@ -4600,6 +4600,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 {
                     "queue_id": "game:1:hash",
                     "line_id": "game:1",
+                    "source_result_sha256": "e" * 64,
                     "speaker": "Narrator",
                     "text": "The first warning is clear. The second is clear.",
                     "requested_voice_character": "Narrator",

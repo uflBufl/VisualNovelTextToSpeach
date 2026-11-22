@@ -1115,7 +1115,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.voice_preview_action.text(),
             "Choose narrator voice...",
         )
-        self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
+        self.assertEqual(tray_application.history_action.text(), "History...")
         self.assertEqual(
             tray_application.support_action.text(),
             "Support and logs",
@@ -1174,41 +1174,33 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_destroyed, [True])
         controller.shutdown.assert_called_once_with()
 
-    def test_window_menus_expose_every_tray_command_using_the_same_actions(self):
+    def test_dashboard_tools_keep_setup_and_ocr_commands_without_a_menu_bar(self):
         tray = TrayApplication(
             self.application,
             AppSettings(),
             controller_factory=Mock(return_value=Mock()),
         )
-
-        def commands(actions):
-            for action in actions:
-                if action.menu() is not None:
-                    yield from commands(action.menu().actions())
-                elif not action.isSeparator():
-                    yield action
-
-        menu_bar = tray.dashboard.menuBar()
-        self.assertFalse(menu_bar.isNativeMenuBar())
-        self.assertTrue(
-            {"Reading", "Setup", "Support"}.issubset(
-                {action.text() for action in menu_bar.actions()}
-            )
-        )
-        window_commands = set(commands(menu_bar.actions()))
-        passive_actions = {
-            tray.status_action,
-            tray.dialog_action,
-            tray.auto_advance_reason_action,
-            tray.show_dashboard_action,
+        dashboard = tray.dashboard
+        self.assertIsNone(dashboard.menuWidget())
+        dashboard.setup_more_button.click()
+        menus = {
+            button.text(): button.menu()
+            for button in dashboard.setup_secondary_content.findChildren(QPushButton)
+            if button.menu() is not None
         }
-        expected = set(commands(tray.menu.actions())) - passive_actions
-        self.assertIn(tray.cancel_configuration_action, expected)
-        self.assertTrue(expected.issubset(window_commands))
-        self.assertNotIn(tray.show_dashboard_action, window_commands)
-        self.assertIs(
-            tray.dashboard.history_button.defaultAction(), tray.history_action
+        self.assertEqual(
+            menus["Game setup"].actions(),
+            [
+                tray.setup_action,
+                tray.profiles_action,
+                tray.assets_action,
+                tray.cancel_configuration_action,
+            ],
         )
+        self.assertEqual(
+            menus["OCR"].actions(), [tray.corrections_action, tray.ocr_review_action]
+        )
+        self.assertIs(dashboard.history_button.defaultAction(), tray.history_action)
 
     def test_dashboard_history_button_uses_the_existing_history_handler(self):
         with patch.object(TrayApplication, "open_history") as open_history:

@@ -3491,13 +3491,21 @@ def _render_stories(
         return _ocr_corrections_story(resources, state)
 
     def dialogue_history(state: str) -> DialogueHistoryDialog:
+        import numpy as np
+
+        from vntts.playback import ReplayAudio
+
         history = DialogueHistory(
             clock=lambda: datetime(2026, 9, 22, 12, 34, tzinfo=timezone.utc)
         )
         if state != "empty":
             history.add("Mareus", "The storm has passed. We can continue our journey.")
-            history.add(
+            recorded = history.add(
                 "Believer IV", "They at least paid with their lives. What about you?"
+            )
+            assert recorded is not None
+            history.retain_audio(
+                recorded.id, None, ReplayAudio(np.zeros(240, dtype=np.float32), 24000)
             )
             if state in {"long-text", "compact-failure"}:
                 history.add(
@@ -3505,23 +3513,23 @@ def _render_stories(
                     "The narration continues beyond the edge of the list. " * 8,
                 )
         dialog = DialogueHistoryDialog(
-            history, lambda *_args: None, stop_handler=lambda: None
+            history,
+            lambda *_args: None,
+            stop_handler=lambda: True,
+            play_recording=lambda *_args: True,
+            thread_pool=IdlePool(),
         )
-        dialog._spoken_character = "Believer IV"
         if state == "filtered":
             dialog.search.setText("storm")
         elif state == "no-matches":
             dialog.search.setText("missing line")
         elif state in {"speaking", "speaking-filtered", "stopping"}:
+            dialog.current_voice_button.click()
+            dialog.set_playing(True)
             if state == "speaking-filtered":
                 dialog.search.setText("missing line")
-            dialog.replay_button.setEnabled(False)
-            dialog.stop_button.setEnabled(state != "stopping")
-            dialog.status.setPlainText(
-                "Stopping speech for Believer IV..."
-                if state == "stopping"
-                else "Speaking as Believer IV with the current voice..."
-            )
+            if state == "stopping":
+                dialog.current_voice_button.click()
         elif state in {"failure", "compact-failure", "compact-long-failure"}:
             dialog._spoken_character = dialog.visible_entries[-1].character
             dialog._replay_finished(

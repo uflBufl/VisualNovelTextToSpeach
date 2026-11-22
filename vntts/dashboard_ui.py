@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import (
+    QAction,
     QCloseEvent,
     QFont,
     QFontMetricsF,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -552,7 +554,7 @@ class ControlDashboard(QMainWindow):
         reading_actions = QHBoxLayout()
         reading_actions.addWidget(self.read_button)
         self.history_button = QToolButton()
-        self.history_button.setText("Dialogue history")
+        self.history_button.setText("History")
         self.history_button.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -621,14 +623,16 @@ class ControlDashboard(QMainWindow):
         set_action_icon(self.setup_more_button, "list")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
-            "Show or hide Check readiness, Support and logs, and Quit"
+            "Show or hide setup, OCR, support, and application tools"
         )
         setup_primary.addWidget(self.setup_more_button)
         setup_primary.addStretch()
         setup.addLayout(setup_primary)
         self.setup_secondary_content = QWidget()
-        setup_secondary = QHBoxLayout(self.setup_secondary_content)
-        setup_secondary.setContentsMargins(0, 0, 0, 0)
+        secondary = QVBoxLayout(self.setup_secondary_content)
+        secondary.setContentsMargins(0, 0, 0, 0)
+        setup_secondary = QHBoxLayout()
+        secondary.addLayout(setup_secondary)
         setup_secondary.addWidget(self.setup_primary_button)
         self.setup_buttons = [self.setup_primary_button, self.setup_more_button]
         for label, icon, signal in (
@@ -655,10 +659,20 @@ class ControlDashboard(QMainWindow):
         self.quit_button.clicked.connect(self.request_quit)
         setup_secondary.addWidget(self.quit_button)
         setup_secondary.addStretch()
+        self.tool_menus = QHBoxLayout()
+        self.tool_menus.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        secondary.addLayout(self.tool_menus)
         self.setup_buttons.append(self.quit_button)
         setup.addWidget(self.setup_secondary_content)
         self.setup_more_button.toggled.connect(self._set_setup_expanded)
         return setup_group
+
+    def add_tool_menu(self, title: str, actions: Sequence[QAction]) -> None:
+        button = QPushButton(title)
+        menu = QMenu(button)
+        menu.addActions(actions)
+        button.setMenu(menu)
+        self.tool_menus.addWidget(button)
 
     def _build_dialogue_card(self) -> QGroupBox:
         card = QGroupBox("Current dialogue")

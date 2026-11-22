@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from vntts_artifacts.generated_audio import GeneratedAudioIndex
 
+from tests.audio_output_fixtures import FakeAudioOutput
 from tests.bulk_generation_fixtures import SyntheticRenderer, queue_item, write_queue
 from tests.story_fixtures import write_synthetic_game_pack
 from tests.symlink_support import symlink_or_skip
@@ -18,7 +19,11 @@ from vntts.authoring.bulk_generation import run_bulk_generation
 from vntts.content_revision import ContentRevision, source_signature
 from vntts.current_voice import CurrentVoiceSnapshot
 from vntts.document_identity import sha256_file
-from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.generated_audio import (
+    GeneratedAudioFallbackBackend,
+    GeneratedAudioLibrary,
+    GeneratedAudioRoute,
+)
 from vntts.path_safety import read_regular_bytes
 from vntts.pregeneration_setup import (
     PregenerationJobStore,
@@ -32,6 +37,7 @@ from vntts.prepared_audio_discovery import (
 from vntts.reading_catalog import ReadingCatalog
 from vntts.settings import AppSettings
 from vntts.story_index_snapshot import load_story_index_snapshot
+from vntts.voice_library import VoiceLibrary
 
 
 class PreparedAudioDiscoveryTests(unittest.TestCase):
@@ -479,6 +485,86 @@ class PreparedAudioDiscoveryTests(unittest.TestCase):
                     library = PreparedAudioSnapshot((source,)).library_for(voices)
                 self.assertTrue(library.has_entry(line_id, text_hash))
                 self.assertEqual(voices.matches.call_args.kwargs["role"], expected)
+
+    def test_automatic_pack_routes_survive_generation_control_changes(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pack, line_id, text, text_hash, generated_wav = write_synthetic_game_pack(
+                root
+            )
+            voices = VoiceLibrary(root / "library")
+            reference = voices.discover("Ada", root / "voices" / "ada.wav")
+            voices.select("Ada", route="voice", source_sha256s=(reference.sha256,))
+            manifest = root / "generated-audio.json"
+            document = json.loads(manifest.read_text())
+            entry = document["entries"][0]
+            entry.update(
+                provider="coqui-xtts",
+                model="archived-model",
+                generation_profile="default",
+                voice_character="Ada",
+                synthesis_provenance_sha256="b" * 64,
+            )
+            entry["vntts.recorded_voice"] = {
+                "schema_version": 1,
+                "source_character": "Ada",
+                "speaker": "ada-v1",
+                "reference_sha256s": [reference.sha256],
+                **{
+                    name: entry[name]
+                    for name in (
+                        "provider",
+                        "model",
+                        "voice_character",
+                        "audio_sha256",
+                        "synthesis_provenance_sha256",
+                    )
+                },
+            }
+            manifest.write_text(json.dumps(document))
+            binding = json.loads(pack.read_text())
+            binding["components"]["generated_audio"]["manifest"]["sha256"] = (
+                sha256_file(manifest)
+            )
+            pack.write_text(json.dumps(binding))
+            settings = AppSettings(
+                game_window_title="Synthetic Game",
+                offline_speech_backend="coqui-xtts",
+                offline_tts_model="archived-model",
+                offline_tts_profile="default",
+            )
+            snapshot = discover_prepared_audio(game_pack=pack).for_settings(settings)
+            self.assertEqual(
+                snapshot.preloader.resolve_exact("Ada", text).line_id, line_id
+            )
+            for changes in (
+                {"offline_tts_model": "another-model"},
+                {"offline_speech_backend": "moss-tts"},
+                {"offline_tts_profile": "natural"},
+            ):
+                with self.subTest(changes=changes):
+                    current = CurrentVoiceSnapshot.capture(
+                        voices, settings.updated(**changes)
+                    )
+                    library = snapshot.library_for(current)
+                    self.assertEqual(library.index.entries[0].line_id, line_id)
+                    self.assertIsNotNone(library.reserve(line_id, text_hash))
+                    output = FakeAudioOutput()
+                    reader = GeneratedAudioFallbackBackend(
+                        None, library, snapshot.preloader, audio_output=output
+                    )
+                    route = reader.prepare_route("Ada", text)
+                    self.assertIsInstance(route, GeneratedAudioRoute)
+                    self.assertEqual(route.prepared.model, "archived-model")
+                    self.assertTrue(reader.play_route(route).successful)
+                    self.assertEqual(len(output.plays), 1)
+            replacement = voices.discover("Ada", generated_wav)
+            voices.select("Ada", route="voice", source_sha256s=(replacement.sha256,))
+            current = CurrentVoiceSnapshot.capture(voices, settings)
+            library = snapshot.library_for(current)
+            self.assertFalse(library.has_entry(line_id, text_hash))
+            self.assertIsNone(library.reserve(line_id, text_hash))
+            self.assertIsNone(library.find(line_id, text_hash))
 
     def test_catalog_packs_and_fresh_sqlite_audio_are_discovered_without_full_import(
         self,

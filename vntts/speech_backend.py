@@ -37,6 +37,7 @@ from vntts.playback import (
     prepared_playback_from_render,
     synthesized_mono_pcm,
 )
+from vntts.playback_observer import playback_preparation_context
 from vntts.services.tts_engine import (
     AudioPlaybackError,
     TTSConfigurationError,
@@ -1427,6 +1428,9 @@ class PocketTTSVoiceRouterBackend:
 
                 def generated_chunks() -> Iterator[object]:
                     with self.model_lock:
+                        report_preparation = playback_preparation_context.get()
+                        if report_preparation is not None:
+                            report_preparation("generating-first-chunk")
                         yield from self.model.generate_audio_stream(
                             prepared.voice_state,
                             prepared.text,
@@ -1752,6 +1756,9 @@ class PocketTTSVoiceRouterBackend:
         if cached is not None:
             return voice_key, cached
 
+        report_preparation = playback_preparation_context.get()
+        if report_preparation is not None:
+            report_preparation("preparing-voice")
         cache_path = self._voice_state_cache_path(voice_key, reference)
         if cache_path.is_file():
             try:

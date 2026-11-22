@@ -19,7 +19,7 @@ from collections import deque
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, field
 from io import BytesIO
 from itertools import chain
@@ -39,7 +39,7 @@ from vntts.audio_output import (
     sanitize_playback_audio,
     stream_underflowed,
 )
-from vntts.cleanup import attempt_cleanup
+from vntts.cleanup import attempt_cleanup, cleanup_on_exit
 from vntts.json_types import is_json_object
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.path_safety import contained_path
@@ -50,6 +50,7 @@ from vntts.playback import (
     ReplayAudioCapture,
     outcome_for_prepared,
 )
+from vntts.playback_observer import playback_preparation_context
 from vntts.qwen_backend import QWEN_CUDA_MODEL, QWEN_MODEL, QwenTTSVoiceRouterBackend
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
@@ -806,6 +807,33 @@ def _backend_runtime_metadata(backend: object) -> FrameDocument:
     return metadata
 
 
+@contextmanager
+def _observe_worker_preparation(
+    command: FrameDocument, output: _WritableBinaryStream
+) -> Generator[None, None, None]:
+    if command.get("observe_preparation") is not True:
+        yield
+        return
+
+    def report(phase: str) -> None:
+        if phase not in {"preparing-voice", "generating-first-chunk"}:
+            return
+        _write_frame(
+            output,
+            {
+                "type": "preparation-phase",
+                "request_id": command.get("request_id"),
+                "phase": phase,
+            },
+        )
+
+    token = playback_preparation_context.set(report)
+    try:
+        yield
+    finally:
+        playback_preparation_context.reset(token)
+
+
 def worker_main(
     *,
     input_stream: _ReadableBinaryStream | None = None,
@@ -933,7 +961,10 @@ def worker_main(
                             },
                         )
                         continue
-                    with redirect_stdout(sys.stderr):
+                    with (
+                        redirect_stdout(sys.stderr),
+                        _observe_worker_preparation(command, protocol_out),
+                    ):
                         source = command.get("pocket_voice_source")
                         if source is None:
                             rendered = backend.render(request)
@@ -1132,6 +1163,9 @@ class IsolatedSpeechBackend:
         self._messages: queue.Queue[WorkerMessage] = queue.Queue()
         self._send_lock = threading.Lock()
         self._request_lock = threading.Lock()
+        self._active_request: tuple[WorkerProcess, str] | None = None
+        self._completed_render_request: tuple[WorkerProcess, str] | None = None
+        self._consumed_render_request: tuple[WorkerProcess, str] | None = None
         self._playback_lock = threading.Lock()
         self._stop_requested = threading.Event()
         self._active_stream: StreamingAudioStream | None = None
@@ -1499,7 +1533,13 @@ class IsolatedSpeechBackend:
                 if frame is None:
                     break
                 document, payload = frame
+                active_request = self._active_request
                 self._messages.put((process, document, payload))
+                if document.get("type") == "result" and active_request == (
+                    process,
+                    document.get("request_id"),
+                ):
+                    self._completed_render_request = active_request
         except Exception as error:
             self._messages.put(
                 (process, {"type": "reader-error", "error": str(error)}, b"")
@@ -1519,6 +1559,9 @@ class IsolatedSpeechBackend:
         if process.stdin is None:
             raise TTSSynthesisError(f"{self.name} isolated worker stdin is unavailable")
         with self._send_lock:
+            request_id = document.get("request_id")
+            if isinstance(request_id, str):
+                self._active_request = (process, request_id)
             _write_frame(process.stdin, document)
 
     def _next_frame(
@@ -1541,6 +1584,18 @@ class IsolatedSpeechBackend:
     def _ensure_worker(
         self, *, cancellation: Callable[[], bool] | None = None
     ) -> WorkerProcess:
+        report_preparation = playback_preparation_context.get()
+        loading = (
+            report_preparation is not None
+            and self.name == "pocket-tts"
+            and (
+                self.process is None
+                or self.process.poll() is not None
+                or (self._startup is not None and not self._startup.future.done())
+            )
+        )
+        if loading and report_preparation is not None:
+            report_preparation("loading-model")
         if self.deferred_startup:
             if (
                 self._closed
@@ -1571,6 +1626,8 @@ class IsolatedSpeechBackend:
             self._start_worker(cancellation=cancellation)
         if self.process is None:
             raise TTSSynthesisError(f"{self.name} isolated worker is not running")
+        if loading and report_preparation is not None:
+            report_preparation("worker-ready")
         return self.process
 
     def render(self, request: SynthesisRequest) -> SynthesisChunkStream:
@@ -1602,7 +1659,25 @@ class IsolatedSpeechBackend:
         *,
         voice_source: tuple[str, str | Path] | None = None,
     ) -> Generator[SynthesisChunk, None, SynthesisResult]:
-        with self._request_lock:
+        report_preparation = playback_preparation_context.get()
+        waiting = report_preparation is not None and self._request_lock.locked()
+        if waiting and report_preparation is not None:
+            report_preparation("waiting-for-worker")
+        with (
+            self._request_lock,
+            cleanup_on_exit(
+                self._discard_finished_render_frames,
+                description="Abandoned render frames",
+            ),
+        ):
+            if (
+                waiting
+                and report_preparation is not None
+                and self.process is not None
+                and self.process.poll() is None
+                and (self._startup is None or self._startup.future.done())
+            ):
+                report_preparation("worker-ready")
             process = self._ensure_worker(
                 cancellation=lambda: (
                     self._stop_requested.is_set() or request.cancellation_requested()
@@ -1620,6 +1695,11 @@ class IsolatedSpeechBackend:
                 {
                     "type": "render",
                     "request_id": request_id,
+                    **(
+                        {"observe_preparation": True}
+                        if report_preparation is not None
+                        else {}
+                    ),
                     "voice": request.voice,
                     "text": request.text,
                     "seed": request.seed,
@@ -1657,6 +1737,11 @@ class IsolatedSpeechBackend:
                     document, payload = self._next_frame(
                         process, timeout=min(0.05, remaining)
                     )
+                    if (
+                        document.get("type") == "result"
+                        and document.get("request_id") == request_id
+                    ):
+                        self._consumed_render_request = (process, request_id)
                 except queue.Empty:
                     continue
                 except TTSSynthesisError:
@@ -1671,12 +1756,28 @@ class IsolatedSpeechBackend:
                 if document.get("request_id") not in {None, request_id}:
                     continue
                 message_type = document.get("type")
-                if message_type == "chunk":
+                if message_type == "preparation-phase":
+                    phase = document.get("phase")
+                    if (
+                        report_preparation is not None
+                        and not chunks
+                        and document.get("request_id") == request_id
+                        and isinstance(phase, str)
+                        and phase in {"preparing-voice", "generating-first-chunk"}
+                    ):
+                        report_preparation(phase)
+                elif message_type == "chunk":
                     pcm: NDArray[np.float32] = (
                         np.frombuffer(payload, dtype=np.float32)
                         .copy()
                         .reshape(_chunk_shape(document))
                     )
+                    if (
+                        not chunks
+                        and report_preparation is not None
+                        and self.name == "pocket-tts"
+                    ):
+                        report_preparation("first-chunk-ready")
                     chunks.append(pcm)
                     yield SynthesisChunk(
                         pcm=pcm,
@@ -1694,7 +1795,7 @@ class IsolatedSpeechBackend:
                     return result
                 elif message_type in {"error", "fatal", "reader-error", "eof"}:
                     self._raise_worker_error(process, document, "render")
-            self._terminate_process(process)
+            self._terminate_unfinished_request(process)
             return self._cancelled_result(request, chunks)
 
     def _cancelled_result(
@@ -1840,7 +1941,7 @@ class IsolatedSpeechBackend:
                     for chunk in chain((first,), rendered):
                         if playback_cancelled(self._stop_requested, playback_guard):
                             interrupted = True
-                            self._terminate_process(self.process)
+                            self._terminate_unfinished_request(self.process)
                             break
                         underflowed = (
                             bool(stream.write(self._prepare_audio(chunk.pcm)))
@@ -2137,8 +2238,43 @@ class IsolatedSpeechBackend:
             stream.abort()
         self.cancel_startup()
         if self._request_lock.locked():
-            self._terminate_process(self.process)
+            self._terminate_unfinished_request(self.process)
         return was_active
+
+    def _terminate_unfinished_request(self, process: WorkerProcess | None) -> None:
+        # Buffered PCM can still be playing after the worker finished synthesis.
+        if (
+            self._active_request is not None
+            and self._active_request[0] is process
+            and self._completed_render_request == self._active_request
+        ):
+            return
+        self._terminate_process(process)
+
+    def _discard_finished_render_frames(self) -> None:
+        request = self._active_request
+        if (
+            request is None
+            or request != self._completed_render_request
+            or request == self._consumed_render_request
+        ):
+            return
+        while True:
+            try:
+                frame = self._messages.get_nowait()
+            except queue.Empty:
+                return
+            process, document, _payload = frame
+            if (
+                process is not request[0]
+                or document.get("request_id") != request[1]
+                or document.get("type") not in {"chunk", "preparation-phase", "result"}
+            ):
+                self._messages.put(frame)
+                return
+            if document.get("type") == "result":
+                self._consumed_render_request = request
+                return
 
     def shutdown(self) -> None:
         self._closed = True

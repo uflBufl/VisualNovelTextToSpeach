@@ -3,6 +3,8 @@ from concurrent.futures import Future
 from datetime import datetime
 from functools import partial
 from threading import Event
+from time import perf_counter
+from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QTextOption
@@ -29,9 +31,18 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.audio_output import PcmAdmission, pcm_admission_context
 from vntts.history import DialogueHistory, DialogueHistoryEntry
 from vntts.playback import ReplayAudio
-from vntts.playback_button import PlaybackState, set_playback_button_state
-from vntts.playback_observer import observe_playback_start
+from vntts.playback_observer import observe_playback_start, playback_preparation_context
 from vntts.qt_dialogs import CloseGuardedDialog
+from vntts.support import record_background_operation
+
+_PREPARATION_LABELS = {
+    "waiting-for-worker": "Waiting for the speech engine...",
+    "loading-model": "Loading Pocket TTS...",
+    "worker-ready": "Preparing speech for {character}...",
+    "preparing-voice": "Preparing the voice for {character}...",
+    "generating-first-chunk": "Generating speech for {character}...",
+    "first-chunk-ready": "Starting audio for {character}...",
+}
 
 
 class DialogueHistoryDialog(CloseGuardedDialog):
@@ -55,18 +66,20 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.stop_handler = stop_handler
         self.replay_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.replay_runner.finished.connect(self._replay_finished)
+        self.replay_runner.progressChanged.connect(self._show_preparation)
         self.stop_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.stop_runner.finished.connect(self._stop_finished)
         self._close_pending = False
         self._stop_unsupported = False
         self._spoken_character = ""
+        self._playing_status = ""
         self._replay_error: Exception | None = None
         self._playing = False
         self._play_request = 0
         self._play_cancelled = Event()
         self.playback_started.connect(self._playback_started)
         self.visible_entries: list[DialogueHistoryEntry] = []
-        self.setWindowTitle("Dialogue history")
+        self.setWindowTitle("History")
         self.resize(820, 480)
 
         self._create_entry_widgets()
@@ -78,12 +91,12 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Speaker or dialogue text")
         self.search.setClearButtonEnabled(True)
-        self.search.setAccessibleName("Search dialogue history")
+        self.search.setAccessibleName("Search history")
         self.search.textChanged.connect(self.refresh)
         self.search_label = QLabel("&Find a line")
         self.search_label.setBuddy(self.search)
         self.entries = QListWidget()
-        self.entries.setAccessibleName("Dialogue history entries")
+        self.entries.setAccessibleName("History entries")
         self.entries.setWordWrap(True)
         self.entries.setViewportMargins(6, 6, 6, 6)
         self.entries.setSpacing(6)
@@ -104,24 +117,15 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.details_label.setBuddy(self.details)
 
     def _create_speech_controls(self) -> None:
-        self.replay_button = QPushButton("Current voice")
-        set_playback_button_state(self.replay_button, "idle", label="current voice")
-        self.replay_button.setEnabled(False)
-        self.current_voice_button = QPushButton("Current voice")
-        set_playback_button_state(
-            self.current_voice_button, "idle", label="current voice"
-        )
+        self.replay_button = QPushButton()
+        self.current_voice_button = QPushButton()
+        self.replay_button.clicked.connect(lambda: self._toggle_playback(recorded=True))
         self.current_voice_button.clicked.connect(
-            lambda: self._play_selected(current_voice=True)
+            lambda: self._toggle_playback(recorded=False)
         )
-        self.stop_button = QPushButton("Stop")
-        set_action_icon(self.stop_button, "square")
-        self.stop_button.setToolTip("Stop current speech")
-        self.stop_button.setAccessibleName("Stop current speech")
-        self.stop_button.setEnabled(False)
         self.export_button = QPushButton("Export...")
         set_action_icon(self.export_button, "download")
-        self.export_button.setAccessibleName("Export dialogue history")
+        self.export_button.setAccessibleName("Export history")
         self.export_button.setToolTip(
             "Export all retained lines, including those hidden by search."
         )
@@ -132,15 +136,12 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self.status.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.status.setFixedHeight(self.status.fontMetrics().lineSpacing() * 2 + 12)
         self.status.installEventFilter(self)
-        self.replay_button.clicked.connect(self.replay_selected)
-        self.stop_button.clicked.connect(self.stop_replay)
         self.export_button.clicked.connect(self.export_history)
 
     def _create_layout(self) -> None:
         actions = QHBoxLayout()
         actions.addWidget(self.replay_button)
         actions.addWidget(self.current_voice_button)
-        actions.addWidget(self.stop_button)
         actions.addStretch()
 
         entries_layout = QVBoxLayout()
@@ -193,6 +194,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
                 else "No dialogue has played in this session yet."
             )
         if latest == self.visible_entries:
+            self._update_speech_controls(entry)
             return
         self.visible_entries = latest
         selected_index = next(
@@ -232,7 +234,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         entry = (
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
-        self._update_replay_button(entry)
+        self._update_speech_controls(entry)
         if entry is None:
             self.details.clear()
             return
@@ -241,68 +243,97 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             f"{entry.character} · {recorded_at:%b %d, %Y %H:%M}\n\n{entry.text}"
         )
 
-    def _update_replay_button(self, entry: DialogueHistoryEntry | None) -> None:
-        busy = self.replay_runner.active
-        state: PlaybackState = "idle"
-        if self.stop_runner.active or (busy and self._play_cancelled.is_set()):
-            state = "preparing"
-        elif busy:
-            state = "playing" if self._playing else "preparing"
-        recorded = self._replaying_audio
-        if not busy:
+    def _update_speech_controls(self, entry: DialogueHistoryEntry | None) -> None:
+        if not (self.replay_runner.active or self.stop_runner.active):
             clips = (
                 self.history.recording(entry.id)
                 if entry and self.play_recording
                 else ()
             )
-            caption = "Current voice"
-            if clips:
-                caption = (
-                    "Replay"
-                    if all(clip.complete for clip in clips)
-                    else "Replay excerpt"
-                )
-            self.replay_button.setText(caption)
-            recorded = bool(clips)
-            self.current_voice_button.setVisible(recorded)
-        set_playback_button_state(
-            self.replay_button,
-            state,
-            label="recording" if recorded else "current voice",
-        )
-        self.current_voice_button.setEnabled(not busy and not self.stop_runner.active)
-        self.replay_button.setEnabled(
-            not self.stop_runner.active
-            and (
-                bool(
-                    (self._replaying_audio or self.stop_handler is not None)
-                    and not self._play_cancelled.is_set()
-                    and not self._stop_unsupported
-                )
-                if busy
-                else entry is not None
+            self.replay_button.setVisible(bool(clips))
+            self.replay_button.setEnabled(bool(clips))
+            caption = (
+                "Original"
+                if all(clip.complete for clip in clips)
+                else "Original (excerpt)"
             )
+            self.replay_button.setText(caption)
+            self.replay_button.setAccessibleName(f"Play {caption.lower()}")
+            self.replay_button.setToolTip(
+                "Hear this line exactly as it sounded during reading."
+            )
+            self.current_voice_button.setEnabled(entry is not None)
+            self.current_voice_button.setText("With current settings")
+            self.current_voice_button.setAccessibleName("Speak with current settings")
+            self.current_voice_button.setToolTip(
+                "Speak the full line again using the current voice settings."
+            )
+            for button in (self.replay_button, self.current_voice_button):
+                button.setMinimumWidth(0)
+                button.setProperty("playbackState", "idle")
+                set_action_icon(button, "play")
+            return
+
+        active, other = (
+            (self.replay_button, self.current_voice_button)
+            if self._replaying_audio
+            else (self.current_voice_button, self.replay_button)
         )
+        other.setEnabled(False)
+        stopping = self.stop_runner.active or (
+            self._replaying_audio and self._play_cancelled.is_set()
+        )
+        can_stop = (
+            self._replaying_audio
+            or self.stop_handler is not None
+            and not self._stop_unsupported
+        )
+        state = "playing" if self._playing and not stopping else "preparing"
+        active.setProperty("playbackState", state)
+        if stopping:
+            caption, icon = "Stopping...", "refresh-cw"
+        elif can_stop:
+            caption, icon = "Stop", "square"
+        elif self._playing:
+            caption, icon = "Playing...", "volume-2"
+        else:
+            caption, icon = "Preparing...", "refresh-cw"
+        active.setText(caption)
+        description = f"{caption.rstrip('.')} speech for {self._spoken_character}"
+        active.setAccessibleName(description)
+        active.setToolTip(description)
+        set_action_icon(active, icon)
+        active.setEnabled(can_stop and not stopping)
 
     def set_playing(self, playing: bool) -> None:
-        if not self.replay_runner.active or self.stop_runner.active:
+        if not self.replay_runner.active or self._play_cancelled.is_set():
             return
         self._playing = playing
-        self._update_replay_button(self.current_entry())
+        if playing:
+            self.status.setPlainText(self._playing_status)
+        self._update_speech_controls(self.current_entry())
+
+    def _show_preparation(self, phase: str) -> None:
+        if phase and not self._playing and not self._play_cancelled.is_set():
+            self.status.setPlainText(
+                _PREPARATION_LABELS[phase].format(character=self._spoken_character)
+            )
 
     def _playback_started(self, request: int) -> None:
         if request == self._play_request:
             self.set_playing(True)
 
-    def replay_selected(self) -> None:
+    def _toggle_playback(self, *, recorded: bool) -> None:
+        requested_at = perf_counter()
         if self.replay_runner.active:
             self.stop_replay()
             return
-        self._play_selected(current_voice=False)
-
-    def _play_selected(self, *, current_voice: bool) -> None:
         entry = self.current_entry()
-        if entry is None or self.replay_runner.active or self.stop_runner.active:
+        if entry is None or self.stop_runner.active:
+            return
+        clips = self.history.recording(entry.id) if recorded else ()
+        if recorded and not clips:
+            self._update_speech_controls(entry)
             return
         self._stop_unsupported = False
         self._spoken_character = entry.character
@@ -311,56 +342,84 @@ class DialogueHistoryDialog(CloseGuardedDialog):
         self._play_request += 1
         self._play_cancelled = Event()
         self.status.setToolTip(entry.text)
-        self.replay_button.setEnabled(False)
-        clips = () if current_voice else self.history.recording(entry.id)
-        self._replaying_audio = bool(clips and self.play_recording is not None)
-        self.stop_button.setEnabled(
-            self._replaying_audio or self.stop_handler is not None
-        )
+        self._replaying_audio = recorded
+        active = self.replay_button if recorded else self.current_voice_button
+        active.setMinimumWidth(active.sizeHint().width())
         operation: Callable[[], object]
         if clips and self.play_recording is not None:
             operation = partial(self.play_recording, clips, self._play_cancelled)
-            description = (
-                "recording"
-                if all(clip.complete for clip in clips)
-                else "available portion"
-            )
+            subject = "line" if all(clip.complete for clip in clips) else "excerpt"
+            self._playing_status = f"Playing {entry.character}’s original {subject}..."
             self.status.setPlainText(
-                f"Replaying the {description} for {entry.character}..."
+                f"Preparing {entry.character}’s original {subject}..."
             )
         else:
             operation = partial(self.replay_handler, entry.character, entry.text)
-            self.status.setPlainText(
-                f"Speaking as {entry.character} with the current voice..."
-            )
-        self.replay_runner.start(
-            self._run_replay, operation, self._play_request, self._play_cancelled
+            self._playing_status = f"Speaking as {entry.character}..."
+            self.status.setPlainText(f"Preparing speech for {entry.character}...")
+        self.replay_runner.start_with_progress(
+            self._run_replay,
+            operation,
+            self._play_request,
+            self._play_cancelled,
+            requested_at,
+            recorded,
         )
-        self._update_replay_button(self.current_entry())
+        self._update_speech_controls(self.current_entry())
 
     def _run_replay(
         self,
         operation: Callable[[], object],
         request: int,
         cancelled: Event,
+        requested_at: float,
+        recorded: bool,
+        *,
+        progress: Callable[[str], None],
     ) -> object:
-        token = pcm_admission_context.set(PcmAdmission(lambda: not cancelled.is_set()))
+        def elapsed_ms() -> float:
+            return round((perf_counter() - requested_at) * 1000, 3)
+
+        timings = {"task_started_at_ms": elapsed_ms()}
+
+        def preparing(phase: str) -> None:
+            if not cancelled.is_set() and "first_audio_ms" not in timings:
+                timings.setdefault(phase.replace("-", "_") + "_at_ms", elapsed_ms())
+                if isValid(self):
+                    progress(phase)
+
+        def started() -> None:
+            timings["first_audio_ms"] = elapsed_ms()
+            if isValid(self):
+                self.playback_started.emit(request)
+
+        outcome = "complete"
         try:
-            with observe_playback_start(
-                lambda: self.playback_started.emit(request) if isValid(self) else None
+            with (
+                pcm_admission_context.set(PcmAdmission(lambda: not cancelled.is_set())),
+                playback_preparation_context.set(None if recorded else preparing),
+                observe_playback_start(started),
             ):
                 result = operation()
                 if isinstance(result, Future):
                     return result.result()
                 return result
+        except Exception:
+            outcome = "failed"
+            raise
         finally:
-            pcm_admission_context.reset(token)
+            record_background_operation(
+                "history-original" if recorded else "history-current-voice",
+                elapsed_ms(),
+                "cancelled" if cancelled.is_set() else outcome,
+                operation_id=uuid4().hex,
+                **timings,
+            )
 
     def _replay_finished(self, _result: object, error: Exception | None) -> None:
         self._replay_error = error
         self._playing = False
-        self.stop_button.setEnabled(False)
-        self._update_replay_button(self.current_entry())
+        self._update_speech_controls(self.current_entry())
         if self.stop_runner.active:
             return
         if self._replaying_audio and error is not None:
@@ -392,9 +451,8 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             return
         if self._replaying_audio:
             self._play_cancelled.set()
-            self.stop_button.setEnabled(False)
             self.status.setPlainText(f"Stopping speech for {self._spoken_character}...")
-            self._update_replay_button(self.current_entry())
+            self._update_speech_controls(self.current_entry())
             return
         if self.stop_handler is None:
             self.status.setPlainText("This speech engine cannot be stopped here.")
@@ -404,26 +462,22 @@ class DialogueHistoryDialog(CloseGuardedDialog):
                 "This speech engine cannot stop playback. Wait for it to finish."
             )
             return
-        self.replay_button.setEnabled(False)
-        self.stop_button.setEnabled(False)
         self.status.setPlainText(f"Stopping speech for {self._spoken_character}...")
         self._play_cancelled.set()
         self.stop_runner.start(self.stop_handler)
-        self._update_replay_button(self.current_entry())
+        self._update_speech_controls(self.current_entry())
 
     def _stop_finished(self, _result: object, error: Exception | None) -> None:
         if error is not None:
             self._close_pending = False
-            self.stop_button.setEnabled(self.replay_runner.active)
-            self._update_replay_button(self.current_entry())
+            self._update_speech_controls(self.current_entry())
             self.status.setPlainText(
                 f"Unable to stop speech for {self._spoken_character}: {error}"
             )
             return
         if _result is False and self.replay_runner.active:
             self._stop_unsupported = True
-            self.stop_button.setEnabled(False)
-            self._update_replay_button(self.current_entry())
+            self._update_speech_controls(self.current_entry())
             self.status.setPlainText(
                 "This speech engine cannot stop playback. Wait for it to finish."
             )
@@ -433,8 +487,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
             return
         self.replay_runner.cancel()
         self._playing = False
-        self.stop_button.setEnabled(False)
-        self._update_replay_button(self.current_entry())
+        self._update_speech_controls(self.current_entry())
         self.status.setPlainText(f"Speech stopped for {self._spoken_character}.")
         if self._close_pending:
             self._close_pending = False
@@ -450,7 +503,7 @@ class DialogueHistoryDialog(CloseGuardedDialog):
     def export_history(self) -> None:
         path, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Export dialogue history",
+            "Export history",
             "dialogue-history.txt",
             "Text files (*.txt);;JSON files (*.json)",
         )

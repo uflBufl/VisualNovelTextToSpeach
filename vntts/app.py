@@ -2059,7 +2059,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._build_actions()
         self._build_main_menu()
         self._build_setup_and_support_menus()
-        self._build_dashboard_menus()
         self._connect_actions()
         self._connect_application_signals()
         self._connect_dashboard()
@@ -2369,7 +2368,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.moss_runtime_action = QAction("Load OpenMOSS", self)
         self.voice_preview_action = QAction("Choose narrator voice...", self)
         self.speaker_mapping_action = QAction("Manage character voices...", self)
-        self.history_action = QAction("Dialogue history...", self)
+        self.history_action = QAction("History...", self)
         self.support_action = QAction("Support and logs", self)
         self.macos_permissions_action = QAction("macOS permissions...", self)
         self.macos_permissions_action.setVisible(sys.platform == "darwin")
@@ -2468,23 +2467,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.tray.setContextMenu(self.menu)
         self.tray.setToolTip(application_name)
 
-    def _build_dashboard_menus(self) -> None:
-        bar = self.dashboard.menuBar()
-        bar.setNativeMenuBar(False)
-        application_menu = bar.addMenu("Application")
-        application_menu.addAction(self.show_compact_action)
-        application_menu.addSeparator()
-        application_menu.addAction(self.quit_action)
-        # Qt native menus need separate menu owners. Share the commands themselves
-        # so labels, availability and checked state follow the same QAction.
-        for shortcuts in (self.playback_menu, self.setup_menu, self.support_menu):
-            menu = bar.addMenu(shortcuts.title())
-            if shortcuts is self.playback_menu:
-                menu.addActions([self.read_action, self.live_action, self.pause_action])
-                menu.addSeparator()
-            menu.addActions(shortcuts.actions())
-        self.dashboard.history_button.setDefaultAction(self.history_action)
-
     def _connect_actions(self) -> None:
         self.read_action.triggered.connect(self.read_once)
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
@@ -2564,6 +2546,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.set_sequence_status(sequence_status)
 
     def _connect_dashboard(self) -> None:
+        self.dashboard.history_button.setDefaultAction(self.history_action)
+        self.dashboard.add_tool_menu(
+            "Game setup",
+            (
+                self.setup_action,
+                self.profiles_action,
+                self.assets_action,
+                self.cancel_configuration_action,
+            ),
+        )
+        self.dashboard.add_tool_menu(
+            "OCR", (self.corrections_action, self.ocr_review_action)
+        )
         self.dashboard.game_window_requested.connect(self.choose_capture_source)
         self.dashboard.screen_capture_requested.connect(
             partial(self.choose_capture_source, None)
@@ -6303,7 +6298,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._needs_modal_stop(state):
             self._stop_live_then(
                 lambda: self._open_history_dialog(state.live, paused=state.paused),
-                "Stopping reading before dialogue history...",
+                "Stopping reading before opening History...",
             )
             return
         self._open_history_dialog(False)

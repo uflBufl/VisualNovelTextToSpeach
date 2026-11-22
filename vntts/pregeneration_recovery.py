@@ -24,10 +24,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_failures import (
     generation_failure_repair_plan,
 )
-from vntts.authoring.generation_fallback import (
-    AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
-    authorize_live_fallback,
-)
+from vntts.authoring.generation_fallback import authorize_live_fallback
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
     generation_item_status,
@@ -36,6 +33,10 @@ from vntts.authoring.generation_state import (
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.generation_database import measure_generation_run
 from vntts.generation_database import state_path as generation_state_path
+from vntts.pregeneration_contract import (
+    PlannedLiveFallback,
+    use_automatic_live_fallback,
+)
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -91,7 +92,7 @@ class _RecoveryTerminalizer(Protocol):
         self,
         generation_input: PregenerationInput,
         generation_result: OfflineGenerationResult,
-        queue_ids: tuple[str, ...],
+        decisions: tuple[PlannedLiveFallback, ...],
         cancel_event: Event | None,
         *,
         generator: _RecoveryGenerator,
@@ -116,7 +117,7 @@ class OfflineRecoveryPlan:
     automatic_batches: tuple[OfflineRecoveryBatch, ...]
     deferred_action_counts: tuple[tuple[str, int], ...]
     deferred_batches: tuple[OfflineRecoveryBatch, ...] = ()
-    live_fallback_queue_ids: tuple[str, ...] = ()
+    live_fallbacks: tuple[PlannedLiveFallback, ...] = ()
     cancelled_queue_ids: tuple[str, ...] = ()
 
     @property
@@ -166,7 +167,7 @@ def plan_automatic_recovery(
         raise OfflineRecoveryError("Offline recovery plan is malformed")
     grouped: dict[str, list[str]] = {action: [] for action in AUTOMATIC_ACTION_ORDER}
     deferred_queue_ids: dict[str, list[str]] = {}
-    live_fallback_queue_ids: list[str] = []
+    live_fallbacks: list[PlannedLiveFallback] = []
     cancelled_queue_ids: list[str] = []
     seen_queue_ids: set[str] = set()
     for record in records:
@@ -174,19 +175,18 @@ def plan_automatic_recovery(
         seen_queue_ids.add(queue_id)
         if record.get("failure_kind") == "cancelled":
             cancelled_queue_ids.append(queue_id)
-        provider = record.get("provider")
-        if action in grouped and not (
-            provider == "pocket-tts"
-            and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
+        source_digest = record.get("source_result_sha256")
+        if use_automatic_live_fallback(
+            action, record.get("provider"), record.get("failure_kind")
         ):
+            if isinstance(source_digest, str):
+                live_fallbacks.append(
+                    PlannedLiveFallback(queue_id, action, source_digest)
+                )
+        elif action in grouped:
             grouped[action].append(queue_id)
-        else:
-            deferred_queue_ids.setdefault(action, []).append(queue_id)
-            if (
-                provider is not None
-                and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
-            ):
-                live_fallback_queue_ids.append(queue_id)
+            continue
+        deferred_queue_ids.setdefault(action, []).append(queue_id)
     failure_count = document.get("failure_count")
     if (
         not isinstance(failure_count, int)
@@ -212,7 +212,9 @@ def plan_automatic_recovery(
             OfflineRecoveryBatch(action, tuple(sorted(queue_ids)))
             for action, queue_ids in sorted(deferred_queue_ids.items())
         ),
-        live_fallback_queue_ids=tuple(sorted(live_fallback_queue_ids)),
+        live_fallbacks=tuple(
+            sorted(live_fallbacks, key=lambda fallback: fallback.queue_id)
+        ),
         cancelled_queue_ids=tuple(sorted(cancelled_queue_ids)),
     )
 
@@ -298,20 +300,20 @@ class OfflineRecoveryWorker:
                 scoped_initial_failures = int(queue_id not in plan.cancelled_queue_ids)
             next_batch = _next_recovery_batch(plan, applied, queue_id)
             if next_batch is None:
-                terminal_queue_ids = tuple(
+                decisions = tuple(
                     candidate
-                    for candidate in plan.live_fallback_queue_ids
-                    if queue_id is None or candidate == queue_id
+                    for candidate in plan.live_fallbacks
+                    if queue_id is None or candidate.queue_id == queue_id
                 )
-                if terminal_queue_ids and not terminalization_attempted:
+                if decisions and not terminalization_attempted:
                     current = self.terminalizer(
                         generation_input,
                         current,
-                        terminal_queue_ids,
+                        decisions,
                         cancel_event,
                         generator=self.generator,
                     )
-                    terminalized = len(terminal_queue_ids)
+                    terminalized = len(decisions)
                     terminalization_attempted = True
                     continue
                 remaining = (
@@ -492,7 +494,7 @@ def _next_recovery_batch(
 
 
 def _plan_contains(plan: OfflineRecoveryPlan, queue_id: str) -> bool:
-    return queue_id in plan.live_fallback_queue_ids or any(
+    return any(
         queue_id in batch.queue_ids
         for batch in (*plan.automatic_batches, *plan.deferred_batches)
     )
@@ -625,7 +627,7 @@ def _saved_generation_state(
 def _terminalize_exhausted_failures(
     generation_input: PregenerationInput,
     generation_result: OfflineGenerationResult,
-    queue_ids: tuple[str, ...],
+    decisions: tuple[PlannedLiveFallback, ...],
     cancel_event: Event | None,
     *,
     generator: _RecoveryGenerator,
@@ -636,14 +638,15 @@ def _terminalize_exhausted_failures(
         "recovery",
         error_type=OfflineRecoveryError,
     )
-    for queue_id in sorted(set(queue_ids)):
+    for decision in decisions:
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Automatic recovery was cancelled")
         try:
             authorize_live_fallback(
                 generation_result.state,
                 generation_input.queue,
-                queue_id,
+                decision.queue_id,
+                planned=decision,
                 reason=LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
                 model="pocket-tts",
             )
@@ -652,7 +655,7 @@ def _terminalize_exhausted_failures(
                 refresh_progress(generation_input)
         except (BulkGenerationError, OSError, ValueError) as error:
             raise OfflineRecoveryError(
-                f"Unable to preserve live fallback for {queue_id!r}: {error}"
+                f"Unable to preserve live fallback for {decision.queue_id!r}: {error}"
             ) from error
     return generator.inspect(generation_input)
 
