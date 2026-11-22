@@ -6,7 +6,7 @@ import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -1874,6 +1874,34 @@ print("worker-import-ready")
                             cache_policy=SynthesisCachePolicy.BYPASS,
                         )
                     )
+
+    def test_runtime_probe_preserves_packaged_dll_error_before_system_fallback(self):
+        def load_failed(_site, _names):
+            try:
+                raise OSError("cannot load packaged libsndfile_x64.dll")
+            except OSError as error:
+                raise OSError("cannot load system libsndfile.dll") from error
+
+        incoming = BytesIO()
+        _write_frame(
+            incoming,
+            {"type": "runtime_probe", "backend": "qwen-tts", "runtime_site": "."},
+        )
+        incoming.seek(0)
+        with (
+            patch("vntts.speech_worker._module_health", side_effect=load_failed),
+            patch("sys.stderr", new_callable=StringIO) as errors,
+        ):
+            self.assertEqual(
+                worker_main(
+                    input_stream=incoming,
+                    output_stream=BytesIO(),
+                    required_modules={"qwen-tts": ("soundfile",)},
+                ),
+                1,
+            )
+        self.assertIn("cannot load packaged libsndfile_x64.dll", errors.getvalue())
+        self.assertIn("cannot load system libsndfile.dll", errors.getvalue())
 
     def test_module_provenance_rejects_dependency_outside_runtime(self):
         with TemporaryDirectory() as directory:

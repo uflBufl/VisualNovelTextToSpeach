@@ -180,10 +180,10 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Adopt Qwen for offline story preparation
 
-- [ ] Repair Windows Qwen voice preview startup. The November 22 support
-      export shows the managed runtime probe failing to load `libsndfile.dll`
-      with error 0x7e. Check the runtime's packaged soundfile library and its
-      dependencies in the worker environment, then start a preview there.
+- [ ] Reproduce the Windows Qwen preview failure from the November 22 export.
+      Run the isolated worker from a managed-length Windows path and preserve
+      the original SoundFile loader error. Use that evidence to correct the
+      cause and confirm a preview on the affected Windows configuration.
 
 - [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
       choosing it as the default offline engine. The speaker-only conditioning

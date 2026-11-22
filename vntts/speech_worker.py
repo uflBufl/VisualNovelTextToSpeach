@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import threading
+import traceback
 import uuid
 from collections import deque
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -133,7 +134,7 @@ _REQUIRED_MODULES = {
     ),
     "qwen-tts": _COMMON_REQUIRED_MODULES
     + (
-        ("qwen_tts", "torch", "torchaudio")
+        ("soundfile", "qwen_tts", "torch", "torchaudio")
         if sys.platform == "win32"
         else ("mlx.core", "mlx_audio", "transformers", "tokenizers", "safetensors")
     ),
@@ -980,7 +981,10 @@ def worker_main(
                     },
                 )
     except Exception as error:
-        print(f"Speech worker failed: {error}", file=sys.stderr)
+        # Native loaders may try a system library after the packaged DLL fails.
+        # Keep the first failure in the installer's stderr without dumping frames.
+        details = "".join(traceback.format_exception(error, limit=0)).strip()
+        print(f"Speech worker failed: {details}", file=sys.stderr)
         try:
             _write_frame(
                 protocol_out,

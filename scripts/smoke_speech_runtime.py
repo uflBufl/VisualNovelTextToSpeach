@@ -80,7 +80,9 @@ def _qwen_without_cuda() -> str:
 def check_runtime(
     backend: str, *, allow_unavailable_metal: bool = False
 ) -> _RuntimeReport:
-    runtime = ROOT / "backends" / backend / ".venv"
+    runtime = (
+        ROOT / "backends" / backend / os.environ.get("UV_PROJECT_ENVIRONMENT", ".venv")
+    )
     if Path(sys.prefix).resolve() != runtime.resolve():
         raise RuntimeError(f"Run this check with the isolated {backend} environment")
     report: _RuntimeReport = {

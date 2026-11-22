@@ -48,6 +48,15 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Exercise the managed Windows directory layout for Qwen
+        if: matrix.backend == 'qwen-tts'
+        shell: pwsh
+        run: |
+          $recipe = '${{ hashFiles('backends/qwen-tts/pyproject.toml', 'backends/qwen-tts/uv.lock') }}'
+          $generation = [guid]::NewGuid().ToString('N')
+          $root = Join-Path $env:LOCALAPPDATA 'Preview тест\VisualNovelTextToSpeech\speech-runtimes\qwen-tts'
+          "UV_PROJECT_ENVIRONMENT=$root\$recipe\generations\$generation\environment" >> $env:GITHUB_ENV
+
       - name: Install locked runtime dependencies
         run: uv sync --project backends/${{ matrix.backend }} --locked --python 3.14 --no-dev
 
