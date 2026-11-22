@@ -141,13 +141,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       preserve the last real speaker and dialogue in dashboard and Compact.
       Confidence/reason belongs to status; raw OCR must not enter status logs.
 
-## Slow voice selection and story preparation
-
-- [ ] Reduce the wait for game voices in the voice editor. The November 22 Windows support export
-      measured 12.4 seconds to list characters and 10.3 seconds to prepare a
-      selected character's references. Isolate index loading from candidate
-      extraction and reuse unchanged results on reopening the same character.
-
 ## Active - Faster voice auditions and qualified reference selection
 
 - [ ] **Validate general automatic reference suitability:** build reproducible positive/negative acoustic controls from authorized installed sources and qualify any new output rule against independently accepted examples; preserve variable repeat outcomes as uncertain. Store the fixture recipe and expected decisions in Git; private historical ratings are not a required input. Require evidence on known natural defect types, balanced shared texts/seeds and independent character/source groups before assigning reference-ranking weights; retain an uncertain outcome and verify sample-rate/gain sensitivity. Do not fit thresholds or invert failed metrics from these development labels; injected controls are not natural-defect precision. Further human listening must answer a concrete unresolved question using a few targeted cases and a stated stopping decision, not another exhaustive batch. Keep named references/ratings research-only and ordinary users free of per-character A/B review.

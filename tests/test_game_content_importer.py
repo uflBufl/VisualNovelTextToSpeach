@@ -89,6 +89,153 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         override.start()
         self.addCleanup(override.stop)
 
+    def test_narrator_list_reopening_reuses_admitted_source_checksums(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "reverse1999"
+            story = write_story_index(output)
+            narrator = output / "narrator-index.jsonl"
+            narrator.write_bytes(story.read_bytes())
+            banks = output / "narrator-banks.json"
+            banks.write_text('["Rhiannon"]', encoding="utf-8")
+            bank_index = output / "english-bank-index.json"
+            bank_index.write_text('{"version": 6, "banks": []}', encoding="utf-8")
+            importer = Reverse1999GameImporter(output_root=root)
+            with patch(
+                "r1999extractor.reverse1999_index.bank_index_staleness_reasons",
+                return_value=[],
+            ) as check_installed:
+                self.assertEqual(
+                    importer.narrator_characters(), ("Centurion", "Rhiannon")
+                )
+                with (
+                    patch.object(
+                        importer_module,
+                        "sha256_file",
+                        side_effect=AssertionError("rehash"),
+                    ),
+                    patch.object(
+                        importer_module,
+                        "read_regular_bytes",
+                        side_effect=AssertionError("reread"),
+                    ),
+                    patch.object(
+                        importer_module,
+                        "read_regular_text",
+                        side_effect=AssertionError("reparse"),
+                    ),
+                ):
+                    reopened = Reverse1999GameImporter(output_root=root)
+                    self.assertEqual(
+                        reopened.narrator_characters(), ("Centurion", "Rhiannon")
+                    )
+                self.assertEqual(check_installed.call_count, 2)
+
+                # The extractor publishes replacements atomically, including same-size catalogs.
+                previous = banks.stat()
+                replacement = banks.with_suffix(".new")
+                replacement.write_text('["Sherlock"]', encoding="utf-8")
+                os.utime(replacement, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+                replacement.replace(banks)
+                self.assertEqual(
+                    importer.narrator_characters(), ("Centurion", "Sherlock")
+                )
+                bank_index.write_text('{"version": 5, "banks": []}', encoding="utf-8")
+                importer.narrator_characters()
+                self.assertEqual(check_installed.call_args.args[0]["version"], 5)
+
+    def test_cached_bank_fingerprints_still_check_installed_bank_changes(self):
+        from r1999extractor.reverse1999_index import index_version
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio"
+            audio.mkdir()
+            bank = audio / "hero.bnk"
+            bank.write_bytes(b"original")
+            fingerprint = bank.stat()
+            index = root / "english-bank-index.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "version": index_version,
+                        "game_audio_directory": str(audio),
+                        "bank_count": 1,
+                        "banks": [
+                            {
+                                "path": bank.name,
+                                "size": fingerprint.st_size,
+                                "mtime_ns": fingerprint.st_mtime_ns,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            check = Reverse1999GameImporter._bank_index_is_stale
+            self.assertFalse(check(index))
+            with patch.object(
+                importer_module,
+                "read_regular_text",
+                side_effect=AssertionError("reparse"),
+            ):
+                self.assertFalse(check(index))
+                bank.write_bytes(b"updated audio bank")
+                self.assertTrue(check(index))
+
+    def test_narrator_list_projection_preserves_voice_and_legacy_status_rules(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            story = write_story_index(root)
+            metadata, *records = [
+                json.loads(row) for row in story.read_text().splitlines()
+            ]
+            banks = root / "narrator-banks.json"
+            banks.write_text("[]", encoding="utf-8")
+            rows = []
+            for index, (speaker, voice, status) in enumerate(
+                (
+                    ("Alias", "Rhiannon", "installed"),
+                    ("Narrator", "Narrator", "installed"),
+                    ("Unavailable", "Unavailable", "configured_unavailable"),
+                )
+            ):
+                row = dict(
+                    records[0],
+                    line_id=f"voice:{index}",
+                    speaker=speaker,
+                    voice_character=voice,
+                    audio_status=status,
+                )
+                row.pop("source_audio_status", None)
+                rows.append(row)
+            metadata["line_count"] = len(rows)
+            story.write_text(
+                "\n".join(json.dumps(row) for row in (metadata, *rows)) + "\n"
+            )
+            self.assertEqual(
+                Reverse1999GameImporter._cached_narrator_characters(
+                    story, banks, sha256_file(story), sha256_file(banks)
+                ),
+                ("Rhiannon",),
+            )
+            for edit in (
+                {"speaker": 42},
+                {"voice_character": " padded "},
+                {"source_audio_status": "absent", "audio_status": "installed"},
+                {"audio_status": "invalid"},
+            ):
+                with self.subTest(edit=edit):
+                    changed = [dict(rows[0], **edit), *rows[1:]]
+                    story.write_text(
+                        "\n".join(json.dumps(row) for row in (metadata, *changed))
+                        + "\n"
+                    )
+                    with self.assertRaises(GameContentImportError):
+                        Reverse1999GameImporter._cached_narrator_characters(
+                            story, banks, sha256_file(story), sha256_file(banks)
+                        )
+
     def test_narrator_banks_keep_mapping_and_list_contracts(self):
         for document in ({"Rhiannon": "hero.bnk"}, ["Rhiannon"], "Rhiannon", [42]):
             with self.subTest(document=document), TemporaryDirectory() as directory:
@@ -1554,6 +1701,60 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 prune_obsolete_voice_candidate_caches(root, jobs),
                 (candidate.resolve(),),
             )
+
+    def test_voice_editor_reuses_only_the_current_role_catalog_across_openings(self):
+        with TemporaryDirectory() as directory, ExitStack() as claims:
+            output = Path(directory).resolve()
+            root = output / "reverse1999"
+            root.mkdir()
+            story = root / "story-index.jsonl"
+            bank = root / "english-bank-index.json"
+            story.touch()
+            bank.touch()
+            claims.enter_context(
+                patch("vntts.voice_candidate_cache._candidate_claims", claims)
+            )
+            claims.enter_context(
+                patch("vntts.voice_candidate_cache._claimed_paths", set())
+            )
+            decoder = claims.enter_context(
+                patch(
+                    "vntts.game_content_importer.ensure_game_decoder",
+                    return_value=output / "decoder",
+                )
+            )
+            manifest = root / "voice-candidates" / "candidate" / "manifest.json"
+
+            def publish(*_args, **_kwargs):
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text("{}")
+                return json.dumps({"voice_manifest": str(manifest)}), ""
+
+            publisher = claims.enter_context(
+                patch.object(
+                    Reverse1999GameImporter,
+                    "_run_source_audio_publisher",
+                    side_effect=publish,
+                )
+            )
+
+            def open_editor(role="Rhiannon", backend="moss-tts"):
+                importer = Reverse1999GameImporter(output_root=output)
+                return importer.prepare_voice_roles((role,), speech_backend=backend)
+
+            self.assertEqual(open_editor(), manifest)
+            self.assertEqual(open_editor(), manifest)
+            decoder.assert_called_once()
+            publisher.assert_called_once()
+            open_editor(role="Centurion")
+            open_editor(backend="pocket-tts")
+            bank.write_text("updated bank index")
+            open_editor()
+            (root / "narrator-index.jsonl").touch()
+            open_editor()
+            manifest.unlink()
+            open_editor()
+            self.assertEqual(publisher.call_count, 6)
 
     def test_voice_candidate_manifest_must_not_be_a_symlink(self):
         with TemporaryDirectory() as temporary_directory:

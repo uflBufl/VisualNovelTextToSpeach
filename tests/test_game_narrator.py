@@ -1126,16 +1126,16 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(dialog.result_settings)
 
     def test_inherited_variant_without_optional_metadata_keeps_defaults(self):
-        dialog = self.editor()
-        dialog._character = "Rhiannon"
+        self.importer.narrator_characters.return_value = ("Rhiannon",)
+        self.importer.prepare_voice_roles.return_value = self.manifest
         registry = CharacterVoiceRegistry.from_file(self.manifest)
         variants = ({"character": "Rhiannon", "voice_character": "rhiannon"},)
         with patch(
-            "vntts.game_narrator_ui.validated_player_voice_candidates",
+            "vntts.game_narrator.validated_player_voice_candidates",
             return_value=(registry, variants),
         ):
-            dialog._show_character_candidates(self.manifest)
-        self.drain()
+            dialog = self.editor()
+            self.select(dialog, "game")
 
         candidate = dialog.voice_panel.current_group().candidate_inventory[0]
         self.assertIsNone(candidate.reference_duration_seconds)

@@ -48,7 +48,11 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.document_identity import sha256_file
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
-from vntts.game_narrator import bind_voice_library_selection, narrator_preview_plan
+from vntts.game_narrator import (
+    bind_voice_library_selection,
+    game_character_preview_plan,
+    narrator_preview_plan,
+)
 from vntts.pocket_model import pocket_model_ready
 from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.pregeneration_audition import (
@@ -64,7 +68,6 @@ from vntts.pregeneration_voices import (
     VoicePlan,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
-    validated_player_voice_candidates,
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
@@ -1367,69 +1370,26 @@ class GameNarratorDialog(QDialog):
         self._start(
             "prepare",
             f"Preparing voice candidates for {self._character}...",
-            partial(
-                self.importer.prepare_voice_roles,
-                (self._character,),
-                self.cancellation,
-                progress=self.decoderProgress.emit,
-                narrator=False,
-                speech_backend=self.settings_value.speech_backend,
-            ),
+            self._prepare_character_plan,
+            self._character,
+            self.settings_value,
         )
 
-    def _show_character_candidates(self, manifest: Path | str) -> None:
-        registry, variants = validated_player_voice_candidates(
-            Path(manifest), speech_backend=self.settings_value.speech_backend
+    def _prepare_character_plan(
+        self, character: str, settings: AppSettings
+    ) -> VoicePlan | None:
+        manifest = self.importer.prepare_voice_roles(
+            (character,),
+            self.cancellation,
+            progress=self.decoderProgress.emit,
+            narrator=False,
+            speech_backend=settings.speech_backend,
         )
-        candidates = []
-        for variant in variants:
-            if normalize_character_name(
-                str(variant.get("character", ""))
-            ) != normalize_character_name(self._character):
-                continue
-            source = f"character:{normalize_character_name(variant['voice_character'])}"
-            voice = registry.resolve_source(source)
-            if voice is None:
-                continue
-            excerpts = cast(
-                Sequence[dict[str, object]], variant.get("source_excerpts", ())
-            )
-            candidates.append(
-                VoiceCandidate(
-                    source_id=source,
-                    source_character=voice.source_character or voice.character,
-                    source_speaker=voice.speaker,
-                    reference_sha256s=tuple(
-                        sha256_file(path) for path in voice.references
-                    ),
-                    reference_duration_seconds=cast(
-                        float | None, variant.get("duration_seconds")
-                    ),
-                    source_bank=cast(str | None, variant.get("source_bank")),
-                    source_line_ids=tuple(
-                        cast(Sequence[str], variant.get("source_line_ids", ()))
-                    ),
-                    source_voice_ids=tuple(
-                        cast(Sequence[str], variant.get("source_voice_ids", ()))
-                    ),
-                    source_excerpts=tuple(
-                        str(value.get("text", "")) for value in excerpts
-                    ),
-                    candidate_origin=cast(str | None, variant.get("candidate_origin")),
-                    reference_transcript=voice.reference_transcript,
-                )
-            )
-        if not candidates:
-            self._set_status(
-                "No usable voice candidates found. Choose another character."
-            )
-            return
-        plan = narrator_preview_plan(
-            self.settings_value,
-            manifest,
-            candidates[0].source_id,
-            COMPARISON_PREVIEW_TEXT,
+        return game_character_preview_plan(
+            settings, manifest, character, COMPARISON_PREVIEW_TEXT
         )
+
+    def _show_character_plan(self, plan: VoicePlan) -> None:
         _binding, saved = self._saved_role_voice(
             self.selected_role, is_narrator(self.selected_role)
         )
@@ -1437,11 +1397,9 @@ class GameNarratorDialog(QDialog):
             plan.groups[0],
             character=self.selected_role,
             speakers=(self.selected_role,),
-            candidates=tuple(candidates),
-            candidate_inventory=tuple(candidates),
-            source_id=saved or candidates[0].source_id,
+            source_id=saved or plan.groups[0].source_id,
         )
-        self._candidate_manifest = manifest
+        self._candidate_manifest = plan.voice_manifest
         self.voice_panel.start(replace(plan, groups=(group,)), group_id=group.group_id)
 
     def _start(
@@ -1484,12 +1442,15 @@ class GameNarratorDialog(QDialog):
         if operation == "discover":
             self._discovery_finished(result)
         elif operation == "prepare" and self.source.currentData() == "game":
-            try:
-                if not isinstance(result, (Path, str)):
-                    raise ValueError("Game importer returned an invalid voice manifest")
-                self._show_character_candidates(result)
-            except (OSError, ValueError, PregenerationVoiceError) as failure:
-                self._set_status(f"{failure}\nChoose another voice source.")
+            if isinstance(result, VoicePlan):
+                try:
+                    self._show_character_plan(result)
+                except (OSError, ValueError, PregenerationVoiceError) as failure:
+                    self._set_status(f"{failure}\nChoose another voice source.")
+            else:
+                self._set_status(
+                    "No usable voice candidates found. Choose another character."
+                )
         elif operation == "narrator":
             if isinstance(result, VoicePlan):
                 self._start_narrator_panel(result)

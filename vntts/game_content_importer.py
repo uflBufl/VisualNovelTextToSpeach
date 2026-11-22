@@ -37,6 +37,7 @@ from vntts_artifacts.story_index import (
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_config_directory, get_local_data_directory
+from vntts.audio_cache import BoundedCache
 from vntts.authoring.asr_model import (
     ManagedAsrModelError,
     install_managed_asr_model,
@@ -48,10 +49,9 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
-from vntts.content_revision import ContentRevision
+from vntts.content_revision import ContentRevision, SourceSignature, source_signature
 from vntts.document_identity import (
     canonical_document_sha256,
-    file_sha256,
     is_lowercase_sha256,
     sha256_file,
 )
@@ -106,6 +106,32 @@ PathInput: TypeAlias = str | PathLike[str]
 InstallationRoots: TypeAlias = tuple[Path, Path, Path]
 InstallationParts: TypeAlias = tuple[Path | None, Path | None, Path | None]
 PopenFactory: TypeAlias = Callable[..., subprocess.Popen[str]]
+
+
+_CandidateRevisions: TypeAlias = tuple[
+    SourceSignature, SourceSignature | None, SourceSignature
+]
+# The extractor owns the disk cache. Remember successful calls while the same
+# process, command line and published game indexes are in use.
+_prepared_candidates = BoundedCache[
+    tuple[Path, tuple[str, ...], _CandidateRevisions], tuple[Path, SourceSignature]
+](64)
+
+
+def _candidate_index_revisions(
+    indexes: Path, target: Path
+) -> _CandidateRevisions | None:
+    try:
+        narrator = None
+        with suppress(FileNotFoundError):
+            narrator = source_signature(indexes / "narrator-index.jsonl")
+        return (
+            source_signature(target),
+            narrator,
+            source_signature(indexes / "english-bank-index.json"),
+        )
+    except OSError, StoryIndexError:
+        return None
 
 
 class NarratorReference(Protocol):
@@ -1128,18 +1154,34 @@ class Reverse1999GameImporter:
             or self._bank_index_is_stale(bank_index)
         ):
             self.import_installed(cancel_event, installation_root)
-        result = self._cached_narrator_characters(
-            story_index,
-            narrator_banks,
-            file_sha256(story_index, error_type=GameContentImportError),
-            file_sha256(narrator_banks, error_type=GameContentImportError),
-        )
+        try:
+            sources = (story_index, narrator_banks)
+            signatures = tuple(source_signature(path) for path in sources)
+            checksums = tuple(
+                self._narrator_source_sha256(path, signature)
+                for path, signature in zip(sources, signatures, strict=True)
+            )
+            result = self._cached_narrator_characters(*sources, *checksums)
+            if tuple(source_signature(path) for path in sources) != signatures:
+                raise GameContentImportError(
+                    "Narrator sources changed while being read"
+                )
+        except (OSError, StoryIndexError) as error:
+            raise GameContentImportError(str(error)) from error
         self._record(
             "narrator-result",
             characters=len(result),
             outcome="complete" if result else "empty",
         )
         return result
+
+    @staticmethod
+    @lru_cache(maxsize=8)
+    def _narrator_source_sha256(path: Path, signature: SourceSignature) -> str:
+        checksum = sha256_file(path)
+        if source_signature(path) != signature:
+            raise GameContentImportError("Narrator source changed while being read")
+        return checksum
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -1166,6 +1208,7 @@ class Reverse1999GameImporter:
                 return tuple(names)
         except OSError, ValueError, KeyError, TypeError:
             pass
+        signatures = (source_signature(story_index), source_signature(narrator_banks))
         banks_payload = read_regular_bytes(narrator_banks)
         if hashlib.sha256(banks_payload).hexdigest() != banks_sha256:
             raise GameContentImportError("Narrator banks changed while being read")
@@ -1181,16 +1224,15 @@ class Reverse1999GameImporter:
             for name in banks
             if not is_narrator(name)
         }
-        if sha256_file(narrator_banks) != banks_sha256:
-            raise GameContentImportError("Narrator banks changed while being read")
-        for record in load_verified_story_index_document(
+        for character in Reverse1999GameImporter._narrator_index_characters(
             story_index, index_sha256
-        ).records:
-            character = synthesis_character_for_line(
-                record.speaker, record.voice_character
-            )
-            if record.source_audio_status == "available" and not is_narrator(character):
-                characters.setdefault(normalize_character_name(character), character)
+        ):
+            characters.setdefault(normalize_character_name(character), character)
+        if (
+            source_signature(story_index),
+            source_signature(narrator_banks),
+        ) != signatures:
+            raise GameContentImportError("Narrator sources changed while being read")
         result = tuple(sorted(characters.values(), key=str.casefold))
         with suppress(OSError):
             atomic_write_json(
@@ -1205,14 +1247,111 @@ class Reverse1999GameImporter:
         return result
 
     @staticmethod
+    def _narrator_index_characters(path: Path, expected_sha256: str) -> tuple[str, ...]:
+        # Reuse the pinned contract's validators without building authoring records.
+        from vntts_artifacts.story_index import (
+            _canonical_text,
+            _load_strict_json,
+            _optional_canonical_text,
+            _strict_source_audio_status,
+            _validate_metadata,
+        )
+
+        from vntts.path_safety import open_regular_binary
+
+        digest = hashlib.sha256()
+        characters: dict[str, str] = {}
+        line_ids = set()
+        try:
+            with open_regular_binary(path) as stream:
+                raw = next(stream)
+                digest.update(raw)
+                metadata = _load_strict_json(raw.decode("utf-8"))
+                _validate_metadata(metadata)
+                if type(metadata.get("line_count")) is not int:
+                    raise ValueError("Narrator-index line count must be an integer")
+                for raw in stream:
+                    digest.update(raw)
+                    record = _load_strict_json(raw.decode("utf-8"))
+                    if (
+                        not isinstance(record, dict)
+                        or record.get("record_type") != "line"
+                    ):
+                        raise ValueError("Expected a narrator-index line")
+                    line_id = _canonical_text(record.get("line_id"), "line_id")
+                    if line_id in line_ids:
+                        raise ValueError("Duplicate narrator-index line identity")
+                    line_ids.add(line_id)
+                    speaker = _canonical_text(record.get("speaker"), "speaker")
+                    voice = _optional_canonical_text(
+                        record.get("voice_character"), "voice_character"
+                    )
+                    status = _strict_source_audio_status(record)
+                    if status == "available":
+                        character = synthesis_character_for_line(
+                            speaker, voice or speaker
+                        )
+                        if not is_narrator(character):
+                            characters.setdefault(
+                                normalize_character_name(character), character
+                            )
+                if metadata["line_count"] != len(line_ids):
+                    raise ValueError("Narrator-index line count mismatch")
+        except (
+            OSError,
+            ValueError,
+            StoryIndexError,
+            StopIteration,
+            RecursionError,
+        ) as error:
+            raise GameContentImportError(
+                f"Unable to read narrator index {path}: {error}"
+            ) from error
+        if digest.hexdigest() != expected_sha256:
+            raise GameContentImportError("Narrator index changed while being read")
+        return tuple(characters.values())
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _cached_bank_index_document(path: Path, signature: SourceSignature) -> object:
+        document = decode_json(read_regular_text(path, encoding="utf-8"))
+        if source_signature(path) != signature:
+            raise GameContentImportError("Audio bank index changed while being read")
+        # Version 6 embeds the entire media inventory alongside source fingerprints.
+        # Keep the fields used for staleness checks without retaining that inventory.
+        if (
+            isinstance(document, dict)
+            and document.get("version") == 6
+            and isinstance(document.get("banks"), list)
+        ):
+            return {
+                "version": 6,
+                "game_audio_directory": document.get("game_audio_directory"),
+                "bank_count": document.get("bank_count"),
+                "banks": [
+                    {
+                        key: bank.get(key)
+                        for key in ("path", "size", "mtime_ns", "source_directory")
+                    }
+                    if isinstance(bank, dict)
+                    else bank
+                    for bank in document["banks"]
+                ],
+            }
+        return document
+
+    @staticmethod
     def _bank_index_is_stale(path: Path) -> bool:
         from r1999extractor.reverse1999_index import bank_index_staleness_reasons
 
         from vntts.support import record_game_import
 
         try:
-            document = decode_json(read_regular_text(path, encoding="utf-8"))
-        except (OSError, ValueError) as error:
+            signature = source_signature(path)
+            document = Reverse1999GameImporter._cached_bank_index_document(
+                path, signature
+            )
+        except (OSError, ValueError, StoryIndexError, GameContentImportError) as error:
             record_game_import(
                 "bank-index", index=path, reason=str(error), cache_state="unreadable"
             )
@@ -1261,12 +1400,12 @@ class Reverse1999GameImporter:
         command = None if narrator else self.command()
         if not narrator and command is None:
             raise GameContentImportError(self.availability().message)
-        decoder = ensure_game_decoder(
-            cancellation=cancel_event,
-            progress=progress,
-            allow_homebrew=self.allow_decoder_homebrew,
-        )
         if narrator:
+            decoder = ensure_game_decoder(
+                cancellation=cancel_event,
+                progress=progress,
+                allow_homebrew=self.allow_decoder_homebrew,
+            )
             return self._prepare_narrator_voice(
                 roles, decoder, cancel_event, narrator_line_id
             )
@@ -1274,7 +1413,6 @@ class Reverse1999GameImporter:
         return self._prepare_role_voice_candidates(
             roles,
             command,
-            decoder,
             cancel_event,
             progress,
             narrator_line_id,
@@ -1309,7 +1447,6 @@ class Reverse1999GameImporter:
         self,
         roles: Sequence[str],
         command: Sequence[str],
-        decoder: Path,
         cancel_event: Cancellation | None,
         progress: ProgressCallback | None,
         narrator_line_id: str | None,
@@ -1317,12 +1454,6 @@ class Reverse1999GameImporter:
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
         admission_policy: str = "transcript-bound",
     ) -> Path:
-        environment = dict(os.environ)
-        environment["PATH"] = os.pathsep.join(
-            (str(decoder.parent), environment.get("PATH", ""))
-        )
-        if progress is not None:
-            progress("Extracting game voice references. Please wait...")
         arguments = [
             *command,
             "--data-directory",
@@ -1339,6 +1470,40 @@ class Reverse1999GameImporter:
             arguments.extend(("--voice-candidate-role", role))
         root = (self.output_root / "reverse1999" / "voice-candidates").absolute()
         with voice_candidate_cache_guard(root) as cache:
+            self._raise_if_cancelled(
+                cancel_event, message="Voice preparation was cancelled"
+            )
+            target = (
+                Path(target_story_index).expanduser()
+                if target_story_index is not None
+                else root.parent / "story-index.jsonl"
+            )
+            revisions = _candidate_index_revisions(root.parent, target)
+            request = (
+                (cache.root, tuple(arguments), revisions)
+                if revisions is not None
+                else None
+            )
+            cached = _prepared_candidates.get(request) if request is not None else None
+            if cached is not None:
+                manifest, revision = cached
+                try:
+                    if source_signature(manifest) == revision:
+                        cache.claim(manifest)
+                        return manifest
+                except OSError, ValueError, StoryIndexError:
+                    pass
+            decoder = ensure_game_decoder(
+                cancellation=cancel_event,
+                progress=progress,
+                allow_homebrew=self.allow_decoder_homebrew,
+            )
+            environment = dict(os.environ)
+            environment["PATH"] = os.pathsep.join(
+                (str(decoder.parent), environment.get("PATH", ""))
+            )
+            if progress is not None:
+                progress("Extracting game voice references. Please wait...")
             stdout, _stderr = self._run_source_audio_publisher(
                 arguments, cancel_event, scan_progress, environment=environment
             )
@@ -1358,6 +1523,12 @@ class Reverse1999GameImporter:
                     error_type=GameContentImportError,
                 )
                 cache.claim(manifest)
+                if request is not None and revisions == _candidate_index_revisions(
+                    root.parent, target
+                ):
+                    _prepared_candidates.put(
+                        request, (manifest, source_signature(manifest))
+                    )
                 return manifest
             except (GameContentImportError, OSError, ValueError) as error:
                 raise GameContentImportError(

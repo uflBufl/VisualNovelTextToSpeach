@@ -2285,6 +2285,7 @@ def _manifest_candidate_variants(
     story_index_sha256: str,
     *,
     speech_backend: str = "",
+    verified_references: dict[Path, str] | None = None,
 ) -> tuple[JsonObject, ...]:
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
@@ -2374,6 +2375,8 @@ def _manifest_candidate_variants(
                 f"Player voice candidate {index} reference is invalid"
             )
             continue
+        if verified_references is not None:
+            verified_references[voice.references[0]] = reference_sha256
         seen.add(variant_id)
         variants.append(dict(variant))
     return tuple(variants)
@@ -2402,6 +2405,7 @@ def validated_player_voice_candidates(
     manifest_path: Path,
     *,
     speech_backend: str = "",
+    verified_references: dict[Path, str] | None = None,
 ) -> tuple[CharacterVoiceRegistry, tuple[JsonObject, ...]]:
     """Read the same checksum-validated candidates used by story preparation."""
     registry, _digest, document = _load_registry(manifest_path)
@@ -2414,7 +2418,12 @@ def validated_player_voice_candidates(
             "Player voice candidate story checksum is invalid"
         )
     return registry, _manifest_candidate_variants(
-        document, registry, manifest_path, story_sha256, speech_backend=speech_backend
+        document,
+        registry,
+        manifest_path,
+        story_sha256,
+        speech_backend=speech_backend,
+        verified_references=verified_references,
     )
 
 

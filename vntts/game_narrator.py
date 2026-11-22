@@ -4,10 +4,16 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from vntts.document_identity import file_sha256
 from vntts.pocket_model import pocket_model_ready
-from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
+from vntts.pregeneration_voices import (
+    VoiceCandidate,
+    VoiceGroup,
+    VoicePlan,
+    validated_player_voice_candidates,
+)
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
 from vntts.voice_library import VoiceBindingRollback, VoiceLibrary
@@ -100,6 +106,77 @@ def narrator_preview_plan(
             else voice.reference_transcript
         ),
     )
+    return _preview_plan(settings, manifest, identity, text, candidate)
+
+
+def game_character_preview_plan(
+    settings: AppSettings,
+    manifest: Path,
+    character: str,
+    text: str,
+) -> VoicePlan | None:
+    verified_references: dict[Path, str] = {}
+    registry, variants = validated_player_voice_candidates(
+        manifest,
+        speech_backend=settings.speech_backend,
+        verified_references=verified_references,
+    )
+    candidates = []
+    target = normalize_character_name(character)
+    for variant in variants:
+        if normalize_character_name(str(variant.get("character", ""))) != target:
+            continue
+        source = f"character:{normalize_character_name(variant['voice_character'])}"
+        voice = registry.resolve_source(source)
+        if voice is None:
+            continue
+        excerpts = cast(Sequence[dict[str, object]], variant.get("source_excerpts", ()))
+        candidates.append(
+            VoiceCandidate(
+                source_id=source,
+                source_character=voice.source_character or voice.character,
+                source_speaker=voice.speaker,
+                reference_sha256s=tuple(
+                    verified_references.get(path) or file_sha256(path)
+                    for path in voice.references
+                ),
+                reference_duration_seconds=cast(
+                    float | None, variant.get("duration_seconds")
+                ),
+                source_bank=cast(str | None, variant.get("source_bank")),
+                source_line_ids=tuple(
+                    cast(Sequence[str], variant.get("source_line_ids", ()))
+                ),
+                source_voice_ids=tuple(
+                    cast(Sequence[str], variant.get("source_voice_ids", ()))
+                ),
+                source_excerpts=tuple(str(value.get("text", "")) for value in excerpts),
+                candidate_origin=cast(str | None, variant.get("candidate_origin")),
+                reference_transcript=voice.reference_transcript,
+            )
+        )
+    if not candidates:
+        return None
+    return _preview_plan(
+        settings,
+        manifest,
+        file_sha256(manifest),
+        text,
+        candidates[0],
+        tuple(candidates),
+    )
+
+
+def _preview_plan(
+    settings: AppSettings,
+    manifest: str | Path | None,
+    identity: str,
+    text: str,
+    candidate: VoiceCandidate,
+    inventory: tuple[VoiceCandidate, ...] = (),
+) -> VoicePlan:
+    source_id = candidate.source_id
+    preset = source_id.startswith("preset:")
     controls = hashlib.sha256(
         repr(
             (
@@ -122,13 +199,14 @@ def narrator_preview_plan(
         alternate_sample_text=None,
         route="needs-audition",
         source_id=source_id,
-        source_character=voice.source_character or voice.character,
-        source_speaker=voice.speaker,
+        source_character=candidate.source_character,
+        source_speaker=candidate.source_speaker,
         reference_sha256s=candidate.reference_sha256s,
         decision_context_sha256=identity,
         control_sha256=controls,
         resolution="player-narrator-choice",
-        candidates=(candidate,),
+        candidates=inventory or (candidate,),
+        candidate_inventory=inventory,
     )
     return VoicePlan(
         job_id="game-narrator",
