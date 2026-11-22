@@ -2913,11 +2913,18 @@ class GeneratedAudioTest(unittest.TestCase):
             clock=lambda: now[0],
         )
         route = GeneratedAudioRoute(
-            PreparedGeneratedAudio("game:1", "hash", np.zeros(24), 24000),
+            PreparedGeneratedAudio(
+                "game:1", "hash", np.zeros(24, dtype=np.float32), 24000
+            ),
             Mock(effective_source="generated"),
         )
         self.assertIsNone(route.first_audio_ms)
-        outcome = backend.play_route(route)
+        from vntts.playback import replay_audio_capture_context
+
+        with replay_audio_capture_context.set(True):
+            outcome = backend.play_route(route)
+        self.assertIs(outcome.replay_audio.pcm, route.prepared.samples)
+        self.assertEqual(outcome.replay_audio.sample_rate, 24000)
         self.assertEqual(outcome.first_audio_at, 10.115)
         self.assertAlmostEqual(outcome.first_audio_ms, 115)
         self.assertEqual(outcome.onset_provenance, "measured")

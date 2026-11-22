@@ -19,9 +19,11 @@ from tests.speech_worker_fixtures import FakeProcess
 from tests.symlink_support import symlink_or_skip
 from vntts.audio_output import AudioDeviceChangedError
 from vntts.model_assets import ModelAssetManager
+from vntts.playback import replay_audio_capture_context
 from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
     _REQUIRED_MODULES,
+    FatalSpeechWorkerError,
     IsolatedSpeechBackend,
     RetainedWorkerRuntime,
     _backend_runtime_metadata,
@@ -802,6 +804,52 @@ class WorkerRenderCancellationTests(unittest.TestCase):
                     self.assertIsNone(backend.process)
                     self.assertFalse(backend._request_lock.locked())
 
+    def test_history_retains_unscaled_pcm_after_worker_stops_mid_playback(self):
+        backend = self.backend()
+        backend.volume = 0.5
+        pcm = np.array([[0.25], [-0.25]], dtype=np.float32)
+        stream = backend.audio_output.OutputStream.return_value.__enter__.return_value
+
+        def write_and_stop(_audio):
+            backend.stop()
+            return False
+
+        stream.write.side_effect = write_and_stop
+        token = replay_audio_capture_context.set(True)
+        try:
+            with patch.object(
+                backend, "_next_frame", return_value=self.chunk_frame(pcm)
+            ):
+                outcome = backend.play_prepared(
+                    backend.prepare_playback("Narrator", "Interrupted line.")
+                )
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertEqual(outcome.status.value, "interrupted")
+        self.assertFalse(outcome.replay_audio.complete)
+        np.testing.assert_array_equal(outcome.replay_audio.pcm, pcm)
+        np.testing.assert_array_equal(stream.write.call_args.args[0], pcm * 0.5)
+
+    def test_history_uses_first_chunk_sample_rate_before_worker_metadata_exists(self):
+        backend = self.backend()
+        del backend.sample_rate
+        rendered = FakeWorkerBackend(backend.registry).render(
+            SynthesisRequest("Narrator", "Cold worker.")
+        )
+        token = replay_audio_capture_context.set(True)
+        try:
+            with patch.object(backend, "render", return_value=rendered):
+                outcome = backend.play_prepared(
+                    backend.prepare_playback("Narrator", "Cold worker.")
+                )
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertTrue(outcome.successful)
+        self.assertEqual(outcome.replay_audio.sample_rate, 24_000)
+        self.assertTrue(outcome.replay_audio.complete)
+
     def test_stop_during_receive_discards_late_chunk_and_result(self):
         for message_type in ("chunk", "result"):
             with self.subTest(message_type=message_type):
@@ -867,6 +915,9 @@ class WorkerRenderCancellationTests(unittest.TestCase):
                         backend.render(
                             SynthesisRequest("Narrator", "Broken line.")
                         ).collect()
+                    if not reader_raises:
+                        self.assertIsNone(backend.process)
+                        backend.process = FakeProcess(None)
                     rendered = backend.render(
                         SynthesisRequest("Narrator", "Broken line.")
                     )
@@ -883,7 +934,10 @@ class WorkerRenderCancellationTests(unittest.TestCase):
                     "worker pipe closed" if reader_raises else "stopped during render",
                     outcome.error,
                 )
-                self.assertIs(outcome.error_type, TTSSynthesisError)
+                self.assertIs(
+                    outcome.error_type,
+                    TTSSynthesisError if reader_raises else FatalSpeechWorkerError,
+                )
                 close.assert_called_once_with()
                 backend.audio_output.OutputStream.assert_not_called()
                 self.assertFalse(backend._request_lock.locked())
@@ -969,6 +1023,169 @@ class WorkerRenderCancellationTests(unittest.TestCase):
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_cuda_device_failure_preserves_traceback_and_exits_before_next_request(
+        self,
+    ):
+        for command in ("render", "prime", "synthesis-key"):
+            with self.subTest(command=command):
+                registry = CharacterVoiceRegistry()
+                backend = FakeWorkerBackend(registry)
+                calls = []
+
+                def fail_request(_request):
+                    calls.append(_request)
+                    raise RuntimeError(
+                        "CUDA error: device-side assert triggered\n"
+                        "CUDA kernel errors might be asynchronously reported."
+                    )
+
+                setattr(backend, command.replace("-", "_"), fail_request)
+                incoming, outgoing = BytesIO(), BytesIO()
+                _write_frame(
+                    incoming,
+                    {
+                        "type": "initialize",
+                        "backend": "qwen-tts",
+                        "runtime_site": "/isolated/site-packages",
+                        "registry": _serialize_registry(registry),
+                        "options": {},
+                    },
+                )
+                for request_id in ("first", "second"):
+                    _write_frame(
+                        incoming,
+                        {
+                            "type": command,
+                            "request_id": request_id,
+                            "voice": "Narrator",
+                            "text": "Hello.",
+                            "seed": None,
+                            "generation_profile": "stable",
+                            "cache_policy": "use",
+                            "registry": _serialize_registry(registry),
+                        },
+                    )
+                incoming.seek(0)
+                self.assertEqual(
+                    worker_main(
+                        input_stream=incoming,
+                        output_stream=outgoing,
+                        backend_classes={"qwen-tts": lambda _registry: backend},
+                        required_modules={"qwen-tts": ()},
+                    ),
+                    1,
+                )
+                self.assertEqual(len(calls), 1)
+                outgoing.seek(0)
+                self.assertEqual(_read_frame(outgoing)[0]["type"], "health")
+                failure, _payload = _read_frame(outgoing)
+                self.assertEqual(failure["type"], "fatal")
+                self.assertEqual(failure["request_id"], "first")
+                self.assertEqual(
+                    failure["error"], "CUDA error: device-side assert triggered"
+                )
+                self.assertIn("fail_request", failure["traceback"])
+                self.assertIn("asynchronously reported", failure["traceback"])
+                self.assertIsNone(_read_frame(outgoing))
+
+    def test_cuda_out_of_memory_keeps_worker_available_for_next_request(self):
+        registry = CharacterVoiceRegistry()
+        backend = FakeWorkerBackend(registry)
+        backend.prime = MagicMock(
+            side_effect=(RuntimeError("CUDA out of memory"), True)
+        )
+        incoming, outgoing = BytesIO(), BytesIO()
+        _write_frame(
+            incoming,
+            {
+                "type": "initialize",
+                "backend": "qwen-tts",
+                "runtime_site": "/isolated/site-packages",
+                "registry": _serialize_registry(registry),
+                "options": {},
+            },
+        )
+        for request_id in ("first", "second"):
+            _write_frame(
+                incoming,
+                {
+                    "type": "prime",
+                    "request_id": request_id,
+                    "voice": "Narrator",
+                    "registry": _serialize_registry(registry),
+                },
+            )
+        incoming.seek(0)
+        self.assertEqual(
+            worker_main(
+                input_stream=incoming,
+                output_stream=outgoing,
+                backend_classes={"qwen-tts": lambda _registry: backend},
+                required_modules={"qwen-tts": ()},
+            ),
+            0,
+        )
+        outgoing.seek(0)
+        self.assertEqual(_read_frame(outgoing)[0]["type"], "health")
+        self.assertEqual(_read_frame(outgoing)[0]["type"], "error")
+        self.assertEqual(
+            _read_frame(outgoing)[0],
+            {"type": "primed", "request_id": "second", "value": True},
+        )
+
+    def test_parent_retires_fatal_worker_and_preserves_remote_traceback(self):
+        for command in ("prime", "render", "synthesis-key"):
+            with self.subTest(command=command):
+                with (
+                    patch.object(IsolatedSpeechBackend, "_start_worker"),
+                    patch(
+                        "vntts.speech_worker._runtime_paths",
+                        return_value=SYNTHETIC_RUNTIME_PATHS,
+                    ),
+                ):
+                    backend = IsolatedSpeechBackend(
+                        "qwen-tts", CharacterVoiceRegistry()
+                    )
+                process = FakeProcess(None)
+                backend.process = process
+                response = (
+                    {
+                        "type": "fatal",
+                        "request_id": None if command == "prime" else "request-1",
+                        "error": "CUDA error: device-side assert triggered",
+                        "error_type": "RuntimeError",
+                        "traceback": "First CUDA failure inside generate_voice_clone",
+                    },
+                    b"",
+                )
+                with (
+                    patch.object(backend, "_ensure_worker", return_value=process),
+                    patch.object(backend, "_send"),
+                    patch.object(backend, "_next_frame", return_value=response),
+                    patch("vntts.speech_worker.uuid.uuid4") as uuid4,
+                    self.assertLogs("vntts.speech_worker", level="ERROR") as logs,
+                    self.assertRaises(FatalSpeechWorkerError) as caught,
+                ):
+                    uuid4.return_value.hex = "request-1"
+                    if command == "prime":
+                        backend.prime("Narrator")
+                    elif command == "synthesis-key":
+                        backend.synthesis_key(SynthesisRequest("Narrator", "Hello."))
+                    else:
+                        backend.render(SynthesisRequest("Narrator", "Hello.")).collect()
+                self.assertEqual(
+                    str(caught.exception), "CUDA error: device-side assert triggered"
+                )
+                self.assertIn(
+                    "First CUDA failure inside generate_voice_clone",
+                    "\n".join(caught.exception.__notes__),
+                )
+                self.assertEqual(process.returncode, -15)
+                self.assertIsNone(backend.process)
+                self.assertIn(
+                    "First CUDA failure inside generate_voice_clone", logs.output[0]
+                )
+
     def test_live_controls_remain_available_while_pocket_restarts_for_speech(self):
         # Stop can retire the eagerly loaded process during synthesis.
         with (
@@ -1696,6 +1913,89 @@ print("worker-import-ready")
                 [("state:anna", "Same phrase."), ("state:alba", "Same phrase.")],
             )
         self.assertIsNone(registry.resolve("Unregistered role"))
+
+    def test_parent_requests_and_receives_qwen_asset_progress(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = root, root / "bin/python", root / "lib/site-packages"
+            statuses = []
+            process = FakeProcess(None)
+            _write_frame(
+                process.stdout,
+                {"type": "asset_progress", "message": "Downloading Qwen3-TTS model..."},
+            )
+            _write_frame(
+                process.stdout,
+                {
+                    "type": "health",
+                    "backend": "qwen-tts",
+                    "interpreter": str(paths[1]),
+                    "prefix": str(root),
+                    "runtime_site": str(paths[2]),
+                    "sample_rate": 24000,
+                    "modules": {},
+                },
+            )
+            process.stdout.seek(0)
+            with patch("vntts.speech_worker._runtime_paths", return_value=paths):
+                backend = IsolatedSpeechBackend(
+                    "qwen-tts",
+                    CharacterVoiceRegistry(),
+                    process_factory=lambda *_args, **_options: process,
+                    startup_progress=statuses.append,
+                )
+                backend.shutdown()
+            process.stdin.seek(0)
+            self.assertTrue(_read_frame(process.stdin)[0]["asset_progress"])
+            self.assertEqual(
+                statuses,
+                [
+                    "Checking Qwen3-TTS runtime...",
+                    "Starting Qwen3-TTS model worker...",
+                    "Downloading Qwen3-TTS model...",
+                ],
+            )
+
+    def test_qwen_worker_forwards_asset_stages_before_ready(self):
+        registry = CharacterVoiceRegistry()
+        incoming, outgoing = BytesIO(), BytesIO()
+        _write_frame(
+            incoming,
+            {
+                "type": "initialize",
+                "backend": "qwen-tts",
+                "runtime_site": "/isolated/site-packages",
+                "registry": _serialize_registry(registry),
+                "options": {},
+                "asset_progress": True,
+            },
+        )
+        incoming.seek(0)
+
+        def create_backend(registry, *, asset_progress):
+            asset_progress("Resolving Qwen3-TTS model...")
+            asset_progress("Loading local Qwen3-TTS model...")
+            return FakeWorkerBackend(registry)
+
+        self.assertEqual(
+            worker_main(
+                input_stream=incoming,
+                output_stream=outgoing,
+                backend_classes={"qwen-tts": create_backend},
+                required_modules={"qwen-tts": ()},
+            ),
+            0,
+        )
+        outgoing.seek(0)
+        self.assertEqual(
+            _read_frame(outgoing)[0],
+            {"type": "asset_progress", "message": "Resolving Qwen3-TTS model..."},
+        )
+        self.assertEqual(
+            _read_frame(outgoing)[0],
+            {"type": "asset_progress", "message": "Loading local Qwen3-TTS model..."},
+        )
+        self.assertEqual(_read_frame(outgoing)[0]["type"], "health")
 
     def test_worker_protocol_streams_typed_pcm_and_results(self):
         registry = CharacterVoiceRegistry()

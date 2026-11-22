@@ -1,5 +1,6 @@
 """Qwen's reference transcript must survive routing into its model call."""
 
+import logging
 import unittest
 import wave
 from contextlib import nullcontext
@@ -13,7 +14,14 @@ import numpy as np
 
 from vntts.pregeneration_queue import _write_effective_voices
 from vntts.pregeneration_voices import _materialize_voice_catalog
-from vntts.qwen_backend import QwenTTSVoiceRouterBackend, _require_qwen_model
+from vntts.qwen_backend import (
+    QWEN_CUDA_MODEL,
+    QWEN_CUDA_REVISION,
+    QWEN_MODEL,
+    QWEN_REVISION,
+    QwenTTSVoiceRouterBackend,
+    _require_qwen_model,
+)
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_worker import (
     _registry_from_document,
@@ -25,6 +33,184 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class QwenBackendTest(unittest.TestCase):
+    def test_qwen_reports_hub_acquisition_before_loading_local_weights(self):
+        class Progress:
+            def __init__(self, *, unit, total):
+                self.total = total
+
+            def refresh(self):
+                pass
+
+        for platform, repository, revision in (
+            ("darwin", QWEN_MODEL, QWEN_REVISION),
+            ("win32", QWEN_CUDA_MODEL, QWEN_CUDA_REVISION),
+        ):
+            # Older Hub versions expose only file counts; newer ones report bytes.
+            for byte_total, download_log in (
+                (None, False),
+                (None, True),
+                (0, False),
+                (128, True),
+            ):
+                with self.subTest(
+                    platform=platform, byte_total=byte_total, download_log=download_log
+                ):
+                    statuses = []
+                    model = SimpleNamespace(
+                        sample_rate=24000,
+                        speech_tokenizer=SimpleNamespace(has_encoder=True),
+                        generate=lambda **_options: iter(()),
+                    )
+
+                    def snapshot(source, *, revision, tqdm_class):
+                        self.assertEqual(source, repository)
+                        self.assertEqual(revision, expected_revision)
+                        self.assertEqual(statuses, ["Resolving Qwen3-TTS model..."])
+                        tqdm_class(unit="files", total=10).refresh()
+                        if byte_total is not None:
+                            transfer = tqdm_class(unit="B", total=byte_total)
+                            transfer.refresh()
+                            transfer.refresh()
+                        if download_log:
+                            logger.info(
+                                "Downloading 'weights' to '/cache/private-path'"
+                            )
+                            logger.info("Downloading 'config' to '/cache/private-path'")
+                        self.assertNotIn("Loading local Qwen3-TTS model...", statuses)
+                        return "cached-model"
+
+                    def load(*_args, **_options):
+                        self.assertEqual(
+                            statuses[-1], "Loading local Qwen3-TTS model..."
+                        )
+                        return model
+
+                    expected_revision = revision
+                    logger = logging.getLogger("huggingface_hub.file_download")
+                    previous_level = logger.level
+                    previous_handlers = logger.handlers[:]
+                    previous_filters = logger.filters[:]
+                    mx = SimpleNamespace(
+                        metal=SimpleNamespace(is_available=lambda: True)
+                    )
+                    modules = {
+                        "huggingface_hub": SimpleNamespace(snapshot_download=snapshot),
+                        "huggingface_hub.utils.tqdm": SimpleNamespace(tqdm=Progress),
+                        "mlx": SimpleNamespace(core=mx),
+                        "mlx.core": mx,
+                        "mlx_audio.tts.utils": SimpleNamespace(load_model=load),
+                        "torch": Mock(),
+                    }
+                    with (
+                        patch("vntts.qwen_backend.sys.platform", platform),
+                        patch.dict("sys.modules", modules),
+                        patch("vntts.qwen_backend._cuda_inference_dtype"),
+                        patch(
+                            "vntts.qwen_backend._load_cuda_qwen_model", side_effect=load
+                        ),
+                    ):
+                        QwenTTSVoiceRouterBackend(
+                            CharacterVoiceRegistry(), asset_progress=statuses.append
+                        )
+                    expected = ["Resolving Qwen3-TTS model..."]
+                    if byte_total or download_log:
+                        expected.append("Downloading Qwen3-TTS model...")
+                    expected.append("Loading local Qwen3-TTS model...")
+                    self.assertEqual(statuses, expected)
+                    self.assertEqual(logger.level, previous_level)
+                    self.assertEqual(logger.handlers, previous_handlers)
+                    self.assertEqual(logger.filters, previous_filters)
+
+    def test_hub_transfer_observer_preserves_existing_log_verbosity(self):
+        from vntts.huggingface_assets import download_snapshot
+
+        logger = logging.getLogger("huggingface_hub.file_download")
+        previous_level = logger.level
+        records, statuses = [], []
+
+        class Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = Capture()
+
+        def snapshot(*_args, **_options):
+            logger.info("Downloading 'weights' to '/cache/private-path'")
+            logger.warning("Existing warning")
+            return "snapshot"
+
+        logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+        try:
+            with patch.dict(
+                "sys.modules",
+                {
+                    "huggingface_hub": SimpleNamespace(snapshot_download=snapshot),
+                    "huggingface_hub.utils.tqdm": SimpleNamespace(tqdm=object),
+                },
+            ):
+                download_snapshot(
+                    QWEN_CUDA_MODEL, asset="Qwen3-TTS model", report=statuses.append
+                )
+            self.assertEqual(records, ["Existing warning"])
+            self.assertEqual(
+                statuses,
+                ["Resolving Qwen3-TTS model...", "Downloading Qwen3-TTS model..."],
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+
+    def test_qwen_acquisition_failure_does_not_report_local_loading(self):
+        from vntts.huggingface_assets import download_snapshot
+
+        logger = logging.getLogger("huggingface_hub.file_download")
+        previous_level, previous_filters = logger.level, logger.filters[:]
+        statuses = []
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "huggingface_hub": SimpleNamespace(
+                        snapshot_download=Mock(side_effect=OSError("download failed"))
+                    ),
+                    "huggingface_hub.utils.tqdm": SimpleNamespace(tqdm=object),
+                },
+            ),
+            self.assertRaisesRegex(OSError, "download failed"),
+        ):
+            download_snapshot(
+                QWEN_CUDA_MODEL, asset="Qwen3-TTS model", report=statuses.append
+            )
+        self.assertEqual(statuses, ["Resolving Qwen3-TTS model..."])
+        self.assertEqual(logger.level, previous_level)
+        self.assertEqual(logger.filters, previous_filters)
+
+    def test_cuda_loads_qwen_with_native_bf16_or_full_precision(self):
+        torch = Mock()
+        provider = Mock()
+        hub = SimpleNamespace(snapshot_download=Mock(return_value="model"))
+        with (
+            patch("vntts.qwen_backend.sys.platform", "win32"),
+            patch.dict(
+                "sys.modules",
+                {"torch": torch, "qwen_tts": provider, "huggingface_hub": hub},
+            ),
+        ):
+            for capability, dtype in (
+                ((7, 5), torch.float32),
+                ((8, 0), torch.bfloat16),
+            ):
+                with self.subTest(capability=capability):
+                    torch.cuda.get_device_capability.return_value = capability
+                    QwenTTSVoiceRouterBackend(CharacterVoiceRegistry())
+                    provider.Qwen3TTSModel.from_pretrained.assert_called_with(
+                        "model",
+                        device_map="cuda:0",
+                        dtype=dtype,
+                        attn_implementation="sdpa",
+                    )
+
     def test_invalid_volume_never_downloads_or_loads_model(self):
         for platform in ("darwin", "win32"):
             for volume in (True, "0.5", None, -0.1, 1.1, float("nan"), float("inf")):
@@ -44,7 +230,7 @@ class QwenBackendTest(unittest.TestCase):
                                     )
                                 },
                             ),
-                            patch("vntts.qwen_backend._require_cuda_device") as cuda,
+                            patch("vntts.qwen_backend._cuda_inference_dtype") as cuda,
                             self.assertRaises(TTSConfigurationError),
                         ):
                             QwenTTSVoiceRouterBackend(

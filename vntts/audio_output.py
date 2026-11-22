@@ -17,6 +17,7 @@ from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
+    ReplayAudioCapture,
     outcome_for_prepared,
 )
 from vntts.playback_observer import playback_started_context
@@ -711,6 +712,9 @@ class SynchronousPcmPlaybackMixin:
             underflowed = False
             first_audio_ms = None
             first_audio_at = None
+            replay = ReplayAudioCapture(self.sample_rate)
+            if isinstance(prepared.payload, np.ndarray):
+                replay.append(prepared.payload)
 
             def first_write() -> None:
                 nonlocal first_audio_ms, first_audio_at
@@ -761,6 +765,9 @@ class SynchronousPcmPlaybackMixin:
                         (self.clock() - started) * 1000,
                         first_audio_ms=first_audio_ms,
                         first_audio_at=first_audio_at,
+                        replay_audio=(
+                            replay.finish(True) if first_audio_at is not None else None
+                        ),
                     )
                 return outcome_for_prepared(
                     prepared,
@@ -770,6 +777,9 @@ class SynchronousPcmPlaybackMixin:
                     first_audio_at=first_audio_at,
                     error=str(error),
                     error_type=type(error),
+                    replay_audio=(
+                        replay.finish(True) if first_audio_at is not None else None
+                    ),
                 )
             finally:
                 with self.playback_state_lock:
@@ -783,6 +793,7 @@ class SynchronousPcmPlaybackMixin:
             underflowed=underflowed,
             first_audio_ms=first_audio_ms,
             first_audio_at=first_audio_at,
+            replay_audio=replay.finish(True) if first_audio_at is not None else None,
         )
 
     def stop(self) -> bool:

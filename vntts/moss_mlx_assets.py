@@ -3,9 +3,8 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from threading import Lock
-from typing import Any
 
+from vntts.huggingface_assets import download_snapshot
 from vntts.services.tts_engine import TTSConfigurationError
 
 
@@ -31,32 +30,9 @@ def open_asset(
     asset = f"MOSS {kind} {source}"
     try:
         if not directory.exists() and not _is_local_path(source):
-            from huggingface_hub import snapshot_download
-            from huggingface_hub.utils.tqdm import tqdm
-
-            report(f"Resolving {asset}...")
-            reported = False
-            lock = Lock()
-
-            class DownloadProgress(tqdm):
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    self.byte_progress = kwargs.get("unit") == "B"
-                    super().__init__(*args, **kwargs)
-
-                def refresh(self, *args: Any, **kwargs: Any) -> bool | None:
-                    nonlocal reported
-                    # The Hub assigns a byte total only when a file needs fetching.
-                    if self.byte_progress and self.total:
-                        with lock:
-                            if not reported:
-                                report(f"Downloading {asset}...")
-                                reported = True
-                    refreshed: bool | None = super().refresh(*args, **kwargs)
-                    return refreshed
-
             directory = Path(
-                snapshot_download(
-                    source, allow_patterns=patterns, tqdm_class=DownloadProgress
+                download_snapshot(
+                    source, asset=asset, report=report, allow_patterns=patterns
                 )
             ).resolve()
             asset = f"{asset} from {directory}"

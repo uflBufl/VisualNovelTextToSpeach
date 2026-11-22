@@ -31,6 +31,7 @@ from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
+    ReplayAudioCapture,
     outcome_for_prepared,
     prepare_playback_payload,
     prepared_playback_from_render,
@@ -1528,6 +1529,7 @@ class PocketTTSVoiceRouterBackend:
             started = self.clock()
             rendered = None
             underflowed = False
+            replay = ReplayAudioCapture(self.sample_rate)
             try:
                 self.playback_active = True
                 request = SynthesisRequest(
@@ -1565,6 +1567,7 @@ class PocketTTSVoiceRouterBackend:
                         (chunk.pcm for chunk in chunks),
                         playback_guard,
                         started=started,
+                        replay_capture=replay,
                     )
                 underflowed = underflowed or stream_underflowed(stream)
                 result = rendered.result
@@ -1601,6 +1604,10 @@ class PocketTTSVoiceRouterBackend:
                     (self.clock() - started) * 1000,
                     underflowed=underflowed,
                     first_audio_ms=_first_write_ms,
+                    replay_audio=replay.finish(
+                        completed and result.completion is SynthesisCompletion.COMPLETE,
+                        result.pcm,
+                    ),
                 )
             except Exception as error:
                 if self.playback_stop.is_set():
@@ -1609,6 +1616,7 @@ class PocketTTSVoiceRouterBackend:
                         PlaybackStatus.INTERRUPTED,
                         (self.clock() - started) * 1000,
                         underflowed=underflowed,
+                        replay_audio=replay.finish(False),
                     )
                 return outcome_for_prepared(
                     prepared,
@@ -1617,6 +1625,7 @@ class PocketTTSVoiceRouterBackend:
                     underflowed=underflowed,
                     error=str(error),
                     error_type=type(error),
+                    replay_audio=replay.finish(False),
                 )
             finally:
                 if rendered is not None:
@@ -1702,7 +1711,7 @@ class PocketTTSVoiceRouterBackend:
         playback_guard: PlaybackGuard,
         *,
         started: float | None = None,
-        raw_chunks: list[AudioArray] | None = None,
+        replay_capture: ReplayAudioCapture | None = None,
     ) -> tuple[bool, bool, float | None]:
         wrote_audio = False
         cancelled = False
@@ -1721,11 +1730,11 @@ class PocketTTSVoiceRouterBackend:
             raw = self._to_numpy(chunk)
             if raw.size == 0:
                 continue
-            if raw_chunks is not None:
-                raw_chunks.append(raw)
             if not wrote_audio and started is not None:
                 first_audio_ms = (self.clock() - started) * 1000
             underflowed = stream.write(self._prepare_audio(raw).reshape(-1, 1))
+            if replay_capture is not None:
+                replay_capture.append(raw)
             underflowed_any = underflowed_any or bool(underflowed)
             wrote_audio = True
         if cancelled:
@@ -2368,6 +2377,7 @@ class MossTTSVoiceRouterBackend:
             started = self.clock()
             underflowed = False
             rendered = None
+            replay = ReplayAudioCapture(self.sample_rate)
             try:
                 self.playback_active = True
                 request = SynthesisRequest(
@@ -2391,7 +2401,7 @@ class MossTTSVoiceRouterBackend:
                     )
                 rendered = self._render_prepared(playback_prepared, request)
                 played, underflowed, first_write_ms = self._play_rendered_stream(
-                    rendered, playback_guard, started=started
+                    rendered, playback_guard, started=started, replay_capture=replay
                 )
                 if not played:
                     try:
@@ -2421,6 +2431,7 @@ class MossTTSVoiceRouterBackend:
                             and result.completion is SynthesisCompletion.LIMITED
                         ),
                         first_audio_ms=first_write_ms,
+                        replay_audio=replay.finish(False),
                     )
                 result = rendered.result
                 completed = result.completion is not SynthesisCompletion.CANCELLED
@@ -2457,6 +2468,9 @@ class MossTTSVoiceRouterBackend:
                         result.completion is SynthesisCompletion.LIMITED
                     ),
                     first_audio_ms=first_write_ms,
+                    replay_audio=replay.finish(
+                        result.completion is SynthesisCompletion.COMPLETE, result.pcm
+                    ),
                 )
             except Exception as error:
                 with self.active_stream_lock:
@@ -2470,6 +2484,7 @@ class MossTTSVoiceRouterBackend:
                         PlaybackStatus.INTERRUPTED,
                         (self.clock() - started) * 1000,
                         underflowed=underflowed,
+                        replay_audio=replay.finish(False),
                     )
                 return outcome_for_prepared(
                     prepared,
@@ -2478,6 +2493,7 @@ class MossTTSVoiceRouterBackend:
                     underflowed=underflowed,
                     error=str(error),
                     error_type=type(error),
+                    replay_audio=(None if stream_still_owned else replay.finish(False)),
                 )
             finally:
                 if rendered is not None:
@@ -2492,6 +2508,7 @@ class MossTTSVoiceRouterBackend:
         playback_guard: PlaybackGuard,
         *,
         started: float,
+        replay_capture: ReplayAudioCapture | None = None,
     ) -> tuple[bool, bool, float | None]:
         try:
             first_chunk = next(rendered)
@@ -2520,6 +2537,7 @@ class MossTTSVoiceRouterBackend:
                 playback_result,
                 playback_guard,
                 started,
+                replay_capture,
             ),
             name="vntts-moss-playback",
             daemon=True,
@@ -2581,6 +2599,7 @@ class MossTTSVoiceRouterBackend:
         playback_result: _StreamingPlaybackResult,
         playback_guard: PlaybackGuard,
         started: float,
+        replay_capture: ReplayAudioCapture | None = None,
     ) -> None:
         try:
             with audio_output.OutputStream(
@@ -2610,6 +2629,8 @@ class MossTTSVoiceRouterBackend:
                         bool(self._write_stream_chunk(stream, item.pcm))
                         or playback_result["underflowed"]
                     )
+                    if replay_capture is not None:
+                        replay_capture.append(item.pcm)
                     wrote_audio = True
             playback_result["underflowed"] = (
                 stream_underflowed(stream) or playback_result["underflowed"]

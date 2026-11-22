@@ -762,15 +762,15 @@ class LiveDialogReader:
                     message,
                 )
 
-    def start(self) -> bool:
+    def start(self, *, paused: bool = False) -> bool:
         if not self.start_lock.acquire(blocking=False):
             return False
         try:
-            return self._start_capture()
+            return self._start_capture(paused=paused)
         finally:
             self.start_lock.release()
 
-    def _start_capture(self) -> bool:
+    def _start_capture(self, *, paused: bool) -> bool:
         with self.state_lock:
             if self.is_shutting_down:
                 return False
@@ -788,8 +788,10 @@ class LiveDialogReader:
             if self.is_shutting_down:
                 return False
             self.emergency_stopped = False
-            self.paused = False
+            self.paused = paused
             self.playback_pause = PlaybackPause()
+            if paused:
+                self.playback_pause.set_paused(True)
             self.stop_event = Event()
             self.run_id = uuid4().hex
             self.run_started_at = monotonic()
@@ -968,7 +970,11 @@ class LiveDialogReader:
             )
         replay = None
         if interrupted is not None:
-            replay = self._admit_chunk(self._new_replay_chunk(interrupted))
+            replay = self._admit_chunk(
+                self._new_replay_chunk(
+                    interrupted, resumed_part=interrupted.dialogue_part
+                )
+            )
             if replay is None:
                 with self.state_lock:
                     return self.paused
@@ -1107,7 +1113,9 @@ class LiveDialogReader:
         self._schedule([self._new_replay_chunk(chunk)])
         return True
 
-    def _new_replay_chunk(self, chunk: SpeechChunk) -> SpeechChunk:
+    def _new_replay_chunk(
+        self, chunk: SpeechChunk, *, resumed_part: tuple[int, int | None] | None = None
+    ) -> SpeechChunk:
         with self.state_lock:
             return SpeechChunk(
                 self.active_generation,
@@ -1115,6 +1123,7 @@ class LiveDialogReader:
                 chunk.text,
                 line_id=chunk.line_id,
                 explicit_replay=True,
+                resumed_part=resumed_part,
                 prepared_audio=chunk.prepared_audio,
             )
 

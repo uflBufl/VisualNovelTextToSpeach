@@ -603,7 +603,15 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
             service = Mock(supports_prefetch=False)
-            service.generate.return_value = generated_preview(root)
+            preview = generated_preview(root)
+            displayed = []
+
+            def generate(*args, progress, **kwargs):
+                progress("Loading the Qwen model...")
+                displayed.append(panel.preview_progress.text())
+                return preview
+
+            service.generate.side_effect = generate
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 Mock(), preview_service=service, player=Mock(), thread_pool=pool
@@ -648,6 +656,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.assertEqual(panel.size(), size)
                     self.assertEqual([c.geometry() for c in controls], geometry)
                     self.finish_task(pool.tasks.pop())
+                    self.assertEqual(displayed.pop(), "Loading the Qwen model...")
+                    service.generate.call_args.kwargs["progress"]("Outdated stage")
+                    self.assertEqual(panel.preview_progress.text(), "")
                     self.assertEqual(button.text(), "Preview")
                     self.assertEqual(button.property("playbackState"), "preparing")
                     panel._playback_state_changed(
@@ -744,6 +755,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 group.candidates[0].source_id,
                 text=group.sample_text,
                 cancel_event=cancellation,
+                progress=ANY,
             )
             decisions.remember_many.assert_not_called()
             panel._set_decision_actions(False)
@@ -899,6 +911,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             service.generate.return_value = generated_preview(root)
             service.supports_prefetch = True
             service.peek.return_value = None
+            service.preparation_progress.return_value = "Downloading the Qwen model..."
             panel = VoiceAuditionPanel(
                 Mock(), preview_service=service, player=Mock(), thread_pool=pool
             )
@@ -916,6 +929,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 )
             )
             self.assertEqual(panel.preview_text.toPlainText(), second.sample_text)
+            panel._refresh_runtime()
+            self.assertEqual(
+                panel.preview_progress.text(), "Downloading the Qwen model..."
+            )
+            service.preparation_progress.return_value = None
+            panel._refresh_runtime()
+            self.assertEqual(panel.preview_progress.text(), "")
             panel.play_a()
             self.finish_task(pool.tasks.pop())
             self.assertEqual(

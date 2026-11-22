@@ -3496,11 +3496,9 @@ def _render_stories(
         )
         if state != "empty":
             history.add("Mareus", "The storm has passed. We can continue our journey.")
-            history.finish_current()
             history.add(
                 "Believer IV", "They at least paid with their lives. What about you?"
             )
-            history.finish_current()
             if state in {"long-text", "compact-failure"}:
                 history.add(
                     "A very long character name from the distant island",

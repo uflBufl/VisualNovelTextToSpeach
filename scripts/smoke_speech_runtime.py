@@ -65,11 +65,11 @@ def _check_sound_effect_text_encoder(directory: Path) -> None:
 
 
 def _qwen_without_cuda() -> str:
-    from vntts.qwen_backend import _require_cuda_device
+    from vntts.qwen_backend import _cuda_inference_dtype
     from vntts.services.tts_engine import TTSConfigurationError
 
     try:
-        _require_cuda_device()
+        _cuda_inference_dtype()
     except TTSConfigurationError as error:
         if "requires an NVIDIA CUDA GPU" not in str(error):
             raise

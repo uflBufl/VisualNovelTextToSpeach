@@ -44,16 +44,19 @@ from vntts.document_identity import canonical_document_sha256, is_lowercase_sha2
 from vntts.json_types import has_schema_version
 from vntts.path_safety import read_regular_bytes
 from vntts.playback import (
+    MAX_REPLAY_AUDIO_BYTES,
+    PreparedPlayback,
+    ReplayAudio,
+    SilentPlayback,
+    outcome_for_prepared,
+    prepare_silent_playback,
+    replay_audio_capture_context,
+)
+from vntts.playback import (
     PlaybackOutcome as PlaybackOutcome,
 )
 from vntts.playback import (
     PlaybackStatus as PlaybackStatus,
-)
-from vntts.playback import (
-    PreparedPlayback,
-    SilentPlayback,
-    outcome_for_prepared,
-    prepare_silent_playback,
 )
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
@@ -1750,6 +1753,7 @@ class AudioRoutePlaybackOwner:
             )
             started = self.router.clock()
             first_audio_at = None
+            replay_audio = None
 
             def first_write() -> None:
                 nonlocal first_audio_at
@@ -1778,10 +1782,13 @@ class AudioRoutePlaybackOwner:
                         PlaybackStatus.INTERRUPTED,
                         (self.router.clock() - started) * 1000,
                     )
-                samples = (
-                    np.asarray(route.prepared.samples, dtype=np.float32)
-                    * self.router.volume
-                )
+                original_pcm = np.asarray(route.prepared.samples, dtype=np.float32)
+                if (
+                    replay_audio_capture_context.get()
+                    and original_pcm.nbytes <= MAX_REPLAY_AUDIO_BYTES
+                ):
+                    replay_audio = ReplayAudio(original_pcm, route.prepared.sample_rate)
+                samples = original_pcm * self.router.volume
                 samples, sample_rate = match_output_sample_rate(
                     self.router.audio_output,
                     samples,
@@ -1826,6 +1833,7 @@ class AudioRoutePlaybackOwner:
                         else (first_audio_at - started) * 1000
                     ),
                     first_audio_at=first_audio_at,
+                    replay_audio=replay_audio,
                     onset_provenance=(
                         "measured" if first_audio_at is not None else "unobserved"
                     ),
@@ -1846,6 +1854,7 @@ class AudioRoutePlaybackOwner:
                         else (first_audio_at - started) * 1000
                     ),
                     first_audio_at=first_audio_at,
+                    replay_audio=replay_audio,
                     onset_provenance=(
                         "measured" if first_audio_at is not None else "unobserved"
                     ),
@@ -2805,6 +2814,7 @@ def _route_outcome(
     status: PlaybackStatus,
     playback_ms: float | None,
     *,
+    replay_audio: ReplayAudio | None = None,
     underflowed: bool = False,
     generation_limited: bool = False,
     first_audio_ms: float | None = None,
@@ -2838,6 +2848,7 @@ def _route_outcome(
         synthesis_ms=route.synthesis_ms,
         cache_source=route.cache_source,
         audio_source=route.trace.effective_source,
+        replay_audio=replay_audio,
         source_sample_rate=source_sample_rate,
         playback_sample_rate=playback_sample_rate,
         sample_count=sample_count,

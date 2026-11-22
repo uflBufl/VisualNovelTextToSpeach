@@ -149,7 +149,7 @@ class StreamingConfigurationTest(unittest.TestCase):
                 download = Mock(side_effect=AssertionError("download reached"))
                 with (
                     patch("vntts.qwen_backend.sys.platform", "win32"),
-                    patch("vntts.qwen_backend._require_cuda_device") as cuda,
+                    patch("vntts.qwen_backend._cuda_inference_dtype") as cuda,
                     patch.dict(
                         "sys.modules",
                         {

@@ -328,6 +328,30 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         self.assertIsNone(service.backend)
         self.assertEqual(backend.shutdown_count, 1)
 
+    def test_before_render_checkpoint_keeps_loaded_model_without_rendering(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _ = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            factory = Mock(return_value=backend)
+            service = VoiceAuditionPreviewService(
+                root / "previews", backend_factory=factory
+            )
+            self.addCleanup(service.close)
+            source = group.candidates[0].source_id
+
+            def checkpoint():
+                self.assertIs(service.backend, backend)
+                raise VoiceAuditionCancelled("Relinquished preview render")
+
+            with self.assertRaisesRegex(VoiceAuditionCancelled, "Relinquished"):
+                service.generate(plan, group, source, before_render=checkpoint)
+            self.assertEqual(backend.requests, [])
+            self.assertTrue(service.can_prefetch(plan))
+            service.generate(plan, group, source)
+            factory.assert_called_once()
+            self.assertEqual(len(backend.requests), 1)
+
     def test_new_preparation_reloads_an_explicitly_unloaded_native_lease(self):
         backend = FakeBackend("moss-tts")
         backend.runtime_status = "ready"

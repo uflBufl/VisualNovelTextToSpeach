@@ -29,6 +29,19 @@ from vntts.window_capture import (
 
 
 class ControllerComponentsTest(unittest.TestCase):
+    def test_restoring_paused_reading_keeps_the_current_story_position(self):
+        controller = AppController(AppSettings())
+        controller.live_reader = Mock()
+        controller.live_reader.start.return_value = True
+        controller.story_cursor = Mock()
+        controller.speech_backend = Mock()
+        with patch.object(controller, "_publish_live_sequence_status"):
+            self.assertTrue(controller.resume_paused_live())
+
+        controller.live_reader.start.assert_called_once_with(paused=True)
+        controller.story_cursor.reset.assert_not_called()
+        controller.speech_backend.set_live_mode_active.assert_called_once_with(True)
+
     def test_keyboard_resume_waits_for_available_output(self):
         for available in (False, True):
             with self.subTest(available=available):
@@ -277,7 +290,7 @@ class ControllerComponentsTest(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=1) as executor:
             controller.speech_executor = executor
             with observe_playback_start(observed):
-                controller.replay_dialog("Marcus", "Hello.").result()
+                controller.preview_voice("Marcus", "Hello.").result()
         observed.assert_called_once_with()
 
     def test_live_dispatch_requires_typed_outcome_from_dynamic_backend(self):

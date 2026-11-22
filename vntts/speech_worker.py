@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import math
 import os
 import platform
@@ -46,6 +47,7 @@ from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
+    ReplayAudioCapture,
     outcome_for_prepared,
 )
 from vntts.qwen_backend import QWEN_CUDA_MODEL, QWEN_MODEL, QwenTTSVoiceRouterBackend
@@ -163,6 +165,28 @@ ProcessFactory: TypeAlias = Callable[..., object]
 PlaybackGuard: TypeAlias = Callable[[], bool] | None
 WarmupProgress: TypeAlias = Callable[[int, int, str], None]
 StartupProgress: TypeAlias = Callable[[str], None] | None
+
+
+class FatalSpeechWorkerError(TTSSynthesisError):
+    """The worker cannot safely accept another synthesis request."""
+
+
+def _fatal_cuda_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return (
+        isinstance(error, RuntimeError)
+        and "cuda" in message
+        and any(
+            marker in message
+            for marker in (
+                "device-side assert",
+                "illegal memory access",
+                "misaligned address",
+                "launch failure",
+                "context is destroyed",
+            )
+        )
+    )
 
 
 class _ReadableBinaryStream(Protocol):
@@ -827,7 +851,10 @@ def worker_main(
                         f"Speech worker option {key} must be a path"
                     )
                 options[key] = Path(value).expanduser().resolve()
-        if backend_name == "moss-tts" and document.get("asset_progress") is True:
+        if (
+            backend_name in {"moss-tts", "qwen-tts"}
+            and document.get("asset_progress") is True
+        ):
 
             def report_asset(message: str) -> None:
                 _write_frame(
@@ -971,15 +998,19 @@ def worker_main(
                         f"Unsupported speech worker command: {command_type!r}"
                     )
             except Exception as error:
+                fatal = _fatal_cuda_error(error)
                 _write_frame(
                     protocol_out,
                     {
-                        "type": "error",
+                        "type": "fatal" if fatal else "error",
                         "request_id": request_id,
-                        "error": str(error),
+                        "error": str(error).splitlines()[0] if fatal else str(error),
                         "error_type": type(error).__name__,
+                        "traceback": "".join(traceback.format_exception(error)),
                     },
                 )
+                if fatal:
+                    return 1
     except Exception as error:
         # Native loaders may try a system library after the packaged DLL fails.
         # Keep the first failure in the installer's stderr without dumping frames.
@@ -1123,6 +1154,8 @@ class IsolatedSpeechBackend:
             return
         from vntts.runtime_installation import ensure_speech_runtime
 
+        if self.name == "qwen-tts" and self.startup_progress is not None:
+            self.startup_progress("Checking Qwen3-TTS runtime...")
         directory = self._runtime_directory
         if not self.allow_download:
             directory = resolve_speech_runtime_paths(self.name, directory)[0]
@@ -1284,7 +1317,11 @@ class IsolatedSpeechBackend:
                 or environment.get("HUGGINGFACE_HUB_CACHE")
                 or str(Path(environment["HF_HOME"]) / "hub")
             )
-            self.startup_progress(f"Loading speech model assets (cache: {cache})...")
+            self.startup_progress(
+                "Starting Qwen3-TTS model worker..."
+                if self.name == "qwen-tts"
+                else f"Loading speech model assets (cache: {cache})..."
+            )
 
     def _launch_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
         if self._closed:
@@ -1337,7 +1374,7 @@ class IsolatedSpeechBackend:
                 "runtime_site": str(self.runtime_site),
                 "registry": _serialize_registry(self.registry),
                 "options": self._json_worker_options(),
-                "asset_progress": self.name == "moss-tts"
+                "asset_progress": self.name in {"moss-tts", "qwen-tts"}
                 and self.startup_progress is not None,
             },
         )
@@ -1656,16 +1693,7 @@ class IsolatedSpeechBackend:
                     self._apply_result_metrics(result)
                     return result
                 elif message_type in {"error", "fatal", "reader-error", "eof"}:
-                    error_type = (
-                        TTSConfigurationError
-                        if message_type == "error"
-                        and document.get("error_type") == "TTSConfigurationError"
-                        else TTSSynthesisError
-                    )
-                    raise error_type(
-                        document.get("error")
-                        or f"{self.name} isolated worker stopped during render"
-                    )
+                    self._raise_worker_error(process, document, "render")
             self._terminate_process(process)
             return self._cancelled_result(request, chunks)
 
@@ -1787,6 +1815,7 @@ class IsolatedSpeechBackend:
             first_audio_ms: float | None = None
             first_audio_at: float | None = None
             interrupted = False
+            replay: ReplayAudioCapture | None = None
             try:
                 try:
                     first = next(rendered)
@@ -1799,6 +1828,7 @@ class IsolatedSpeechBackend:
                         generation_limited=result.completion
                         is SynthesisCompletion.LIMITED,
                     )
+                replay = ReplayAudioCapture(first.sample_rate)
                 audio_output = self._resolve_audio_output()
                 with audio_output.OutputStream(
                     samplerate=first.sample_rate,
@@ -1816,6 +1846,7 @@ class IsolatedSpeechBackend:
                             bool(stream.write(self._prepare_audio(chunk.pcm)))
                             or underflowed
                         )
+                        replay.append(chunk.pcm)
                         if first_audio_at is None:
                             first_audio_at = self.clock()
                             first_audio_ms = (first_audio_at - started) * 1000
@@ -1836,6 +1867,7 @@ class IsolatedSpeechBackend:
                         underflowed=underflowed,
                         first_audio_ms=first_audio_ms,
                         first_audio_at=first_audio_at,
+                        replay_audio=replay.finish(False),
                     )
                 result = rendered.result
                 completed = result.completion is not SynthesisCompletion.CANCELLED
@@ -1859,6 +1891,9 @@ class IsolatedSpeechBackend:
                     generation_limited=result.completion is SynthesisCompletion.LIMITED,
                     first_audio_ms=first_audio_ms,
                     first_audio_at=first_audio_at,
+                    replay_audio=replay.finish(
+                        result.completion is SynthesisCompletion.COMPLETE, result.pcm
+                    ),
                 )
             except Exception as error:
                 cancelled = playback_cancelled(self._stop_requested, playback_guard)
@@ -1875,6 +1910,7 @@ class IsolatedSpeechBackend:
                     first_audio_at=first_audio_at,
                     error=None if cancelled else str(error),
                     error_type=None if cancelled else type(error),
+                    replay_audio=None if replay is None else replay.finish(False),
                 )
             finally:
                 rendered.close()
@@ -1990,16 +2026,47 @@ class IsolatedSpeechBackend:
                 )
             except queue.Empty:
                 continue
-            if document.get("request_id") != request_id:
+            if document.get("request_id") != request_id and not (
+                document.get("request_id") is None
+                and document.get("type") in {"fatal", "reader-error", "eof"}
+            ):
                 continue
-            if document.get("type") == "error":
-                error_type = (
-                    TTSConfigurationError
-                    if document.get("error_type") == "TTSConfigurationError"
-                    else TTSSynthesisError
-                )
-                raise error_type(_required_text(document, "error"))
+            if document.get("type") in {"error", "fatal", "reader-error", "eof"}:
+                self._raise_worker_error(process, document, command_type)
             return document.get("value")
+
+    def _raise_worker_error(
+        self, process: WorkerProcess, document: FrameDocument, command_type: str
+    ) -> None:
+        fatal = document.get("type") != "error"
+        error_type = (
+            FatalSpeechWorkerError
+            if fatal
+            else TTSConfigurationError
+            if document.get("error_type") == "TTSConfigurationError"
+            else TTSSynthesisError
+        )
+        error = error_type(
+            document.get("error")
+            or f"{self.name} isolated worker stopped during {command_type}"
+        )
+        remote_traceback = document.get("traceback")
+        if isinstance(remote_traceback, str) and remote_traceback:
+            error.add_note(f"Speech worker traceback:\n{remote_traceback}")
+        if fatal:
+            # A background preview can fail before any UI caller is waiting for it.
+            logging.getLogger(__name__).error(
+                "%s speech worker failed during %s",
+                self.name,
+                command_type,
+                exc_info=error,
+            )
+            attempt_cleanup(
+                lambda: self._terminate_process(process),
+                description="Failed speech worker cleanup",
+                primary_error=error,
+            )
+        raise error
 
     def set_volume(self, volume: object) -> None:
         self.volume = validate_volume(volume)
@@ -2305,6 +2372,8 @@ def create_qwen_worker_backend(
     if "runtime_directory" not in options and options.get("defer_startup") is not True:
         from vntts.runtime_installation import ensure_speech_runtime
 
+        if progress is not None:
+            progress("Preparing Qwen3-TTS runtime...")
         options["runtime_directory"] = ensure_speech_runtime(
             "qwen-tts" if sys.platform == "win32" else "moss-tts",
             cancellation=cancellation,

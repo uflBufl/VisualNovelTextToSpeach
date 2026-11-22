@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -81,7 +81,8 @@ class CharacterVoicePanelTest(unittest.TestCase):
             group,
             candidate.source_id,
             text="One phrase for both voices.",
-            cancel_event=self.service.generate.call_args.kwargs["cancel_event"],
+            cancel_event=ANY,
+            progress=ANY,
         )
         self.assertEqual(self.panel.current_selection, selection)
         self.assertFalse(self.panel.a_use.isEnabled())

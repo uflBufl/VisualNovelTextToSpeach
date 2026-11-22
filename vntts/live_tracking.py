@@ -52,6 +52,13 @@ class SpeechChunk:
         default=None, compare=False, repr=False
     )
     first_observed_at: float | None = field(default=None, compare=False)
+    resumed_part: tuple[int, int | None] | None = field(default=None, compare=False)
+
+    @property
+    def dialogue_part(self) -> tuple[int, int | None] | None:
+        if self.explicit_replay:
+            return self.resumed_part
+        return self.generation, self.ordinal
 
     @property
     def chunk_id(self) -> str | None:

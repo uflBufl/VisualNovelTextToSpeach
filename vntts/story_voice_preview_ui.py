@@ -166,7 +166,7 @@ class StoryVoicePreview(QObject):
         if ready is not None:
             self._finished(ready, None)
             return
-        self.runner.start(
+        self.runner.start_with_progress(
             self.session.generate,
             plan,
             group,

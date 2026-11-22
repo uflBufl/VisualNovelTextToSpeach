@@ -5368,8 +5368,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.hotkeys_requested.emit()
         self.set_status(f"Profile {profile_name!r} selected")
 
-    def _needs_modal_stop(self) -> bool:
-        state = self._runtime_control_state()
+    def _needs_modal_stop(self, state: RuntimeControlState | None = None) -> bool:
+        state = state or self._runtime_control_state()
         return bool(
             self._modal_stop_pending
             or self.controller.is_live_running is True
@@ -6299,32 +6299,39 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if getattr(self.controller, "is_one_shot_read_running", False) is True:
             self.set_status("Finish the current dialog read before opening history")
             return
-        resume_live = bool(self.controller.is_live_running)
-        if self._needs_modal_stop():
+        state = self._runtime_control_state()
+        if self._needs_modal_stop(state):
             self._stop_live_then(
-                lambda: self._open_history_dialog(resume_live),
+                lambda: self._open_history_dialog(state.live, paused=state.paused),
                 "Stopping reading before dialogue history...",
             )
             return
         self._open_history_dialog(False)
 
-    def _open_history_dialog(self, resume_live: bool) -> None:
+    def _open_history_dialog(self, resume_live: bool, *, paused: bool = False) -> None:
         if self._shutting_down:
             return
+        generation = self._lifecycle_generation
         try:
             dialog = DialogueHistoryDialog(
                 self.controller.history,
-                self.controller.replay_dialog,
+                self.controller.preview_voice,
                 stop_handler=self.controller.stop_voice_preview,
+                play_recording=self.controller.play_history_audio,
             )
             dialog.exec()
         finally:
             if (
                 resume_live
-                and not self._shutting_down
+                and self._lifecycle_is_current(generation)
                 and not self.controller.is_live_running
             ):
-                self.toggle_live()
+                if paused:
+                    if self._reading_window_available(self.controller.settings):
+                        running = self.controller.resume_paused_live()
+                        self.signals.live_changed.emit(running)
+                else:
+                    self.toggle_live()
 
     def export_support_bundle(self) -> None:
         if (

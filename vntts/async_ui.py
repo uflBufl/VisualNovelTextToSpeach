@@ -13,6 +13,7 @@ from vntts.support import record_background_operation
 
 class _TaskSignals(QObject):
     finished = Signal(int, object, object)
+    progress = Signal(int, str)
 
 
 class _Task(QRunnable):
@@ -71,6 +72,7 @@ class LatestTaskRunner(QObject):
 
     finished = Signal(object, object)
     activeChanged = Signal(bool)
+    progressChanged = Signal(str)
 
     def __init__(
         self,
@@ -86,6 +88,17 @@ class LatestTaskRunner(QObject):
         # owner is deleted after cancellation. Qt disconnects the dead receiver.
         self._signals = _TaskSignals()
         self._signals.finished.connect(self._task_finished)
+        self._signals.progress.connect(self._task_progress)
+
+    def start_with_progress(
+        self, function: Callable[..., object], *args: object, **kwargs: object
+    ) -> int:
+        report = partial(self._signals.progress.emit, self._serial + 1)
+        return self.start(function, *args, progress=report, **kwargs)
+
+    def _task_progress(self, serial: int, message: str) -> None:
+        if self._active and serial == self._serial:
+            self.progressChanged.emit(message)
 
     @property
     def active(self) -> bool:
@@ -132,4 +145,6 @@ class LatestTaskRunner(QObject):
         if self._active == active:
             return
         self._active = active
+        if not active:
+            self.progressChanged.emit("")
         self.activeChanged.emit(active)

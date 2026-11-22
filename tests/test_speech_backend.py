@@ -9,7 +9,12 @@ from unittest.mock import Mock, patch
 import numpy as np
 import torch
 
-from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+from vntts.playback import (
+    PlaybackOutcome,
+    PlaybackStatus,
+    PreparedPlayback,
+    replay_audio_capture_context,
+)
 from vntts.services.tts_engine import AudioPlaybackError, TTSConfigurationError
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -713,6 +718,25 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         self.assertGreaterEqual(len(played_audio), 47_999)
         self.assertLessEqual(float(np.max(np.abs(played_audio))), 0.95)
 
+    def test_history_retains_original_pcm_before_volume_and_output_resampling(self):
+        audio_output = FakeStreamingAudioOutput()
+        audio_output.sample_rate = 48_000
+        backend, _model = self.create_backend(
+            CharacterVoiceRegistry(), audio_output=audio_output
+        )
+        backend.set_volume(0.5)
+        pcm = np.linspace(-0.5, 0.5, 2400, dtype=np.float32)
+        prepared = PreparedPlayback(pcm, None, None, "test", "test")
+        token = replay_audio_capture_context.set(True)
+        try:
+            outcome = backend.play_prepared(prepared)
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertTrue(outcome.replay_audio.complete)
+        self.assertEqual(outcome.replay_audio.sample_rate, 24_000)
+        np.testing.assert_array_equal(outcome.replay_audio.pcm.reshape(-1), pcm)
+
     def test_playback_removes_invalid_samples_dc_offset_and_clipping(self):
         backend, _model = self.create_backend(CharacterVoiceRegistry())
 
@@ -1210,6 +1234,58 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertEqual(len(model.stream_calls), 1)
         self.assertEqual(len(audio_output.streams), 2)
         self.assertEqual(backend.last_synthesis_ms, 0.0)
+
+    def test_playback_retains_unscaled_pcm_only_for_history_listener(self):
+        backend, _model, audio_output = self.create_backend()
+        backend.set_volume(0.5)
+        prepared = backend.prepare_playback("Narrator", "Retain this line.")
+        self.assertIsNone(backend.play_prepared(prepared).replay_audio)
+        token = replay_audio_capture_context.set(True)
+        try:
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Retain this line.")
+            )
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertTrue(outcome.replay_audio.complete)
+        np.testing.assert_array_equal(
+            outcome.replay_audio.pcm.reshape(-1),
+            np.array([0.0, 0.25, -0.25, 0.1, -0.1, 0.0], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            audio_output.streams[-1].writes[0], outcome.replay_audio.pcm * 0.5
+        )
+
+    def test_interrupted_playback_retains_submitted_prefix_without_caching_it(self):
+        backend, _model, _audio_output = self.create_backend()
+        backend.stream_prefill_samples = 1
+        original_write = FakeOutputStream.write
+
+        def write_and_stop(stream, audio):
+            result = original_write(stream, audio)
+            backend.stop()
+            return result
+
+        token = replay_audio_capture_context.set(True)
+        try:
+            with patch.object(FakeOutputStream, "write", write_and_stop):
+                outcome = backend.play_prepared(
+                    backend.prepare_playback("Narrator", "Interrupted line.")
+                )
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertEqual(outcome.status, PlaybackStatus.INTERRUPTED)
+        self.assertFalse(outcome.replay_audio.complete)
+        np.testing.assert_array_equal(
+            outcome.replay_audio.pcm.reshape(-1),
+            np.array([0.0, 0.25, -0.25], dtype=np.float32),
+        )
+        self.assertEqual(
+            backend.prepare_playback("Narrator", "Interrupted line.").cache_source,
+            "fresh-generation",
+        )
 
     def test_complete_audio_cache_survives_backend_restart(self):
         backend, first_model, _output = self.create_backend()

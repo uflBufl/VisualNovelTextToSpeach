@@ -11,7 +11,7 @@ import numpy as np
 
 from vntts.audio_output import PlaybackPause, playback_pause_context
 from vntts.audio_store import AudioCatalogError
-from vntts.playback import PlaybackStatus
+from vntts.playback import PlaybackStatus, replay_audio_capture_context
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
@@ -409,6 +409,24 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(output.streams[0].options["channels"], 2)
         self.assertEqual(output.streams[0].writes[0].shape, (3, 2))
         self.assertIsNotNone(backend.last_first_audio_ms)
+
+    def test_history_retains_original_stereo_pcm_from_the_playback_consumer(self):
+        backend, _model, output = self.create_backend()
+        backend.set_volume(0.5)
+        token = replay_audio_capture_context.set(True)
+        try:
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Retained stereo line.")
+            )
+        finally:
+            replay_audio_capture_context.reset(token)
+
+        self.assertTrue(outcome.successful)
+        self.assertTrue(outcome.replay_audio.complete)
+        self.assertEqual(outcome.replay_audio.sample_rate, 48_000)
+        np.testing.assert_array_equal(
+            np.concatenate(output.streams[0].writes), outcome.replay_audio.pcm * 0.5
+        )
 
     def test_render_returns_typed_pcm_without_opening_an_audio_device(self):
         backend, model, output = self.create_backend()

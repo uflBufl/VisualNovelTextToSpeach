@@ -26,24 +26,56 @@ from shiboken6 import isValid  # noqa: E402
 from vntts.audio_output import PcmAdmissionRejected, resolve_audio_output  # noqa: E402
 from vntts.history import DialogueHistory  # noqa: E402
 from vntts.history_ui import DialogueHistoryDialog  # noqa: E402
+from vntts.playback import ReplayAudio  # noqa: E402
 from vntts.playback_observer import playback_started_context  # noqa: E402
 
 
 class DialogueHistoryTest(unittest.TestCase):
-    def test_typewriter_updates_coalesce_until_dialog_finishes(self):
+    def test_export_groups_played_chunks_by_utterance_and_preserves_repetitions(self):
         history = DialogueHistory()
+        first = history.add("Marcus", "Wait.", utterance=("run", 1), ordinal=1)
+        history.add("Marcus", "Listen.", utterance=("run", 1), ordinal=2)
+        history.add("Marcus", "Listen.", utterance=("run", 1), ordinal=2)
+        history.add("Marcus", "Wait.", utterance=("run", 2), ordinal=1)
 
-        first = history.add("Marcus", "Hello")
-        updated = history.add("Marcus", "Hello, Timekeeper.")
-        self.assertEqual(history.add("Marcus", "Hello"), updated)
-        self.assertEqual(history.snapshot(), [updated])
-        history.finish_current()
-        repeated = history.add("Marcus", "Hello, Timekeeper.")
+        with TemporaryDirectory() as directory:
+            path = history.export(Path(directory) / "history.json")
+            rows = json.loads(path.read_text())["entries"]
+        self.assertEqual([row["text"] for row in rows], ["Wait. Listen.", "Wait."])
+        self.assertEqual(rows[0]["id"], first.id)
+        self.assertNotEqual(rows[0]["id"], rows[1]["id"])
 
-        self.assertEqual(history.snapshot(), [updated, repeated])
-        self.assertEqual(updated.id, first.id)
-        self.assertEqual(updated.text, "Hello, Timekeeper.")
-        self.assertNotEqual(repeated.id, updated.id)
+    def test_recordings_keep_order_upgrade_after_resume_and_evict_audio_separately(
+        self,
+    ):
+        history = DialogueHistory(maximum_audio_bytes=12)
+        first = history.add("Ada", "First.", utterance=("run", 1), ordinal=1)
+        prefix = ReplayAudio(np.ones(1, np.float32), 24000, complete=False)
+        full = ReplayAudio(np.ones(2, np.float32), 24000)
+        history.retain_audio(first.id, 1, prefix)
+        history.retain_audio(first.id, 1, full)
+        history.retain_audio(first.id, 1, prefix)
+        history.add("Ada", "Second.", utterance=("run", 1), ordinal=2)
+        self.assertEqual(history.recording(first.id), ())
+        history.retain_audio(first.id, 2, prefix)
+        clips = history.recording(first.id)
+        self.assertIs(clips[0], full)
+        self.assertIs(clips[1], prefix)
+
+        second = history.add("Ada", "Next.")
+        history.retain_audio(second.id, None, full)
+        self.assertEqual(history.recording(first.id), ())
+        self.assertIs(history.recording(second.id)[0], full)
+        self.assertEqual(
+            [e.text for e in history.snapshot()], ["First. Second.", "Next."]
+        )
+        with TemporaryDirectory() as directory:
+            export = json.loads(
+                history.export(Path(directory) / "history.json").read_text()
+            )
+        self.assertEqual(
+            set(export["entries"][1]), {"id", "recorded_at", "character", "text"}
+        )
 
     def test_full_history_keeps_both_recent_lines_even_when_they_are_similar(self):
         history = DialogueHistory(maximum_entries=2)
@@ -131,7 +163,7 @@ class DialogueHistoryDialogTest(unittest.TestCase):
             dialog.export_button.accessibleName(), "Export dialogue history"
         )
         self.assertFalse(dialog.export_button.isEnabled())
-        self.assertIn("No dialogue has been captured", dialog.empty_message.text())
+        self.assertIn("No dialogue has played", dialog.empty_message.text())
         self.assertEqual(dialog.status.toPlainText(), "")
 
     def test_whitespace_search_preserves_empty_session_guidance(self):
@@ -139,14 +171,13 @@ class DialogueHistoryDialogTest(unittest.TestCase):
 
         dialog.search.setText("   ")
 
-        self.assertIn("No dialogue has been captured", dialog.empty_message.text())
+        self.assertIn("No dialogue has played", dialog.empty_message.text())
         self.assertEqual(dialog.status.toPlainText(), "")
         self.assertFalse(dialog.export_button.isEnabled())
 
     def test_searches_and_replays_selected_entry(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
         history.add("Lucy", "Good morning.")
         replay = Mock()
         dialog = self.create_dialog(history, replay)
@@ -158,10 +189,40 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.entries.count(), 1)
         replay.assert_called_once_with("Marcus", "The suitcase is ready.")
 
+    def test_recorded_line_plays_without_synthesis_and_can_be_read_in_current_voice(
+        self,
+    ):
+        history = DialogueHistory()
+        entry = history.add("Marcus", "Hello.")
+        clip = ReplayAudio(np.ones(3, np.float32), 24000, complete=False)
+        history.retain_audio(entry.id, None, clip)
+        started = Event()
+
+        def play(clips, cancelled):
+            self.assertIs(clips[0], clip)
+            started.set()
+            return not cancelled.wait(3)
+
+        voice, stop_voice = Mock(), Mock()
+        dialog = self.create_dialog(
+            history, voice, stop_handler=stop_voice, play_recording=play
+        )
+        self.assertEqual(dialog.replay_button.text(), "Replay excerpt")
+        dialog.replay_button.click()
+        self.wait_for(started.is_set)
+        self.assertIn("available portion", dialog.status.toPlainText())
+        dialog.stop_button.click()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        self.assertIn("stopped", dialog.status.toPlainText())
+        stop_voice.assert_not_called()
+        voice.assert_not_called()
+        dialog.current_voice_button.click()
+        self.wait_for(lambda: not dialog.replay_runner.active)
+        voice.assert_called_once_with("Marcus", "Hello.")
+
     def test_slow_replay_keeps_qt_responsive_and_reports_completion(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
         started, finished = Event(), Event()
         release = Event()
         self.addCleanup(release.set)
@@ -292,7 +353,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
                 history = DialogueHistory()
                 text = "The suitcase is ready."
                 history.add("Marcus", text)
-                history.finish_current()
                 history.add("Lucy", "Good morning.")
                 started = Event()
                 release = Event()
@@ -341,7 +401,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
     def test_stop_confirmation_closes_even_if_replay_future_is_unresponsive(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
         started = Event()
         release = Event()
         self.addCleanup(release.set)
@@ -436,7 +495,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
     def test_escape_stops_active_replay_before_closing(self):
         history = DialogueHistory()
         history.add("Marcus", "The suitcase is ready.")
-        history.finish_current()
         started = Event()
         release = Event()
         self.addCleanup(release.set)
@@ -492,7 +550,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         history = DialogueHistory()
         text = " ".join(["The suitcase is ready."] * 100)
         history.add("Marcus", text)
-        history.finish_current()
         history.add("Lucy", "Good morning.")
         replay_started = Event()
         replay_release = Event()
@@ -653,7 +710,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         history = DialogueHistory(maximum_entries=40)
         for index in range(40):
             history.add(f"Speaker {index}", f"Dialogue line {index}")
-            history.finish_current()
         dialog = self.create_dialog(history, Mock())
         dialog.resize(520, 300)
         dialog.show()
@@ -665,7 +721,6 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         previous_scroll = scroll_bar.value()
 
         history.add("New speaker", "A newly captured line")
-        history.finish_current()
         dialog.refresh()
 
         self.assertEqual(dialog.current_entry().id, selected_id)

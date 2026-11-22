@@ -1,7 +1,8 @@
 """Typed preparation and playback results shared by live speech backends."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
@@ -53,6 +54,56 @@ def prepare_silent_playback(text: str) -> PreparedPlayback | None:
 
 
 @dataclass(frozen=True)
+class ReplayAudio:
+    """Unscaled PCM retained for replay without a speech model."""
+
+    pcm: NDArray[np.float32] = field(repr=False, compare=False)
+    sample_rate: int
+    complete: bool = True
+
+
+replay_audio_capture_context: ContextVar[bool] = ContextVar(
+    "replay_audio_capture_context", default=False
+)
+MAX_REPLAY_AUDIO_BYTES = 32 * 1024 * 1024
+
+
+class ReplayAudioCapture:
+    """Retain submitted streaming PCM only while dialogue history is listening."""
+
+    def __init__(self, sample_rate: int) -> None:
+        self.sample_rate = sample_rate
+        self.chunks: list[NDArray[np.float32]] | None = (
+            [] if replay_audio_capture_context.get() else None
+        )
+        self.byte_count = 0
+
+    def append(self, pcm: NDArray[np.float32]) -> None:
+        if self.chunks is None:
+            return
+        audio = pcm.reshape(-1, 1) if pcm.ndim == 1 else pcm
+        self.byte_count += audio.nbytes
+        if self.byte_count > MAX_REPLAY_AUDIO_BYTES:
+            self.chunks = None
+            return
+        if len(audio):
+            self.chunks.append(audio)
+
+    def finish(
+        self, complete: bool, pcm: NDArray[np.float32] | None = None
+    ) -> ReplayAudio | None:
+        if not self.chunks:
+            return None
+        if pcm is None or pcm.nbytes != self.byte_count:
+            pcm = (
+                self.chunks[0]
+                if len(self.chunks) == 1
+                else np.concatenate(self.chunks, axis=0)
+            )
+        return ReplayAudio(pcm, self.sample_rate, complete)
+
+
+@dataclass(frozen=True)
 class PlaybackOutcome:
     status: PlaybackStatus
     playback_ms: float | None
@@ -71,6 +122,7 @@ class PlaybackOutcome:
     first_audio_at: float | None = None
     onset_provenance: str = "unobserved"
     end_provenance: str = "unobserved"
+    replay_audio: ReplayAudio | None = field(default=None, repr=False, compare=False)
 
     def onset_observation(self, playback_started: float) -> tuple[float, str] | None:
         if self.first_audio_at is not None:
@@ -160,6 +212,7 @@ def outcome_for_prepared(
     error: str | None = None,
     error_type: type[Exception] | None = None,
     first_audio_at: float | None = None,
+    replay_audio: ReplayAudio | None = None,
 ) -> PlaybackOutcome:
     return PlaybackOutcome(
         status=status,
@@ -175,4 +228,5 @@ def outcome_for_prepared(
         synthesis_ms=prepared.synthesis_ms,
         cache_source=prepared.cache_source,
         audio_source=prepared.audio_source,
+        replay_audio=replay_audio,
     )

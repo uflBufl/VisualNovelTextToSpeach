@@ -307,6 +307,21 @@ class StoryVoicePreviewTest(unittest.TestCase):
         )
         self.assertEqual(self.dialog.voice_confirmation_status.text(), "")
 
+    def test_preview_stage_is_visible_and_ignores_late_updates(self):
+        stages = []
+
+        def generate(*args, progress, **kwargs):
+            progress("Loading the Qwen model...")
+            stages.append(self.dialog.summary_preview_progress.text())
+            return self.preview
+
+        self.service.generate.side_effect = generate
+        self.row_button(self.group).click()
+        self.run_tasks()
+        self.assertEqual(stages, ["Loading the Qwen model..."])
+        self.service.generate.call_args.kwargs["progress"]("Outdated stage")
+        self.assertEqual(self.dialog.summary_preview_progress.text(), "")
+
     def test_automatic_voices_prepare_before_manual_choices_and_narrator(self):
         fresh = replace(
             self.group, character="Fresh", resolution="known-character-voice"

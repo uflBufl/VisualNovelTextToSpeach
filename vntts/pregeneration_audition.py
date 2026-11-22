@@ -430,6 +430,7 @@ class VoiceAuditionPreviewService:
         text: str | None = None,
         cancel_event: _Cancellation | None = None,
         progress: ProgressReporter | None = None,
+        before_render: Callable[[], object] | None = None,
     ) -> VoiceAuditionPreview:
         """Generate or reuse the exact requested candidate phrase."""
         with self._lock:
@@ -510,6 +511,7 @@ class VoiceAuditionPreviewService:
                             progress,
                             notify,
                             telemetry,
+                            before_render,
                         )
                     _raise_if_cancelled(cancellation)
                     if not self.authorization_unchanged(stamp):
@@ -557,10 +559,14 @@ class VoiceAuditionPreviewService:
         progress: ProgressReporter | None,
         notify: ProgressReporter,
         telemetry: _PreviewTelemetry,
+        before_render: Callable[[], object] | None,
     ) -> VoiceAuditionPreview:
         self.root.mkdir(parents=True, exist_ok=True)
         telemetry.stage = "startup"
         self._ensure_preview_backend(plan, registry, cancellation, progress, notify)
+        _raise_if_cancelled(cancellation)
+        if before_render is not None:
+            before_render()
         telemetry.stage = "render"
         attempt = self._failed_preview_attempts.get(identity, 0)
         telemetry.seed = _preview_seed(plan, attempt)

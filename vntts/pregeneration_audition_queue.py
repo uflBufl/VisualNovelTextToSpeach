@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from secrets import token_hex
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from time import monotonic
 
 from vntts.document_identity import canonical_document_sha256
@@ -17,6 +17,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
     VoiceAuditionReference,
+    _backend_config,
     _Cancellation,
     _count_audition,
     _validate_request,
@@ -24,9 +25,14 @@ from vntts.pregeneration_audition import (
 )
 from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.settings import AppSettings
+from vntts.speech_worker import FatalSpeechWorkerError
 from vntts.support import performance_operation_id, record_background_operation
 
 PreviewInput = tuple[VoiceGroup, str, str | None]
+
+
+class _DeferredPreview(VoiceAuditionCancelled):
+    """Shared startup completed; an explicit preview takes the next render."""
 
 
 def _context_key(
@@ -66,7 +72,9 @@ class _Job:
     done: Event = field(default_factory=Event)
     preview: VoiceAuditionPreview | None = None
     error: Exception | None = None
-    progress: ProgressReporter | None = None
+    progress: list[ProgressReporter] = field(default_factory=list)
+    progress_message: str | None = None
+    rendering: bool = False
     operation_id: str = field(
         default_factory=lambda: performance_operation_id.get() or token_hex(16)
     )
@@ -86,6 +94,7 @@ class VoiceAuditionCoordinator:
         self.background_available = background_available
         self._lock = Lock()
         self._cache_lock = Lock()
+        self._progress_lock = RLock()
         self._pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="voice-audition"
         )
@@ -177,6 +186,50 @@ class VoiceAuditionCoordinator:
             self._draining = True
             self._pool.submit(self._drain)
 
+    def _progress_message(self, job: _Job) -> str | None:
+        running = self._running
+        if running is job:
+            return job.progress_message
+        if running is not None:
+            if not running.rendering and _backend_config(
+                running.plan
+            ) == _backend_config(job.plan):
+                return running.progress_message
+            return "Waiting for the current voice preview to finish..."
+        return "Waiting to prepare the voice preview..."
+
+    def _report_progress(self, job: _Job, message: str) -> None:
+        with self._progress_lock:
+            with self._lock:
+                job.progress_message = message
+                listeners = [*job.progress]
+                if not job.rendering:
+                    for pending in self._pending:
+                        if not pending.cancel.is_set() and _backend_config(
+                            pending.plan
+                        ) == _backend_config(job.plan):
+                            listeners.extend(pending.progress)
+            for listener in listeners:
+                listener(message)
+
+    def _replay_progress(self, job: _Job, progress: ProgressReporter) -> None:
+        with self._progress_lock:
+            with self._lock:
+                message = self._progress_message(job)
+            if message is not None:
+                progress(message)
+
+    def _before_render(self, job: _Job) -> None:
+        with self._lock:
+            if job.cancel.is_set():
+                raise VoiceAuditionCancelled("Voice audition generation was cancelled")
+            if not job.foreground and any(
+                pending.foreground and not pending.cancel.is_set()
+                for pending in self._pending
+            ):
+                raise _DeferredPreview("Explicit voice preview takes priority")
+            job.rendering = True
+
     def _drain(self) -> None:
         while True:
             with self._lock:
@@ -200,8 +253,36 @@ class VoiceAuditionCoordinator:
             )
             try:
                 ready_stamp = self._run_job(job)
+            except _DeferredPreview:
+                with self._lock:
+                    self._running = None
+                    self._pending.append(job)
+                    job.progress_message = None
+                continue
             except Exception as error:
                 job.error = error
+                cause: BaseException | None = error
+                while cause is not None:
+                    if isinstance(cause, FatalSpeechWorkerError):
+                        with self._lock:
+                            self._suspended = True
+                            self._cancel_warmup()
+                            for session in self._sessions:
+                                self._cancel_session(session, background_only=True)
+                            if not job.rendering:
+                                for pending in tuple(self._pending):
+                                    if _backend_config(pending.plan) == _backend_config(
+                                        job.plan
+                                    ):
+                                        self._pending.remove(pending)
+                                        pending.error = error
+                                        pending.session._failures[pending.key] = str(
+                                            error
+                                        )
+                                        pending.session._jobs.pop(pending.key, None)
+                                        pending.done.set()
+                        break
+                    cause = cause.__cause__
             finally:
                 performance_operation_id.reset(operation_token)
             with self._lock:
@@ -251,8 +332,9 @@ class VoiceAuditionCoordinator:
                 job.group,
                 job.source,
                 text=job.text,
-                cancel_event=job.cancel,
-                progress=job.progress,
+                cancel_event=_SharedPreparationCancellation(self, job),
+                progress=lambda message: self._report_progress(job, message),
+                before_render=lambda: self._before_render(job),
             )
         job.preview = preview
         if stamp != self.service.authorization_stamp(job.plan, job.group, job.source):
@@ -369,15 +451,22 @@ class VoiceAuditionSession:
                     text,
                     foreground=not automatic,
                     automatic=automatic,
-                    progress=progress,
                 )
                 self.owner._submit(job)
             else:
                 job.foreground = job.foreground or not automatic
                 job.automatic = job.automatic or automatic
-                job.progress = progress
+            if progress is not None:
+                job.progress.append(progress)
             job.waiters += 1
-        return _wait_for_preview(job, cancel_event)
+        try:
+            if progress is not None:
+                self.owner._replay_progress(job, progress)
+            return _wait_for_preview(job, cancel_event)
+        finally:
+            if progress is not None:
+                with self.owner._lock:
+                    job.progress.remove(progress)
 
     def peek(
         self,
@@ -498,6 +587,21 @@ class VoiceAuditionSession:
         with self.owner._lock:
             return self._failures.get(key)
 
+    def preparation_progress(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+    ) -> str | None:
+        key = _context_key(plan, group, candidate_source_id, text)
+        with self.owner._lock:
+            job = self._jobs.get(key)
+            if job is None or job.cancel.is_set():
+                return None
+            return self.owner._progress_message(job)
+
     def prefetch(
         self,
         plan: VoicePlan,
@@ -578,6 +682,26 @@ class VoiceAuditionSession:
 
     def new_session(self) -> VoiceAuditionSession:
         return self.owner.session()
+
+
+class _SharedPreparationCancellation:
+    def __init__(self, owner: VoiceAuditionCoordinator, job: _Job) -> None:
+        self.owner = owner
+        self.job = job
+
+    def is_set(self) -> bool:
+        if not self.job.cancel.is_set():
+            return False
+        with self.owner._lock:
+            if self.job.rendering or self.owner._closed or self.owner._suspended:
+                return True
+            # A closing window can relinquish startup to another explicit owner.
+            return not any(
+                pending.foreground
+                and not pending.cancel.is_set()
+                and _backend_config(pending.plan) == _backend_config(self.job.plan)
+                for pending in self.owner._pending
+            )
 
 
 def _wait_for_preview(

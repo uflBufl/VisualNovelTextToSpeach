@@ -239,7 +239,7 @@ class MainTest(unittest.TestCase):
             owner.start()
             self.addCleanup(owner.stop)
 
-    def test_record_and_display_dialogue_preserves_full_long_text(self):
+    def test_observation_displays_full_long_text_without_recording_history(self):
         dialogs = []
         controller = AppController(
             AppSettings(),
@@ -248,12 +248,10 @@ class MainTest(unittest.TestCase):
         )
         text = " ".join(["A long accepted dialogue line."] * 8)
 
-        controller._record_and_display_dialogue("Rhiannon", text)
+        controller._dialog_observed("Rhiannon", text)
 
         self.assertEqual(dialogs, [("Rhiannon", text)])
-        self.assertEqual(
-            [entry.text for entry in controller.history.snapshot()], [text]
-        )
+        self.assertEqual(controller.history.snapshot(), [])
 
     def test_dialog_fingerprint_changes_when_only_the_text_changes(self):
         first = Image.new("RGB", (1200, 240), "#202020")
@@ -2939,11 +2937,7 @@ class MainTest(unittest.TestCase):
         controller._dialog_observed("Marcus", "A line visible in the tray")
 
         self.assertEqual(dialogs[-1], ("Marcus", "A line visible in the tray"))
-        self.assertEqual(controller.history.snapshot()[0].character, "Marcus")
-        self.assertEqual(
-            controller.history.snapshot()[0].text,
-            "A line visible in the tray",
-        )
+        self.assertEqual(controller.history.snapshot(), [])
 
     def test_sequence_unavailable_reason_is_cached_for_off_mode_status(self):
         reason = SequenceUnavailableReason.NOT_READY
@@ -4531,10 +4525,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(controller.story_cursor.state, StoryCursorState.LOCKED)
         self.assertEqual(
             [entry.text for entry in controller.history.snapshot()],
-            [
-                "Second canonical line that",
-                "Second canonical line that remains stable.",
-            ],
+            ["Second canonical line that"],
         )
 
         controller.story_cursor.reset()
@@ -4593,7 +4584,7 @@ class MainTest(unittest.TestCase):
                 occurrence = controller.story_cursor.occurrence_id
                 controller._dialog_observed(lines[0].speaker, symbols)
                 self.assertEqual(controller.story_cursor.occurrence_id, occurrence)
-                self.assertEqual(controller.history.snapshot()[-1].text, symbols)
+                self.assertEqual(controller.history.snapshot(), [])
                 self.assertEqual(
                     [
                         lease
@@ -5976,7 +5967,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(preloader.current_match.sequence, 2)
         self.assertEqual(
             [entry.text for entry in controller.history.snapshot()],
-            [repeated, repeated],
+            [repeated],
         )
 
     def test_manual_multi_line_skip_requires_bounded_recognition(self):

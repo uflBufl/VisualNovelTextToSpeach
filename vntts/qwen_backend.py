@@ -43,27 +43,28 @@ class _CudaQwenModel:
         return self.model.generate_voice_clone(**options)
 
 
-def _require_cuda_device() -> None:
+def _cuda_inference_dtype() -> object:
     import torch
 
     if not torch.cuda.is_available():
         raise TTSConfigurationError("Qwen3-TTS requires an NVIDIA CUDA GPU on Windows")
-    if torch.cuda.get_device_capability(0) < (7, 5):
+    capability = torch.cuda.get_device_capability(0)
+    if capability < (7, 5):
         raise TTSConfigurationError(
             "Qwen3-TTS requires NVIDIA Turing (RTX 20 series) or newer"
         )
+    # Keep the checkpoint's numerical range even on Turing, which lacks native BF16.
+    return torch.bfloat16 if capability >= (8, 0) else torch.float32
 
 
-def _load_cuda_qwen_model(model_path: str) -> _CudaQwenModel:
-    import torch
+def _load_cuda_qwen_model(model_path: str, dtype: object) -> _CudaQwenModel:
     from qwen_tts import Qwen3TTSModel
 
-    _require_cuda_device()
     return _CudaQwenModel(
         Qwen3TTSModel.from_pretrained(
             model_path,
             device_map="cuda:0",
-            dtype=torch.float16,
+            dtype=dtype,
             attn_implementation="sdpa",
         )
     )
@@ -167,6 +168,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
         streaming_interval: float = 0.25,
         generation_profile: object = "stable",
         playback_consumer_join_timeout: float = 5.0,
+        asset_progress: Callable[[str], None] | None = None,
     ) -> None:
         if sys.platform not in {"darwin", "win32"}:
             raise TTSConfigurationError(
@@ -188,7 +190,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
         metal_available = False
         resolved_model_factory: _QwenTTSModelFactory
         if model_factory is None:
-            from huggingface_hub import snapshot_download
+            from vntts.huggingface_assets import download_snapshot
 
             if sys.platform == "darwin":
                 import mlx.core as mx
@@ -199,7 +201,12 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         "Qwen MLX requires an Apple Silicon GPU"
                     )
                 metal_available = True
-                model_path = snapshot_download(QWEN_MODEL, revision=QWEN_REVISION)
+                model_path = download_snapshot(
+                    QWEN_MODEL,
+                    revision=QWEN_REVISION,
+                    asset="Qwen3-TTS model",
+                    report=asset_progress,
+                )
 
                 def load_qwen_model(model_name: str, *, lazy: bool) -> object:
                     return load_model(model_path, lazy=lazy)
@@ -207,18 +214,23 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 resolved_model_factory = load_qwen_model
 
             else:
-                _require_cuda_device()
-                model_path = snapshot_download(
-                    QWEN_CUDA_MODEL, revision=QWEN_CUDA_REVISION
+                cuda_dtype = _cuda_inference_dtype()
+                model_path = download_snapshot(
+                    QWEN_CUDA_MODEL,
+                    revision=QWEN_CUDA_REVISION,
+                    asset="Qwen3-TTS model",
+                    report=asset_progress,
                 )
 
                 def load_cuda_model(model_name: str, *, lazy: bool) -> _CudaQwenModel:
-                    return _load_cuda_qwen_model(model_path)
+                    return _load_cuda_qwen_model(model_path, cuda_dtype)
 
                 resolved_model_factory = load_cuda_model
         else:
             model_path = QWEN_MODEL if sys.platform == "darwin" else QWEN_CUDA_MODEL
             resolved_model_factory = model_factory
+        if asset_progress is not None:
+            asset_progress("Loading local Qwen3-TTS model...")
         super().__init__(
             registry,
             narrator_reference=narrator_reference,

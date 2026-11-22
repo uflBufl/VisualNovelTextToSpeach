@@ -176,6 +176,15 @@ class _PrefetchVoiceAuditionPreviewer(_VoiceAuditionPreviewer, Protocol):
         text: str | None = None,
     ) -> str | None: ...
 
+    def preparation_progress(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+    ) -> str | None: ...
+
     def new_session(self) -> _VoiceAuditionPreviewer: ...
 
 
@@ -192,6 +201,15 @@ _preview_service_factory: Callable[[], _VoiceAuditionPreviewer] = (
 
 class VoiceAuditionUIError(RuntimeError):
     """The player audition card received an invalid unresolved plan."""
+
+
+def voice_preview_progress_label() -> QLabel:
+    label = QLabel()
+    label.setAccessibleName("Voice preview preparation")
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    label.setWordWrap(True)
+    return label
 
 
 def _read_verified_audio(path: Path, expected_sha256: str | None) -> bytes:
@@ -289,7 +307,8 @@ class VoiceAuditionPanel(QGroupBox):
         self.retry_save_button.clicked.connect(self._start_save)
         self.retry_save_button.setVisible(False)
         self.outcome_actions = QHBoxLayout()
-        self.outcome_actions.addStretch()
+        self.preview_progress = voice_preview_progress_label()
+        self.outcome_actions.addWidget(self.preview_progress, 1)
         self.outcome_actions.addWidget(self.retry_save_button)
         self.outcome_actions.addWidget(self.a_use)
 
@@ -724,6 +743,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._pending_playback_source: str | None = None
         self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preview_runner.finished.connect(self._preview_finished)
+        self.preview_runner.progressChanged.connect(self._preview_progress_changed)
         self.original_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.original_runner.finished.connect(self._original_finished)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -759,7 +779,29 @@ class VoiceAuditionPanel(QGroupBox):
             self._refresh_reference_advice()
             self._check_ready_previews()
             self._refresh_preparation_failure()
+            if (
+                self._preview_request is None
+                and self._playing_source is None
+                and not self._cancel_requested
+                and getattr(self.preview_service, "supports_prefetch", False) is True
+            ):
+                message = cast(
+                    _PrefetchVoiceAuditionPreviewer, self.preview_service
+                ).preparation_progress(
+                    self._require_plan(),
+                    self.current_group(),
+                    self._current_entry()[0].source_id,
+                    text=self._sample_text,
+                )
+                self.preview_progress.setText(
+                    message if isinstance(message, str) else ""
+                )
         self._set_playing_source(self._playing_source)
+
+    def _preview_progress_changed(self, message: str) -> None:
+        request = self._preview_request
+        if request is not None and not request.cancellation.is_set():
+            self.preview_progress.setText(message)
 
     @property
     def active(self) -> bool:
@@ -900,7 +942,7 @@ class VoiceAuditionPanel(QGroupBox):
             "text": request.text,
             "cancel_event": request.cancellation,
         }
-        self.preview_runner.start(
+        self.preview_runner.start_with_progress(
             self.preview_service.generate,
             request.plan,
             request.group,
@@ -1406,6 +1448,7 @@ class VoiceAuditionPanel(QGroupBox):
     def _preview_finished(
         self, preview: _PreviewAudio | None, error: Exception | None
     ) -> None:
+        self.preview_progress.clear()
         if self._shutdown_requested:
             if not self.active:
                 self.preview_service.close()
@@ -1567,6 +1610,7 @@ class VoiceAuditionPanel(QGroupBox):
             )
 
     def _cancel_preview_request(self) -> None:
+        self.preview_progress.clear()
         if self._preview_request is not None:
             self._preview_request.cancellation.set()
         if self._queued_preview_request is not None:
@@ -2357,6 +2401,7 @@ class VoiceAuditionPanel(QGroupBox):
                 )
 
     def _stop_player(self) -> None:
+        self.preview_progress.clear()
         self._playback_request_serial += 1
         self._pending_playback_source = None
         self.original_runner.cancel()

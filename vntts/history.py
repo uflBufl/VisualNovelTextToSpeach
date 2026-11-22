@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from durable_file import atomic_write_text
 
+from vntts.playback import MAX_REPLAY_AUDIO_BYTES, ReplayAudio
+
 
 @dataclass(frozen=True)
 class DialogueHistoryEntry:
@@ -22,36 +24,45 @@ class DialogueHistory:
         self,
         *,
         maximum_entries: int = 1000,
+        maximum_audio_bytes: int = MAX_REPLAY_AUDIO_BYTES,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if maximum_entries < 1:
             raise ValueError("maximum_entries must be positive")
         self.maximum_entries = maximum_entries
+        self.maximum_audio_bytes = maximum_audio_bytes
+        self._audio: dict[str, dict[int, ReplayAudio | None]] = {}
+        self._audio_bytes = 0
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._entries: list[DialogueHistoryEntry] = []
-        self._active_entry_id: str | None = None
+        self._last_utterance: tuple[str, int] | None = None
+        self._last_ordinal = 0
         self._lock = RLock()
 
     def add(
-        self, character: str | None, text: str | None
+        self,
+        character: str | None,
+        text: str | None,
+        *,
+        utterance: tuple[str, int] | None = None,
+        ordinal: int | None = None,
     ) -> DialogueHistoryEntry | None:
         character = (character or "Narrator").strip() or "Narrator"
         text = " ".join((text or "").split())
         if not text:
-            self.finish_current()
             return None
         with self._lock:
-            active = self._active_entry()
-            if (
-                active is not None
-                and active.character == character
-                and self._is_continuation(active.text, text)
-            ):
-                if active.text.startswith(text):
-                    return active
-                updated = replace(active, text=text)
-                self._entries[-1] = updated
-                return updated
+            part = 1 if ordinal is None else ordinal
+            if utterance is not None and utterance == self._last_utterance:
+                previous = self._entries[-1]
+                if part > self._last_ordinal:
+                    self._entries[-1] = replace(
+                        previous, text=f"{previous.text} {text}"
+                    )
+                    self._last_ordinal = part
+                    if previous.id in self._audio:
+                        self._audio[previous.id][part] = None
+                return self._entries[-1]
             entry = DialogueHistoryEntry(
                 id=uuid4().hex,
                 recorded_at=self.clock().isoformat(),
@@ -59,14 +70,45 @@ class DialogueHistory:
                 text=text,
             )
             self._entries.append(entry)
+            self._audio[entry.id] = {part: None}
             if len(self._entries) > self.maximum_entries:
-                self._entries = self._entries[-self.maximum_entries :]
-            self._active_entry_id = entry.id
+                self._drop_audio(self._entries.pop(0).id)
+            self._last_utterance = utterance
+            self._last_ordinal = part
             return entry
 
-    def finish_current(self) -> None:
+    def retain_audio(
+        self, entry_id: str, ordinal: int | None, clip: ReplayAudio
+    ) -> None:
         with self._lock:
-            self._active_entry_id = None
+            parts = self._audio.get(entry_id)
+            part = 1 if ordinal is None else ordinal
+            if parts is None or part not in parts:
+                return
+            previous = parts[part]
+            if previous is not None:
+                if previous.complete or (
+                    not clip.complete and previous.pcm.nbytes >= clip.pcm.nbytes
+                ):
+                    return
+                self._audio_bytes -= previous.pcm.nbytes
+            parts[part] = clip
+            self._audio_bytes += clip.pcm.nbytes
+            while self._audio_bytes > self.maximum_audio_bytes and self._audio:
+                self._drop_audio(next(iter(self._audio)))
+
+    def _drop_audio(self, entry_id: str) -> None:
+        parts = self._audio.pop(entry_id, {})
+        self._audio_bytes -= sum(
+            clip.pcm.nbytes for clip in parts.values() if clip is not None
+        )
+
+    def recording(self, entry_id: str) -> tuple[ReplayAudio, ...]:
+        with self._lock:
+            parts = self._audio.get(entry_id)
+            if not parts or None in parts.values():
+                return ()
+            return tuple(clip for clip in parts.values() if clip is not None)
 
     def snapshot(self) -> list[DialogueHistoryEntry]:
         with self._lock:
@@ -103,12 +145,3 @@ class DialogueHistory:
             )
         atomic_write_text(path, content + ("\n" if content else ""))
         return path
-
-    def _active_entry(self) -> DialogueHistoryEntry | None:
-        if not self._entries or self._entries[-1].id != self._active_entry_id:
-            return None
-        return self._entries[-1]
-
-    @staticmethod
-    def _is_continuation(previous: str, current: str) -> bool:
-        return previous.startswith(current) or current.startswith(previous)

@@ -1845,6 +1845,20 @@ class LiveDialogReaderTest(unittest.TestCase):
                 )
                 self.assertNotIn("PRIVATE", repr(health))
 
+    def test_paused_start_blocks_speech_before_workers_are_submitted(self):
+        reader = self.create_reader()
+
+        def submit(*_args):
+            self.assertTrue(reader.paused)
+            self.assertTrue(reader.playback_pause.is_paused())
+            return Future()
+
+        reader.ocr_executor.submit.side_effect = submit
+        reader.capture_executor.submit.side_effect = submit
+        self.assertTrue(reader.start(paused=True))
+        self.assertFalse(reader.toggle_pause())
+        self.assertFalse(reader.playback_pause.is_paused())
+
     def test_restart_resets_health_before_queued_workers_can_begin(self):
         reader = self.create_reader(
             capture_executor=QueuedExecutor(), ocr_executor=QueuedExecutor()

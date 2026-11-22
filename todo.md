@@ -180,10 +180,10 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Adopt Qwen for offline story preparation
 
-- [ ] Play one Qwen character voice preview on the affected Windows 10 PC
-      after updating. Confirm that the preview reaches audible playback with
-      the compact managed runtime. If startup still fails, export the logs
-      with the original native loader error.
+- [ ] On the Windows RTX 2070 SUPER, select Qwen and a character voice, type a
+      fresh sentence in the voice preview and click Preview. Confirm it speaks
+      that sentence. If synthesis fails, export the support report with the
+      first worker traceback.
 
 - [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
       choosing it as the default offline engine. The speaker-only conditioning
@@ -250,7 +250,7 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Dialogue history on Windows
 
-- [ ] Start a captured line with its assigned
+- [ ] Start a history line with its current assigned
       voice, select or filter to another line, then stop and confirm the audio
       and named status agree. Restore an unavailable engine and retry from the
       same window.

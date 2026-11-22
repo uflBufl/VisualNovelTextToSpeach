@@ -4100,7 +4100,7 @@ class TrayApplicationTest(unittest.TestCase):
         def generate(*_args, cancel_event, **_kwargs):
             cancellation.append(cancel_event)
             entered.set()
-            if not cancel_event.wait(5):
+            if not release.wait(5) or not cancel_event.is_set():
                 raise AssertionError("Reading did not cancel the preview")
             raise VoiceAuditionCancelled("Reading has priority")
 
@@ -7231,8 +7231,9 @@ class TrayApplicationTest(unittest.TestCase):
 
         factory.assert_called_once_with(
             controller.history,
-            controller.replay_dialog,
+            controller.preview_voice,
             stop_handler=controller.stop_voice_preview,
+            play_recording=controller.play_history_audio,
         )
         dialog.exec.assert_called_once_with()
         controller.toggle_live.assert_not_called()
@@ -7267,6 +7268,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(controller.is_live_running)
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
+        controller.resume_paused_live.assert_not_called()
         controller.unresolved_live_speakers.assert_called_once_with()
         controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
@@ -7313,6 +7315,73 @@ class TrayApplicationTest(unittest.TestCase):
         controller.read_once.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
         tray_application.shutdown()
+
+    def test_history_dialog_preserves_paused_reading_after_close(self):
+        snapshot = {"paused": True}
+        controller = Mock(is_live_running=True, is_one_shot_read_running=False)
+        controller.runtime_control_snapshot.side_effect = lambda: dict(snapshot)
+        controller.unresolved_live_speakers.return_value = ()
+
+        def stop_reading():
+            controller.is_live_running = False
+            snapshot["paused"] = False
+
+        def resume_paused_live():
+            controller.is_live_running = True
+            snapshot["paused"] = True
+            return True
+
+        controller.emergency_stop.side_effect = stop_reading
+        controller.resume_paused_live.side_effect = resume_paused_live
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        pool = ManualThreadPool()
+        tray.live_stop_runner.thread_pool = pool
+        dialog = Mock()
+        dialog.exec.side_effect = lambda: self.assertFalse(controller.is_live_running)
+
+        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog):
+            tray.open_history()
+            dialog.exec.assert_not_called()
+            pool.run_next()
+            self.wait_until(lambda: dialog.exec.called)
+
+        dialog.exec.assert_called_once_with()
+        controller.resume_paused_live.assert_called_once_with()
+        controller.toggle_live.assert_not_called()
+        self.assertTrue(controller.is_live_running)
+        self.assertTrue(tray._runtime_control_state().paused)
+        self.assertEqual(tray.dashboard.pause_button.accessibleName(), "Resume speech")
+        self.assertEqual(
+            tray.compact_controller.pause_button.accessibleName(), "Resume speech"
+        )
+        tray.shutdown()
+
+    def test_history_dialog_keeps_stopped_reading_stopped(self):
+        controller = Mock(is_live_running=False, is_one_shot_read_running=False)
+        controller.runtime_control_snapshot.return_value = {"paused": False}
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        dialog = Mock()
+
+        with patch("vntts.app.DialogueHistoryDialog", return_value=dialog):
+            tray.open_history()
+
+        dialog.exec.assert_called_once_with()
+        controller.emergency_stop.assert_not_called()
+        controller.toggle_live.assert_not_called()
+        controller.resume_paused_live.assert_not_called()
+        self.assertFalse(tray._runtime_control_state().active)
+        self.assertEqual(tray.dashboard.live_button.accessibleName(), "Start reading")
+        tray.shutdown()
 
     def test_history_dialog_restores_live_capture_after_construction_failure(self):
         controller = Mock()
@@ -11134,7 +11203,7 @@ class TrayApplicationTest(unittest.TestCase):
         with patch.object(
             tray_application,
             "_open_history_dialog",
-            side_effect=lambda resume: opened.append(resume),
+            side_effect=lambda resume, *, paused: opened.append((resume, paused)),
         ):
             tray_application.open_history()
             QTimer.singleShot(0, lambda: heartbeat.append(True))
@@ -11143,7 +11212,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(opened, [])
             self.assertTrue(tray_application.live_stop_runner.active)
             release.set()
-            self.wait_until(lambda: opened == [True])
+            self.wait_until(lambda: opened == [(True, False)])
 
         tray_application.shutdown()
 
@@ -11240,7 +11309,7 @@ class TrayApplicationTest(unittest.TestCase):
                     if target == "settings":
                         settings.assert_called_once_with()
                     elif target == "history":
-                        history.assert_called_once_with(False)
+                        history.assert_called_once_with(False, paused=False)
                     controller.toggle_live.assert_not_called()
                 tray.shutdown()
 

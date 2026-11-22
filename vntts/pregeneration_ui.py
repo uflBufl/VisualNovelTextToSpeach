@@ -68,6 +68,7 @@ from vntts.pregeneration_audition import COMPARISON_PREVIEW_TEXT
 from vntts.pregeneration_audition_ui import (
     _preview_service_factory,
     _VoiceAuditionPreviewer,
+    voice_preview_progress_label,
 )
 from vntts.pregeneration_failures_ui import PreparationFailuresPanel
 from vntts.pregeneration_generation import (
@@ -1178,7 +1179,11 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.voice_routes_empty)
         actions = QHBoxLayout()
         actions.addWidget(self.back_to_story_selection)
-        actions.addStretch()
+        self.summary_preview_progress = voice_preview_progress_label()
+        actions.addWidget(self.summary_preview_progress, 1)
+        self.summary_voice_preview.runner.progressChanged.connect(
+            self.summary_preview_progress.setText
+        )
         actions.addWidget(self.inspect_character_voice)
         confirmation_layout.addLayout(actions)
         options_row = QHBoxLayout()

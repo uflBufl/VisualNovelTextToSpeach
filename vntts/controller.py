@@ -73,7 +73,8 @@ from vntts.generated_audio import (
     RouteDecision,
     SourceAudioRoute,
 )
-from vntts.history import DialogueHistory
+from vntts.history import DialogueHistory, DialogueHistoryEntry
+from vntts.history_playback import HistoryAudioPlayer
 from vntts.live import (
     AdaptiveSpeechBackpressure,
     AutoAdvanceAttempt,
@@ -116,10 +117,13 @@ from vntts.ocr import (
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import (
     PreparedPlayback,
+    ReplayAudio,
     SilentPlayback,
     outcome_for_prepared,
     prepare_silent_playback,
+    replay_audio_capture_context,
 )
+from vntts.playback_observer import observe_playback_start
 from vntts.pocket_model import pocket_model_ready
 from vntts.pregeneration_setup import PregenerationJobStore
 from vntts.prepared_audio_discovery import (
@@ -707,6 +711,7 @@ class AppController:
         self.live_scope_identification_diagnostics: dict[str, object] = {}
         self.allow_unscoped_live_reading = False
         self.history = history or DialogueHistory()
+        self.history_player = HistoryAudioPlayer()
         self.chapter_voice_preloader = (
             chapter_voice_preloader
             or ChapterVoicePreloader.load_optional(self.settings.story_index)
@@ -896,6 +901,18 @@ class AppController:
     def toggle_live(self) -> bool:
         return self.live_session.toggle()
 
+    def resume_paused_live(self) -> bool:
+        """Reopen capture for a paused session after modal audio has finished."""
+        reader = self.live_reader
+        if reader is None or self.shutdown_requested.is_set():
+            return False
+        self._start_live_sequence_session(preserve_position=True)
+        running = reader.start(paused=True)
+        if running:
+            self._set_backend_live_mode(True)
+            self.status_handler("Speech paused")
+        return running
+
     def stop_live(self) -> bool:
         return self.live_session.stop()
 
@@ -996,8 +1013,15 @@ class AppController:
     def preview_voice(self, character: str, text: str) -> _ExecutorFuture:
         return self.voice_assignments.preview(character, text)
 
-    def replay_dialog(self, character: str, text: str) -> _ExecutorFuture:
-        return self.voice_assignments.replay(character, text)
+    def play_history_audio(
+        self, clips: tuple[ReplayAudio, ...], cancelled: Event
+    ) -> bool:
+        return self.history_player.play(
+            clips,
+            volume=self.settings.output_volume_percent / 100,
+            playback_latency="low",
+            cancelled=cancelled,
+        )
 
     def get_capture_geometry(self) -> WindowGeometry | None:
         return self.diagnostics.capture_geometry()
@@ -2403,7 +2427,6 @@ class AppController:
         return UncertainFrameRecorder(self.settings.ocr_diagnostics_directory)
 
     def _finish_observed_dialogue(self) -> bool:
-        self.history.finish_current()
         with self.story_cursor_lock:
             if (
                 self.story_cursor is not None
@@ -2432,15 +2455,8 @@ class AppController:
         observed_character = character or "Narrator"
         character = self._canonical_observed_character(character, text, lease=lease)
         canonical_routing = False
-        canonical_event_changed = False
         early_prefix = False
         owned_confirmation = False
-        with self.story_cursor_lock:
-            previous_event_id = (
-                None
-                if self.story_cursor is None
-                else self.story_cursor.current_event_id
-            )
         sequence_observation = self._observe_live_sequence(character, text, lease=lease)
         with self.story_cursor_lock:
             if self._story_observation_lease_locked(lease).stale:
@@ -2481,9 +2497,7 @@ class AppController:
                     ):
                         if not self._mark_sequence_silence_locked(event.event_id):
                             return False
-                        if event.event_id != previous_event_id:
-                            self.history.finish_current()
-                        self._record_and_display_dialogue(character, text)
+                        self.dialog_handler(character or "Narrator", text)
                         return SilentDialogRoute(event.event_id)
                     line = self._canonical_sequence_line_locked(
                         None if event is None else event.event_id,
@@ -2506,13 +2520,10 @@ class AppController:
                     self.chapter_voice_preloader.select_line_id(line.line_id)
                     character, text = line.speaker, line.text
                     canonical_routing = True
-                    canonical_event_changed = event.event_id != previous_event_id
         self._prime_observed_voice(character, text)
         if not owned_confirmation:
             self._prime_likely_chapter_voice(character, text)
-        if canonical_event_changed:
-            self.history.finish_current()
-        self._record_and_display_dialogue(character, text)
+        self.dialog_handler(character or "Narrator", text)
         if early_prefix:
             return CanonicalDialogRoute(character, text)
         return (
@@ -2570,7 +2581,7 @@ class AppController:
             return False
         return True
 
-    def _start_live_sequence_session(self) -> None:
+    def _start_live_sequence_session(self, *, preserve_position: bool = False) -> None:
         with self.story_cursor_lock:
             self.sequence_admitted_chunks.clear()
             self.sequence_playback_leases.clear()
@@ -2580,7 +2591,7 @@ class AppController:
                 return
             if self.explicit_sequence_anchor_pending:
                 self.explicit_sequence_anchor_pending = False
-            else:
+            elif not preserve_position:
                 cursor.reset("live-session-started")
             self._publish_live_sequence_status()
 
@@ -3761,8 +3772,7 @@ class AppController:
     ) -> bool:
         self._prime_observed_voice(line.speaker, line.text)
         self._prime_likely_chapter_voice(line.speaker, line.text)
-        self.history.finish_current()
-        self._record_and_display_dialogue(line.speaker, line.text)
+        self.dialog_handler(line.speaker, line.text)
         reader = self.live_reader
         if reader is None:
             return False
@@ -3778,10 +3788,6 @@ class AppController:
                 else {}
             ),
         )
-
-    def _record_and_display_dialogue(self, character: str | None, text: str) -> None:
-        self.history.add(character, text)
-        self.dialog_handler(character or "Narrator", text)
 
     def _report_explicit_live_sequence_outcome(
         self,
@@ -5190,10 +5196,38 @@ class AppController:
                 "chunk_id": chunk.chunk_id,
             }
         )
-        try:
-            outcome = announcement_interruption or self._dispatch_live_playback(
-                reader, chunk, audio
+
+        part = chunk.dialogue_part
+        history_entry: DialogueHistoryEntry | None = None
+
+        def record_dialogue_start() -> None:
+            nonlocal history_entry
+            if part is None:
+                return
+            generation, ordinal = part
+            history_entry = self.history.add(
+                chunk.character,
+                chunk.text,
+                utterance=(chunk.run_id or reader.run_id, generation),
+                ordinal=ordinal,
             )
+
+        try:
+            with (
+                replay_audio_capture_context.set(part is not None),
+                observe_playback_start(record_dialogue_start),
+            ):
+                outcome = announcement_interruption or self._dispatch_live_playback(
+                    reader, chunk, audio
+                )
+            if (
+                history_entry is not None
+                and part is not None
+                and outcome.replay_audio is not None
+            ):
+                self.history.retain_audio(
+                    history_entry.id, part[1], outcome.replay_audio
+                )
             if outcome.successful and not reader.wait_until_playable(chunk):
                 outcome = replace(outcome, status=PlaybackStatus.INTERRUPTED)
             result = outcome.successful

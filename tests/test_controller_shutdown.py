@@ -307,7 +307,7 @@ class ControllerShutdownTest(unittest.TestCase):
         self.assertFalse(controller._prime_observed_voice("Narrator"))
 
         canonical.assert_not_called()
-        history.finish_current.assert_not_called()
+        history.add.assert_not_called()
         executor.submit.assert_not_called()
         backend.prime.assert_not_called()
 

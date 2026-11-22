@@ -1857,9 +1857,6 @@ class VoiceAssignmentComponent:
             text.strip(),
         )
 
-    def replay(self, character: str, text: str) -> _ExecutorFuture:
-        return self.preview(character, text)
-
 
 @dataclass(frozen=True)
 class DiagnosticsComponent:

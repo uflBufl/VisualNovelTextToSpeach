@@ -19,6 +19,7 @@ from vntts.pregeneration_audition_queue import (
     _wait_for_preview,
 )
 from vntts.settings import AppSettings
+from vntts.speech_worker import FatalSpeechWorkerError
 from vntts.support import PerformanceLog
 
 
@@ -205,6 +206,243 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             self.assertEqual(
                 session.peek(plan, group, group.candidates[0].source_id), preview
             )
+
+    def test_explicit_preview_joins_shared_startup_and_takes_the_next_render(self):
+        for same_key in (False, True):
+            with self.subTest(same_key=same_key), TemporaryDirectory() as directory:
+                plan, group, _, backend, owner = self.fixture(Path(directory))
+                session = owner.session()
+                source = group.candidates[0].source_id
+                selected_text = None if same_key else group.alternate_sample_text
+                entered, release, joined = Event(), Event(), Event()
+                progress = []
+
+                def factory(*_args, **kwargs):
+                    kwargs["startup_progress"]("Loading model weights...")
+                    entered.set()
+                    self.assertTrue(release.wait(5))
+                    kwargs["startup_progress"]("Model weights loaded.")
+                    return backend
+
+                def wait_for_preview(job, cancel_event):
+                    joined.set()
+                    return _wait_for_preview(job, cancel_event)
+
+                with (
+                    patch.object(
+                        owner.service, "backend_factory", side_effect=factory
+                    ) as start,
+                    ThreadPoolExecutor() as pool,
+                ):
+                    try:
+                        session.prefetch(plan, ((group, source, None),), automatic=True)
+                        self.assertTrue(entered.wait(5))
+                        self.assertEqual(
+                            session.preparation_progress(plan, group, source),
+                            "Loading model weights...",
+                        )
+                        with patch(
+                            "vntts.pregeneration_audition_queue._wait_for_preview",
+                            side_effect=wait_for_preview,
+                        ):
+                            future = pool.submit(
+                                session.generate,
+                                plan,
+                                group,
+                                source,
+                                text=selected_text,
+                                progress=progress.append,
+                            )
+                            self.assertTrue(joined.wait(5))
+                            self.assertEqual(progress[-1], "Loading model weights...")
+                            self.assertEqual(
+                                session.preparation_progress(
+                                    plan, group, source, text=selected_text
+                                ),
+                                "Loading model weights...",
+                            )
+                            release.set()
+                            preview = future.result(timeout=5)
+                    finally:
+                        release.set()
+                    self.wait(owner)
+                    start.assert_called_once()
+                self.assertIn("Model weights loaded.", progress)
+                self.assertEqual(
+                    preview.text, group.sample_text if same_key else selected_text
+                )
+                self.assertEqual(
+                    [request.text for request in backend.requests],
+                    [group.sample_text]
+                    if same_key
+                    else [selected_text, group.sample_text],
+                )
+                self.assertIsNone(session.preparation_progress(plan, group, source))
+                self.assertIsNone(session.preparation_error(plan, group, source))
+
+    def test_closing_background_owner_preserves_startup_for_waiting_preview(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            background, foreground = owner.session(), owner.session()
+            source = group.candidates[0].source_id
+            entered, release, joined = Event(), Event(), Event()
+
+            def factory(*_args, **kwargs):
+                entered.set()
+                self.assertTrue(release.wait(5))
+                self.assertFalse(kwargs["startup_cancellation"].is_set())
+                return backend
+
+            def wait_for_preview(job, cancel_event):
+                joined.set()
+                return _wait_for_preview(job, cancel_event)
+
+            with (
+                patch.object(
+                    owner.service, "backend_factory", side_effect=factory
+                ) as start,
+                ThreadPoolExecutor() as pool,
+            ):
+                try:
+                    background.prefetch(plan, ((group, source, None),), automatic=True)
+                    self.assertTrue(entered.wait(5))
+                    with patch(
+                        "vntts.pregeneration_audition_queue._wait_for_preview",
+                        side_effect=wait_for_preview,
+                    ):
+                        future = pool.submit(
+                            foreground.generate,
+                            plan,
+                            group,
+                            source,
+                            text=group.alternate_sample_text,
+                        )
+                        self.assertTrue(joined.wait(5))
+                        background.close()
+                        release.set()
+                        self.assertEqual(
+                            future.result(timeout=5).text, group.alternate_sample_text
+                        )
+                finally:
+                    release.set()
+                self.wait(owner)
+                start.assert_called_once()
+            self.assertEqual(
+                [request.text for request in backend.requests],
+                [group.alternate_sample_text],
+            )
+            self.assertIsNone(owner.service.lookup(plan, group, source))
+
+    def test_cancelling_waiting_preview_keeps_original_preparation(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            session = owner.session()
+            source = group.candidates[0].source_id
+            entered, release, joined, cancel = Event(), Event(), Event(), Event()
+            progress = []
+
+            def factory(*_args, **kwargs):
+                kwargs["startup_progress"]("Loading model weights...")
+                entered.set()
+                self.assertTrue(release.wait(5))
+                self.assertFalse(kwargs["startup_cancellation"].is_set())
+                kwargs["startup_progress"]("Model weights loaded.")
+                return backend
+
+            def wait_for_preview(job, cancel_event):
+                joined.set()
+                return _wait_for_preview(job, cancel_event)
+
+            with (
+                patch.object(
+                    owner.service, "backend_factory", side_effect=factory
+                ) as start,
+                ThreadPoolExecutor() as pool,
+            ):
+                try:
+                    session.prefetch(plan, ((group, source, None),), automatic=True)
+                    self.assertTrue(entered.wait(5))
+                    with patch(
+                        "vntts.pregeneration_audition_queue._wait_for_preview",
+                        side_effect=wait_for_preview,
+                    ):
+                        future = pool.submit(
+                            session.generate,
+                            plan,
+                            group,
+                            source,
+                            text=group.alternate_sample_text,
+                            cancel_event=cancel,
+                            progress=progress.append,
+                        )
+                        self.assertTrue(joined.wait(5))
+                        cancel.set()
+                        with self.assertRaises(VoiceAuditionCancelled):
+                            future.result(timeout=2)
+                        cancelled_progress = list(progress)
+                        release.set()
+                finally:
+                    release.set()
+                self.wait(owner)
+                start.assert_called_once()
+            self.assertEqual(progress, cancelled_progress)
+            self.assertEqual(
+                [request.text for request in backend.requests], [group.sample_text]
+            )
+            self.assertIsNotNone(session.peek(plan, group, source))
+
+    def test_waiting_preview_receives_shared_fatal_startup_failure_without_restart(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            session = owner.session()
+            source = group.candidates[0].source_id
+            entered, release, joined = Event(), Event(), Event()
+
+            def factory(*_args, **_kwargs):
+                entered.set()
+                self.assertTrue(release.wait(5))
+                raise FatalSpeechWorkerError("CUDA device-side assert triggered")
+
+            def wait_for_preview(job, cancel_event):
+                joined.set()
+                return _wait_for_preview(job, cancel_event)
+
+            with (
+                patch.object(
+                    owner.service, "backend_factory", side_effect=factory
+                ) as start,
+                ThreadPoolExecutor() as pool,
+            ):
+                try:
+                    session.prefetch(plan, ((group, source, None),), automatic=True)
+                    self.assertTrue(entered.wait(5))
+                    with patch(
+                        "vntts.pregeneration_audition_queue._wait_for_preview",
+                        side_effect=wait_for_preview,
+                    ):
+                        future = pool.submit(
+                            session.generate,
+                            plan,
+                            group,
+                            source,
+                            text=group.alternate_sample_text,
+                        )
+                        self.assertTrue(joined.wait(5))
+                        release.set()
+                        with self.assertRaisesRegex(
+                            VoiceAuditionError, "CUDA device-side assert"
+                        ):
+                            future.result(timeout=5)
+                finally:
+                    release.set()
+                self.wait(owner)
+                start.assert_called_once()
+            self.assertFalse(session.can_prepare_automatically())
+            self.assertEqual(backend.requests, [])
+            session.generate(plan, group, source, text=group.alternate_sample_text)
+            self.assertTrue(session.can_prepare_automatically())
 
     def test_queued_automatic_preparation_stops_for_reading_or_suspension(self):
         for suspend in (False, True):
@@ -448,6 +686,7 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             source = group.candidates[0].source_id
             entered, release, queued = Event(), Event(), Event()
             pending_text = "Another background phrase."
+            progress = []
 
             def block():
                 entered.set()
@@ -476,8 +715,19 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                             group,
                             source,
                             text=group.alternate_sample_text,
+                            progress=progress.append,
                         )
                         self.assertTrue(queued.wait(5))
+                        self.assertEqual(
+                            progress,
+                            ["Waiting for the current voice preview to finish..."],
+                        )
+                        self.assertEqual(
+                            session.preparation_progress(
+                                plan, group, source, text=group.alternate_sample_text
+                            ),
+                            progress[-1],
+                        )
                         release.set()
                         preview = future.result(timeout=5)
                 finally:
@@ -518,6 +768,92 @@ class VoiceAuditionQueueTest(unittest.TestCase):
             session.generate(plan, group, source)
             self.assertEqual(session.preparation_state(plan, group, source), "ready")
             self.assertIsNone(session.preparation_error(plan, group, source))
+
+    def test_fatal_worker_failure_stops_background_work_until_explicit_retry(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, backend, owner = self.fixture(Path(directory))
+            session = owner.session()
+            other_session = owner.session()
+            source = group.candidates[0].source_id
+            cached = session.generate(plan, group, source)
+            failed_text = group.alternate_sample_text
+            queued_text = "Another queued preview."
+            entered, release = Event(), Event()
+
+            def fail():
+                entered.set()
+                self.assertTrue(release.wait(5))
+                raise FatalSpeechWorkerError("CUDA device-side assert triggered")
+
+            backend.on_render = fail
+            try:
+                session.prefetch(
+                    plan,
+                    ((group, source, failed_text), (group, source, queued_text)),
+                    automatic=True,
+                )
+                self.assertTrue(entered.wait(5))
+                other_session.prefetch(
+                    plan, ((group, source, "Other window."),), automatic=True
+                )
+            finally:
+                release.set()
+            self.wait(owner)
+            self.assertEqual(len(backend.requests), 2)
+            self.assertEqual(
+                session.preparation_state(plan, group, source, text=failed_text),
+                "failed",
+            )
+            self.assertIn(
+                "CUDA device-side assert",
+                session.preparation_error(plan, group, source, text=failed_text),
+            )
+            self.assertFalse(session.preparing)
+            self.assertFalse(other_session.preparing)
+            self.assertFalse(session.can_prepare_automatically())
+            self.assertEqual(session.peek(plan, group, source), cached)
+            session.prefetch(plan, ((group, source, queued_text),), automatic=True)
+            with self.assertRaises(VoiceAuditionCancelled):
+                other_session.generate(
+                    plan, group, source, text=queued_text, automatic=True
+                )
+            self.wait(owner)
+            self.assertEqual(len(backend.requests), 2)
+            backend.on_render = None
+            retried = session.generate(plan, group, source, text=failed_text)
+            self.assertEqual(retried.text, failed_text)
+            self.assertTrue(session.can_prepare_automatically())
+            self.assertEqual(
+                session.preparation_state(plan, group, source, text=failed_text),
+                "ready",
+            )
+
+    def test_recoverable_failure_does_not_stop_other_background_previews(self):
+        with TemporaryDirectory() as directory:
+            plan, group, _, _, owner = self.fixture(Path(directory))
+            session = owner.session()
+            source = group.candidates[0].source_id
+            generate = owner.service.generate
+
+            def fail_first(plan, group, source, **kwargs):
+                if kwargs["text"] is None:
+                    raise VoiceAuditionError("Model unavailable")
+                return generate(plan, group, source, **kwargs)
+
+            with patch.object(owner.service, "generate", side_effect=fail_first):
+                session.prefetch(
+                    plan,
+                    (
+                        (group, source, None),
+                        (group, source, group.alternate_sample_text),
+                    ),
+                    automatic=True,
+                )
+                self.wait(owner)
+            self.assertTrue(session.can_prepare_automatically())
+            self.assertIsNotNone(
+                session.peek(plan, group, source, text=group.alternate_sample_text)
+            )
 
     def test_restore_cached_inventory_admits_audio_without_starting_model(self):
         with TemporaryDirectory() as directory:
