@@ -564,6 +564,8 @@ fn record_video(options: &Options, session: &mut Session) -> Result<serde_json::
             let height = metadata["height"].as_u64().ok_or("Invalid video height")? as u32;
             if count == 0 {
                 first_time = time;
+                session.metadata["first_source_pixel_format"] =
+                    metadata["source_pixel_format"].clone();
             }
             writer.write(width, height, &pixels, time)?;
             count += 1;

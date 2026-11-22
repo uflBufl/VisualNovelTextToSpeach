@@ -3,6 +3,8 @@ mod caf;
 #[cfg(windows)]
 mod capture;
 #[cfg(windows)]
+mod display_color;
+#[cfg(windows)]
 mod frame_buffer;
 #[cfg(windows)]
 mod media_writer;

@@ -74,6 +74,12 @@ def measure(hwnd: int, display: str, output: Path) -> None:
                 if recorder.poll() is None:
                     recorder.kill()
         report["recorder_exit_code"] = status
+        session_path = recording / "session.json"
+        if session_path.is_file():
+            metadata = json.loads(session_path.read_text(encoding="utf-8"))
+            report["recorder_source_pixel_format"] = metadata.get(
+                "first_source_pixel_format"
+            )
         import cv2
 
         video = cv2.VideoCapture(str(recording / "game.mp4"))

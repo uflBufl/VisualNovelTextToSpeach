@@ -79,14 +79,13 @@ Closed items, changed process identity, minimize, invalid dimensions and device
 errors invalidate cached pixels. Device-loss HRESULT is retained; reopen the
 session after the error. A first device-loss failure recreates the native source once; a second loss is explicit. Recovery clears cached pixels and preserves the session sequence, epoch and HRESULT/removal details on failure.
 
-Capture uses RGBA16F scRGB throughout the native pool and staging texture, then
-converts linear Rec.709 to SDR sRGB/BGRA8. SDR values retain their linear
-brightness before sRGB encoding; 80-nit scRGB white maps to SDR white. Pixels
-above SDR white are scaled together by their peak channel, preserving channel
-ratios instead of clipping channels independently. HDR highlight luminance
-above that white point is not retained in SDR output. Alpha is opaque. This is
-implemented color conversion, not evidence of HDR display/game correctness. SDR/HDR visual fidelity, OCR,
-latency and CPU cost have not been verified on Windows hardware.
+On an active SDR output, the frame pool and staging texture use BGRA8. The worker
+copies the encoded BGR values directly and sets alpha to opaque. It selects the
+format for the monitor containing the game window or for the selected display.
+Moving between outputs or changing the output color mode can recreate the pool.
+HDR and unidentified outputs use RGBA16F scRGB. This path encodes linear Rec.709
+as sRGB, mapping 80-nit white to SDR white and scaling brighter pixels by their
+peak channel. Both paths produce the same packed BGRA8 transport format.
 
 Real-game capture, occlusion, volume HUD, fullscreen, lifecycle/DPI transitions,
 device failures and packaged execution remain unverified on Windows. There is

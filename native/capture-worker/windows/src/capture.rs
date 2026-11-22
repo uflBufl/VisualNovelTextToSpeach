@@ -1,4 +1,5 @@
 use crate::{
+    display_color::DisplayColor,
     pixels,
     protocol::{Failure, Request, Target},
 };
@@ -30,8 +31,8 @@ use windows::{
             Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
             Dxgi::{Common::*, IDXGIDevice},
             Gdi::{
-                ClientToScreen, GetMonitorInfoW, MonitorFromPoint, HMONITOR, MONITORINFO,
-                MONITOR_DEFAULTTOPRIMARY,
+                ClientToScreen, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR,
+                MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
             },
         },
         System::{
@@ -325,6 +326,7 @@ struct Native {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     winrt_device: IDirect3DDevice,
+    color: DisplayColor,
     size: SizeInt32,
     closed: Arc<AtomicBool>,
     closed_token: Option<i64>,
@@ -380,6 +382,7 @@ unsafe fn run_source(
     let _ = ready.send(Ok(native.process_created));
     let (mut sequence, mut epoch) = (0u64, 1u64);
     let mut layout = None;
+    let mut next_color_check = Instant::now();
     let mut valid_after = clock()?;
     let mut next_copy = Instant::now();
     let process_created = native.process_created;
@@ -393,6 +396,7 @@ unsafe fn run_source(
                 match native.geometry() {
                     Ok(current) => {
                         if layout.as_ref() != Some(&current) {
+                            next_color_check = Instant::now();
                             epoch += 1;
                             valid_after = clock()?;
                             let mut state = shared.0.lock().unwrap();
@@ -426,17 +430,22 @@ unsafe fn run_source(
                 if let Some(frame) = latest {
                     let size = frame.ContentSize()?;
                     pixels::dimensions(size.Width, size.Height)?;
-                    if size != native.size {
+                    let prior_format = native.color.format();
+                    let now = Instant::now();
+                    let format = if now >= next_color_check {
+                        next_color_check = now + Duration::from_secs(1);
+                        native.color.refresh(target_monitor(&target))
+                    } else {
+                        prior_format
+                    };
+                    if size != native.size || format != prior_format {
                         frame.Close()?;
                         shared.0.lock().unwrap().latest = None;
                         epoch += 1;
                         valid_after = clock()?;
-                        native.pool.Recreate(
-                            &native.winrt_device,
-                            DirectXPixelFormat::R16G16B16A16Float,
-                            2,
-                            size,
-                        )?;
+                        native
+                            .pool
+                            .Recreate(&native.winrt_device, format, 2, size)?;
                         native.size = size;
                         continue;
                     }
@@ -476,7 +485,13 @@ unsafe fn run_source(
                             }
                             Target::Display { .. } => ("display", None, None),
                         };
-                        let metadata = json!({"backend":"windows_graphics_capture","scope":scope,"session_id":id,"window_id":window_id,"pid":pid,"width":size.Width,"height":size.Height,"row_stride":size.Width*4,"pixel_format":"BGRA8","content_rect":content,"desktop_bounds":surface,"frame_sequence":sequence,"source_time":source_time,"acquired_at":clock()?,"layout_epoch":epoch});
+                        let source_pixel_format =
+                            if format == DirectXPixelFormat::B8G8R8A8UIntNormalized {
+                                "BGRA8"
+                            } else {
+                                "RGBA16F"
+                            };
+                        let metadata = json!({"backend":"windows_graphics_capture","scope":scope,"session_id":id,"window_id":window_id,"pid":pid,"width":size.Width,"height":size.Height,"row_stride":size.Width*4,"pixel_format":"BGRA8","source_pixel_format":source_pixel_format,"content_rect":content,"desktop_bounds":surface,"frame_sequence":sequence,"source_time":source_time,"acquired_at":clock()?,"layout_epoch":epoch});
                         let mut state = shared.0.lock().unwrap();
                         state.replace_live(
                             Some(Frame {
@@ -596,12 +611,9 @@ impl Native {
             .ok_or_else(|| Failure::new("native_error", "D3D11 context was not returned"))?;
         let dxgi: IDXGIDevice = device.cast()?;
         let winrt_device: IDirect3DDevice = CreateDirect3D11DeviceFromDXGIDevice(&dxgi)?.cast()?;
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &winrt_device,
-            DirectXPixelFormat::R16G16B16A16Float,
-            2,
-            size,
-        )?;
+        let color = DisplayColor::new(target_monitor(&target));
+        let pool =
+            Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, color.format(), 2, size)?;
         let session = pool.CreateCaptureSession(&item)?;
         session.SetIsCursorCaptureEnabled(false)?;
         // Keep the OS default capture border; never request borderless capture access.
@@ -625,6 +637,7 @@ impl Native {
             device,
             context,
             winrt_device,
+            color,
             size,
             closed,
             closed_token: None,
@@ -656,7 +669,13 @@ impl Native {
         let texture: ID3D11Texture2D = access.GetInterface()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc);
-        if desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT
+        let bgra = self.color.format() == DirectXPixelFormat::B8G8R8A8UIntNormalized;
+        let expected = if bgra {
+            DXGI_FORMAT_B8G8R8A8_UNORM
+        } else {
+            DXGI_FORMAT_R16G16B16A16_FLOAT
+        };
+        if desc.Format != expected
             || desc.Width < self.size.Width as u32
             || desc.Height < self.size.Height as u32
         {
@@ -692,11 +711,16 @@ impl Native {
         let result = match length {
             Some(length)
                 if !mapped.pData.is_null()
-                    && mapped.RowPitch >= desc.Width * 8
+                    && mapped.RowPitch >= desc.Width * if bgra { 4 } else { 8 }
                     && length <= 1024 * 1024 * 1024 =>
             {
                 let bytes = std::slice::from_raw_parts(mapped.pData as *const u8, length);
-                pixels::convert_rgba16f(
+                let read = if bgra {
+                    pixels::copy_bgra8
+                } else {
+                    pixels::convert_rgba16f
+                };
+                read(
                     bytes,
                     mapped.RowPitch as usize,
                     desc.Width as usize,
@@ -743,6 +767,15 @@ pub fn selected_window_size(
         result
     }
 }
+unsafe fn target_monitor(target: &Target) -> HMONITOR {
+    match *target {
+        Target::Window { window_id, .. } => {
+            MonitorFromWindow(HWND(window_id as usize as *mut _), MONITOR_DEFAULTTONEAREST)
+        }
+        Target::Display { display_id } => monitor(display_id),
+    }
+}
+
 unsafe fn monitor(id: i64) -> HMONITOR {
     if id == 0 {
         MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY)

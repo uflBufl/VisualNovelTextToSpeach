@@ -113,6 +113,38 @@ pub fn client_rect(
     Ok([x, y, client[2], client[3]])
 }
 
+/// Copy mapped SDR BGRA8 rows without changing their encoded color values.
+pub fn copy_bgra8(
+    input: &[u8],
+    pitch: usize,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, Failure> {
+    let (width, height) = dimensions(
+        i32::try_from(width).unwrap_or(-1),
+        i32::try_from(height).unwrap_or(-1),
+    )?;
+    let row_bytes = width * 4;
+    if pitch < row_bytes
+        || pitch
+            .checked_mul(height)
+            .is_none_or(|size| input.len() < size)
+    {
+        return Err(Failure::new(
+            "invalid_stride",
+            "Mapped BGRA8 texture has invalid RowPitch or length",
+        ));
+    }
+    let mut output = vec![0; row_bytes * height];
+    for (y, row) in output.chunks_exact_mut(row_bytes).enumerate() {
+        row.copy_from_slice(&input[y * pitch..y * pitch + row_bytes]);
+        for pixel in row.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+    }
+    Ok(output)
+}
+
 /// scRGB linear Rec.709 (1.0 = 80 nit) to SDR sRGB, preserving SDR contrast.
 pub fn convert_rgba16f(
     input: &[u8],
@@ -191,6 +223,51 @@ mod tests {
             .iter()
             .flat_map(|value| [*value, *value, *value, 255])
             .collect()
+    }
+
+    #[test]
+    fn bgra8_copy_preserves_every_encoded_gray_value() {
+        let input = gray_pixels(&(0..=255).collect::<Vec<_>>());
+        assert_eq!(copy_bgra8(&input, input.len(), 256, 1).unwrap(), input);
+    }
+
+    #[test]
+    fn bgra8_copy_preserves_channel_order_and_makes_alpha_opaque() {
+        let input = [
+            255, 0, 0, 0, 0, 255, 0, 127, 0, 0, 255, 255, 254, 253, 252, 1,
+        ];
+        assert_eq!(
+            copy_bgra8(&input, input.len(), 4, 1).unwrap(),
+            [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 254, 253, 252, 255]
+        );
+    }
+
+    #[test]
+    fn bgra8_copy_skips_row_padding() {
+        let input = [
+            1, 2, 3, 0, 4, 5, 6, 1, 99, 99, 99, 99, 7, 8, 9, 2, 10, 11, 12, 3, 99, 99, 99, 99,
+        ];
+        assert_eq!(
+            copy_bgra8(&input, 12, 2, 2).unwrap(),
+            [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
+        );
+    }
+
+    #[test]
+    fn bgra8_copy_rejects_invalid_dimensions_stride_and_length() {
+        for (pitch, width, height) in [
+            (4, 0, 1),
+            (4, 1, 0),
+            (4, usize::MAX, 1),
+            (4, 1, usize::MAX),
+            (4, 8192, 4097),
+            (3, 1, 1),
+            (4, 1, 2),
+            (usize::MAX, 1, 2),
+        ] {
+            assert!(copy_bgra8(&[0; 4], pitch, width, height).is_err());
+        }
+        assert!(copy_bgra8(&[0; 7], 8, 1, 1).is_err());
     }
 
     #[test]

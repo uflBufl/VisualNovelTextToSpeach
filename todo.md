@@ -123,13 +123,12 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       On Windows10, exercise FTS5/RapidFuzz and indexed query/cancellation;
       shared Python logic and dependency collection are not native acceptance.
 
-- [ ] **REC-12-01 - Locate and fix the brightness gain in Windows SDR recording.**
-      Matching static patches in a game screenshot and decoded MP4 show about
-      1.9x linear-light gain with Windows HDR reported off. On the game's
-      display, run `uv run python -m scripts.windows_sdr_probe` and collect
-      `report.json`. Compare the expected ramp, captured RGB, and decoded
-      MP4 values. If the ramp matches at both stages, compare a static game
-      scene before encoding. Verify the fix against the reproducing source.
+- [ ] **REC-12-01 - Preserve SDR levels in Windows native capture.**
+      The Windows 10 grey ramp with HDR reported off shows 128 becoming 176
+      before encoding and 175 in the MP4. Inputs 192 and 224 both clip to 255.
+      Rebuild the Windows worker and run `uv run python -m scripts.windows_sdr_probe`
+      on the same monitor. Verify the recorder reports BGRA8, capture preserves
+      the reference ramp, and the decoded 192, 224 and white patches remain distinct.
 
 - [ ] **Deferred document and new-game reading layouts.**
       Architecture: [text-reading-architecture.md](docs/text-reading-architecture.md).
