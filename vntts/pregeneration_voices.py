@@ -1023,7 +1023,8 @@ class VoicePlanStore:
                         variant_key=binding.variant_key,
                         rollback=rollback,
                     )
-        for binding in self.voice_library.bindings():
+        snapshot = self.voice_library.read_snapshot(snapshot)
+        for binding in snapshot.bindings():
             _raise_if_cancelled(cancellation)
             if (
                 binding.route == "narrator"
@@ -1188,10 +1189,15 @@ class VoicePlanStore:
                 linked_names=linked_names,
                 archived_sources=archived_sources,
             )
-        if self.voice_library is not None:
+        if self.voice_library is not None and library_snapshot is not None:
             self.voice_library.discover_many(
                 _group_voice_discoveries(
-                    registry, character, variant_key, candidate_inventory, cancellation
+                    registry,
+                    character,
+                    variant_key,
+                    candidate_inventory,
+                    library_snapshot,
+                    cancellation,
                 ),
                 rollback=rollback,
             )
@@ -1404,11 +1410,16 @@ def _group_voice_discoveries(
     character: str,
     variant_key: str | None,
     candidates: Sequence[VoiceCandidate],
+    snapshot: VoiceLibraryReadSnapshot,
     cancellation: Cancellation | None,
 ) -> Iterator[VoiceDiscovery]:
+    recorded = {
+        alternative.sha256
+        for alternative in snapshot.alternatives(character, variant_key=variant_key)
+    }
     for available in candidates:
         _raise_if_cancelled(cancellation)
-        for discovery in voice_source_discoveries(
+        discoveries = voice_source_discoveries(
             registry,
             character,
             available.source_id,
@@ -1416,9 +1427,18 @@ def _group_voice_discoveries(
             method="automatic",
             evidence={"recommendation": available.recommendation},
             algorithm="voice-plan-v1",
+        )
+        for discovery, checksum in zip(
+            discoveries, available.reference_sha256s, strict=True
         ):
             _raise_if_cancelled(cancellation)
-            yield discovery
+            if (
+                checksum in recorded
+                and Path(discovery.reference).suffix.casefold() == ".wav"
+                and snapshot.has_verified_reference(checksum)
+            ):
+                continue
+            yield replace(discovery, expected_sha256=checksum)
 
 
 def _load_bound_story(job: PregenerationJob) -> StoryIndexDocument:
@@ -1489,6 +1509,8 @@ def _materialize_voice_catalog(
     identity: list[tuple[str, str, list[str]] | tuple[str, str, list[str], str]] = []
     root = job_store.directory_for(job.job_id)
     root.mkdir(parents=True, exist_ok=True)
+    reuse_catalog = any(root.glob("voice-catalog-*/manifest.json"))
+    pending_references: list[tuple[CharacterVoice, Path, str, str]] = []
     with staged_directory(root, prefix=".voice-catalog-") as staging:
         for voice in sorted(
             registry.unique_voices(), key=lambda value: value.character.casefold()
@@ -1502,10 +1524,13 @@ def _materialize_voice_catalog(
                 checksum = hashlib.sha256(payload).hexdigest()
                 suffix = reference.suffix or ".wav"
                 relative = f"references/{checksum}{suffix}"
-                target = staging / relative
-                if not target.is_file():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(payload)
+                if reuse_catalog:
+                    pending_references.append((voice, reference, relative, checksum))
+                else:
+                    target = staging / relative
+                    if not target.is_file():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(payload)
                 del payload
                 references.append(relative)
                 checksums.append(checksum)
@@ -1531,6 +1556,19 @@ def _materialize_voice_catalog(
         _raise_if_cancelled(cancellation)
         if manifest.is_file():
             return manifest
+        for voice, reference, relative, checksum in pending_references:
+            _raise_if_cancelled(cancellation)
+            target = staging / relative
+            if target.is_file():
+                continue
+            payload = read_voice_reference_bytes(voice, reference)
+            if hashlib.sha256(payload).hexdigest() != checksum:
+                raise PregenerationVoiceError(
+                    "Voice reference changed while the catalog was prepared"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            del payload
         write_voice_manifest(
             staging / "manifest.json", {"version": 2, "voices": voices}
         )

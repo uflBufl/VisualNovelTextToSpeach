@@ -119,7 +119,7 @@ class CharacterVoiceRegistry:
     ) -> CharacterVoiceRegistry:
         """Project captured data using the original manifest's reference root."""
         manifest_path = Path(manifest_path).expanduser().resolve()
-        entries = voice_manifest_entries_at_path(manifest, manifest_path)
+        entries = validate_voice_manifest(manifest, allow_legacy=True)
         return cls._from_validated_manifest(manifest, entries, manifest_path)
 
     @classmethod

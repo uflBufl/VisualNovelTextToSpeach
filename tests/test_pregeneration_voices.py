@@ -213,6 +213,77 @@ class VoicePlanStoreTest(unittest.TestCase):
                 len(CharacterVoiceRegistry.from_file(manifest).unique_voices()), 3
             )
 
+    def test_existing_voice_catalog_rechecks_sources_without_rewriting_references(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            manifest = _materialize_voice_catalog(jobs, job, registry)
+            with (
+                patch(
+                    "vntts.pregeneration_voices.read_voice_reference_bytes",
+                    wraps=read_voice_reference_bytes,
+                ) as read_reference,
+                patch.object(Path, "write_bytes") as write_bytes,
+            ):
+                reused = _materialize_voice_catalog(jobs, job, registry)
+            self.assertEqual(reused, manifest)
+            self.assertEqual(read_reference.call_count, 3)
+            write_bytes.assert_not_called()
+            self.assertEqual(
+                list(jobs.directory_for(job.job_id).glob(".voice-catalog-*")), []
+            )
+
+            reference = registry.unique_voices()[0].references[0]
+            changed = reference.read_bytes() + b"changed"
+            reference.write_bytes(changed)
+            refreshed = _materialize_voice_catalog(jobs, job, registry)
+            self.assertNotEqual(refreshed, manifest)
+            self.assertTrue(manifest.is_file())
+            changed_checksum = hashlib.sha256(changed).hexdigest()
+            self.assertEqual(
+                (
+                    refreshed.parent / "references" / f"{changed_checksum}.wav"
+                ).read_bytes(),
+                changed,
+            )
+
+    def test_changed_reference_during_catalog_refresh_prevents_publication(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            manifest = _materialize_voice_catalog(jobs, job, registry)
+            reference = registry.unique_voices()[0].references[0]
+            reference.write_bytes(reference.read_bytes() + b"changed")
+            reads = 0
+
+            def change_after_fingerprint(voice, path):
+                nonlocal reads
+                reads += 1
+                payload = read_voice_reference_bytes(voice, path)
+                if reads == 3:
+                    reference.write_bytes(reference.read_bytes() + b"changed again")
+                return payload
+
+            with (
+                patch(
+                    "vntts.pregeneration_voices.read_voice_reference_bytes",
+                    side_effect=change_after_fingerprint,
+                ),
+                self.assertRaisesRegex(PregenerationVoiceError, "changed while"),
+            ):
+                _materialize_voice_catalog(jobs, job, registry)
+            self.assertEqual(
+                list(
+                    jobs.directory_for(job.job_id).glob("voice-catalog-*/manifest.json")
+                ),
+                [manifest],
+            )
+            self.assertEqual(
+                list(jobs.directory_for(job.job_id).glob(".voice-catalog-*")), []
+            )
+
     def test_cancellation_during_catalog_read_prevents_publication(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -305,9 +376,18 @@ class VoicePlanStoreTest(unittest.TestCase):
                 group for group in first.groups if group.character == "Rhiannon"
             )
             binding = library.binding("Rhiannon")
-            with patch(
-                "vntts.pregeneration_voices.record_background_operation"
-            ) as record:
+            with (
+                patch(
+                    "vntts.pregeneration_voices.record_background_operation"
+                ) as record,
+                patch.object(
+                    library,
+                    "_discovery_payload",
+                    side_effect=AssertionError(
+                        "Reopening re-imported a known reference"
+                    ),
+                ),
+            ):
                 second = planner.create(
                     job,
                     AppSettings(),

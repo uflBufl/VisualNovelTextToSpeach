@@ -938,6 +938,12 @@ class VoiceLibraryReadSnapshot(VoiceLibrary):
             self._validate_blob(checksum) for checksum in binding.source_sha256s
         )
 
+    def has_verified_reference(self, checksum: str) -> bool:
+        if checksum not in self._recorded or not self._blob_path(checksum).exists():
+            return False
+        self._validate_blob(checksum)
+        return True
+
 
 def _role_identity(role: object, variant_key: object) -> tuple[str, str, str | None]:
     if not isinstance(role, str) or not (display_role := role.strip()):

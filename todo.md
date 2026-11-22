@@ -143,14 +143,7 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 
 ## Slow voice selection and story preparation
 
-- [ ] Reduce the wait when reopening the voice plan. The November 22 Windows
-      support export measured 14.7 seconds on both attempts. Building the
-      voice inventory took 5.8–6.2 seconds and resolving the groups took
-      3.8–3.9 seconds even when every group reused its library snapshot.
-      Profile catalog construction and repeated candidate hash/duration work
-      on the same selection, then remove the dominant redundant work. Compare
-      reopen time and verify the same groups, references and saved choices.
-- [ ] Reduce the wait for game voices in the voice editor. The same export
+- [ ] Reduce the wait for game voices in the voice editor. The November 22 Windows support export
       measured 12.4 seconds to list characters and 10.3 seconds to prepare a
       selected character's references. Isolate index loading from candidate
       extraction and reuse unchanged results on reopening the same character.
