@@ -580,6 +580,7 @@ class LiveDialogReader:
         self.current_chunk_pipeline_origins: dict[str, float | None] | None = None
         self.last_spoken_chunk: SpeechChunk | None = None
         self.last_completed_chunk: SpeechChunk | None = None
+        self._playback_audio: tuple[str, str, str] = ("", "", "")
         self.reading_notice: tuple[str, int, int, str] | None = None
         self.output_interrupted_chunk: SpeechChunk | None = None
         self.output_interrupted_generation: int | None = None
@@ -726,11 +727,15 @@ class LiveDialogReader:
                 chunk = self.output_interrupted_chunk
             elif self.current_chunk is None:
                 chunk = self.last_completed_chunk
+            playback_id, source, voice = self._playback_audio
+            has_audio = chunk is not None and chunk.playback_id == playback_id
             return {
                 "paused": self.paused,
                 "speaking": self.current_chunk is not None,
                 "speaking_character": chunk.character if chunk else "",
                 "speaking_text": chunk.text if chunk else "",
+                "audio_source": source if has_audio else "",
+                "playback_voice": voice if has_audio else "",
                 "reading_notice": (
                     self.reading_notice[3]
                     if self.reading_notice is not None
@@ -745,6 +750,11 @@ class LiveDialogReader:
                 "replayable": replayable,
                 "output_interrupted": interrupted,
             }
+
+    def set_playback_audio(self, chunk: SpeechChunk, source: str, voice: str) -> None:
+        with self.state_lock:
+            if self.current_chunk is chunk and self.is_playback_current(chunk):
+                self._playback_audio = (chunk.playback_id, source, voice)
 
     def set_reading_notice(self, generation: int, message: str) -> None:
         with self.state_lock:

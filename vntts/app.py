@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -418,9 +419,11 @@ class SettingsDialog(QDialog):
             [str, str], tuple[DialogRegion | None, DialogRegion | None]
         ]
         | None = None,
+        moss_runtime_action: QAction | None = None,
     ) -> None:
         super().__init__(parent)
         self.remembered_capture_areas = remembered_capture_areas
+        self.moss_runtime_action = moss_runtime_action
         self.voice_library = voice_library or application_voice_library()
         self.dialogue_region = dialogue_region
         self.story_region = story_region
@@ -965,6 +968,16 @@ class SettingsDialog(QDialog):
         speech_form = QFormLayout()
         self.speech_form = speech_form
         speech_form.addRow("Live reading engine", self.speech_backend)
+        if self.moss_runtime_action is not None:
+            self.moss_runtime_button = QToolButton()
+            self.moss_runtime_button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            )
+            self.moss_runtime_button.setDefaultAction(self.moss_runtime_action)
+            self.moss_runtime_button.setAccessibleName("Load or unload OpenMOSS model")
+            speech_form.addRow("OpenMOSS runtime", self.moss_runtime_button)
+            self.moss_runtime_action.changed.connect(self._update_moss_runtime_controls)
+            self._update_moss_runtime_controls()
         speech_form.addRow("Offline preparation engine", self.offline_speech_backend)
         speech_form.addRow("Offline preparation model", self.offline_tts_model)
         self.narrator_voice = QLabel()
@@ -1037,6 +1050,12 @@ class SettingsDialog(QDialog):
         speech_form.addRow("", self.pocket_setup)
         speech_form.addRow("", self.pocket_terms_label)
         return speech_form
+
+    def _update_moss_runtime_controls(self) -> None:
+        if self.moss_runtime_action is not None:
+            self.speech_form.setRowVisible(
+                self.moss_runtime_button, self.moss_runtime_action.isVisible()
+            )
 
     def _build_playback_form(
         self,
@@ -2581,7 +2600,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
         self.dashboard.compact_requested.connect(self.show_compact_controls)
-        self.dashboard.moss_runtime_requested.connect(self.toggle_moss_runtime)
+        self.dashboard.check_dialogue_area_requested.connect(self.calibrate)
         self.dashboard.quit_requested.connect(self.request_quit)
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
@@ -2728,7 +2747,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _refresh_speech_runtime(self) -> None:
         self._refresh_reading_diagnostic_status()
-        self._apply_runtime_control_state(self._runtime_control_state())
+        reading = self._runtime_control_state()
+        self._apply_runtime_control_state(reading)
         self.dashboard.set_speech_runtime(self._speech_runtime_label())
         loaded = self.moss_runtime.loaded
         label = (
@@ -2738,10 +2758,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if loaded
             else "Load OpenMOSS"
         )
-        self.dashboard.moss_runtime_button.setText(label)
         self.moss_runtime_action.setText(label)
         visible = self.settings.speech_backend == "moss-tts"
-        self.dashboard.moss_runtime_button.setVisible(visible)
         self.moss_runtime_action.setVisible(visible)
         preparing = bool(
             self.pregeneration_dialog is not None
@@ -2750,12 +2768,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         enabled = not (
             self.moss_runtime_runner.active
             or self._controller_busy
-            or self.controller.is_live_running is True
+            or reading.active
+            or reading.transition is not None
             or preparing
             or self._shutting_down
         )
-        self.dashboard.moss_runtime_button.setEnabled(enabled)
         self.moss_runtime_action.setEnabled(enabled)
+        self.moss_runtime_action.setToolTip(
+            "Load or release the model for the saved live reading engine."
+            if enabled
+            else "Wait for model loading to finish."
+            if self.moss_runtime_runner.active
+            else "Stop reading and finish the current operation to manage OpenMOSS."
+        )
 
     def _voice_audition_background_available(self) -> bool:
         dialog = self.pregeneration_dialog
@@ -2770,15 +2795,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def toggle_moss_runtime(self) -> None:
-        if self.settings.speech_backend != "moss-tts" or self._shutting_down:
+        self._refresh_speech_runtime()
+        if (
+            self.settings.speech_backend != "moss-tts"
+            or not self.moss_runtime_action.isEnabled()
+        ):
             return
         if self.moss_runtime.loaded:
             self.voice_auditions.suspend()
             self.moss_runtime.unload()
             self.set_status("OpenMOSS unloaded. It will load again on the next speech.")
             self._refresh_speech_runtime()
-            return
-        if self.moss_runtime_runner.active:
             return
         download = OnboardingDiagnostics().moss_installation_space(self.settings)
         if download is not None:
@@ -2796,7 +2823,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else f"{remaining / 1_000_000:.1f} MB"
             )
             answer = QMessageBox.question(
-                self.dashboard,
+                QApplication.activeModalWidget() or self.dashboard,
                 "Install OpenMOSS",
                 f"OpenMOSS needs a {amount} download before it can load. "
                 "Download and install it now?",
@@ -2821,6 +2848,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             startup_progress=self.signals.status_changed.emit,
             allow_download=download is not None,
         )
+        self._refresh_speech_runtime()
 
     def _moss_runtime_finished(
         self, _backend: object | None, error: Exception | None
@@ -3528,9 +3556,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         selected, accepted = QInputDialog.getItem(
             self.dashboard,
-            "Set story position / resync",
-            "Choose the dialogue box currently visible in the game. This stops "
-            "stale queued speech and makes the selected event authoritative.",
+            "Choose story line",
+            "Choose the line on screen. Reading will continue from that position.",
             labels,
             current_index,
             False,
@@ -4849,6 +4876,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         story_region = story_region if isinstance(story_region, DialogRegion) else None
         dialog = SettingsDialog(
             self.settings,
+            moss_runtime_action=self.moss_runtime_action,
             voice_library=self.controller.voice_library,
             dialogue_region=dialogue_region,
             remembered_capture_areas=remembered_capture_areas(
@@ -6071,6 +6099,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_support_center(self) -> None:
         if self.support_dialog is None:
             self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
+            self.support_dialog.reading_report_provider = self.dashboard.reading_report
             self.support_dialog.reading_status_provider = lambda: (
                 self.reading_diagnostic_session.status()
                 if self.reading_diagnostic_session
@@ -6604,6 +6633,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             speaking=bool(snapshot.get("speaking", False)),
             speaking_character=str(snapshot.get("speaking_character") or ""),
             speaking_text=str(snapshot.get("speaking_text") or ""),
+            audio_source=str(snapshot.get("audio_source") or ""),
+            playback_voice=str(snapshot.get("playback_voice") or ""),
             reading_notice=str(snapshot.get("reading_notice") or ""),
             loading_voice=bool(
                 self._controller_busy

@@ -155,8 +155,8 @@ def readable_model_name(model: object | None) -> str:
         "xtts_v2": "XTTS v2",
     }
     if str(model).startswith("openmoss-cpp:"):
-        return "OpenMOSS (exact model in details)"
-    return aliases.get(name, name if len(name) <= 70 else "Custom model (see details)")
+        return "OpenMOSS"
+    return aliases.get(name, name if len(name) <= 70 else "Custom model")
 
 
 def _recorded_playback_labels(source: str) -> tuple[str, str]:
@@ -187,7 +187,15 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
     if source.startswith("Original game audio"):
         return "Original game voice", "Played by the game · no generation"
     if source.startswith("Original game cue"):
-        return "See playback details", "Game sound, followed by speech"
+        _, separator, following = source.partition(", then ")
+        if separator:
+            voice, audio = playback_labels(following, voice)
+            return voice, f"Game sound · {audio}"
+        return voice, "Game sound, followed by speech"
+    if source.startswith("Authorized live fallback "):
+        return voice, "New speech for this line"
+    if source in {"Authorized silent audio event omission", "No speech (symbols)"}:
+        return "None", "Silent line"
     if "memory cache" in source or "persistent cache" in source:
         return voice, "Saved preview or cached speech · no generation"
     if source.startswith(("MOSS ", "Live TTS (")):
@@ -196,7 +204,7 @@ def playback_labels(source: str, voice: str) -> tuple[str, str]:
         ) else "New speech"
     if source in {"Not selected", ""}:
         return voice, "No playback information for this capture"
-    return voice, "Audio source: see details"
+    return voice, source
 
 
 def playback_status_label(message: str) -> str:

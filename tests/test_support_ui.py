@@ -101,6 +101,55 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog.close()
         dialog.deleteLater()
 
+    def test_copy_reading_report_uses_current_context_on_every_click(self):
+        dialog = SupportCenterDialog(FakeEventLog())
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        report = "Reading stopped\nGame: fixture"
+        dialog.reading_report_provider = lambda: report
+        dialog.copy_reading_report_button.click()
+        self.assertEqual(self.application.clipboard().text(), report)
+        report = "Speaking\nMira: A new line.\nAudio: prepared"
+        dialog.copy_reading_report_button.click()
+        self.assertEqual(self.application.clipboard().text(), report)
+        self.assertIn(
+            "review it before sharing", dialog.copy_reading_report_button.toolTip()
+        )
+
+    def test_reading_report_expands_refreshes_and_preserves_unchanged_selection(self):
+        dialog = SupportCenterDialog(FakeEventLog())
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        report = "Current dialogue\nMira: " + "complete dialogue text " * 40
+        dialog.reading_report_provider = lambda: report
+        dialog.resize(620, 600)
+        dialog.show()
+        self.application.processEvents()
+        self.assertTrue(dialog.reading_report_view.isHidden())
+        dialog.reading_report_toggle.click()
+        self.application.processEvents()
+        view = dialog.reading_report_view
+        self.assertTrue(view.isVisible())
+        self.assertEqual(view.toPlainText(), report)
+        cursor = view.textCursor()
+        cursor.setPosition(2)
+        cursor.setPosition(10, QTextCursor.MoveMode.KeepAnchor)
+        view.setTextCursor(cursor)
+        selection = cursor.selectedText()
+        dialog.refresh()
+        self.assertEqual(view.textCursor().selectedText(), selection)
+        self.assertEqual(dialog.body_scroll.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(view.horizontalScrollBar().maximum(), 0)
+        report = "Speaking\nAda: The current line.\nStory: fixture:2"
+        dialog.refresh()
+        self.assertEqual(view.toPlainText(), report)
+        dialog.reading_report_toggle.click()
+        report = "Reading stopped"
+        dialog.refresh()
+        self.assertNotEqual(view.toPlainText(), report)
+        dialog.reading_report_toggle.click()
+        self.assertEqual(view.toPlainText(), report)
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

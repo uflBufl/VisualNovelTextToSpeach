@@ -7238,6 +7238,21 @@ class MainTest(unittest.TestCase):
             errors[0].__cause__, controller.capture_target.get_geometry.side_effect
         )
 
+    def test_line_audio_uses_scoped_voice_at_dispatch(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        reader = Mock()
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(PlaybackStatus.COMPLETED, 10.0)
+        )
+        chunk = SpeechChunk(2, "Ada", "Last train.")
+        prepared = replace(
+            controller.speech_backend.prepared, voice_label="Station announcer"
+        )
+        controller._dispatch_live_playback(reader, chunk, prepared)
+        reader.set_playback_audio.assert_called_once_with(
+            chunk, controller._describe_audio_source(prepared), "Station announcer"
+        )
+
     def test_live_underflow_temporarily_disables_then_restores_prefetch(self):
         statuses = []
         now = [0.0]

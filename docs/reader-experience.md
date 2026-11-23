@@ -28,7 +28,7 @@ Reading
 [Play] [Pause]   [ Reverse: 1999       v ]
 Reading stopped
 
-[Read once] [Compact]       [Details]
+[Read once] [History] [Compact]
 [ ] Auto advance after speech
 ```
 
@@ -39,12 +39,13 @@ and restarts the interrupted line. Stop remains available while paused.
 Selecting another source ends the old session and its queued speech before
 binding the new target. Opening and dismissing the picker keeps reading.
 
-Show the one-shot read action, Compact, Details and the auto-advance setting
+Show the one-shot read action, History, Compact and the auto-advance setting
 directly below the primary controls. Reflect the saved choice and key binding.
 Changing a default for new installations is a separate product decision.
 Show the speaker and selected line on Reading as soon as dialogue arrives.
 Keep the line visible while paused or waiting, and clear it when the game changes.
-Raw recognition and audio routing are available in Details.
+The information button on a line shows its voice and audio source. If recognition
+stays uncertain, show the observed text and a shortcut to check the dialogue area.
 Voice editing, chapter preparation and technical diagnostics retain their own
 entry points. The launch screen does not need copies of their controls.
 
@@ -91,8 +92,8 @@ entry points. The launch screen does not need copies of their controls.
   and keeps the session running. Keep Stop reachable without global hotkeys.
 - Keep **Read current line once** as a secondary action when available. Keep
   manual indexed reading directly reachable when it is how the player advances.
-  Put engine/model, detailed voice routing, OCR and readiness reports under
-  **Details** or Settings. Show recovery controls at the point of failure, with
+  Keep engine controls in Settings and the copyable Reading report in
+  **Support and logs**. Show recovery controls at the point of failure, with
   a stable way to reach manual story position in manual mode. Remove the empty
   transcript before the first line, duplicate status prose and the permanent
   bottom toolbar of diagnostic actions from the everyday screen.

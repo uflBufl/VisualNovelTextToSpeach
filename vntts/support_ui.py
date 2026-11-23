@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTextEdit,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -28,7 +29,7 @@ from vntts import support
 from vntts.action_icons import set_action_icon
 from vntts.diagnostic_recording import MAX_DIAGNOSTIC_SECONDS
 from vntts.reading_diagnostics import DiagnosticSessionEntry
-from vntts.ui_text import shortcut_tooltip
+from vntts.ui_text import copy_text_button, shortcut_tooltip
 
 
 class SupportCenterDialog(QDialog):
@@ -75,6 +76,16 @@ class SupportCenterDialog(QDialog):
         self.privacy_note.setAccessibleDescription(self.privacy_note.toolTip())
         self.privacy_note.setWordWrap(True)
         actions = QHBoxLayout()
+        self.copy_reading_report_button = copy_text_button(
+            "Copy reading report",
+            self._current_reading_report,
+        )
+        self.copy_reading_report_button.setAutoDefault(False)
+        self.copy_reading_report_button.setAccessibleName("Copy current reading report")
+        self.copy_reading_report_button.setToolTip(
+            "Copy current dialogue, playback, capture source and reading diagnostics. "
+            "The report can contain dialogue text and local paths; review it before sharing."
+        )
         self.diagnostics_button = QPushButton("Diagnostics")
         set_action_icon(self.diagnostics_button, "scan")
         self.diagnostics_button.setToolTip("Open live diagnostics")
@@ -118,6 +129,50 @@ class SupportCenterDialog(QDialog):
         actions.addWidget(self.settings_button)
         actions.addStretch()
         return actions
+
+    def _create_reading_report(self) -> QHBoxLayout:
+        self.reading_report_toggle = QToolButton()
+        self.reading_report_toggle.setText("Reading report")
+        self.reading_report_toggle.setAccessibleName("Show current reading report")
+        self.reading_report_toggle.setCheckable(True)
+        self.reading_report_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.reading_report_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.reading_report_toggle.toggled.connect(self._set_reading_report_expanded)
+        self.reading_report_view = QPlainTextEdit(readOnly=True, tabChangesFocus=True)
+        self.reading_report_view.setAccessibleName("Current reading report")
+        self.reading_report_view.setWordWrapMode(
+            QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere
+        )
+        self.reading_report_view.setMinimumHeight(180)
+        self.reading_report_view.hide()
+        header = QHBoxLayout()
+        header.addWidget(self.reading_report_toggle)
+        header.addWidget(self.copy_reading_report_button)
+        header.addStretch()
+        return header
+
+    def _current_reading_report(self) -> str:
+        return (
+            self.reading_report_provider()
+            if self.reading_report_provider is not None
+            else "No reading context available."
+        )
+
+    def _set_reading_report_expanded(self, expanded: bool) -> None:
+        self.reading_report_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.reading_report_view.setVisible(expanded)
+        self._refresh_reading_report()
+
+    def _refresh_reading_report(self) -> None:
+        if self.reading_report_view.isHidden():
+            return
+        report = self._current_reading_report()
+        if self.reading_report_view.toPlainText() != report:
+            self.reading_report_view.setPlainText(report)
 
     def _create_session_history(self) -> None:
         self.reading_history = QTreeWidget()
@@ -209,6 +264,7 @@ class SupportCenterDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.event_log = event_log
+        self.reading_report_provider: Callable[[], str] | None = None
         self.reading_status_provider: Callable[[], dict[str, object] | None] | None = (
             None
         )
@@ -249,6 +305,9 @@ class SupportCenterDialog(QDialog):
 
     def _set_focus_order(self) -> None:
         self.setTabOrder(self.events, self.new_events_button)
+        self.setTabOrder(self.reading_report_toggle, self.copy_reading_report_button)
+        self.setTabOrder(self.copy_reading_report_button, self.reading_report_view)
+        self.setTabOrder(self.reading_report_view, self.events)
         self.setTabOrder(self.new_events_button, self.diagnostics_button)
         self.setTabOrder(self.diagnostics_button, self.settings_button)
         self.setTabOrder(self.settings_button, self.reading_media)
@@ -279,6 +338,8 @@ class SupportCenterDialog(QDialog):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
+        layout.addLayout(self._create_reading_report())
+        layout.addWidget(self.reading_report_view)
         layout.addLayout(heading)
         layout.addWidget(self.events, 1)
         layout.addLayout(actions)
@@ -607,6 +668,7 @@ class SupportCenterDialog(QDialog):
             self.reading_delete_requested.emit(entry.session_id)
 
     def refresh(self) -> None:
+        self._refresh_reading_report()
         self.refresh_reading_session()
         entries = sorted(
             self.event_log.snapshot()

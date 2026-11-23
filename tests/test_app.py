@@ -294,7 +294,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray.dashboard.dialogue.toPlainText(), text)
         self.assertEqual(tray.dialog_action.toolTip(), f"Cornerstone: {text}")
         self.assertLessEqual(len(tray.dialog_action.text()), 96)
-        self.assertIn(text, tray.dashboard._copy_details())
+        self.assertIn(text, tray.dashboard.reading_report())
 
         tray.signals.dialog_changed.emit("Narrator", "")
         self.application.processEvents()
@@ -964,10 +964,10 @@ class TrayApplicationTest(unittest.TestCase):
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
-        self.assertIn("GPU: RTX 2070 SUPER", tray.dashboard.speech_runtime.text())
+        self.assertIn("GPU: RTX 2070 SUPER", tray.dashboard.reading_report())
         controller.speech_backend = None
         tray._refresh_speech_runtime()
-        self.assertIn("not loaded", tray.dashboard.speech_runtime.text())
+        self.assertIn("not loaded", tray.dashboard.reading_report())
         tray.shutdown()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
@@ -1003,6 +1003,117 @@ class TrayApplicationTest(unittest.TestCase):
         tray.shutdown()
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
+
+    def test_settings_openmoss_action_tracks_loading_and_unload_in_modal_dialog(self):
+        with TemporaryDirectory() as directory:
+            settings = AppSettings(speech_backend="moss-tts")
+            controller = Mock(
+                settings=settings,
+                is_live_running=False,
+                voice_library=VoiceLibrary(directory),
+            )
+            runtime = Mock(loaded=False)
+            tray = TrayApplication(
+                self.application,
+                settings,
+                controller_factory=Mock(return_value=controller),
+                moss_runtime=runtime,
+            )
+            runner = Mock(active=False)
+            tray.moss_runtime_runner = runner
+            runner.start.side_effect = lambda *args, **kwargs: setattr(
+                runner, "active", True
+            )
+            runtime.unload.side_effect = lambda: setattr(runtime, "loaded", False)
+            dialog = tray._create_settings_dialog()
+            self.addCleanup(delete_dialog, dialog)
+            dialog.section_navigation.setCurrentText("Speech and voices")
+            states = []
+
+            def exercise():
+                button = dialog.moss_runtime_button
+                states.append((button.isVisible(), button.text(), button.isEnabled()))
+                button.click()
+                states.append((button.isVisible(), button.text(), button.isEnabled()))
+                runner.active = False
+                runtime.loaded = True
+                tray._moss_runtime_finished(None, None)
+                states.append((button.isVisible(), button.text(), button.isEnabled()))
+                button.click()
+                states.append((button.isVisible(), button.text(), button.isEnabled()))
+                dialog.reject()
+
+            with patch(
+                "vntts.app.OnboardingDiagnostics.moss_installation_space",
+                return_value=None,
+            ):
+                QTimer.singleShot(0, exercise)
+                dialog.exec()
+            self.assertEqual(
+                states,
+                [
+                    (True, "Load OpenMOSS", True),
+                    (True, "Loading OpenMOSS", False),
+                    (True, "Unload OpenMOSS", True),
+                    (True, "Load OpenMOSS", True),
+                ],
+            )
+            runner.start.assert_called_once()
+            runtime.unload.assert_called_once()
+            controller.is_live_running = True
+            tray._refresh_speech_runtime()
+            self.assertFalse(dialog.moss_runtime_button.isEnabled())
+            tray.toggle_moss_runtime()
+            runner.start.assert_called_once()
+            controller.is_live_running = False
+            controller.runtime_control_snapshot.return_value = {"speaking": True}
+            tray._refresh_speech_runtime()
+            self.assertFalse(dialog.moss_runtime_button.isEnabled())
+            tray.toggle_moss_runtime()
+            runner.start.assert_called_once()
+            tray.settings = settings.updated(speech_backend="pocket-tts")
+            tray._refresh_speech_runtime()
+            self.assertFalse(
+                dialog.speech_form.isRowVisible(dialog.moss_runtime_button)
+            )
+
+    def test_support_copies_live_reading_context_without_reopening(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray.open_support_center()
+        tray.set_dialog("Mira", "First line.")
+        tray.support_dialog.copy_reading_report_button.click()
+        self.assertIn("First line.", self.application.clipboard().text())
+        tray.set_dialog("Ada", "Current line.")
+        tray.support_dialog.copy_reading_report_button.click()
+        self.assertIn("Current line.", self.application.clipboard().text())
+        self.assertNotIn("First line.", self.application.clipboard().text())
+
+    def test_persistent_recognition_issue_can_stop_live_and_open_calibration(self):
+        controller = Mock(is_ready=True, is_live_running=True)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.set_ready(True)
+        tray.set_live(True)
+        tray.dashboard.show_reading()
+        tray.set_screen_observation(
+            ScreenObservation("", True, lambda: True, controller.live_reader)
+        )
+        tray.set_screen_observation(
+            ScreenObservation("", True, lambda: True, controller.live_reader)
+        )
+        tray.dashboard._recognition_timeout()
+        self.assertFalse(tray.dashboard.recognition_area.isHidden())
+        self.assertTrue(tray.dashboard.check_dialogue_area_button.isEnabled())
+        with patch.object(tray, "_stop_live_then", return_value=True) as stop:
+            tray.dashboard.check_dialogue_area_button.click()
+        self.assertEqual(stop.call_args.args[0], tray.calibrate)
 
     def test_missing_saved_pack_opens_settings_without_starting_playback(self):
         with TemporaryDirectory() as directory:
@@ -2140,10 +2251,9 @@ class TrayApplicationTest(unittest.TestCase):
             diagnostic = f"Player candidate Centurion {identity[:12]}; voice ID: player-candidate:{identity}"
             controller._resolve_voice_label.return_value = diagnostic
             tray._apply_controller_action_state()
-            self.assertIn("Centurion", tray.dashboard.reading_defaults.text())
-            self.assertNotIn("Player candidate", tray.dashboard.reading_defaults.text())
+            self.assertIn("Centurion", tray.dashboard.speech_configuration.text())
             self.assertNotIn(identity, tray.dashboard.speech_configuration.text())
-            self.assertIn(diagnostic, tray.dashboard.speech_details.text())
+            self.assertIn(diagnostic, tray.dashboard.reading_report())
             controller.start.assert_not_called()
             tray.shutdown()
 

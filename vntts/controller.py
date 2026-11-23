@@ -175,6 +175,7 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceChoice,
     VoiceEngine,
+    VoiceManifestError,
     application_voice_library,
     is_narrator,
     is_unattributed_speaker,
@@ -1354,7 +1355,10 @@ class AppController:
                         else self.shutdown_requested,
                     )
                     if voice is not None:
-                        return prepare_with_voice(character, text, voice)
+                        return replace(
+                            prepare_with_voice(character, text, voice),
+                            voice_label=f"{voice.source_character or voice.character}; voice ID: {voice.speaker}",
+                        )
                     break
         return backend.prepare_playback(character, text)
 
@@ -2772,10 +2776,7 @@ class AppController:
             )
         elif snapshot.state == StoryCursorState.DESYNCHRONIZED:
             recovery_required = True
-            guidance = (
-                "The observed line is outside the allowed successor path. Set the "
-                "visible story position to resume."
-            )
+            guidance = "Story position lost. Choose the line shown in the game."
         elif snapshot.state == StoryCursorState.MANUAL:
             guidance = (
                 "Make the in-game decision. Reading resumes automatically when the "
@@ -2796,8 +2797,7 @@ class AppController:
             if candidate is None:
                 recovery_required = True
                 guidance = (
-                    "The next event is not deterministic. Set the visible story "
-                    "position after making the in-game choice."
+                    "Make your choice in the game, then select the line on screen."
                 )
             else:
                 guidance = "Watching for the next recognized dialogue."
@@ -5386,14 +5386,52 @@ class AppController:
                 return reader.is_playback_current(chunk)
             return self._live_playback_guard(reader, chunk, audio)
 
-        def pending_dispatch(_route: RouteDecision) -> bool:
+        def record_audio(route: object) -> None:
+            prepared = (
+                route.prepared
+                if isinstance(route, (LiveFallbackRoute, LiveTTSRoute))
+                else route
+            )
+            voice = (
+                prepared.voice_label if isinstance(prepared, PreparedPlayback) else None
+            )
+            if (
+                not voice
+                and isinstance(prepared, PreparedPlayback)
+                and not isinstance(
+                    prepared.payload,
+                    (
+                        PreparedGeneratedAudio,
+                        PreparedSourceAudioPassThrough,
+                        SilentPlayback,
+                    ),
+                )
+            ):
+                role = (
+                    route.decision.requested_voice_character
+                    if isinstance(route, LiveFallbackRoute)
+                    else chunk.character
+                )
+                try:
+                    voice = self._resolve_voice_label(role)
+                except OSError, VoiceManifestError:
+                    # Looking up a display name must not interrupt prepared audio.
+                    voice = None
+            reader.set_playback_audio(
+                chunk, self._describe_audio_source(route), voice or ""
+            )
+
+        def pending_dispatch(route: RouteDecision) -> bool:
             nonlocal pending_dispatched
             if not playback_guard():
                 return False
             pending_dispatched = True
+            record_audio(route)
             return True
 
         try:
+            if not isinstance(audio, PendingGeneratedAudioRoute):
+                record_audio(audio)
             if isinstance(audio, RouteDecision):
                 if callable(play_route):
                     if isinstance(audio, PendingGeneratedAudioRoute):
@@ -5767,16 +5805,15 @@ class AppController:
             return "Authorized silent audio event omission"
         if isinstance(prepared, PendingGeneratedAudioRoute):
             return f"Waiting for prepared audio (line {prepared.line_id})"
-        lead_seconds = float(getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0)
-        if lead_seconds > 0 and isinstance(
-            prepared,
-            (GeneratedAudioRoute, LiveFallbackRoute, LiveTTSRoute),
+        if (
+            isinstance(prepared, (GeneratedAudioRoute, LiveFallbackRoute, LiveTTSRoute))
+            and prepared.source_audio_lead_seconds > 0
         ):
             following = self._describe_audio_source(
                 replace(prepared, source_audio_lead_seconds=0.0)
             )
             return (
-                f"Original game cue ({lead_seconds:.2f}s including post-roll), "
+                f"Original game cue ({prepared.source_audio_lead_seconds:.2f}s including post-roll), "
                 f"then {following}"
             )
         if isinstance(prepared, LiveFallbackRoute) and not isinstance(

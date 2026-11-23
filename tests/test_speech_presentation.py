@@ -76,6 +76,15 @@ class SpeechPresentationTest(unittest.TestCase):
                     "Nick: Guard: " + expected,
                 )
 
+    def test_line_information_names_voice_after_an_original_cue(self):
+        self.assertEqual(
+            playback_labels(
+                "Original game cue (1.00s including post-roll), then Authorized live fallback (moss-tts/model)",
+                "Alba",
+            ),
+            ("Alba", "Game sound · New speech for this line"),
+        )
+
     def test_playback_status_preserves_warnings_and_unrecognized_routes(self):
         messages = (
             "Audio underrun detected; live speech prefetch disabled temporarily",

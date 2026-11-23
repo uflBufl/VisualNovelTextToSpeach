@@ -45,6 +45,7 @@ class PreparedPlayback:
     cache_source: str | None
     audio_source: str
     generation_completed: bool = True
+    voice_label: str | None = None
 
 
 def prepare_silent_playback(text: str) -> PreparedPlayback | None:

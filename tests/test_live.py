@@ -2274,6 +2274,10 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.last_spoken_chunk = chunk
         reader.speech_futures[pending] = chunk
         reader.paused = True
+        reader.set_playback_audio(chunk, "Live TTS (pocket-tts)", "Alba")
+        reader.set_playback_audio(
+            SpeechChunk(3, "Alice", "Next."), "Next route", "Other voice"
+        )
 
         self.assertEqual(
             reader.runtime_control_snapshot(),
@@ -2282,6 +2286,8 @@ class LiveDialogReaderTest(unittest.TestCase):
                 "speaking": True,
                 "speaking_character": "Alice",
                 "speaking_text": "Hello.",
+                "audio_source": "Live TTS (pocket-tts)",
+                "playback_voice": "Alba",
                 "reading_notice": "",
                 "queued": True,
                 "replayable": True,
@@ -2291,6 +2297,7 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
+        self.assertEqual(reader.runtime_control_snapshot()["audio_source"], "")
 
     def test_snapshot_keeps_short_completed_line_between_ui_refreshes(self):
         reader = self.create_reader(play_prepared=lambda *_: True)

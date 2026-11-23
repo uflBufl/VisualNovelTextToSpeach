@@ -2656,6 +2656,7 @@ def _render_stories(
         dashboard = ControlDashboard(settings)
         dashboard.resize(1040, 760)
         dashboard.set_status("Reading the selected game window.")
+        dashboard.set_live(True)
         dashboard.set_dialogue(
             "Believer IV",
             "They at least paid with their lives. What about you?",
@@ -2665,11 +2666,14 @@ def _render_stories(
                 ready=True,
                 live=True,
                 speaking=True,
+                speaking_character="Believer IV",
+                speaking_text="They at least paid with their lives. What about you?",
+                audio_source="MOSS fresh generation (voice Believer IV)",
+                playback_voice="Believer IV voice",
                 queued=True,
                 replayable=True,
             )
         )
-        dashboard.set_live(True)
         dashboard.set_speech_identity(settings, narrator="Centurion")
         dashboard.set_diagnostic(
             DiagnosticSnapshot(
@@ -2680,9 +2684,7 @@ def _render_stories(
                 audio_source="MOSS fresh generation (voice Believer IV)",
             )
         )
-        dashboard.speech_runtime.setText("Compute: Apple GPU · model loaded")
-        dashboard.moss_runtime_button.setText("Unload OpenMOSS")
-        dashboard.moss_runtime_button.setEnabled(False)
+        dashboard.set_speech_runtime("Compute: Apple GPU · model loaded")
         dashboard.show_reading()
         return dashboard
 
@@ -2710,16 +2712,19 @@ def _render_stories(
 
     def dashboard_live_tts() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.details_toggle.setChecked(True)
         dashboard.set_configuration(replace(settings, speech_backend="pocket-tts"))
-        dashboard.set_diagnostic(
-            DiagnosticSnapshot(
-                None,
-                character="Believer IV",
-                voice="Alba",
+        dashboard.set_runtime_controls(
+            RuntimeControlState(
+                ready=True,
+                live=True,
+                speaking=True,
+                speaking_character="Believer IV",
+                speaking_text=dashboard.dialogue.toPlainText(),
+                playback_voice="Alba",
                 audio_source="Live TTS (pocket-tts)",
             )
         )
+        dashboard.dialogue_info_button.click()
         return dashboard
 
     def dashboard_setup() -> ControlDashboard:
@@ -2801,9 +2806,17 @@ def _render_stories(
         dashboard.set_live(False)
         return dashboard
 
-    def dashboard_technical() -> ControlDashboard:
+    def dashboard_line_audio() -> ControlDashboard:
         dashboard = dashboard_reading()
-        dashboard.details_toggle.setChecked(True)
+        dashboard.dialogue_info_button.click()
+        return dashboard
+
+    def dashboard_uncertain_text() -> ControlDashboard:
+        dashboard = dashboard_waiting()
+        dashboard._recognition_timer.setInterval(0)
+        for fragment in ("They at Ieast", "They at Ieast paid"):
+            dashboard.set_recognition(fragment, uncertain=True)
+        QCoreApplication.processEvents()
         return dashboard
 
     def dashboard_story_recovery() -> ControlDashboard:
@@ -2866,14 +2879,18 @@ def _render_stories(
 
     def dashboard_long_values_scrolled() -> ControlDashboard:
         dashboard = dashboard_long_capture()
-        dashboard.set_diagnostic(
-            DiagnosticSnapshot(
-                None,
-                character="The Very Long Name of the Fourth Believer from the Northern District",
-                voice="Believer IV voice from a long user-provided reference recording",
+        dashboard.set_runtime_controls(
+            RuntimeControlState(
+                ready=True,
+                live=True,
+                speaking=True,
+                speaking_character=dashboard.speaker.text(),
+                speaking_text=dashboard.dialogue.toPlainText(),
+                playback_voice="Believer IV voice from a long user-provided reference recording",
                 audio_source="MOSS fresh generation with a long user-provided reference recording",
             )
         )
+        dashboard.dialogue_info_button.click()
         QTimer.singleShot(
             0,
             lambda: dashboard.content_scroll.verticalScrollBar().setValue(
@@ -3937,7 +3954,8 @@ def _render_stories(
         "dashboard.reading-waiting": dashboard_waiting,
         "dashboard.reading-paused": dashboard_paused,
         "dashboard.reading-stopped": dashboard_stopped,
-        "dashboard.reading-technical": dashboard_technical,
+        "dashboard.reading-line-audio": dashboard_line_audio,
+        "dashboard.reading-uncertain": dashboard_uncertain_text,
         "dashboard.story-position-recovery": dashboard_story_recovery,
         "dashboard.story-position-manual": dashboard_story_manual,
         "dashboard.reading-long-values": dashboard_long_values,
