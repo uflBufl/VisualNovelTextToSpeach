@@ -1640,7 +1640,14 @@ class VoiceLibraryTest(unittest.TestCase):
             library = VoiceLibrary(root / "library")
             choice = library.discover("Role", selected, bind_if_missing=True)
             other = library.discover("Role", unused)
+            snapshot = library.read_snapshot()
+            with patch.object(snapshot, "_validate_blob", side_effect=AssertionError):
+                self.assertTrue(snapshot.has_recorded_reference(other.sha256))
+            other.path.write_bytes(b"damaged recording")
+            with self.assertRaisesRegex(VoiceLibraryError, "checksum failed"):
+                library.select("Role", route="voice", source_sha256s=(other.sha256,))
             other.path.unlink()
+            self.assertFalse(snapshot.has_recorded_reference(other.sha256))
 
             self.assertEqual(library.resolve_source_path("Role"), choice.path)
             with self.assertRaisesRegex(VoiceLibraryError, "missing or unsafe"):

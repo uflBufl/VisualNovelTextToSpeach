@@ -1,7 +1,7 @@
 """Small story snapshots with membership witnesses in a verified source catalog.
 
 Persistent witnesses are hints, not validation receipts. Each process admits the
-complete source and its semantic evidence once; later reads still hash the source.
+complete source and its semantic evidence before reusing the selected rows.
 Only immutable metadata, row locations and original row hashes survive admission.
 """
 
@@ -12,7 +12,7 @@ import json
 from collections import OrderedDict
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
@@ -26,6 +26,7 @@ from vntts_artifacts.story_index import (
 )
 
 from vntts.authoring.publication import rename_directory_no_replace, staged_directory
+from vntts.content_revision import SourceSignature, reusable_file_signature
 from vntts.document_identity import is_lowercase_sha256, sha256_file
 from vntts.path_safety import open_regular_binary, read_regular_bytes
 from vntts.source_audio_semantics import (
@@ -68,6 +69,7 @@ class _SourceReceipt:
     metadata: bytes
     rows: Mapping[str, tuple[int, int, str]]
     selections: tuple[tuple[str, tuple[str, ...]], ...]
+    signature: SourceSignature | None = None
 
 
 _source_receipts: OrderedDict[tuple[str, str, str | None], _SourceReceipt] = (
@@ -170,10 +172,17 @@ def _changed(message: str) -> None:
 
 
 def _assert_current(
-    source: Path, expected_sha256: str, evidence_sha256: str | None
+    source: Path,
+    expected_sha256: str,
+    evidence_sha256: str | None,
+    verified_signature: SourceSignature | None = None,
 ) -> None:
-    if sha256_file(source) != expected_sha256:
-        _changed("Selected story origin checksum changed while read")
+    if (
+        verified_signature is None
+        or reusable_file_signature(source) != verified_signature
+    ):
+        if sha256_file(source) != expected_sha256:
+            _changed("Selected story origin checksum changed while read")
     if _digest(_evidence_payload(source)) != evidence_sha256:
         _changed("Selected story origin evidence checksum changed while read")
 
@@ -248,7 +257,12 @@ def _remember_source_receipt(
     evidence_sha256: str | None,
 ) -> _SourceReceipt:
     receipt = _build_receipt(document, payload)
+    signature = reusable_file_signature(document.path)
     _assert_current(document.path, expected_sha256, evidence_sha256)
+    if signature is not None:
+        if reusable_file_signature(document.path) != signature:
+            _changed("Selected story origin checksum changed while read")
+        receipt = replace(receipt, signature=signature)
     key = (str(document.path), expected_sha256, evidence_sha256)
     with _receipt_lock:
         _source_receipts[key] = receipt
@@ -414,7 +428,7 @@ def validate_selected_story_origin(document: StoryIndexDocument) -> None:
             _, receipt, _ = _admit_source(source, expected_sha256, evidence_sha256)
         _validate_records(document, origin, receipt)
         _validate_selected_semantics(document)
-        _assert_current(source, expected_sha256, evidence_sha256)
+        _assert_current(source, expected_sha256, evidence_sha256, receipt.signature)
     except (OSError, SourceAudioSemanticEvidenceError) as error:
         raise StoryIndexError(f"Selected story origin is invalid: {error}") from error
 

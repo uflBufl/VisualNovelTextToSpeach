@@ -938,10 +938,16 @@ class VoiceLibraryReadSnapshot(VoiceLibrary):
             self._validate_blob(checksum) for checksum in binding.source_sha256s
         )
 
-    def has_verified_reference(self, checksum: str) -> bool:
-        if checksum not in self._recorded or not self._blob_path(checksum).exists():
+    def has_recorded_reference(self, checksum: str) -> bool:
+        """Skip rediscovery of stored alternatives. Selection verifies their bytes."""
+        if checksum not in self._recorded:
             return False
-        self._validate_blob(checksum)
+        try:
+            mode = self._blob_path(checksum).lstat().st_mode
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(mode):
+            raise VoiceLibraryError(f"Voice blob is missing or unsafe: {checksum}")
         return True
 
 

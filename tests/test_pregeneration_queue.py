@@ -745,10 +745,12 @@ class PregenerationInputStoreTest(unittest.TestCase):
             store = PregenerationInputStore(jobs)
             prepared = store.materialize(job, plan)
             metadata = load_generation_input_metadata(prepared.directory)
+            self.assertFalse(store.has_saved_confirmation(job))
             self.assertFalse(store.was_confirmed(prepared))
             store.confirm(prepared)
 
             restarted = PregenerationInputStore(PregenerationJobStore(jobs.root))
+            self.assertTrue(restarted.has_saved_confirmation(job))
             reopened = restarted.materialize(job, plan)
             self.assertTrue(restarted.was_confirmed(reopened))
             with patch("vntts.pregeneration_queue.write_versioned_json") as write:

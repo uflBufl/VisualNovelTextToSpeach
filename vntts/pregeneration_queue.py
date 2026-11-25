@@ -155,6 +155,14 @@ class PregenerationInputStore:
     def __init__(self, job_store: PregenerationJobStore) -> None:
         self.job_store = job_store
 
+    def has_saved_confirmation(self, job: PregenerationJob) -> bool:
+        """Hint for showing the voice picker while the exact input is validated."""
+        return any(
+            self.job_store.directory_for(job.job_id).glob(
+                "generation-input-*/voice-confirmation.json"
+            )
+        )
+
     def was_confirmed(self, prepared: PregenerationInput) -> bool:
         """Match explicit voice approval against already validated inputs."""
         try:

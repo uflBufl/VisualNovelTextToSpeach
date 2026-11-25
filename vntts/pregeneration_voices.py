@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import wave
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -44,6 +45,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.cleanup import attempt_cleanup
+from vntts.content_revision import SourceSignature, reusable_file_signature
 from vntts.document_identity import canonical_document_sha256, is_sha256, sha256_file
 from vntts.json_types import decode_json, has_schema_version
 from vntts.numeric_values import optional_finite_number
@@ -152,6 +154,45 @@ class PregenerationVoiceError(RuntimeError):
 
 class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
+
+
+class _VoiceReferenceFacts:
+    """Reuse bytes already checked during one plan, never between plan attempts."""
+
+    def __init__(self) -> None:
+        self._facts: dict[
+            tuple[Path, Path], tuple[SourceSignature, str, float | None]
+        ] = {}
+
+    def reference(self, voice: CharacterVoice, path: Path) -> tuple[str, float | None]:
+        if voice.reference_root is None:
+            return sha256_file(path), _reference_duration_seconds(path)
+        root = voice.reference_root.resolve()
+        canonical = path.parent.resolve() / path.name
+        if not path.is_relative_to(root) or not canonical.is_relative_to(root):
+            raise VoiceManifestError(
+                "Voice reference must stay within the manifest directory"
+            )
+        if canonical != path:
+            raise VoiceManifestError("Voice reference must not use symlinks")
+        key = canonical, root
+        before = reusable_file_signature(canonical)
+        cached = self._facts.get(key)
+        if before is not None and cached is not None and cached[0] == before:
+            return cached[1], cached[2]
+        payload = read_voice_reference_bytes(voice, path)
+        checksum = hashlib.sha256(payload).hexdigest()
+        try:
+            with wave.open(io.BytesIO(payload), "rb") as audio:
+                duration = audio.getnframes() / audio.getframerate()
+        except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
+            duration = None
+        after = reusable_file_signature(canonical)
+        if before is not None and before == after:
+            self._facts[key] = before, checksum, duration
+        else:
+            self._facts.pop(key, None)
+        return checksum, duration
 
 
 def _voice_catalog_call[**P, T](
@@ -653,6 +694,7 @@ class VoicePlanStore:
             rollback,
             cancellation,
         )
+        reference_facts = _VoiceReferenceFacts()
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
             manifest_document,
@@ -660,10 +702,15 @@ class VoicePlanStore:
             manifest_path,
             job.story_index_sha256,
             speech_backend=settings.speech_backend,
+            reference_facts=reference_facts,
         )
         if self.voice_library is not None:
             manifest_path = _materialize_voice_catalog(
-                self.job_store, job, registry, cancellation=cancellation
+                self.job_store,
+                job,
+                registry,
+                cancellation=cancellation,
+                reference_facts=reference_facts,
             )
             manifest_sha256 = sha256_file(manifest_path)
         reference_files, reference_bytes = _voice_reference_stats(registry)
@@ -714,6 +761,7 @@ class VoicePlanStore:
             reference_qualifier is not None,
             reference_files,
             reference_bytes,
+            reference_facts,
         )
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -774,6 +822,7 @@ class VoicePlanStore:
         defer_automatic_bindings: bool,
         reference_files: int,
         reference_bytes: int,
+        reference_facts: _VoiceReferenceFacts,
     ) -> tuple[list[VoiceGroup], CharacterVoiceRegistry, dict[str, str]]:
         phase_started, cpu_started = perf_counter(), process_time()
         person_aliases = (
@@ -809,6 +858,7 @@ class VoicePlanStore:
                     defer_automatic_bindings,
                     library_snapshot,
                     cancellation,
+                    reference_facts,
                 )
             )
         if self.voice_library is not None:
@@ -1089,6 +1139,7 @@ class VoicePlanStore:
         defer_automatic_bindings: bool,
         library_snapshot: VoiceLibraryReadSnapshot | None,
         cancellation: Cancellation | None,
+        reference_facts: _VoiceReferenceFacts,
     ) -> VoiceGroup:
         records = tuple(value.record for value in values)
         character = values[0].character
@@ -1131,7 +1182,8 @@ class VoicePlanStore:
             and voice_binding_source_id(binding) == assignment_source
         ):
             assignment_source = (
-                _saved_original_source(binding, registry) or assignment_source
+                _saved_original_source(binding, registry, reference_facts)
+                or assignment_source
             )
         manually_selected_source = (
             assignment_source
@@ -1161,6 +1213,7 @@ class VoicePlanStore:
             assignment_source=assignment_source,
             linked_names=linked_names,
             archived_sources=archived_sources,
+            reference_facts=reference_facts,
         )
         if (
             binding is not None
@@ -1188,6 +1241,7 @@ class VoicePlanStore:
                 assignment_source=None,
                 linked_names=linked_names,
                 archived_sources=archived_sources,
+                reference_facts=reference_facts,
             )
         if self.voice_library is not None and library_snapshot is not None:
             self.voice_library.discover_many(
@@ -1211,6 +1265,7 @@ class VoicePlanStore:
             assignment_source=_effective_assignment_source(
                 settings, "Narrator", library=library_snapshot
             ),
+            reference_facts=reference_facts,
         )
         decision_context_sha256 = _digest(
             {
@@ -1435,7 +1490,7 @@ def _group_voice_discoveries(
             if (
                 checksum in recorded
                 and Path(discovery.reference).suffix.casefold() == ".wav"
-                and snapshot.has_verified_reference(checksum)
+                and snapshot.has_recorded_reference(checksum)
             ):
                 continue
             yield replace(discovery, expected_sha256=checksum)
@@ -1504,6 +1559,7 @@ def _materialize_voice_catalog(
     registry: CharacterVoiceRegistry,
     *,
     cancellation: Cancellation | None = None,
+    reference_facts: _VoiceReferenceFacts | None = None,
 ) -> Path:
     voices: list[JsonObject] = []
     identity: list[tuple[str, str, list[str]] | tuple[str, str, list[str], str]] = []
@@ -1520,8 +1576,16 @@ def _materialize_voice_catalog(
             checksums: list[str] = []
             for reference in voice.references:
                 _raise_if_cancelled(cancellation)
-                payload = read_voice_reference_bytes(voice, reference)
-                checksum = hashlib.sha256(payload).hexdigest()
+                payload = None
+                if (
+                    reuse_catalog
+                    and reference_facts is not None
+                    and voice.reference_root is not None
+                ):
+                    checksum, _duration = reference_facts.reference(voice, reference)
+                else:
+                    payload = read_voice_reference_bytes(voice, reference)
+                    checksum = hashlib.sha256(payload).hexdigest()
                 suffix = reference.suffix or ".wav"
                 relative = f"references/{checksum}{suffix}"
                 if reuse_catalog:
@@ -1530,6 +1594,7 @@ def _materialize_voice_catalog(
                     target = staging / relative
                     if not target.is_file():
                         target.parent.mkdir(parents=True, exist_ok=True)
+                        assert payload is not None
                         target.write_bytes(payload)
                 del payload
                 references.append(relative)
@@ -1619,6 +1684,7 @@ def _candidate_inventory(
     assignment_source: str | None = None,
     linked_names: Sequence[str] = (),
     archived_sources: Sequence[str] = (),
+    reference_facts: _VoiceReferenceFacts,
 ) -> tuple[VoiceCandidate, ...]:
     assignment = assignment_source
     candidates: dict[str, VoiceCandidate] = {}
@@ -1658,7 +1724,8 @@ def _candidate_inventory(
             return
         variant = variant or variants_by_source.get(source_id)
         if variant is None and len(voice.references) == 1:
-            variant = variants_by_reference.get(sha256_file(voice.references[0]))
+            checksum = reference_facts.reference(voice, voice.references[0])[0]
+            variant = variants_by_reference.get(checksum)
         variant = variant or {}
         candidate = _ranked_candidate(
             source_id,
@@ -1666,6 +1733,7 @@ def _candidate_inventory(
             score,
             recommendation,
             variant=variant,
+            reference_facts=reference_facts,
         )
         previous = candidates.get(source_id)
         quality = variant.get("quality_score")
@@ -1758,6 +1826,7 @@ def _narrator_candidate(
     registry: CharacterVoiceRegistry,
     *,
     assignment_source: str | None = None,
+    reference_facts: _VoiceReferenceFacts,
 ) -> VoiceCandidate | None:
     selected = _candidate_for(
         "Narrator",
@@ -1771,6 +1840,7 @@ def _narrator_candidate(
             selected[1],
             120,
             "Configured narrator voice",
+            reference_facts=reference_facts,
         )
     if settings.speech_backend != "pocket-tts":
         voice = registry.resolve("Narrator")
@@ -1781,6 +1851,7 @@ def _narrator_candidate(
             voice,
             120,
             "Configured narrator voice",
+            reference_facts=reference_facts,
         )
     source_id = pregeneration_narrator_source_id(settings)
     voice = _candidate_from_source(source_id, registry)
@@ -1791,6 +1862,7 @@ def _narrator_candidate(
         voice,
         120,
         "Configured narrator voice",
+        reference_facts=reference_facts,
     )
 
 
@@ -1832,7 +1904,9 @@ def _effective_assignment_source(
 
 
 def _saved_original_source(
-    binding: VoiceBinding, registry: CharacterVoiceRegistry
+    binding: VoiceBinding,
+    registry: CharacterVoiceRegistry,
+    reference_facts: _VoiceReferenceFacts,
 ) -> str | None:
     """Prefer the original source when it preserves the saved voice choice."""
     if binding.route != "voice" or binding.provenance.get("method") != "manual":
@@ -1854,8 +1928,7 @@ def _saved_original_source(
                 == (evidence["reference_transcript"] or None)
             )
             and tuple(
-                hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
-                for path in voice.references
+                reference_facts.reference(voice, path)[0] for path in voice.references
             )
             == binding.source_sha256s
         ):
@@ -1904,23 +1977,30 @@ def _ranked_candidate(
     recommendation: str,
     *,
     variant: Mapping[str, object] | None = None,
+    reference_facts: _VoiceReferenceFacts,
 ) -> VoiceCandidate:
     variant = variant or {}
     source_excerpts = variant.get("source_excerpts", ())
     if not isinstance(source_excerpts, (list, tuple)):
         raise PregenerationVoiceError("Voice candidate source excerpts are invalid")
+    facts = [reference_facts.reference(voice, path) for path in voice.references]
+    duration = None
+    if facts and all(value is not None for _checksum, value in facts):
+        duration = round(
+            sum(value for _checksum, value in facts if value is not None), 3
+        )
     return VoiceCandidate(
         source_id=source_id,
         source_character=voice.source_character or voice.character,
         source_speaker=voice.speaker,
-        reference_sha256s=tuple(sha256_file(path) for path in voice.references),
+        reference_sha256s=tuple(checksum for checksum, _duration in facts),
         match_score=score,
         recommendation=recommendation,
         portrait=_optional_variant(variant.get("portrait")),
         source_bank=_optional_variant(variant.get("source_bank")),
         source_voice_ids=_text_values(variant.get("source_voice_ids")),
         source_line_ids=_text_values(variant.get("source_line_ids")),
-        reference_duration_seconds=_reference_duration_seconds(voice.references),
+        reference_duration_seconds=duration,
         source_excerpts=_source_excerpt_transcripts(source_excerpts),
         source_titles=tuple(
             dict.fromkeys(
@@ -1936,18 +2016,12 @@ def _ranked_candidate(
     )
 
 
-def _reference_duration_seconds(references: Sequence[Path]) -> float | None:
-    total = 0.0
+def _reference_duration_seconds(reference: Path) -> float | None:
     try:
-        for reference in references:
-            with (
-                open_regular_binary(reference) as source,
-                wave.open(source, "rb") as audio,
-            ):
-                total += audio.getnframes() / audio.getframerate()
+        with open_regular_binary(reference) as source, wave.open(source, "rb") as audio:
+            return audio.getnframes() / audio.getframerate()
     except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
         return None
-    return round(total, 3) if references else None
 
 
 def _voice_reference_stats(registry: CharacterVoiceRegistry) -> tuple[int, int]:
@@ -2286,6 +2360,7 @@ def _manifest_candidate_variants(
     *,
     speech_backend: str = "",
     verified_references: dict[Path, str] | None = None,
+    reference_facts: _VoiceReferenceFacts | None = None,
 ) -> tuple[JsonObject, ...]:
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
@@ -2368,9 +2443,17 @@ def _manifest_candidate_variants(
         reference_sha256 = variant["reference_sha256"]
         source_id = f"character:{normalize_character_name(voice_character)}"
         voice = _candidate_from_source(source_id, registry)
-        if voice is None or tuple(sha256_file(path) for path in voice.references) != (
-            reference_sha256,
-        ):
+        checksums = (
+            tuple(
+                reference_facts.reference(voice, path)[0]
+                if reference_facts is not None
+                else sha256_file(path)
+                for path in voice.references
+            )
+            if voice is not None
+            else ()
+        )
+        if voice is None or checksums != (reference_sha256,):
             _record_rejected_player_voice_candidate(
                 f"Player voice candidate {index} reference is invalid"
             )

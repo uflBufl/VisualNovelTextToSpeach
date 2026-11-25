@@ -299,7 +299,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     reason=SequenceUnavailableReason.MANUAL_BOUNDARY
                 )
             )
-            with patch.object(dialog.input_runner, "start"):
+            with (
+                patch.object(dialog.input_runner, "start"),
+                patch.object(dialog, "_show_voice_confirmation"),
+            ):
                 dialog._start_generation_input(Mock())
             dialog._generation_input = inputs
             current = PreparedSequenceResult(
@@ -1255,6 +1258,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog.preparing_inputs)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.voice_confirmation.isHidden())
+            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertIsNone(dialog.generation_input())
             pool.tasks.pop(0).run()
             self.application.processEvents()
 

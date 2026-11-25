@@ -1636,7 +1636,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _update_voice_route_actions(self) -> None:
         role = self._selected_routing_role()
         unchanged = not self._voice_plan_needs_update()
-        ready = role is not None and unchanged
+        ready = role is not None and unchanged and not self.has_pending_work()
         self.inspect_character_voice.setEnabled(ready)
         for button in self._summary_preview_rows.values():
             button.setEnabled(unchanged and not self.has_pending_work())
@@ -2146,6 +2146,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.blockSignals(False)
 
     def _show_voice_confirmation(self, plan: VoicePlan) -> None:
+        self._voice_plan = plan
         self._reuse_voice_confirmation = False
         self.continue_button.setDefault(True)
         self.cancel_button.setAutoDefault(True)
@@ -2166,7 +2167,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._set_progress_visible(False)
             self.content_scroll.hide()
             self.selection_panel.show()
-            self._set_import_controls(True)
+            self._set_import_controls(not self.preparing_inputs)
             self.continue_button.setText("Retry voice matching")
             set_action_icon(self.continue_button, "refresh-cw")
             self._set_selection_status(f"Unable to show character voices: {error}")
@@ -2198,24 +2199,26 @@ class OfflineAudioPreparationDialog(QDialog):
             "Matching saved work can be resumed. Other prepared stories remain unchanged."
         )
         self._populate_narrator_choices(choices)
-        self._render_voice_routes(plan)
         self.continue_button.setText("Generate with these voices")
         set_action_icon(self.continue_button, "wand-sparkles")
         self.continue_button.setAccessibleDescription(
             "Generate the selected stories with the voices shown"
         )
-        self.cancel_button.setText("Cancel")
+        self.cancel_button.setText(
+            "Cancel preparation" if self.preparing_inputs else "Cancel"
+        )
         self.cancel_button.setEnabled(True)
         self._prepare_summary_previews(plan)
 
     def _prepare_summary_previews(self, plan: VoicePlan) -> None:
         self._narrator_choice_changed()
+        labels = self._voice_selection_labels(plan.groups)
         requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
         narrator_requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
         for group in sorted(
             plan.groups,
             key=lambda group: (
-                not self._voice_selection_label(group).startswith("automatic"),
+                not labels[group.group_id].startswith("automatic"),
                 -len(group.line_ids),
                 group.character.casefold(),
             ),
@@ -2323,6 +2326,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.more_voice_actions.setVisible(
             bool(visible) and self.more_voice_actions_toggle.isChecked()
         )
+        labels = self._voice_selection_labels(visible)
         for group in sorted(
             visible,
             key=lambda value: (
@@ -2334,6 +2338,7 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             item = self._voice_route_item(
                 group,
+                status=labels[group.group_id],
                 show_portraits=show_portraits,
                 suggested_link=normalize_character_name(
                     group.routing_role or group.character
@@ -2352,7 +2357,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self._update_confirmation_options()
 
     def _voice_route_item(
-        self, group: VoiceGroup, *, show_portraits: bool, suggested_link: bool
+        self,
+        group: VoiceGroup,
+        *,
+        status: str,
+        show_portraits: bool,
+        suggested_link: bool,
     ) -> QListWidgetItem:
         routing_role = group.routing_role or group.character
         display_role = (
@@ -2384,7 +2394,6 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if route.startswith("Player candidate "):
             route = voice_source_label(route)
-        status = self._voice_selection_label(group)
         attention = group.route == "needs-audition"
         prefix = (
             "REVIEW VOICE: "
@@ -2471,14 +2480,26 @@ class OfflineAudioPreparationDialog(QDialog):
             else explanation
         )
 
-    def _voice_selection_label(self, group: VoiceGroup) -> str:
+    def _voice_selection_labels(self, groups: Sequence[VoiceGroup]) -> dict[str, str]:
+        library = (
+            self.voice_library.read_snapshot()
+            if any(group.resolution.startswith("saved-") for group in groups)
+            else self.voice_library
+        )
+        return {
+            group.group_id: self._voice_selection_label(group, library)
+            for group in groups
+        }
+
+    @staticmethod
+    def _voice_selection_label(group: VoiceGroup, library: VoiceLibrary) -> str:
         if group.route == "needs-audition":
             return "automatic (review optional)"
         if group.resolution == "saved-player-decision":
             return "chosen by you"
         if not group.resolution.startswith("saved-"):
             return "automatic"
-        binding = self.voice_library.binding(group.character)
+        binding = library.binding(group.character)
         if binding is None or not (
             voice_binding_source_id(binding) == group.source_id
             or (
@@ -2574,26 +2595,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_choice.setToolTip(self.narrator_choice.currentText())
         self._refresh_narrator_status()
         self._update_confirmed_narrator()
-        can_preview = isinstance(source_id, str) and (
-            source_id.startswith("character:")
-            or source_id.startswith("preset:")
-            and self._voice_plan is not None
-            and self._voice_plan.synthesis_backend == "pocket-tts"
-        )
-        self.play_summary_narrator.setEnabled(
-            can_preview and not self._voice_plan_needs_update()
-        )
-        self.play_summary_narrator.setToolTip(
-            "Play the narrator preview shown here."
-            if can_preview
-            else "Choose a supported narrator reference or Pocket built-in voice in Voices."
-        )
         self._stop_narrator_reference()
         self.play_narrator_reference.setEnabled(
             isinstance(source_id, str) and source_id.startswith("character:")
         )
         if self._voice_plan is not None:
             self._render_voice_routes(self._voice_plan)
+        self._refresh_voice_confirmation()
+
+    def _refresh_voice_confirmation(self) -> None:
+        source_id = self.narrator_choice.currentData()
         needs_narrator = bool(
             self._voice_plan
             and isinstance(self._voice_plan.groups, (tuple, list))
@@ -2604,7 +2615,12 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         ready = source_id is not None or not needs_narrator
         changed = self._voice_plan_needs_update()
-        if changed:
+        if self.preparing_inputs:
+            set_labeled_text(
+                self.change_summary,
+                (*self._voice_change_rows, ("Status", "Checking saved audio...")),
+            )
+        elif changed:
             set_labeled_text(
                 self.change_summary,
                 (
@@ -2622,10 +2638,33 @@ class OfflineAudioPreparationDialog(QDialog):
             "Apply voice changes" if changed else "Generate with these voices"
         )
         set_action_icon(self.continue_button, "check" if changed else "wand-sparkles")
-        self.continue_button.setEnabled(ready)
+        self.continue_button.setEnabled(ready and not self.preparing_inputs)
+        self.narrator_choice.setEnabled(not self.preparing_inputs)
+        self.game_narrator_button.setEnabled(not self.preparing_inputs)
+        self.pocket_setup.setEnabled(not self.preparing_inputs)
+        self.back_to_story_selection.setEnabled(not self.preparing_inputs)
+        self.edit_confirmed_narrator.setEnabled(not self.preparing_inputs)
+        can_preview = isinstance(source_id, str) and (
+            source_id.startswith("character:")
+            or source_id.startswith("preset:")
+            and self._voice_plan is not None
+            and self._voice_plan.synthesis_backend == "pocket-tts"
+        )
+        self.play_summary_narrator.setEnabled(
+            can_preview and not changed and not self.preparing_inputs
+        )
+        self.play_summary_narrator.setToolTip(
+            "Play the narrator preview shown here."
+            if can_preview
+            else "Choose a supported narrator reference or Pocket built-in voice in Voices."
+        )
         self._update_voice_route_actions()
         self.voice_confirmation_status.setText(
-            "Choose a narrator before generation." if not ready else ""
+            "Checking saved audio before generation..."
+            if self.preparing_inputs
+            else "Choose a narrator before generation."
+            if not ready
+            else ""
         )
 
     def _confirmation_change_rows(self) -> tuple[tuple[str, str], ...]:
@@ -2732,6 +2771,8 @@ class OfflineAudioPreparationDialog(QDialog):
             )
 
     def _confirm_voice_plan(self) -> None:
+        if self.preparing_inputs:
+            return
         self._stop_narrator_reference()
         source_id = self.narrator_choice.currentData()
         current = pregeneration_narrator_source_id(
@@ -5489,26 +5530,39 @@ class OfflineAudioPreparationDialog(QDialog):
         self._prepared_sequence_result = None
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel preparation")
-        self._show_waiting_phase(
-            "Checking saved audio",
-            "Checking recordings with the selected voices. Saved audio is kept.",
-            "Cancel stops preparation and closes this window. Reopen it and choose "
-            "Continue to resume from the saved selection and voice choices.",
+        show_confirmation = not self._generate_after_input and not (
+            self._reuse_voice_confirmation
+            and self._job is not None
+            and self.input_store.has_saved_confirmation(self._job)
         )
-        if self._changes_rows:
-            set_labeled_text(
-                self.progress_counts,
-                (
-                    *self._changes_rows,
-                    ("Status", "Rechecking for the selected voices..."),
-                ),
+        if show_confirmation:
+            self._changes_rows = self._voice_change_rows
+            self._preparation_changes = None
+            self.progress_phase.setText("Checking saved audio")
+            self._set_phase_detail("Checking recordings with the selected voices.")
+        else:
+            self._show_waiting_phase(
+                "Checking saved audio",
+                "Checking recordings with the selected voices. Saved audio is kept.",
+                "Cancel stops preparation and closes this window. Reopen it and choose "
+                "Continue to resume from the saved selection and voice choices.",
             )
-            self.progress_counts.show()
+            if self._changes_rows:
+                set_labeled_text(
+                    self.progress_counts,
+                    (
+                        *self._changes_rows,
+                        ("Status", "Rechecking for the selected voices..."),
+                    ),
+                )
+                self.progress_counts.show()
         self.input_runner.start(
             self._prepare_input_with_changes,
             self._job,
             plan,
         )
+        if show_confirmation and self.preparing_inputs:
+            self._show_voice_confirmation(plan)
 
     def _prepare_input_with_changes(
         self, job: PregenerationJob, plan: VoicePlan
@@ -5560,6 +5614,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._recover_stale_voice_job(error):
             return
         if error is not None:
+            self._awaiting_voice_confirmation = False
+            self.voice_confirmation.hide()
             self.selection_panel.setVisible(True)
             self._preparation_paused("Preparation paused", error)
             self.progress_cancel_consequence.setText(
@@ -5638,7 +5694,11 @@ class OfflineAudioPreparationDialog(QDialog):
         ):
             self._start_generation()
             return
-        self._show_voice_confirmation(self._voice_plan)
+        if self._awaiting_voice_confirmation:
+            self.work_summary.setText(self.summary.text())
+            self._refresh_voice_confirmation()
+        else:
+            self._show_voice_confirmation(self._voice_plan)
 
     def _start_generation(self) -> None:
         assert self._generation_input is not None
@@ -6006,6 +6066,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setEnabled(False)
             self.play_ready_button.setEnabled(False)
             self.progress_phase.setText(f"Cancelling {stage}...")
+            if self._awaiting_voice_confirmation:
+                self.voice_confirmation_status.setText(f"Cancelling {stage}...")
             self._set_phase_detail("")
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setFormat("")

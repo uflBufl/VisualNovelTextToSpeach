@@ -42,6 +42,20 @@ def source_signature(path: Path) -> SourceSignature:
     return _signature(path.stat(follow_symlinks=False))
 
 
+def reusable_file_signature(path: Path) -> SourceSignature | None:
+    """Identify unchanged regular files on systems with a fine-grained POSIX ctime."""
+    if os.name != "posix":
+        return None
+    info = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or not info.st_ino
+        or info.st_ctime_ns % 1_000_000 == 0
+    ):
+        return None
+    return _signature(info)
+
+
 @dataclass(frozen=True)
 class ContentRevision:
     source_path: Path

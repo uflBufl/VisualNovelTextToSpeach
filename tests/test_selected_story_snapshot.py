@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -431,6 +432,26 @@ class SelectedStorySnapshotTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(StoryIndexError, "origin checksum changed"):
                 self.load(selected)
+
+    @unittest.skipUnless(os.name == "posix", "requires a POSIX change timestamp")
+    def test_warm_origin_hash_survives_reopen_but_not_same_size_edit(self):
+        selected = self.create()
+        if next(iter(_source_receipts.values())).signature is None:
+            self.skipTest("filesystem lacks a fine-grained change timestamp")
+        with patch(
+            "vntts.selected_story_snapshot.sha256_file", wraps=sha256_file
+        ) as digest:
+            self.load(selected)
+            digest.assert_not_called()
+            stat = self.source.stat()
+            original = self.source.read_bytes()
+            changed = original.replace(b"Exact text later", b"Other text later")
+            self.assertNotEqual(original, changed)
+            self.source.write_bytes(changed)
+            os.utime(self.source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            with self.assertRaisesRegex(StoryIndexError, "origin checksum changed"):
+                self.load(selected)
+            digest.assert_called_once_with(self.source)
 
     def test_warm_receipt_rows_cannot_be_mutated(self):
         self.create()

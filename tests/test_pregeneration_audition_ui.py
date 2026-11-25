@@ -2408,6 +2408,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
         preview_service = Mock()
         preview_service.generate.return_value = generated_preview(root)
         input_store = Mock()
+        input_store.has_saved_confirmation.return_value = False
         input_store.materialize.return_value = Mock(ready_items=1, progress_items=1)
         pool = ManualThreadPool()
         dialog = OfflineAudioPreparationDialog(
@@ -2521,19 +2522,15 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             )
             saved_fallback = replace(
                 narrator_fallback,
+                group_id="saved-fallback",
                 resolution="saved-player-decision",
             )
             self.assertEqual(
-                dialog._voice_route_item(
-                    narrator_fallback, show_portraits=False, suggested_link=False
-                ).data(int(Qt.ItemDataRole.UserRole) + 2)[2],
-                "automatic",
-            )
-            self.assertEqual(
-                dialog._voice_route_item(
-                    saved_fallback, show_portraits=False, suggested_link=False
-                ).data(int(Qt.ItemDataRole.UserRole) + 2)[2],
-                "chosen by you",
+                dialog._voice_selection_labels((narrator_fallback, saved_fallback)),
+                {
+                    narrator_fallback.group_id: "automatic",
+                    saved_fallback.group_id: "chosen by you",
+                },
             )
 
     def test_voice_route_card_supports_mouse_keyboard_and_double_click(self):
@@ -2813,7 +2810,9 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(voice_plan_store.create.call_count, 2)
-            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.voice_confirmation.isHidden())
+            self.assertFalse(dialog.continue_button.isEnabled())
             self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(len(pool.tasks), 1)
             self.assertTrue(dialog.input_runner.active)

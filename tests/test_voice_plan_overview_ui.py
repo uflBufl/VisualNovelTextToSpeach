@@ -14,7 +14,7 @@ from PySide6.QtGui import QKeySequence  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from tests.pregeneration_fixtures import ambiguous_fixture  # noqa: E402
+from tests.pregeneration_fixtures import ambiguous_fixture, fixture  # noqa: E402
 from tests.qt_task_fixtures import ManualThreadPool  # noqa: E402
 from vntts.dashboard_ui import ControlDashboard  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
@@ -49,6 +49,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
         )
         self.library = VoiceLibrary(self.root / "library")
         self.library.select("Narrator", route="voice", source_id="preset:alba")
+        self.pool = ManualThreadPool()
         self.dialog = OfflineAudioPreparationDialog(
             AppSettings(),
             discovery=lambda: ContentDiscovery(()),
@@ -63,7 +64,7 @@ class VoicePlanOverviewTest(unittest.TestCase):
             ),
             audition_service=Mock(),
             preview_player=Mock(),
-            thread_pool=ManualThreadPool(),
+            thread_pool=self.pool,
         )
         self.addCleanup(self.dialog.deleteLater)
         self.addCleanup(self.dialog.summary_voice_preview.close)
@@ -93,6 +94,110 @@ class VoicePlanOverviewTest(unittest.TestCase):
             reference_sha256s=candidate.reference_sha256s,
             **changes,
         )
+
+    def test_voice_plan_appears_before_saved_audio_check_and_updates_in_place(self):
+        job, prepared, _result, _items = fixture(self.root / "prepared")
+        self.dialog._job = job
+        changes = OfflinePreparationChanges(1, 1, 0, 0, 0, 0, 0, 0)
+        self.dialog._prepare_input_with_changes = Mock(
+            return_value=(prepared, changes, None)
+        )
+        with patch.object(
+            self.dialog, "_render_voice_routes", wraps=self.dialog._render_voice_routes
+        ) as render:
+            self.dialog._voice_plan_finished(self.plan, None)
+
+            self.assertTrue(self.dialog.preparing_inputs)
+            self.assertFalse(self.dialog.voice_confirmation.isHidden())
+            self.assertFalse(self.dialog.continue_button.isEnabled())
+            self.assertFalse(self.dialog.narrator_choice.isEnabled())
+            self.assertFalse(self.dialog.game_narrator_button.isEnabled())
+            self.assertFalse(self.dialog.inspect_character_voice.isEnabled())
+            self.assertFalse(self.dialog.back_to_story_selection.isEnabled())
+            self.assertIn("Checking saved audio", self.dialog.change_summary.text())
+            self.dialog.continue_button.click()
+            self.dialog._confirm_voice_plan()
+            self.assertFalse(self.dialog.generating)
+            self.assertEqual(len(self.pool.tasks), 1)
+            self.dialog.voice_routes.setCurrentRow(0)
+            card = self.dialog.voice_routes.itemWidget(self.dialog.voice_routes.item(0))
+
+            self.pool.run_next()
+            self.application.processEvents()
+
+            self.assertFalse(self.dialog.preparing_inputs)
+            self.assertIs(self.dialog.generation_input(), prepared)
+            self.assertTrue(self.dialog.continue_button.isEnabled())
+            self.assertTrue(self.dialog.narrator_choice.isEnabled())
+            self.assertTrue(self.dialog.game_narrator_button.isEnabled())
+            self.assertTrue(self.dialog.inspect_character_voice.isEnabled())
+            self.assertTrue(self.dialog.back_to_story_selection.isEnabled())
+            self.assertIn("1 saved recordings", self.dialog.change_summary.text())
+            self.assertNotIn("Checking saved audio", self.dialog.change_summary.text())
+            self.assertIs(
+                self.dialog.voice_routes.itemWidget(self.dialog.voice_routes.item(0)),
+                card,
+            )
+            self.assertEqual(render.call_count, 1)
+            self.dialog.narrator_choice.setCurrentIndex(
+                self.dialog.narrator_choice.findData("preset:marius")
+            )
+            self.assertEqual(render.call_count, 2)
+            self.assertIn("Marius", self.row_values()[1])
+            self.assertEqual(self.dialog.continue_button.text(), "Apply voice changes")
+
+    def test_cancel_during_visible_voice_plan_waits_for_input_and_closes(self):
+        job, prepared, _result, _items = fixture(self.root / "prepared")
+        self.dialog._job = job
+        self.dialog._prepare_input_with_changes = Mock(
+            return_value=(
+                prepared,
+                OfflinePreparationChanges(1, 1, 0, 0, 0, 0, 0, 0),
+                None,
+            )
+        )
+        self.dialog._voice_plan_finished(self.plan, None)
+        self.assertEqual(self.dialog.cancel_button.text(), "Cancel preparation")
+        with patch.object(self.dialog, "reject") as reject:
+            self.dialog.cancel_button.click()
+            self.assertTrue(self.dialog.voice_cancel_event.is_set())
+            self.assertFalse(self.dialog.cancel_button.isEnabled())
+            self.assertIn("Cancelling", self.dialog.voice_confirmation_status.text())
+            reject.assert_not_called()
+
+            self.pool.run_next()
+            self.application.processEvents()
+
+            reject.assert_called_once()
+            self.assertIsNone(self.dialog.generation_input())
+            self.assertFalse(self.dialog.generating)
+
+    def test_unavailable_voice_choices_cannot_enable_generation_after_input_check(self):
+        job, prepared, _result, _items = fixture(self.root / "prepared")
+        self.dialog._job = job
+        self.dialog._prepare_input_with_changes = Mock(
+            return_value=(
+                prepared,
+                OfflinePreparationChanges(1, 1, 0, 0, 0, 0, 0, 0),
+                None,
+            )
+        )
+        with patch.object(
+            self.dialog,
+            "_voice_choices",
+            side_effect=ValueError("Voice is unavailable"),
+        ):
+            self.dialog._voice_plan_finished(self.plan, None)
+            self.assertTrue(self.dialog.preparing_inputs)
+            self.assertFalse(self.dialog.continue_button.isEnabled())
+
+            self.pool.run_next()
+            self.application.processEvents()
+
+            self.assertFalse(self.dialog._awaiting_voice_confirmation)
+            self.assertTrue(self.dialog.voice_confirmation.isHidden())
+            self.assertEqual(self.dialog.continue_button.text(), "Retry voice matching")
+            self.assertFalse(self.dialog.generating)
 
     def test_imported_voice_names_remain_distinct_in_confirmation(self):
         for name in ("Zuzanna", "Everecho"):

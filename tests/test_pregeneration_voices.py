@@ -11,15 +11,18 @@ from unittest.mock import patch
 
 from PIL import Image
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from tests.pocket_model_fixtures import pocket_model_readiness
 from tests.regular_file_fixtures import RegularFileGate, swap_at_acquisition
 from tests.story_fixtures import write_content
+from tests.symlink_support import symlink_or_skip
 from tests.voice_manifest_fixtures import (
     write_conflicting_manifest,
     write_manifest,
     write_player_candidate_manifest,
 )
+from vntts.content_revision import reusable_file_signature
 from vntts.pregeneration_queue import (
     PregenerationInputStore,
 )
@@ -34,6 +37,7 @@ from vntts.pregeneration_voices import (
     _load_registry,
     _materialize_voice_catalog,
     _reference_duration_seconds,
+    _VoiceReferenceFacts,
     player_voice_catalog_is_current,
     resolve_pregeneration_settings,
     validated_player_voice_candidates,
@@ -133,9 +137,9 @@ class VoicePlanStoreTest(unittest.TestCase):
                 audio.writeframes(b"\x00\x00" * 16_000)
             gate: RegularFileGate = {"path": path, "armed": True}
             with swap_at_acquisition(self, gate):
-                self.assertIsNone(_reference_duration_seconds([path]))
+                self.assertIsNone(_reference_duration_seconds(path))
             self.assertFalse(gate["armed"], "regular file must be swapped at open")
-            self.assertEqual(_reference_duration_seconds([path]), 1.0)
+            self.assertEqual(_reference_duration_seconds(path), 1.0)
 
     def test_registry_and_manifest_share_one_snapshot_and_recheck_final_bytes(self):
         for restore in (True, False):
@@ -213,6 +217,138 @@ class VoicePlanStoreTest(unittest.TestCase):
                 len(CharacterVoiceRegistry.from_file(manifest).unique_voices()), 3
             )
 
+    @pocket_model_readiness(True)
+    def test_reopened_plan_reuses_reference_validation_for_catalog_and_ranking(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "voices", job.story_index_sha256
+            )
+            references = tuple((manifest.parent / "references").glob("*.wav"))
+            self.assertTrue(references)
+            if any(reusable_file_signature(path) is None for path in references):
+                self.skipTest("Filesystem cannot safely reuse metadata-bound facts")
+            library = VoiceLibrary(root / "library")
+            first = VoicePlanStore(jobs, voice_library=library).create(
+                job, AppSettings(), manifest_path=manifest
+            )
+            # The first saved binding also becomes part of the published catalog.
+            VoicePlanStore(jobs, voice_library=library).create(
+                job, AppSettings(), manifest_path=manifest
+            )
+            with patch(
+                "vntts.pregeneration_voices.read_voice_reference_bytes",
+                wraps=read_voice_reference_bytes,
+            ) as read_reference:
+                second = VoicePlanStore(jobs, voice_library=library).create(
+                    job, AppSettings(), manifest_path=manifest
+                )
+            for reference in references:
+                self.assertEqual(
+                    sum(
+                        call.args[1].resolve() == reference.resolve()
+                        for call in read_reference.call_args_list
+                    ),
+                    1,
+                    reference,
+                )
+            self.assertEqual(
+                [group.group_id for group in second.groups],
+                [group.group_id for group in first.groups],
+            )
+            for candidate in second.groups[0].candidate_inventory:
+                if candidate.reference_sha256s:
+                    self.assertEqual(candidate.reference_duration_seconds, 0.1)
+
+    def test_reference_facts_invalidate_changed_files_and_voice_roots(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            voice = registry.unique_voices()[0]
+            reference = voice.references[0]
+            facts = _VoiceReferenceFacts()
+            first = facts.reference(voice, reference)
+            self.assertEqual(first[1], 1.0)
+            with patch(
+                "vntts.pregeneration_voices.read_voice_reference_bytes",
+                wraps=read_voice_reference_bytes,
+            ) as read_reference:
+                self.assertEqual(facts.reference(voice, reference), first)
+            self.assertEqual(
+                read_reference.call_count,
+                int(reusable_file_signature(reference) is None),
+            )
+            original_stat = reference.stat()
+            payload = reference.read_bytes()
+            reference.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+            os.utime(
+                reference, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns)
+            )
+            # A fresh planning attempt must recheck even restored timestamps.
+            refreshed = _VoiceReferenceFacts().reference(voice, reference)
+            self.assertNotEqual(first[0], refreshed[0])
+            if os.name != "nt":
+                self.assertEqual(facts.reference(voice, reference), refreshed)
+            with self.assertRaisesRegex(
+                VoiceManifestError, "within the manifest directory"
+            ):
+                facts.reference(
+                    replace(voice, reference_root=root / "unrelated"), reference
+                )
+            alias = voice.reference_root / "alias"
+            symlink_or_skip(alias, reference.parent, target_is_directory=True)
+            with self.assertRaisesRegex(VoiceManifestError, "symlink"):
+                facts.reference(voice, alias / reference.name)
+
+    def test_reference_facts_rehash_when_metadata_cannot_guard_reuse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            voice = registry.unique_voices()[0]
+            reference = voice.references[0]
+            original_stat = reference.stat()
+            facts = _VoiceReferenceFacts()
+            with patch(
+                "vntts.pregeneration_voices.reusable_file_signature", return_value=None
+            ):
+                first = facts.reference(voice, reference)
+                payload = reference.read_bytes()
+                reference.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+                os.utime(
+                    reference, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns)
+                )
+                second = facts.reference(voice, reference)
+            self.assertNotEqual(first[0], second[0])
+
+    def test_unowned_reference_facts_stream_and_catalog_keeps_owned_admission(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            registry = CharacterVoiceRegistry.from_file(write_manifest(root / "voices"))
+            registry = CharacterVoiceRegistry(
+                [
+                    replace(voice, reference_root=None)
+                    for voice in registry.unique_voices()
+                ]
+            )
+            voice = registry.unique_voices()[0]
+            facts = _VoiceReferenceFacts()
+            with patch(
+                "vntts.pregeneration_voices.read_voice_reference_bytes",
+                side_effect=AssertionError("Unowned facts must keep streaming"),
+            ):
+                self.assertEqual(facts.reference(voice, voice.references[0])[1], 1.0)
+            _materialize_voice_catalog(jobs, job, registry)
+            with patch.object(
+                facts,
+                "reference",
+                side_effect=AssertionError(
+                    "Unowned facts cannot admit catalog references"
+                ),
+            ):
+                _materialize_voice_catalog(jobs, job, registry, reference_facts=facts)
+
     def test_existing_voice_catalog_rechecks_sources_without_rewriting_references(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -273,7 +409,9 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(PregenerationVoiceError, "changed while"),
             ):
-                _materialize_voice_catalog(jobs, job, registry)
+                _materialize_voice_catalog(
+                    jobs, job, registry, reference_facts=_VoiceReferenceFacts()
+                )
             self.assertEqual(
                 list(
                     jobs.directory_for(job.job_id).glob("voice-catalog-*/manifest.json")

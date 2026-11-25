@@ -3820,7 +3820,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.addCleanup(dialog.deleteLater)
             dialog.prepare_again.click()
             for _ in range(5):
-                if dialog._awaiting_voice_confirmation:
+                if dialog._awaiting_voice_confirmation and not dialog.preparing_inputs:
                     break
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
@@ -3835,7 +3835,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.apply_narrator_settings(settings, voice_changed=True)
             dialog.prepare_again.click()
             for _ in range(5):
-                if dialog._awaiting_voice_confirmation:
+                if dialog._awaiting_voice_confirmation and not dialog.preparing_inputs:
                     break
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
