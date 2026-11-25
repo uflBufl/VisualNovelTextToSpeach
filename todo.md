@@ -197,14 +197,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach.
 - [ ] Re-render Character Story review, resolve Astra findings and risks, then run extractor UI tests and an independent code review. Integrate a released extractor revision into this project's pinned dependency only after the user authorizes the cross-repository workflow.
 
-## Qualify the existing audio-bank index migration on macOS
-
-- [ ] On the current Mac, reopen Stories after updating the app and confirm the
-      stale English audio-bank index triggers visible automatic import, preserves
-      prepared audio, and no longer reaches `Saved audio needs attention`. The
-      importer and background UI route are covered by automated tests; do not
-      overwrite the user's game-content cache merely for this validation.
-
 ## P0 - Play while offline audio is still preparing
 
 - [ ] Explain or correct the support bundle's `live_sequence_mode=off` while
