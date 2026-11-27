@@ -1024,9 +1024,14 @@ class VoiceAuditionQueueTest(unittest.TestCase):
                         side_effect=AssertionError("ready recheck acquired model"),
                     ),
                 ):
+                    source = group.candidates[0].source_id
+                    self.assertIsNone(
+                        session.peek(plan, group, source, revalidate=False)
+                    )
+                    readmit.assert_not_called()
                     for _ in range(2):
                         self.assertEqual(
-                            session.peek(plan, group, group.candidates[0].source_id),
+                            session.peek(plan, group, source),
                             None if mutate else first,
                         )
                     readmit.assert_called_once()

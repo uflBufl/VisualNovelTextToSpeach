@@ -475,7 +475,9 @@ class VoiceAuditionSession:
         candidate_source_id: str,
         *,
         text: str | None = None,
+        revalidate: bool = True,
     ) -> VoiceAuditionPreview | None:
+        """Check admitted audio; only workers may opt into cache revalidation."""
         key = _context_key(plan, group, candidate_source_id, text)
         with self.owner._lock:
             ready = self._ready.get(key)
@@ -484,7 +486,9 @@ class VoiceAuditionSession:
         try:
             if self.owner.service.authorization_unchanged(ready[1]):
                 return ready[0]
-            # Adding a shared WAV link changes ctime; re-admit once, without rendering.
+            if not revalidate:
+                return None
+            # Hard-link creation can change ctime without changing the audio.
             stamp = self.owner.service.authorization_stamp(
                 plan, group, candidate_source_id
             ) + self.owner.service.audio_stamp(ready[0])
@@ -501,9 +505,11 @@ class VoiceAuditionSession:
                         self._ready[key] = ready[0], stamp
                         return ready[0]
         except OSError, ValueError, VoiceAuditionError:
-            pass
+            if not revalidate:
+                return None
         with self.owner._lock:
-            self._ready.pop(key, None)
+            if self._ready.get(key) is ready:
+                self._ready.pop(key)
         return None
 
     @measure_audition_phase("restore-cache")

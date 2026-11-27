@@ -71,7 +71,12 @@ from vntts.pregeneration_setup import (
     load_verified_story_index_document,
 )
 from vntts.source_audio_process import SourceAudioProcess
-from vntts.source_audio_progress import SourceAudioProgress, SourceAudioProgressReader
+from vntts.source_audio_progress import (
+    SOURCE_AUDIO_STAGES,
+    STORY_IMPORT_STAGES,
+    SourceAudioProgress,
+    SourceAudioProgressReader,
+)
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
@@ -235,6 +240,8 @@ class Reverse1999GameImporter:
         self,
         cancel_event: Cancellation | None = None,
         installation_root: PathInput | None = None,
+        *,
+        progress: Callable[[SourceAudioProgress], None] | None = None,
     ) -> GameContent:
         command = self.command()
         package_version: str | None
@@ -290,7 +297,9 @@ class Reverse1999GameImporter:
             self._record(
                 "import-roots", reason="no usable saved source; auto-discovery required"
             )
-        story_index, result = self._replace_story_catalog(arguments, cancel_event)
+        story_index, result = self._replace_story_catalog(
+            arguments, cancel_event, progress
+        )
         if roots is None:
             roots = self._previous_installation()
         if roots is not None:
@@ -300,7 +309,10 @@ class Reverse1999GameImporter:
         return result
 
     def _replace_story_catalog(
-        self, arguments: Sequence[str], cancel_event: Cancellation | None
+        self,
+        arguments: Sequence[str],
+        cancel_event: Cancellation | None,
+        progress: Callable[[SourceAudioProgress], None] | None = None,
     ) -> tuple[Path, GameContent]:
         """Run the extractor as one rollback-safe story-catalog replacement."""
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
@@ -314,8 +326,22 @@ class Reverse1999GameImporter:
                 raise GameContentImportError(
                     f"Unable to preserve the previous story catalog: {error}"
                 ) from error
+
+        def catalog_progress(processed: int, total: int) -> None:
+            self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
+            if progress is not None:
+                progress(SourceAudioProgress("catalog", processed, total, "analyzing"))
+
         try:
-            self._run(arguments, cancel_event)
+            if progress is None:
+                self._run(arguments, cancel_event)
+            else:
+                self._run(
+                    (*arguments, "--progress-stdout"),
+                    cancel_event,
+                    scan_progress=progress,
+                    progress_stages=STORY_IMPORT_STAGES,
+                )
             if not story_index.is_file():
                 self._record(
                     "import-result", outcome="missing-story-index", index=story_index
@@ -323,7 +349,13 @@ class Reverse1999GameImporter:
                 raise GameContentImportError(
                     "The game importer finished without producing story content."
                 )
-            result = inspect_story_index(story_index, provider_id=self.provider_id)
+            catalog_progress(0, 0)
+            result = inspect_story_index(
+                story_index,
+                provider_id=self.provider_id,
+                catalog_progress=catalog_progress,
+            )
+            self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
         except BaseException as error:
             if backup.is_file():
                 attempt_cleanup(
@@ -336,6 +368,10 @@ class Reverse1999GameImporter:
                     lambda: story_index.unlink(missing_ok=True),
                     description="story catalog rollback",
                     primary_error=error,
+                )
+            if isinstance(error, PregenerationSetupError):
+                self._raise_if_cancelled(
+                    cancel_event, message="Game import was cancelled"
                 )
             raise
         try:
@@ -1554,6 +1590,7 @@ class Reverse1999GameImporter:
         environment: dict[str, str] | None = None,
         scan_progress: Callable[[SourceAudioProgress], None] | None = None,
         source_audio: bool = False,
+        progress_stages: tuple[str, ...] = SOURCE_AUDIO_STAGES,
     ) -> tuple[str, str]:
         self._raise_if_cancelled(cancel_event, message="Game import was cancelled")
         started = time.monotonic()
@@ -1587,7 +1624,7 @@ class Reverse1999GameImporter:
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
         stdout, stderr = self._communicate(
-            process, cancel_event, scan_progress, started, stop_process
+            process, cancel_event, scan_progress, started, stop_process, progress_stages
         )
         self._record(
             "process-exit",
@@ -1622,10 +1659,13 @@ class Reverse1999GameImporter:
         scan_progress: Callable[[SourceAudioProgress], None] | None,
         started: float,
         stop_process: Callable[[], None],
+        progress_stages: tuple[str, ...],
     ) -> tuple[str, str]:
         cancelled = False
         reader: SourceAudioProgressReader | None = None
-        report_progress = self._source_audio_progress_reporter(scan_progress, started)
+        report_progress = self._source_audio_progress_reporter(
+            scan_progress, started, progress_stages
+        )
 
         try:
             with (
@@ -1675,26 +1715,38 @@ class Reverse1999GameImporter:
         self,
         scan_progress: Callable[[SourceAudioProgress], None] | None,
         started: float,
+        stages: tuple[str, ...] = SOURCE_AUDIO_STAGES,
     ) -> Callable[[SourceAudioProgress], None]:
         previous_progress: SourceAudioProgress | None = None
 
         def report_progress(current: SourceAudioProgress) -> None:
             nonlocal previous_progress
-            if scan_progress is None:
+            if scan_progress is None or current.stage not in stages:
                 return
             if current == previous_progress:
                 return
+            gaining_total = (
+                stages == STORY_IMPORT_STAGES
+                and previous_progress is not None
+                and previous_progress.total == 0
+                and current.processed == 0
+                and current.total > 0
+            )
             if previous_progress is not None and (
                 current.stage == previous_progress.stage
                 and (
-                    current.total != previous_progress.total
+                    (current.total != previous_progress.total and not gaining_total)
                     or current.processed < previous_progress.processed
                     or previous_progress.state == "publishing"
                     and current.state != "publishing"
                 )
                 or current.stage != previous_progress.stage
-                and (previous_progress.stage, current.stage)
-                != ("references", "portraits")
+                and (
+                    stages.index(current.stage) <= stages.index(previous_progress.stage)
+                    if stages == STORY_IMPORT_STAGES
+                    else (previous_progress.stage, current.stage)
+                    != ("references", "portraits")
+                )
             ):
                 return
             if (
@@ -1704,7 +1756,9 @@ class Reverse1999GameImporter:
                 and previous_progress.state != "publishing"
             ):
                 self._record(
-                    "source-audio-progress",
+                    "story-import-progress"
+                    if stages == STORY_IMPORT_STAGES
+                    else "source-audio-progress",
                     command_kind=current.stage,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                     cache_state={

@@ -512,6 +512,7 @@ class StoryCatalog:
         *,
         story: StoryIndexDocument | None = None,
         source_semantics_valid: bool = True,
+        progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self._check_replaceable(document["schema_version"])
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,7 +536,7 @@ class StoryCatalog:
                 self._write(connection, document)
                 if story is not None:
                     self._write_records(
-                        connection, document, story, source_semantics_valid
+                        connection, document, story, source_semantics_valid, progress
                     )
                 connection.commit()
             _sync_regular_file(temporary)
@@ -553,6 +554,15 @@ class StoryCatalog:
         raw: bytes, expected: dict[str, object]
     ) -> dict[str, object]:
         try:
+            # The story writer emits sorted UTF-8 JSON. Exact bytes prove the
+            # match without parsing and serializing the record again.
+            if raw == (
+                json.dumps(
+                    expected, ensure_ascii=False, sort_keys=True, allow_nan=False
+                ).encode("utf-8")
+                + b"\n"
+            ):
+                return expected
             actual = decode_json(raw)
             if not is_json_object(actual) or canonical_document_sha256(
                 actual
@@ -573,9 +583,13 @@ class StoryCatalog:
         document: Mapping[str, object],
         story: StoryIndexDocument,
         semantic_valid: bool,
+        progress: Callable[[int, int], None] | None = None,
     ) -> None:
         if type(semantic_valid) is not bool or story.path.is_symlink():
             raise StoryCatalogError("Story catalog source identity is invalid")
+        total = len(story.records)
+        if progress is not None:
+            progress(0, total)
         from vntts.chapter_voice_preload import (
             ChapterVoicePreloader,
             _normalize,
@@ -656,6 +670,8 @@ class StoryCatalog:
                     digest.update(raw)
                     offset += len(raw)
                     count += 1
+                    if progress is not None and (count % 1024 == 0 or count == total):
+                        progress(count, total)
                 after = os.fstat(stream.fileno())
             current = story.path.stat(follow_symlinks=False)
         except OSError as error:

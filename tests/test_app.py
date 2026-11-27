@@ -1945,6 +1945,7 @@ class TrayApplicationTest(unittest.TestCase):
         create_dialog.assert_called_once_with(
             tray_application.settings,
             audition_service=ANY,
+            model_setup=tray_application.model_setup,
             generator=ANY,
             game_narrator_chooser=tray_application._open_preparation_narrator,
             automatic_activation=True,
@@ -2145,6 +2146,7 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application.dashboard,
                 preview_service=ANY,
                 use_offline_engine=False,
+                model_setup=tray_application.model_setup,
             )
             tray_application._narrator_finished(QDialog.DialogCode.Rejected)
         controller.start.assert_not_called()
@@ -2183,6 +2185,7 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application.dashboard,
                 preview_service=ANY,
                 use_offline_engine=True,
+                model_setup=tray_application.model_setup,
             )
             factory.return_value.set_voice_context.assert_called_once_with(
                 None,
@@ -3659,6 +3662,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.dashboard,
             preview_service=ANY,
             use_offline_engine=False,
+            model_setup=tray_application.model_setup,
         )
         dialog.set_voice_context.assert_called_once_with(character="Selone")
         dialog.set_recovery_context.assert_called_once_with("Selone", resume_live=False)
@@ -7262,6 +7266,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.dashboard,
             preview_service=ANY,
             use_offline_engine=False,
+            model_setup=tray_application.model_setup,
         )
         controller.start.assert_not_called()
         controller.available_voice_choices.assert_not_called()

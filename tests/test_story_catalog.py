@@ -53,6 +53,19 @@ class StoryCatalogTest(unittest.TestCase):
         self.first = inspect_story_index(self.path)
         _cached_story_index_document.cache_clear()
 
+    def test_cold_index_reports_catalog_rows_and_warm_index_reuses_them(self):
+        self.catalog.unlink()
+        counts = []
+        inspect_story_index(
+            self.path, catalog_progress=lambda done, total: counts.append((done, total))
+        )
+        self.assertEqual(counts, [(0, 3), (3, 3)])
+
+        def unexpected_progress(_done, _total):
+            self.fail("Warm story catalog rebuilt the dialogue index")
+
+        inspect_story_index(self.path, catalog_progress=unexpected_progress)
+
     def test_restart_loads_summaries_and_only_selected_line_ids(self):
         original = StoryCatalog.line_ids
         with (

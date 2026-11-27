@@ -1287,6 +1287,77 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         self.assertEqual(content.provider_id, "reverse1999")
         self.assertEqual(content.game, "Reverse: 1999")
 
+    def test_story_import_forwards_real_progress_in_stage_order(self):
+        observed = []
+        script = (
+            "import json,sys; assert '--progress-stdout' in sys.argv; "
+            "emit=lambda stage,n,total: print('R1999_PROGRESS '+json.dumps({"
+            "'schema':'r1999.source-audio-progress','schema_version':1,"
+            "'stage':stage,'processed':n,'total':total,'state':'analyzing'}),flush=True); "
+            "emit('configuration',0,0); emit('banks',0,0); emit('banks',0,13); "
+            "emit('banks',6,13); emit('banks',3,13); emit('banks',8,12); "
+            "emit('duration',3,8); emit('story-assets',1,4); emit('banks',13,13)"
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_story_index(output / "reverse1999")
+            importer = Reverse1999GameImporter(
+                command=(sys.executable, "-c", script),
+                output_root=output,
+                installation_file=output / "installation.json",
+            )
+            importer.import_installed(progress=observed.append)
+
+        self.assertEqual(
+            [(value.stage, value.processed, value.total) for value in observed],
+            [
+                ("configuration", 0, 0),
+                ("banks", 0, 0),
+                ("banks", 0, 13),
+                ("banks", 6, 13),
+                ("story-assets", 1, 4),
+                ("catalog", 0, 0),
+            ],
+        )
+
+    def test_cancelling_catalog_indexing_restores_previous_story_bytes(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            story = write_story_index(output / "reverse1999")
+            original = story.read_bytes()
+            first_line, records = original.split(b"\n", 1)
+            metadata = json.loads(first_line)
+            metadata["game_version"] = "updated"
+            replacement = story.with_name("updated.jsonl")
+            replacement.write_bytes((json.dumps(metadata) + "\n").encode() + records)
+            cancelled = Event()
+            importer = Reverse1999GameImporter(
+                command=("extractor",),
+                output_root=output,
+                installation_file=output / "installation.json",
+            )
+
+            def progress(value):
+                if value.stage == "catalog" and value.total:
+                    cancelled.set()
+
+            with (
+                patch.object(
+                    importer,
+                    "_run",
+                    side_effect=lambda *_args, **_kwargs: replacement.replace(story),
+                ),
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=output / "catalog.sqlite3",
+                ),
+                self.assertRaises(GameContentImportCancelled),
+            ):
+                importer.import_installed(cancelled, progress=progress)
+            self.assertEqual(story.read_bytes(), original)
+            self.assertFalse((output / "catalog.sqlite3").exists())
+
     def test_failed_import_exposes_last_plain_error_line(self):
         process = FinishedProcess(
             2,

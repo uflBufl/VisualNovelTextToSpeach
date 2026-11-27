@@ -9,6 +9,8 @@ from typing import IO
 from vntts.json_types import decode_json
 
 PROGRESS_PREFIX = "R1999_PROGRESS "
+SOURCE_AUDIO_STAGES = ("duration", "semantics", "references", "portraits")
+STORY_IMPORT_STAGES = ("configuration", "banks", "story-assets", "artifacts")
 
 
 @dataclass(frozen=True)
@@ -34,11 +36,13 @@ def parse_source_audio_progress(payload: str) -> SourceAudioProgress | None:
         document.get("schema") != "r1999.source-audio-progress"
         or type(document.get("schema_version")) is not int
         or document["schema_version"] != 1
-        or stage not in ("duration", "semantics", "references", "portraits")
+        or stage not in (*SOURCE_AUDIO_STAGES, *STORY_IMPORT_STAGES)
         or state not in ("analyzing", "publishing")
         or type(processed) is not int
         or type(total) is not int
         or not 0 <= processed <= total <= 2**31 - 1
+        or stage in ("configuration", "artifacts")
+        and total != 0
         or state == "publishing"
         and stage != "portraits"
         and processed != total

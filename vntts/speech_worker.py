@@ -40,7 +40,9 @@ from vntts.audio_output import (
     stream_underflowed,
 )
 from vntts.cleanup import attempt_cleanup, cleanup_on_exit
+from vntts.huggingface_assets import AssetProgress
 from vntts.json_types import is_json_object
+from vntts.model_activity import ModelActivity, begin_model_activity
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.path_safety import contained_path
 from vntts.playback import (
@@ -259,6 +261,35 @@ def _required_text(document: Mapping[str, object], field: str) -> str:
     if not isinstance(value, str):
         raise TTSConfigurationError(f"Speech worker {field} must be text")
     return value
+
+
+_ASSET_COUNTS = (
+    "completed_bytes",
+    "total_bytes",
+    "completed_files",
+    "total_files",
+)
+
+
+def _asset_progress_document(event: AssetProgress) -> FrameDocument:
+    return {
+        "type": "asset_transfer",
+        "phase": event.phase,
+        "asset": event.asset,
+        **{name: getattr(event, name) for name in _ASSET_COUNTS},
+    }
+
+
+def _asset_progress_value(document: Mapping[str, object]) -> AssetProgress:
+    counts: list[int | None] = []
+    for name in _ASSET_COUNTS:
+        value = document.get(name)
+        if value is not None and (type(value) is not int or value < 0):
+            raise TTSConfigurationError(f"Speech worker {name} must be nonnegative")
+        counts.append(value)
+    return AssetProgress(
+        _required_text(document, "phase"), _required_text(document, "asset"), *counts
+    )
 
 
 def _required_integer(document: Mapping[str, object], field: str) -> int:
@@ -872,6 +903,7 @@ def worker_main(
         registry_document = _registry_document(document["registry"])
         registry = _registry_from_document(registry_document)
         options = _worker_options(document.get("options"))
+        asset_progress_lock = threading.Lock()
         for key, value in tuple(options.items()):
             if key.endswith("_directory") and value is not None:
                 if not isinstance(value, (str, Path)):
@@ -885,11 +917,19 @@ def worker_main(
         ):
 
             def report_asset(message: str) -> None:
-                _write_frame(
-                    protocol_out, {"type": "asset_progress", "message": message}
-                )
+                with asset_progress_lock:
+                    _write_frame(
+                        protocol_out, {"type": "asset_progress", "message": message}
+                    )
 
             options["asset_progress"] = report_asset
+        if backend_name == "qwen-tts" and document.get("model_progress") is True:
+
+            def report_model(event: AssetProgress) -> None:
+                with asset_progress_lock:
+                    _write_frame(protocol_out, _asset_progress_document(event))
+
+            options["model_progress"] = report_model
         with redirect_stdout(sys.stderr):
             candidate = _backend_factory(backend_classes[backend_name])(
                 registry, **options
@@ -1318,8 +1358,15 @@ class IsolatedSpeechBackend:
                 self.name == "qwen-tts" and sys.platform == "darwin"
             ):
                 self._runtime_use = claim_runtime("moss-tts", self.runtime_root)
+        activity = (
+            begin_model_activity(
+                self.name, AssetProgress("resolving", "Qwen3-TTS model")
+            )
+            if self.name == "qwen-tts"
+            else None
+        )
         try:
-            self._launch_worker(cancellation=cancellation)
+            self._launch_worker(cancellation=cancellation, model_activity=activity)
             if self.deferred_startup:
                 if self._closed or (cancellation is not None and cancellation()):
                     raise TTSSynthesisError(
@@ -1343,6 +1390,9 @@ class IsolatedSpeechBackend:
                 finally:
                     self._runtime_use = None
             raise
+        finally:
+            if activity is not None:
+                activity.close()
 
     def _report_loading_assets(self, environment: Mapping[str, str]) -> None:
         if self.startup_progress is not None:
@@ -1357,7 +1407,12 @@ class IsolatedSpeechBackend:
                 else f"Loading speech model assets (cache: {cache})..."
             )
 
-    def _launch_worker(self, *, cancellation: Callable[[], bool] | None = None) -> None:
+    def _launch_worker(
+        self,
+        *,
+        cancellation: Callable[[], bool] | None = None,
+        model_activity: ModelActivity | None = None,
+    ) -> None:
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
         from vntts.model_assets import ModelAssetManager
@@ -1410,6 +1465,7 @@ class IsolatedSpeechBackend:
                 "options": self._json_worker_options(),
                 "asset_progress": self.name in {"moss-tts", "qwen-tts"}
                 and self.startup_progress is not None,
+                "model_progress": self.name == "qwen-tts",
             },
         )
         deadline = monotonic() + self.startup_timeout
@@ -1436,6 +1492,11 @@ class IsolatedSpeechBackend:
             if message.get("type") == "asset_progress":
                 if self.startup_progress is not None:
                     self.startup_progress(_required_text(message, "message"))
+                continue
+            if message.get("type") == "asset_transfer":
+                event = _asset_progress_value(message)
+                if model_activity is not None:
+                    model_activity.report(event)
                 continue
             break
         if message.get("type") != "health":

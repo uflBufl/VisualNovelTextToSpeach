@@ -3,11 +3,12 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, get_ident
 from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import Qt, QThreadPool, QTimer  # noqa: E402
 from PySide6.QtGui import QKeySequence, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -321,6 +322,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.set_current_voice(replace(plan, groups=(saved_group,)), "Saved voice")
             panel.start(plan, group_id=group.group_id)
             self.assertTrue(panel.current_voice_box.isHidden())
+            self.assertFalse(panel.reference_transcript_hint.isHidden())
+            self.assertIn(
+                "improve Qwen voice cloning", panel.reference_transcript_hint.text()
+            )
             self.assertTrue(panel.a_original.isEnabled())
             self.assertTrue(panel.a_play.isEnabled())
             self.assertFalse(panel.reference_model.item(0, 0).icon().isNull())
@@ -735,7 +740,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 group.candidates[0].source_id: first,
                 group.candidates[1].source_id: second,
             }
-            service.peek.side_effect = lambda _plan, _group, source, *, text: ready.get(
+            service.peek.side_effect = lambda _plan, _group, source, **_: ready.get(
                 source
             )
             for index, recording in ((1, second), (0, first)):
@@ -761,7 +766,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel._set_decision_actions(False)
             self.assertFalse(panel.a_play.isEnabled())
 
-    def test_prefetched_sample_is_playable_during_render_but_needs_audition(self):
+    def test_cached_sample_is_playable_during_render_but_needs_audition(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -775,7 +780,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=plan.groups[0].group_id)
-            self.assertLessEqual(len(service.prefetch.call_args.args[1]), 3)
+            service.prefetch.assert_not_called()
             panel.play_a()
             select_reference(panel, 1)
             service.peek.return_value = generated_preview(root)
@@ -833,7 +838,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan, group_id=plan.groups[0].group_id)
             self.assertIs(panel.preview_service, replacement)
             old.new_session.assert_called_once_with()
-            replacement.prefetch.assert_called_once()
+            replacement.prefetch.assert_not_called()
 
     def test_latest_play_request_starts_after_canceled_worker_finishes(self):
         with TemporaryDirectory() as directory:
@@ -911,36 +916,74 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             service.generate.return_value = generated_preview(root)
             service.supports_prefetch = True
             service.peek.return_value = None
-            service.preparation_progress.return_value = "Downloading the Qwen model..."
             panel = VoiceAuditionPanel(
                 Mock(), preview_service=service, player=Mock(), thread_pool=pool
             )
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(plan, group_id=second.group_id)
-            self.assertEqual(
-                service.prefetch.call_args.args[1][0],
-                (second, second.candidates[0].source_id, second.sample_text),
-            )
-            self.assertTrue(
-                all(
-                    request[0] == second
-                    for request in service.prefetch.call_args.args[1]
-                )
-            )
+            service.prefetch.assert_not_called()
+            service.generate.assert_not_called()
             self.assertEqual(panel.preview_text.toPlainText(), second.sample_text)
-            panel._refresh_runtime()
-            self.assertEqual(
-                panel.preview_progress.text(), "Downloading the Qwen model..."
-            )
-            service.preparation_progress.return_value = None
-            panel._refresh_runtime()
-            self.assertEqual(panel.preview_progress.text(), "")
             panel.play_a()
             self.finish_task(pool.tasks.pop())
             self.assertEqual(
                 service.generate.call_args.kwargs["text"], second.sample_text
             )
+
+    def test_typing_waits_for_preview_click_and_generation_leaves_qt_responsive(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            service, player, pool = Mock(supports_prefetch=True), Mock(), QThreadPool()
+            service.peek.return_value = None
+            started, release = Event(), Event()
+            gui_thread = get_ident()
+            recording = generated_preview(root)
+
+            def generate(*_args, **_kwargs):
+                self.assertNotEqual(get_ident(), gui_thread)
+                started.set()
+                self.assertTrue(release.wait(5))
+                return recording
+
+            service.generate.side_effect = generate
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=service, player=player, thread_pool=pool
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            try:
+                panel.start(plan, group_id=group.group_id)
+                select_reference(panel, 1)
+                panel.game_phrase_button.click()
+                panel.preview_text.selectAll()
+                QTest.keyClicks(panel.preview_text, "A custom preview.")
+                QTest.qWait(200)
+                service.prefetch.assert_not_called()
+                service.generate.assert_not_called()
+
+                panel.a_play.click()
+                self.assertTrue(started.wait(2))
+                callbacks = []
+                QTimer.singleShot(0, lambda: callbacks.append(panel.a_play.text()))
+                self.application.processEvents()
+                self.assertTrue(callbacks)
+                self.assertTrue(panel.preview_runner.active)
+                player.play_bytes.assert_not_called()
+                self.assertEqual(
+                    service.generate.call_args.args[2], group.candidates[1].source_id
+                )
+                self.assertEqual(
+                    service.generate.call_args.kwargs["text"], "A custom preview."
+                )
+            finally:
+                release.set()
+                self.assertTrue(pool.waitForDone(5000))
+                self.application.processEvents()
+            player.play_bytes.assert_called_once()
+            service.prefetch.assert_not_called()
 
     def test_unknown_language_keeps_story_phrase_as_default(self):
         with TemporaryDirectory() as directory:
@@ -1553,17 +1596,14 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 thread_pool=pool,
             )
             previous = panel.preview_service
-            self.assertFalse(panel.runtime_timer.isActive())
             panel.shutdown()
             panel.start(plan, group_id=plan.groups[0].group_id)
             panel.a_play.click()
-            self.assertTrue(panel.runtime_timer.isActive())
             self.assertIsNot(panel.preview_service, previous)
             self.assertFalse(panel.preview_service._closed)
             self.assertTrue(pool.tasks)
             panel.preview_runner.cancel()
             panel.shutdown()
-            self.assertFalse(panel.runtime_timer.isActive())
 
     def test_multimedia_output_is_lazy_when_no_audition_is_started(self):
         with (

@@ -323,7 +323,7 @@ def create_backend(
 
         pinned_model = QWEN_CUDA_MODEL if sys.platform == "win32" else QWEN_MODEL
         if model_name not in {None, pinned_model}:
-            raise ValueError(f"Qwen experimental backend uses {pinned_model}")
+            raise ValueError(f"Qwen backend uses {pinned_model}")
         return _require_benchmark_backend(
             create_qwen_worker_backend(
                 registry,

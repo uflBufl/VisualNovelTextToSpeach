@@ -178,20 +178,6 @@ Evidence: `vntts-support (31).zip` and diagnostic session
       not a permanent reachability exemption. Preserve revision forwarding,
       CUDA/BF16 refusal, dtype/attention options and actual generated audio.
 
-## Adopt Qwen for offline story preparation
-
-- [ ] On the Windows RTX 2070 SUPER, select Qwen and a character voice, type a
-      fresh sentence in the voice preview and click Preview. Confirm it speaks
-      that sentence. If synthesis fails, export the support report with the
-      first worker traceback.
-
-- [ ] Listen to transcriptless Qwen game-voice samples on Mac and Windows before
-      choosing it as the default offline engine. The speaker-only conditioning
-      path is functional but may preserve expression less well than a reference
-      with verified spoken words.
-- [ ] On the RTX 2070 Super 8 GB, generate the fixed character corpus with the Windows Qwen 0.6B runtime. Compare its voices with MOSS, confirm memory use and complete lines, and retain the audio and timings. The Mac Qwen 1.7B comparison has passed listening review but does not establish Windows 0.6B quality.
-- [ ] Before making Qwen the preferred offline engine, review the pinned dependencies' CI exceptions for release and complete the Windows quality check. Then verify narrator setup and story preparation with Qwen and keep MOSS available.
-
 ## Active - Review remaining source-extraction UI
 
 - [ ] In `reverse1999-extractor`, reduce empty Character Story table/portrait space so review and A/B actions are easier to reach.

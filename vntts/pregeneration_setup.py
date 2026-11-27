@@ -300,6 +300,7 @@ def inspect_story_index(
     provider_id: str = "local-story-index",
     source_audio_evidence_payload: bytes | None = None,
     game_id: str | None = None,
+    catalog_progress: Callable[[int, int], None] | None = None,
 ) -> GameContent:
     started = perf_counter()
     cpu_started = process_time()
@@ -364,7 +365,9 @@ def inspect_story_index(
                 else "miss"
             )
             if persistent_cache:
-                _save_story_catalog(content, evidence_sha256, document)
+                _save_story_catalog(
+                    content, evidence_sha256, document, progress=catalog_progress
+                )
         content = _with_game_id(content, _adapter_game_id(content.game, provider_id))
         content = _with_game_id(content, game_id)
     except (OSError, StoryIndexError, ValueError, PregenerationSetupError) as error:
@@ -558,6 +561,8 @@ def _save_story_catalog(
     content: GameContent,
     evidence_sha256: str,
     story: StoryIndexDocument | None = None,
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256, evidence_sha256)
@@ -574,6 +579,7 @@ def _save_story_catalog(
             },
             story=story,
             source_semantics_valid=_story_semantics_valid(story, evidence_sha256),
+            progress=progress,
         )
     except OSError, ValueError:
         logging.getLogger(__name__).warning(

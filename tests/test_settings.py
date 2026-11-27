@@ -172,8 +172,9 @@ class SettingsTest(unittest.TestCase):
                             (settings, revision)
                         ),
                     )
-                    self.assertEqual(loaded, AppSettings())
-                    self.assertEqual(snapshots, [(AppSettings(), None)])
+                    defaults = AppSettings(offline_speech_backend="moss-tts")
+                    self.assertEqual(loaded, defaults)
+                    self.assertEqual(snapshots, [(defaults, None)])
                     self.assertEqual(fallbacks, [True])
 
     def test_explicit_home_path_round_trips_between_save_and_load(self):
@@ -692,7 +693,7 @@ class SettingsTest(unittest.TestCase):
 
             settings = load_app_settings(path, environment={}, warn=warnings.append)
 
-        self.assertEqual(settings, AppSettings())
+        self.assertEqual(settings, AppSettings(offline_speech_backend="moss-tts"))
         self.assertIn("unsupported settings schema version", warnings[0])
 
     def test_invalid_fields_and_environment_values_do_not_prevent_startup(self):

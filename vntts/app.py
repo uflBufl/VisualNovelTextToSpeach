@@ -125,6 +125,7 @@ from vntts.macos import (
 )
 from vntts.macos_ui import MacOSPermissionsDialog
 from vntts.model_assets import ModelDownloadCancelled
+from vntts.model_download_ui import QWEN_BACKEND, QwenModelSetup
 from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr import (
     CaptureRegionNeedsCalibration,
@@ -420,10 +421,12 @@ class SettingsDialog(QDialog):
         ]
         | None = None,
         moss_runtime_action: QAction | None = None,
+        model_setup: QwenModelSetup | None = None,
     ) -> None:
         super().__init__(parent)
         self.remembered_capture_areas = remembered_capture_areas
         self.moss_runtime_action = moss_runtime_action
+        self.model_setup = model_setup
         self.voice_library = voice_library or application_voice_library()
         self.dialogue_region = dialogue_region
         self.story_region = story_region
@@ -980,6 +983,12 @@ class SettingsDialog(QDialog):
             self._update_moss_runtime_controls()
         speech_form.addRow("Offline preparation engine", self.offline_speech_backend)
         speech_form.addRow("Offline preparation model", self.offline_tts_model)
+        if self.model_setup is not None and packaged_speech_backend_available(
+            QWEN_BACKEND
+        ):
+            model_downloads = QPushButton("Model downloads…")
+            model_downloads.clicked.connect(self.model_setup.open_dialog)
+            speech_form.addRow("Models", model_downloads)
         self.narrator_voice = QLabel()
         self.narrator_voice.setWordWrap(True)
         self.narrator_voice.setAccessibleName("Selected narrator voice")
@@ -1679,6 +1688,7 @@ class SettingsDialog(QDialog):
             self,
             voice_library=self.voice_library,
             use_offline_engine=offline_qwen,
+            model_setup=self.model_setup,
             voice_binding_rollback=self._voice_binding_rollback,
         )
         dialog.pocket_setup.readyChanged.connect(self.pocket_setup.refresh)
@@ -2349,6 +2359,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._notification_recovery: str | None = None
         self._background_notification_shown = False
+        self.model_setup = QwenModelSetup(self)
         self.dashboard = ControlDashboard(
             self._runtime_settings(), window_provider=list_windows
         )
@@ -4877,6 +4888,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = SettingsDialog(
             self.settings,
             moss_runtime_action=self.moss_runtime_action,
+            model_setup=self.model_setup,
             voice_library=self.controller.voice_library,
             dialogue_region=dialogue_region,
             remembered_capture_areas=remembered_capture_areas(
@@ -5013,6 +5025,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = OfflineAudioPreparationDialog(
             self.settings,
             audition_service=audition_session,
+            model_setup=self.model_setup,
             generator=OfflineGenerationWorker(
                 backend_factory=self.moss_runtime.benchmark_backend,
                 retain_isolated_backend=True,
@@ -5640,6 +5653,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard,
             preview_service=self.voice_auditions.session(),
             use_offline_engine=for_preparation,
+            model_setup=self.model_setup,
         )
         dialog.pocket_setup.readyChanged.connect(self._pocket_model_setup_finished)
         if for_preparation and self.pregeneration_dialog is not None:
@@ -7079,6 +7093,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _cancel_shutdown_tasks(self) -> None:
         self._controller_busy = True
+        self.model_setup.shutdown()
         self._cancel_live_stop_continuation()
         self._live_stop_generation = None
         self.live_stop_runner.cancel()

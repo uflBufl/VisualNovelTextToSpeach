@@ -73,6 +73,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoicePlan,
 )
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.source_audio_progress import SourceAudioProgress  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
@@ -1735,6 +1736,22 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertTrue(dialog.importing)
                 self.assertTrue(dialog.discovery_panel.isVisible())
                 self.assertIn("Updating", dialog.discovery_message.text())
+                self.assertEqual(dialog.discovery_progress.maximum(), 0)
+                dialog.importProgress.emit(
+                    SourceAudioProgress("banks", 100, 1000, "analyzing")
+                )
+                self.assertEqual(dialog.discovery_progress.maximum(), 1000)
+                self.assertEqual(dialog.discovery_progress.value(), 100)
+                self.assertIn(
+                    "100 of 1,000 audio bank files", dialog.discovery_message.text()
+                )
+                dialog.importProgress.emit(
+                    SourceAudioProgress("catalog", 0, 0, "analyzing")
+                )
+                self.assertEqual(dialog.discovery_progress.maximum(), 0)
+                self.assertIn(
+                    "Building the Stories catalog", dialog.discovery_message.text()
+                )
                 self.assertEqual(len(pool.tasks), 1)
                 self.run_next_task(pool)
 
@@ -1870,7 +1887,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertFalse(dialog.discovery_runner.active)
             self.assertTrue(dialog.importing)
-            self.assertFalse(dialog.discovery_panel.isVisible())
+            self.assertTrue(dialog.discovery_panel.isVisible())
             self.assertTrue(dialog.continue_button.isHidden())
             self.assertEqual(len(pool.tasks), 2)
             pool.tasks.pop(1).run()
@@ -5277,7 +5294,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         importer = Mock()
         importer.availability.return_value = ImporterAvailability(True, "Ready")
 
-        def import_installed(cancel_event, installation_root):
+        def import_installed(cancel_event, installation_root, *, progress):
             self.assertIsNone(installation_root)
             if cancel_event.is_set():
                 raise GameContentImportCancelled("cancelled")
@@ -5355,7 +5372,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             importer.prepare_source_audio_semantics.return_value = None
 
             def prepare_candidates(*_args, scan_progress, **_kwargs):
-                from vntts.source_audio_progress import SourceAudioProgress
 
                 scan_progress(SourceAudioProgress("portraits", 1, 1, "publishing"))
                 self.assertEqual(

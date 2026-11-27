@@ -49,6 +49,7 @@ from vntts.action_icons import action_icon, set_action_icon
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.pcm_playback import PcmPlaybackError
 from vntts.document_identity import sha256_file
+from vntts.model_download_ui import QwenModelSetup
 from vntts.path_safety import read_regular_bytes
 from vntts.playback_button import set_playback_button_state
 from vntts.pregeneration_audition import (
@@ -129,18 +130,6 @@ class _VoiceAuditionPreviewer(Protocol):
 
 
 class _PrefetchVoiceAuditionPreviewer(_VoiceAuditionPreviewer, Protocol):
-    def generate(
-        self,
-        plan: VoicePlan,
-        group: VoiceGroup,
-        candidate_source_id: str,
-        *,
-        text: str | None = None,
-        cancel_event: Event | None = None,
-        progress: Callable[[str], object] | None = None,
-        automatic: bool = False,
-    ) -> _PreviewAudio: ...
-
     def peek(
         self,
         plan: VoicePlan,
@@ -148,42 +137,8 @@ class _PrefetchVoiceAuditionPreviewer(_VoiceAuditionPreviewer, Protocol):
         candidate_source_id: str,
         *,
         text: str | None = None,
+        revalidate: bool = True,
     ) -> _PreviewAudio | None: ...
-
-    def prefetch(
-        self,
-        plan: VoicePlan,
-        requests: tuple[tuple[VoiceGroup, str, str | None], ...],
-        *,
-        automatic: bool = False,
-    ) -> None: ...
-
-    def preparation_state(
-        self,
-        plan: VoicePlan,
-        group: VoiceGroup,
-        candidate_source_id: str,
-        *,
-        text: str | None = None,
-    ) -> str: ...
-
-    def preparation_error(
-        self,
-        plan: VoicePlan,
-        group: VoiceGroup,
-        candidate_source_id: str,
-        *,
-        text: str | None = None,
-    ) -> str | None: ...
-
-    def preparation_progress(
-        self,
-        plan: VoicePlan,
-        group: VoiceGroup,
-        candidate_source_id: str,
-        *,
-        text: str | None = None,
-    ) -> str | None: ...
 
     def new_session(self) -> _VoiceAuditionPreviewer: ...
 
@@ -245,6 +200,7 @@ class VoiceAuditionPanel(QGroupBox):
         content_advisor: PreviewContentAdvisor | None = None,
         thread_pool: QThreadPool | None = None,
         player: _PreviewPlayer | None = None,
+        model_setup: QwenModelSetup | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -255,6 +211,7 @@ class VoiceAuditionPanel(QGroupBox):
             preview_service or _preview_service_factory()
         )
         self.player: _PreviewPlayer | None = player
+        self.model_setup = model_setup
         self.playback_guard: Callable[[], None] | None = None
         self.can_save_selection: Callable[[], bool] | None = None
         self._save_actions_enabled = True
@@ -328,11 +285,8 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_messages()
 
         self._build_layout()
-        self.runtime_timer = QTimer(self)
-        self.runtime_timer.setInterval(500)
-        self.runtime_timer.timeout.connect(self._refresh_runtime)
-        self.preview_runner.activeChanged.connect(self._refresh_runtime)
-        self._refresh_runtime()
+        self._text_refresh_timer = QTimer(self, singleShot=True, interval=150)
+        self._text_refresh_timer.timeout.connect(self._refresh_sample_previews)
         self._connect_player()
         for runner in (self.preview_runner, self.original_runner, self.decision_runner):
             runner.activeChanged.connect(
@@ -414,15 +368,19 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_original.clicked.connect(self._play_original)
         candidate_layout = QVBoxLayout(box)
         candidate_layout.addWidget(self.a_reason)
+        self.reference_transcript_hint = QLabel(
+            "An exact transcript can improve Qwen voice cloning. "
+            "Match the words in Original, or leave blank to use audio alone.",
+            wordWrap=True,
+        )
+        candidate_layout.addWidget(self.reference_transcript_hint)
         self.reference_transcript = QLineEdit()
         self.reference_transcript.setAccessibleName(
             "Exact reference transcript for Qwen"
         )
-        self.reference_transcript.setPlaceholderText(
-            "Optional: verified words spoken in this reference"
-        )
-        self.reference_transcript.setToolTip(
-            "Use only the exact spoken words. Leave blank for voice-only conditioning."
+        self.reference_transcript.setPlaceholderText("Reference transcript (optional)")
+        self.reference_transcript.setAccessibleDescription(
+            self.reference_transcript_hint.text()
         )
         self.reference_transcript.editingFinished.connect(
             self._reference_transcript_edited
@@ -446,6 +404,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.game_phrase_button.setToolTip("Insert the next game phrase for preview")
         self.game_phrase_button.clicked.connect(self._insert_game_phrase)
         self.a_play = QPushButton("Preview")
+        self.a_play.setAutoDefault(False)
         set_action_icon(self.a_play, "play")
         self.a_play.setMinimumWidth(self.a_play.sizeHint().width())
         self.a_play.setAccessibleName("Play voice preview")
@@ -484,6 +443,7 @@ class VoiceAuditionPanel(QGroupBox):
             lambda: self._play_original(current_voice=True)
         )
         self.current_play = QPushButton("Preview")
+        self.current_play.setAutoDefault(False)
         set_action_icon(self.current_play, "play")
         self.current_play.setAccessibleName("Play current voice preview")
         self.current_play.clicked.connect(self.play_current)
@@ -604,6 +564,10 @@ class VoiceAuditionPanel(QGroupBox):
             self._play_preview(preview, current_voice=True)
             return
         plan, group, candidate = self._current_voice
+        if self.model_setup and not self.model_setup.ready_for_use(
+            plan.synthesis_backend
+        ):
+            return
         request = _PreviewRequest(
             plan, group, candidate, self._sample_text, Event(), True
         )
@@ -613,6 +577,7 @@ class VoiceAuditionPanel(QGroupBox):
                 "Stopping the previous preview; the current voice will play next.",
                 current_voice=True,
             )
+            self._set_playing_source(self._playing_source)
         else:
             self._launch_preview_request(request)
 
@@ -622,7 +587,11 @@ class VoiceAuditionPanel(QGroupBox):
         if getattr(self.preview_service, "supports_prefetch", False) is True:
             plan, group, candidate = self._current_voice
             return cast(_PrefetchVoiceAuditionPreviewer, self.preview_service).peek(
-                plan, group, candidate.source_id, text=self._sample_text
+                plan,
+                group,
+                candidate.source_id,
+                text=self._sample_text,
+                revalidate=False,
             )
         return self._current_previews.get(self._sample_text)
 
@@ -755,48 +724,14 @@ class VoiceAuditionPanel(QGroupBox):
         self._queued_preview_request = None
 
     def _refresh_runtime(self) -> None:
-        if (
-            self._plan is not None
-            and self._candidate_entries
-            and not self._pending_decisions
-            and not self._shutdown_requested
-            and not self._cancel_requested
-            and not self.decision_runner.active
-            and self._playing_source != "preview"
-            and bool(self._sample_text)
-            and self._ready_preview(self._current_entry()[0]) is not None
+        if self._candidate_entries and not (
+            self._pending_decisions
+            or self._shutdown_requested
+            or self._cancel_requested
+            or self._terminal_emitted
         ):
-            self.a_play.setEnabled(True)
-            candidate = self._current_entry()[0]
-            self._preview_errors.pop(self._preview_key(candidate), None)
-        if (
-            self._candidate_entries
-            and not self._pending_decisions
-            and not self._shutdown_requested
-            and not self._terminal_emitted
-        ):
-            self._prefetch_window()
             self._refresh_reference_advice()
             self._check_ready_previews()
-            self._refresh_preparation_failure()
-            if (
-                self._preview_request is None
-                and self._playing_source is None
-                and not self._cancel_requested
-                and getattr(self.preview_service, "supports_prefetch", False) is True
-            ):
-                message = cast(
-                    _PrefetchVoiceAuditionPreviewer, self.preview_service
-                ).preparation_progress(
-                    self._require_plan(),
-                    self.current_group(),
-                    self._current_entry()[0].source_id,
-                    text=self._sample_text,
-                )
-                self.preview_progress.setText(
-                    message if isinstance(message, str) else ""
-                )
-        self._set_playing_source(self._playing_source)
 
     def _preview_progress_changed(self, message: str) -> None:
         request = self._preview_request
@@ -871,7 +806,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._shutdown_requested = False
         self._save_actions_enabled = True
         self.retry_save_button.setVisible(False)
-        self.runtime_timer.start()
+        self._text_refresh_timer.stop()
         self.setVisible(True)
         self._show_group()
 
@@ -910,8 +845,14 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_decision_actions(True)
             self._play_preview(preview)
             return
+        plan = self._require_plan()
+        if self.model_setup and not self.model_setup.ready_for_use(
+            plan.synthesis_backend
+        ):
+            self._set_playing_source(self._playing_source)
+            return
         request = _PreviewRequest(
-            self._require_plan(),
+            plan,
             self.current_group(),
             candidate,
             self._sample_text,
@@ -923,6 +864,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_playback_status(
                 "Stopping the previous preview; the selected sample will play next."
             )
+            self._set_playing_source(self._playing_source)
             return
         self._launch_preview_request(request)
 
@@ -949,6 +891,7 @@ class VoiceAuditionPanel(QGroupBox):
             request.candidate.source_id,
             **arguments,
         )
+        self._set_playing_source(self._playing_source)
 
     def refresh_save_action(self) -> None:
         selection_can_be_saved = (
@@ -989,6 +932,7 @@ class VoiceAuditionPanel(QGroupBox):
             self._set_status("Finishing the voice save before returning...")
             return
         self._cancel_requested = True
+        self._text_refresh_timer.stop()
         self._cache_cancel.set()
         self.cache_runner.cancel()
         self._cancel_advice()
@@ -1010,8 +954,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._cancel_advice()
         if getattr(self.preview_service, "supports_prefetch", False) is True:
             self.preview_service.cancel()
-        self.runtime_timer.stop()
-        self._refresh_runtime()
+        self._text_refresh_timer.stop()
         if self.preview_runner.active:
             self._cancel_preview_request()
             return
@@ -1268,8 +1211,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._candidate_offset = index
         if self._sample_text in self._game_phrases[1:]:
             self.preview_text.setPlainText(self._game_phrases[0])
-        else:
-            self._show_current_candidate()
+        self._show_current_candidate()
 
     def _preview_text_edited(self) -> None:
         if not self.decision_runner.active:
@@ -1278,18 +1220,34 @@ class VoiceAuditionPanel(QGroupBox):
                 self._set_sample_text(text)
 
     def _set_sample_text(self, text: str) -> None:
-        self._cancel_preview_request()
-        self._stop_player()
+        if (
+            self._preview_request is not None
+            or self._pending_playback_source is not None
+            or self._playing_source is not None
+            or self.original_runner.active
+        ):
+            self.stop_playback()
         self._cancel_advice()
+        self._cache_cancel.set()
+        self.cache_runner.cancel()
         self._sample_text = text
         self._advice_attempted.clear()
         self._advice_unavailable = False
         self._advice_error = None
         self._content_checks.clear()
         if self._candidate_entries:
-            self._restore_cached_previews()
-            self._show_current_candidate()
+            self._accepted_choice = None
+            self.a_play.setEnabled(bool(text))
+            self.recommendation.hide()
+            self._set_status("")
+            self._restore_auditioned_choice()
+            self._text_refresh_timer.start()
         self._refresh_current_actions()
+
+    def _refresh_sample_previews(self) -> None:
+        if self._candidate_entries:
+            self._restore_cached_previews()
+            self._refresh_runtime()
 
     def _reference_transcript_edited(self) -> None:
         if self.decision_runner.active or not self._candidate_entries:
@@ -1347,10 +1305,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.candidate_voice_label.show()
         with QSignalBlocker(self.reference_transcript):
             self.reference_transcript.setText(candidate.reference_transcript or "")
-        self.reference_transcript.setVisible(
-            self._require_plan().synthesis_backend == "qwen-tts"
-        )
         reference_count = len(candidate.reference_sha256s)
+        qwen = self._require_plan().synthesis_backend == "qwen-tts"
+        self.reference_transcript.setVisible(qwen and bool(reference_count))
+        self.reference_transcript_hint.setVisible(qwen and bool(reference_count))
         transcript = (
             candidate.reference_transcript
             or "\n".join(candidate.source_excerpts)
@@ -1361,13 +1319,12 @@ class VoiceAuditionPanel(QGroupBox):
             )
         )
         self.a_reason.setText(transcript)
-        preview = self._ready_preview(candidate)
         self.a_play.setEnabled(bool(self._sample_text))
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
         self._set_playing_source(None)
         self.a_original.setToolTip(
             "Listen to the first original reference; generation uses the full reference set."
-            if reference_count > 1
+            if reference_count > 1 and not qwen
             else "Listen to the original reference used for this voice."
             if candidate.reference_sha256s
             else "This voice has no recorded reference."
@@ -1376,19 +1333,11 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_use.setAccessibleDescription(
             "Save this voice for future speech and story preparation"
         )
-        heard = (
-            preview is not None
-            and self._auditioned.get(self._preview_key(candidate))
-            == preview.audio_sha256
-        )
         self.a_box.setVisible(True)
         self.reference_table.setEnabled(bool(self._candidate_entries))
         self.game_phrase_button.setEnabled(bool(self._game_phrases))
-        self._prefetch_window()
         self._refresh_reference_advice()
-        if preview is not None and heard:
-            self._accepted_choice = self._current_entry()[1]
-        self.refresh_save_action()
+        self._restore_auditioned_choice()
         preview_error = self._preview_errors.get(self._preview_key(candidate))
         self._set_status(
             f"Preview failed for {_candidate_name(candidate)}: {preview_error}\n"
@@ -1401,49 +1350,25 @@ class VoiceAuditionPanel(QGroupBox):
             else ""
         )
 
-        self._refresh_preparation_failure()
         self._refresh_saved_reference()
         self.selectionChanged.emit()
 
-    def _preparation_error(self, candidate: VoiceCandidate) -> str | None:
-        if self._availability(candidate) != "Preparation failed":
-            return None
-        getter = getattr(self.preview_service, "preparation_error", None)
-        if callable(getter):
-            error = getter(
-                self._require_plan(),
-                self.current_group(),
-                candidate.source_id,
-                text=self._sample_text,
-            )
-            if isinstance(error, str) and error.strip():
-                return error
-        return "The preview could not be prepared."
-
-    def _refresh_preparation_failure(self) -> None:
+    def _restore_auditioned_choice(self) -> None:
         if (
-            self.isHidden()
-            or self.active
-            or self._cancel_requested
-            or self._playing_source is not None
+            self._accepted_choice is None
+            and self._pending_playback_source is None
+            and (
+                self._preview_request is None
+                or self._preview_request.cancellation.is_set()
+            )
         ):
-            return
-        candidate = self._current_entry()[0]
-        current = self.status.toPlainText()
-        if self._preview_key(candidate) in self._preview_errors or current.startswith(
-            "Unable to"
-        ):
-            return
-        error = self._preparation_error(candidate)
-        message = (
-            f"Background preview failed: {_candidate_name(candidate)}: {error} "
-            "Play preview to retry."
-            if error
-            else ""
-        )
-        if error or current.startswith("Background preview failed:"):
-            if current != message:
-                self._set_status(message)
+            candidate, choice, _ = self._current_entry()
+            heard_sha256 = self._auditioned.get(self._preview_key(candidate))
+            if heard_sha256 is not None:
+                preview = self._ready_preview(candidate)
+                if preview is not None and preview.audio_sha256 == heard_sha256:
+                    self._accepted_choice = choice
+        self.refresh_save_action()
 
     def _preview_finished(
         self, preview: _PreviewAudio | None, error: Exception | None
@@ -1460,6 +1385,7 @@ class VoiceAuditionPanel(QGroupBox):
         request = self._completed_preview_request(error)
         if request is None:
             return
+        self._set_playing_source(self._playing_source)
         candidate = request.candidate
         if request.current_voice:
             if error is not None:
@@ -1481,9 +1407,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._previews[self._preview_key(candidate)] = preview
         self._set_decision_actions(True)
         self._play_preview(preview)
-        self._prefetch_window()
-        self._refresh_reference_advice()
-        self._check_ready_previews()
+        self._refresh_runtime()
 
     def _preview_failed(self, request: _PreviewRequest, error: Exception) -> None:
         candidate = request.candidate
@@ -1551,6 +1475,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         if not self.decision_runner.active:
             self._set_decision_actions(True)
+            self._set_playing_source(self._playing_source)
             if self._playing_source is None and not self.original_runner.active:
                 self._set_playback_status(
                     "Preview preparation stopped. Browse voices or retry this preview."
@@ -1624,39 +1549,17 @@ class VoiceAuditionPanel(QGroupBox):
                 self.current_group(),
                 candidate.source_id,
                 text=self._sample_text,
+                revalidate=False,
             )
         return self._previews.get(self._preview_key(candidate))
 
     def _ordered_candidates(self) -> tuple[VoiceCandidate, ...]:
         if not self._candidate_entries:
             return ()
-        # Keep preparation stable while the table is filtered, sorted or scrolled.
+        # Check the selected preview first, independently of the table sort order.
         indices = (self._candidate_offset, *range(len(self._candidate_entries)))
         return tuple(
             self._candidate_entries[index][0] for index in dict.fromkeys(indices)
-        )
-
-    def _prefetch_window(self) -> None:
-        if (
-            getattr(self.preview_service, "supports_prefetch", False) is not True
-            or not self._sample_text
-            or self._cancel_requested
-            or self._shutdown_requested
-            or self._terminal_emitted
-            or self._pending_decisions
-            or self.decision_runner.active
-        ):
-            return
-        group = self.current_group()
-        requests = []
-        for candidate in self._ordered_candidates():
-            if self._availability(candidate) in {"Ready", "Preparation failed"}:
-                continue
-            requests.append((group, candidate.source_id, self._sample_text))
-            if len(requests) == 3:
-                break
-        cast(_PrefetchVoiceAuditionPreviewer, self.preview_service).prefetch(
-            self._require_plan(), tuple(requests), automatic=True
         )
 
     def _preview_key(self, candidate: VoiceCandidate) -> PreviewKey:
@@ -1682,21 +1585,6 @@ class VoiceAuditionPanel(QGroupBox):
             return "Queued" if request is self._queued_preview_request else "Preparing"
         if self._preview_key(candidate) in self._preview_errors:
             return "Preparation failed"
-        state = getattr(self.preview_service, "preparation_state", None)
-        if callable(state):
-            value = state(
-                self._require_plan(),
-                self.current_group(),
-                candidate.source_id,
-                text=self._sample_text,
-            )
-            labels = {
-                "preparing": "Preparing",
-                "queued": "Queued",
-                "failed": "Preparation failed",
-            }
-            if isinstance(value, str) and value in labels:
-                return labels[value]
         return "Not prepared"
 
     def _unchecked_content_state(self, candidate: VoiceCandidate) -> str:
@@ -1902,7 +1790,10 @@ class VoiceAuditionPanel(QGroupBox):
     def _restore_cached_previews(self) -> None:
         self._cache_cancel.set()
         self.cache_runner.cancel()
-        if getattr(self.preview_service, "supports_prefetch", False) is not True:
+        if (
+            not self._sample_text
+            or getattr(self.preview_service, "supports_prefetch", False) is not True
+        ):
             return
         self._cache_cancel = Event()
         plan, group, text = (
@@ -1961,8 +1852,8 @@ class VoiceAuditionPanel(QGroupBox):
                 (check.preview_identity, check.audio_sha256)
                 for check in (checks or {}).values()
             )
-        self._refresh_reference_advice()
-        self._check_ready_previews()
+        self._restore_auditioned_choice()
+        self._refresh_runtime()
 
     def _cancel_advice(self) -> None:
         self._advice_cancel.set()
@@ -2107,6 +1998,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._start_save()
 
     def _start_save(self) -> None:
+        self._text_refresh_timer.stop()
         self._cache_cancel.set()
         self.cache_runner.cancel()
         self._cancel_advice()
@@ -2150,7 +2042,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._terminal_emitted = True
         self._cancel_advice()
-        self.runtime_timer.stop()
+        self._text_refresh_timer.stop()
         self.setVisible(False)
         self.completed.emit()
 
@@ -2210,8 +2102,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._terminal_emitted = True
         self._shutdown_requested = True
-        self.runtime_timer.stop()
-        self._refresh_runtime()
+        self._text_refresh_timer.stop()
         self.setVisible(False)
         if (
             self._owns_preview_service
@@ -2317,7 +2208,10 @@ class VoiceAuditionPanel(QGroupBox):
         candidate_busy = bool(
             self._candidate_entries
             and source != "preview"
-            and self._availability(self._current_entry()[0]) in {"Queued", "Preparing"}
+            and request is not None
+            and not request.current_voice
+            and not request.cancellation.is_set()
+            and request.candidate.source_id == self._current_entry()[0].source_id
         )
         preparing_original = (
             self.original_runner.active

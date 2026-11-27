@@ -1,4 +1,4 @@
-"""Experimental Qwen3-TTS Base voice cloning on Apple Silicon and CUDA."""
+"""Qwen3-TTS Base voice cloning on Apple Silicon and CUDA."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Any, ClassVar, Protocol, cast
 
 from vntts.audio_output import AudioOutput
+from vntts.huggingface_assets import AssetProgress
 from vntts.services.tts_engine import TTSConfigurationError, validate_volume
 from vntts.speech_backend import (
     MossTTSPreparedSpeech,
@@ -169,6 +170,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
         generation_profile: object = "stable",
         playback_consumer_join_timeout: float = 5.0,
         asset_progress: Callable[[str], None] | None = None,
+        model_progress: Callable[[AssetProgress], None] | None = None,
     ) -> None:
         if sys.platform not in {"darwin", "win32"}:
             raise TTSConfigurationError(
@@ -206,6 +208,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     revision=QWEN_REVISION,
                     asset="Qwen3-TTS model",
                     report=asset_progress,
+                    progress=model_progress,
                 )
 
                 def load_qwen_model(model_name: str, *, lazy: bool) -> object:
@@ -220,6 +223,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     revision=QWEN_CUDA_REVISION,
                     asset="Qwen3-TTS model",
                     report=asset_progress,
+                    progress=model_progress,
                 )
 
                 def load_cuda_model(model_name: str, *, lazy: bool) -> _CudaQwenModel:
@@ -231,6 +235,8 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
             resolved_model_factory = model_factory
         if asset_progress is not None:
             asset_progress("Loading local Qwen3-TTS model...")
+        if model_progress is not None:
+            model_progress(AssetProgress("loading", "Qwen3-TTS model"))
         super().__init__(
             registry,
             narrator_reference=narrator_reference,

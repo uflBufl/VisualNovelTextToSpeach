@@ -707,7 +707,9 @@ def load_app_settings(
     def fallback() -> AppSettings:
         if on_fallback is not None:
             on_fallback()
-        return AppSettings(capture_mode=default_capture_mode)
+        return AppSettings(
+            capture_mode=default_capture_mode, offline_speech_backend="moss-tts"
+        )
 
     revision: bytes | None = None
 

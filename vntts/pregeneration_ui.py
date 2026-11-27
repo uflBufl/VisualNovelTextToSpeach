@@ -60,6 +60,7 @@ from vntts.game_content_importer import (
 )
 from vntts.game_narrator import load_original_reference, narrator_preview_plan
 from vntts.generation_database import state_path as generation_state_path
+from vntts.model_download_ui import QwenModelSetup
 from vntts.person_link_suggestions import PersonLinkSuggestion
 from vntts.playback_button import set_playback_button_state
 from vntts.pocket_model import pocket_model_ready
@@ -339,6 +340,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     decoderProgress = Signal(str)
     sourceAudioProgress = Signal(object)
+    importProgress = Signal(object)
     phaseChanged = Signal(str)
     activityChanged = Signal(bool)
     preparationRequested = Signal()
@@ -368,10 +370,12 @@ class OfflineAudioPreparationDialog(QDialog):
         automatic_activation: bool = False,
         thread_pool: QThreadPool | None = None,
         voice_library: VoiceLibrary | None = None,
+        model_setup: QwenModelSetup | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.settings = settings
+        self.model_setup = model_setup
         self._playback_settings = playback_settings
         self.voice_library = voice_library or application_voice_library()
         self.automatic_activation = automatic_activation
@@ -433,6 +437,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.saved_pack_runner.finished.connect(self._saved_pack_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
+        self.importProgress.connect(self._import_progress)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decoderProgress.connect(self._decoder_progress)
         self.sourceAudioProgress.connect(self._source_audio_progress)
@@ -1498,6 +1503,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self,
                 importer=self.importer,
                 voice_library=self.voice_library,
+                model_setup=self.model_setup,
             )
             dialog.set_voice_context(self._voice_plan, character=character)
             settings = (
@@ -1621,6 +1627,10 @@ class OfflineAudioPreparationDialog(QDialog):
                 if plan.synthesis_language in {None, "en", "English"}
                 else group.sample_text
             )
+            if self.model_setup and not self.model_setup.ready_for_use(
+                plan.synthesis_backend
+            ):
+                return
             self.summary_voice_preview.play(plan, group, source, text)
         except (OSError, ValueError) as error:
             logging.getLogger(__name__).exception("Unable to preview story voice")
@@ -2212,6 +2222,10 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _prepare_summary_previews(self, plan: VoicePlan) -> None:
         self._narrator_choice_changed()
+        if self.model_setup and not self.model_setup.is_ready_for_use(
+            plan.synthesis_backend
+        ):
+            return
         labels = self._voice_selection_labels(plan.groups)
         requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
         narrator_requests: list[tuple[VoicePlan, VoiceGroup, str, str]] = []
@@ -3186,14 +3200,17 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self.importing = True
         self._automatic_import = automatic
-        if automatic:
-            self.discovery_message.setText(
-                "Updating the story list. Previous recordings remain saved. "
-                "You can cancel this update."
-            )
-            self._set_discovery_loading(True)
-            self.discovery_import_button.setEnabled(False)
-            self.discovery_game_folder_button.setEnabled(False)
+        self.discovery_message.setText(
+            "Updating the story list. Previous recordings remain saved. "
+            "You can cancel this update."
+            if automatic
+            else "Finding the installed game and importing story content..."
+        )
+        self.discovery_progress.setRange(0, 0)
+        self.discovery_progress.setAccessibleName("Story import progress")
+        self._set_discovery_loading(True)
+        self.discovery_import_button.setEnabled(False)
+        self.discovery_game_folder_button.setEnabled(False)
         self.continue_button.hide()
         self.phaseChanged.emit("Importing installed game")
         self.import_cancel_event.clear()
@@ -3227,7 +3244,9 @@ class OfflineAudioPreparationDialog(QDialog):
         installation_root: str | None,
         protected: tuple[str | Path, ...],
     ) -> GameContent:
-        content = self.importer.import_installed(cancel_event, installation_root)
+        content = self.importer.import_installed(
+            cancel_event, installation_root, progress=self.importProgress.emit
+        )
         if isinstance(self.importer.output_root, Path):
             prune_obsolete_voice_candidate_caches(
                 self.importer.output_root / "reverse1999" / "voice-candidates",
@@ -3235,6 +3254,30 @@ class OfflineAudioPreparationDialog(QDialog):
                 protected_paths=protected,
             )
         return content
+
+    def _import_progress(self, value: object) -> None:
+        if (
+            not isinstance(value, SourceAudioProgress)
+            or not self.importing
+            or self.import_cancel_event.is_set()
+        ):
+            return
+        phases = {
+            "configuration": ("Loading game configuration", ""),
+            "banks": ("Indexing game audio", "audio bank files"),
+            "story-assets": ("Extracting story dialogue", "story assets"),
+            "artifacts": ("Saving game indexes", ""),
+            "catalog": ("Building the Stories catalog", "dialogue rows"),
+        }
+        phase, unit = phases[value.stage]
+        self.discovery_progress.setRange(0, value.total)
+        if value.total:
+            self.discovery_progress.setValue(value.processed)
+            self.discovery_message.setText(
+                f"{phase}. {value.processed:,} of {value.total:,} {unit} processed."
+            )
+        else:
+            self.discovery_message.setText(f"{phase}...")
 
     def current_content(self) -> GameContent | None:
         index = self.source.currentIndex()
@@ -5703,6 +5746,13 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _start_generation(self) -> None:
         assert self._generation_input is not None
+        if (
+            self.model_setup
+            and self._voice_plan is not None
+            and not self.model_setup.ready_for_use(self._voice_plan.synthesis_backend)
+        ):
+            self._show_voice_confirmation(self._voice_plan)
+            return
         try:
             self.input_store.confirm(self._generation_input)
         except (OSError, ValueError, PregenerationQueueError) as error:
@@ -5940,12 +5990,16 @@ class OfflineAudioPreparationDialog(QDialog):
     def _import_finished(self, content: object, error: Exception | None) -> None:
         self.importing = False
         was_automatic = self._automatic_import
-        if was_automatic:
-            self._automatic_import = False
-            self._set_discovery_loading(False)
-            available = self.importer.availability().available
-            self.discovery_import_button.setEnabled(available)
-            self.discovery_game_folder_button.setEnabled(available)
+        self._automatic_import = False
+        self._set_discovery_loading(False)
+        self.discovery_progress.setRange(0, 0)
+        self.discovery_progress.setAccessibleName("Finding local game content")
+        self.discovery_message.setText(
+            "Finding local stories. Controls unlock when loading finishes."
+        )
+        available = self.importer.availability().available
+        self.discovery_import_button.setEnabled(available)
+        self.discovery_game_folder_button.setEnabled(available)
         if self._close_after_voice_cancel:
             self._show_source_status("Game import cancelled.")
             self.reject()
@@ -6080,6 +6134,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_cancel_event.set()
         self._close_after_voice_cancel = True
         self.cancel_button.setEnabled(False)
+        self.discovery_message.setText("Cancelling game import...")
         self._show_source_status("Cancelling game import...")
 
     def closeEvent(self, event: QCloseEvent) -> None:

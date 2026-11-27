@@ -69,25 +69,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         service.backend = None
         service.preparing = False
         service.supports_prefetch = True
-        service.can_prepare_automatically.return_value = True
         service.peek.side_effect = lambda _plan, _group, source, **_: ready.get(source)
-        pending = set()
-
-        def prefetch(_plan, requests, *, automatic=False):
-            self.assertTrue(automatic)
-            pending.clear()
-            pending.update(
-                source for _group, source, _text in requests if source not in ready
-            )
-
-        service.prefetch.side_effect = prefetch
-        service.preparation_state.side_effect = lambda _plan, _group, source, **_: (
-            "ready"
-            if source in ready
-            else "queued"
-            if source in pending
-            else "not-prepared"
-        )
 
         def generate(_plan, _group, source, *, text, cancel_event, automatic=False):
             if cancel_event.is_set():
@@ -118,7 +100,6 @@ class ReferenceAdviceUITest(unittest.TestCase):
             installer=installer,
             service=service,
             ready=ready,
-            pending=pending,
             previews=previews,
             decisions=decisions,
             player=player,
@@ -166,7 +147,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             if not fixture.pool.tasks:
                 return
             fixture.pool.run_next()
-        self.fail("Automatic reference preparation did not finish its bounded batch")
+        self.fail("Reference checks did not finish their bounded batch")
 
     @staticmethod
     def select_reference(fixture, row):
@@ -188,7 +169,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
         )
         return str(value or "")
 
-    def test_opening_keeps_existing_choice_and_only_queues_listening_window(self):
+    def test_opening_keeps_existing_choice_without_synthesizing_a_preview(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             group = replace(f.group, source_id=f.candidates[1].source_id)
@@ -198,9 +179,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertEqual(
                 f.panel.reference_model.rowCount(), len(group.candidate_inventory)
             )
-            requests = f.service.prefetch.call_args.args[1]
-            self.assertEqual(requests[0][1], group.source_id)
-            self.assertLessEqual(len(requests), 3)
+            f.service.prefetch.assert_not_called()
             f.service.generate.assert_not_called()
             f.transcript.assert_not_called()
             f.player.play_bytes.assert_not_called()
@@ -349,19 +328,15 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertIsNone(f.panel._accepted_choice)
             f.decisions.remember_many.assert_not_called()
 
-    def test_selection_prepares_current_before_default_ranked_references(self):
+    def test_content_check_starts_with_selected_reference(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             f = self.fixture(root)
             plan, group, candidates = self.add_inventory(f, root)
             f.panel.start(plan, group_id=group.group_id)
             self.select_reference(f, 4)
-            requests = f.service.prefetch.call_args.args[1]
-            self.assertEqual(
-                [source for _group, source, _text in requests],
-                [candidates[index].source_id for index in (4, 0, 1)],
-            )
-            self.assertIn("Queued", self.reference_cell(f, 4, 0))
+            f.service.prefetch.assert_not_called()
+            self.assertNotIn("Queued", self.reference_cell(f, 4, 0))
             self.assertNotIn("Not prepared", self.reference_cell(f, 7, 0))
             f.ready.update(
                 (candidate.source_id, f.previews[candidate.source_id])
@@ -369,11 +344,15 @@ class ReferenceAdviceUITest(unittest.TestCase):
             )
             self.drain(f)
             self.assertEqual(f.transcript.call_count, 3)
+            self.assertEqual(
+                tuple(f.panel._content_checks),
+                tuple(candidates[index].source_id for index in (4, 0, 1)),
+            )
             self.assertIn("Ready", self.reference_cell(f, 7, 0))
             self.assertNotIn("Content not checked", self.reference_cell(f, 7, 0))
             self.assertEqual(self.selected_reference_row(f), 4)
 
-    def test_hover_and_scroll_do_not_reorder_preparation_or_change_selection(self):
+    def test_hover_and_scroll_do_not_generate_or_change_selection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             f = self.fixture(root)
@@ -387,42 +366,9 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertFalse(f.service.prefetch.called)
             QTest.qWait(220)
             f.panel._refresh_runtime()
-            for call in f.service.prefetch.call_args_list:
-                self.assertEqual(
-                    [source for _group, source, _text in call.args[1]],
-                    [candidate.source_id for candidate in candidates[:3]],
-                )
+            f.service.prefetch.assert_not_called()
             f.service.generate.assert_not_called()
             self.assertEqual(self.selected_reference_row(f), 0)
-            f.player.play_bytes.assert_not_called()
-            f.decisions.remember_many.assert_not_called()
-
-    def test_preparation_advances_in_default_order_skipping_ready_and_failed(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            f = self.fixture(root)
-            plan, group, candidates = self.add_inventory(f, root)
-            f.panel.start(plan, group_id=group.group_id)
-            f.service.preparation_state.side_effect = (
-                lambda _plan, _group, source, **_: (
-                    "failed" if source == candidates[1].source_id else "not-prepared"
-                )
-            )
-            for completed in (0, 2, 3):
-                candidate = candidates[completed]
-                f.ready[candidate.source_id] = f.previews[candidate.source_id]
-                f.panel._refresh_runtime()
-                expected = [
-                    candidate.source_id
-                    for candidate in candidates
-                    if candidate.source_id not in f.ready
-                    and candidate.source_id != candidates[1].source_id
-                ][:3]
-                requests = f.service.prefetch.call_args.args[1]
-                self.assertEqual(
-                    [source for _group, source, _text in requests], expected
-                )
-                self.assertEqual(self.selected_reference_row(f), 0)
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
@@ -496,7 +442,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 self.assertGreater(f.player.stop.call_count, stops)
                 self.assertTrue(f.panel.a_use.isEnabled())
 
-    def test_ready_play_and_prefetch_remain_available_in_both_check_orders(self):
+    def test_ready_preview_is_playable_in_both_content_check_orders(self):
         for check_first in (False, True):
             with (
                 self.subTest(check_first=check_first),
@@ -518,7 +464,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
                 self.assertTrue(f.panel.advice_runner.active)
                 self.assertTrue(f.panel.a_play.isEnabled())
                 self.assertTrue(f.panel.reference_table.isEnabled())
-                f.service.prefetch.assert_called()
+                f.service.prefetch.assert_not_called()
                 f.service.cancel.assert_not_called()
                 f.transcript.assert_not_called()
 
@@ -604,7 +550,7 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
-    def test_cached_content_evidence_is_not_rehashed_by_runtime_timer(self):
+    def test_cached_content_evidence_is_not_rehashed_by_ui_refresh(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.advisor.check(tuple(f.previews.values()))
@@ -660,27 +606,22 @@ class ReferenceAdviceUITest(unittest.TestCase):
             self.assertNotIn("Check words by ear", self.reference_cell(f, 0, 0))
             self.assertTrue(f.panel.recommendation.isHidden())
 
-    def test_background_failure_shows_reason_without_playing_or_saving(self):
+    def test_preview_failure_shows_reason_without_playing_or_saving(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.panel.start(f.plan, group_id=f.group.group_id)
             self.assertTrue(f.panel.status.isHidden())
             self.assertTrue(f.panel.messages.isHidden())
             first = f.candidates[0]
-            failed = {first.source_id}
-            f.service.preparation_state.side_effect = (
-                lambda _plan, _group, source, **_: (
-                    "failed" if source in failed else "not-prepared"
-                )
-            )
-            f.service.preparation_error.return_value = "Model assets are missing."
-            f.panel._refresh_runtime()
+            f.service.generate.side_effect = RuntimeError("Model assets are missing.")
+            f.panel.a_play.click()
+            self.drain(f)
             message = f.panel.status.toPlainText()
             self.assertFalse(f.panel.status.isHidden())
             self.assertFalse(f.panel.messages.isHidden())
             self.assertIn(first.source_character, message)
             self.assertIn("Model assets are missing", message)
-            self.assertIn("retry", message)
+            self.assertIn("retry", message.lower())
             f.panel.status.selectAll()
             f.panel.status.copy()
             self.assertEqual(self.application.clipboard().text(), message)
@@ -692,16 +633,14 @@ class ReferenceAdviceUITest(unittest.TestCase):
             f.panel._set_status("Unable to save choices: disk full")
             f.panel._refresh_runtime()
             self.assertIn("disk full", f.panel.status.toPlainText())
-            f.panel._set_status(message)
-            failed.clear()
-            f.panel._refresh_runtime()
+            f.panel.a_play.click()
             self.assertTrue(f.panel.status.isHidden())
             self.assertTrue(f.panel.messages.isHidden())
-            f.service.generate.assert_not_called()
+            f.service.generate.assert_called_once()
             f.player.play_bytes.assert_not_called()
             f.decisions.remember_many.assert_not_called()
 
-    def test_failed_recognition_is_not_retried_by_runtime_timer(self):
+    def test_failed_recognition_is_not_retried_by_ui_refresh(self):
         with TemporaryDirectory() as directory:
             f = self.fixture(Path(directory))
             f.ready.update(f.previews)

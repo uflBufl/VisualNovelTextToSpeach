@@ -53,6 +53,7 @@ from vntts.game_narrator import (
     game_character_preview_plan,
     narrator_preview_plan,
 )
+from vntts.model_download_ui import QwenModelSetup
 from vntts.pocket_model import pocket_model_ready
 from vntts.pocket_setup_ui import PocketSetupControl
 from vntts.pregeneration_audition import (
@@ -171,6 +172,7 @@ class GameNarratorDialog(QDialog):
         voice_library: VoiceLibrary | None = None,
         voice_binding_rollback: VoiceBindingRollback | None = None,
         use_offline_engine: bool = True,
+        model_setup: QwenModelSetup | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Narrator and character voices")
@@ -212,6 +214,7 @@ class GameNarratorDialog(QDialog):
             ),
             thread_pool=thread_pool,
             player=player,
+            model_setup=model_setup,
             parent=self,
         )
         self.voice_panel.completed.connect(self._saved)

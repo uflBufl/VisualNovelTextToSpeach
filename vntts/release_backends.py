@@ -15,7 +15,7 @@ SPEECH_BACKEND_LABELS = {
     "coqui-xtts": "XTTS",
     "chatterbox-nano": "Chatterbox Nano",
     "moss-tts": "MOSS-TTS Local v1.5",
-    "qwen-tts": "Qwen3-TTS voice cloning (experimental)",
+    "qwen-tts": "Qwen3-TTS voice cloning",
 }
 
 
