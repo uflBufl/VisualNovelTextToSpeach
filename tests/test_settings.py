@@ -22,6 +22,17 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_retired_reference_preference_is_ignored(self):
+        for former_choice in (True, False):
+            with self.subTest(former_choice=former_choice):
+                settings = AppSettings.from_mapping(
+                    {"prefer_steady_references": former_choice, "tts_language": "en"}
+                )
+                self.assertEqual(
+                    settings, AppSettings.from_mapping({"tts_language": "en"})
+                )
+                self.assertNotIn("prefer_steady_references", asdict(settings))
+
     def test_legacy_pocket_consent_is_ignored_without_becoming_a_setting(self):
         settings = AppSettings.from_mapping({"pocket_gated_model_accepted": True})
         self.assertEqual(settings, AppSettings.from_mapping({}))

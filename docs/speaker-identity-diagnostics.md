@@ -6,7 +6,7 @@ voice manifest, source-reference decision, workspace, review or game pack.
 
 ## Pinned runtime
 
-The optional `speaker-identity` dependency installs SpeechBrain 1.1.1. Managed
+The application includes SpeechBrain 1.1.1. Managed
 installation metadata retains the historical SpeechBrain 1.0.3 provenance for
 the pinned snapshot. The diagnostic model is
 [`speechbrain/spkrec-ecapa-voxceleb`](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb)
@@ -28,10 +28,9 @@ The initial implementation is deliberately CPU-only. A non-CPU request fails
 before loading the model. The weights stay in the device-local authoring model
 directory; they are not bundled into game packs.
 
-Install the optional implementation and pinned snapshot:
+Automatic reference selection installs the pinned snapshot on first use. To prepare it in advance, run
 
 ```bash
-uv sync --extra speaker-identity
 uv run vntts-pregenerate speaker-identity-model-install
 uv run vntts-pregenerate speaker-identity-model-status
 ```

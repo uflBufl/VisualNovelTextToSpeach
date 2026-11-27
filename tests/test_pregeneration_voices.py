@@ -31,6 +31,7 @@ from vntts.pregeneration_voices import (
     PLAYER_VOICE_CANDIDATES_FIELD,
     PregenerationVoiceCancelled,
     PregenerationVoiceError,
+    ReferenceRanking,
     VoiceDecisionStore,
     VoicePlanStore,
     _decision_key,
@@ -257,9 +258,20 @@ class VoicePlanStoreTest(unittest.TestCase):
                 [group.group_id for group in second.groups],
                 [group.group_id for group in first.groups],
             )
+            durations = {}
+            for reference in references:
+                with wave.open(str(reference), "rb") as recording:
+                    durations[sha256_file(reference)] = (
+                        recording.getnframes() / recording.getframerate()
+                    )
             for candidate in second.groups[0].candidate_inventory:
                 if candidate.reference_sha256s:
-                    self.assertEqual(candidate.reference_duration_seconds, 0.1)
+                    self.assertEqual(
+                        candidate.reference_duration_seconds,
+                        sum(
+                            durations[digest] for digest in candidate.reference_sha256s
+                        ),
+                    )
 
     def test_reference_facts_invalidate_changed_files_and_voice_roots(self):
         with TemporaryDirectory() as directory:
@@ -1233,6 +1245,12 @@ class VoicePlanStoreTest(unittest.TestCase):
                 quality_scores=(100, 100),
             )
 
+            document = json.loads(manifest.read_bytes())
+            variants = document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]
+            variants[0]["duration_seconds"] = 8.0
+            variants[1]["duration_seconds"] = 4.0
+            manifest.write_text(json.dumps(document))
+
             plan = VoicePlanStore(jobs).create(
                 job,
                 AppSettings(),
@@ -1255,6 +1273,37 @@ class VoicePlanStoreTest(unittest.TestCase):
                 rhiannon.candidates[0].source_voice_ids,
                 ("play_rhiannon_1",),
             )
+
+    def test_unusable_game_recordings_are_excluded_even_without_alternatives(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "voices",
+                job.story_index_sha256,
+                quality_scores=(100, 90),
+                admission_policy="audio-only",
+            )
+            document = json.loads(manifest.read_bytes())
+            variants = document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]
+            settings = AppSettings(speech_backend="moss-tts")
+            for index, variant in enumerate(variants):
+                reference = manifest.parent / document["voices"][index]["references"][0]
+                with wave.open(str(reference), "wb") as audio:
+                    audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+                    audio.writeframes(bytes(32_000 + index * 2))
+                variant["reference_sha256"] = sha256_file(reference)
+                manifest.write_text(json.dumps(document))
+                plan = VoicePlanStore(jobs).create(
+                    job, settings, manifest_path=manifest
+                )
+                group = next(g for g in plan.groups if g.character == "Rhiannon")
+                self.assertEqual(len(group.candidate_inventory), 2)
+                remaining = [item["reference_sha256"] for item in variants[index + 1 :]]
+                self.assertEqual(
+                    [c.reference_sha256s[0] for c in group.candidates], remaining
+                )
+                self.assertEqual(group.route, "voice" if remaining else "narrator")
 
     @pocket_model_readiness(True)
     def test_player_variant_duration_refuses_unrepresentable_integer_and_recovers(self):
@@ -1427,6 +1476,10 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(len(group.candidates), 1)
 
     @pocket_model_readiness(True)
+    @patch(
+        "vntts.reference_selection.make_reference_selector",
+        new=lambda *_args, **_kwargs: lambda _role: ReferenceRanking(None, None),
+    )
     def test_player_audition_keeps_only_three_best_equal_evidence_clips(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1457,6 +1510,10 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
 
     @pocket_model_readiness(True)
+    @patch(
+        "vntts.reference_selection.make_reference_selector",
+        new=lambda *_args, **_kwargs: lambda _role: ReferenceRanking(None, None),
+    )
     def test_playable_main_voice_surfaces_without_auto_selecting_long_clips(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

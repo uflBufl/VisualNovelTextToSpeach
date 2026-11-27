@@ -1,0 +1,773 @@
+{
+  "schema": "vntts.six-default-reference-replay",
+  "version": 1,
+  "status": "complete",
+  "story_sha256": "43a6d8f4eb38716456918868bc092be046674872213427ec13a148dfe6bbd139",
+  "source_manifest_sha256": "9971150480d33f7d4a30ef3a59f8bc8b90007ab55c5a7a2bc7a67f3e776aefda",
+  "source_report_sha256": "b82a62f0ccb1f94ad6bcc72c2da0c26f63f9b730ad4efe4e1c8e32cf8143ab42",
+  "listened_comparison_sha256": "1fc59b98c4d504262fa4c72a49d68d461704a5047f191b2d422a13815994e27e",
+  "planner_sources": {
+    "vntts/pregeneration_voices.py": "132d99821a096ca2915e8bcbdb1d8aa698396cbe179a0bfc0729481674d83918",
+    "vntts/reference_selection.py": "4793000ec7e9fb1d25d83a8abbe8f7f63c1d98b14b1d52f40ae8254c4aad55f1",
+    "vntts/settings.py": "a74225686ace898a2234a09d869a1372399295f1506f30b296eacf18115f07ad",
+    "vntts/story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a"
+  },
+  "settings": {
+    "backend": "moss-tts",
+    "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "language": "en",
+    "profile": "stable"
+  },
+  "source_policy": "Untouched installed full-pool source report; no task-specific audio, media, reference, or anchor exclusions.",
+  "narrator_policy": "Preserved only actual active manual Centurion narrator binding in fresh isolated voice library.",
+  "comparison": "Final ordinary full-catalog VoicePlanStore and qualify_story_references versus final references from the previously listened ON arm. Existing targets and original anchors are retained.",
+  "roles": {
+    "210": {
+      "listened_on_reference_sha256s": [
+        "c18410d34d8ab6e38d33839a38f5900c59fdd07cb3fdd3e8c8eea56b15965366"
+      ],
+      "final_reference_sha256s": [
+        "c18410d34d8ab6e38d33839a38f5900c59fdd07cb3fdd3e8c8eea56b15965366"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 125,
+      "selection": {
+        "fit_count": 124,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 115,
+        "selected_sha256": "c18410d34d8ab6e38d33839a38f5900c59fdd07cb3fdd3e8c8eea56b15965366",
+        "typical_sha256": "05aa9a13a88d45af81a468ecb9a094fe3831c2fa75e1338f29593f7bb21142cc",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidate21017b7580f8a11",
+            "preview_identity": "67d0398b293408ab6631ceaae991f82a0e7ab0c674734860412ac2fa8789ae20",
+            "audio_sha256": "52ce35e8bfa830c19e2037ba9079a343451df8b1822804b6cccf933402522b5d",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidate210d75ed75e7297",
+            "preview_identity": "57ba6971a5e104ecac4be5bf3cce12b8097e21e6f121e2f07c45dee283b8e5db",
+            "audio_sha256": "8c302e2c6f39432376624b4c27341ed3c765722f01829a0517f7dad8142fd76d",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidate2100833f128efc3",
+            "preview_identity": "55516cdffd9df6b90afb8f303d95ab0246f0024a2228fecccc8604c2dabca45d",
+            "audio_sha256": "d69d5141bac0d2d5cfedceceb8fa718193847b462a22cefd78c25f8bfa665cf4",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "210",
+          "source_bank": "plotvoc_npc510601chapter7_part01.bnk",
+          "media_id": 106442421,
+          "source_sha256": "bd2bd7c12d8295787abc1b2593650c9bb935b918f0302f754b20ecc7c95f3419",
+          "reference_sha256": "c18410d34d8ab6e38d33839a38f5900c59fdd07cb3fdd3e8c8eea56b15965366",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Narrator": {
+      "listened_on_reference_sha256s": [
+        "720416162f0b42251dde8372504472fc611d2da6ad4825105269fe81828cb630"
+      ],
+      "final_reference_sha256s": [
+        "720416162f0b42251dde8372504472fc611d2da6ad4825105269fe81828cb630"
+      ],
+      "changed": false,
+      "route": "narrator",
+      "resolution": "saved-narrator-assignment",
+      "inventory_count": 1,
+      "selection": null,
+      "qualification": {
+        "automatic_qualifier_applied": false,
+        "checks": [],
+        "all_shortlist_checked": null
+      },
+      "reference_sources": [],
+      "noncomparative_narrator": true
+    },
+    "Thirty-seven": {
+      "listened_on_reference_sha256s": [
+        "6f95f0fb92b5fd0c95734df6f4a1ec06f902c730ef5ab85527b186c64ae5b882"
+      ],
+      "final_reference_sha256s": [
+        "6f95f0fb92b5fd0c95734df6f4a1ec06f902c730ef5ab85527b186c64ae5b882"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 462,
+      "selection": {
+        "fit_count": 456,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 419,
+        "selected_sha256": "6f95f0fb92b5fd0c95734df6f4a1ec06f902c730ef5ab85527b186c64ae5b882",
+        "typical_sha256": "c9443c9e21e3ac6912a73754b61b1d44055187bec91ef358ee750ce43b707dd5",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatethirtyseven5da63d7934ec",
+            "preview_identity": "9423401cf2fdaa7a93468a7cf603ca84f90cb1e7fc87ea61858f933283764f04",
+            "audio_sha256": "792ecd41c4c82cc753e4781cf1645b18f931b337ff1f776dd6242b2d8ddd18db",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatethirtysevenfc6a79d0aa90",
+            "preview_identity": "bc5a6b0963fd7e2b909c2bb63f7ba9a92359f7a6bc1cda04a1ac52e50daa2a80",
+            "audio_sha256": "ce5372ff1ffb570204a7146304b3ee18ab8e362fbb61de95f2a68d66e629b591",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "A storm has passed. We can continue our journey.",
+              "status": "uncertain_recognition",
+              "issues": [
+                {
+                  "kind": "uncertain_recognition",
+                  "expected_words": [
+                    "the"
+                  ],
+                  "observed_words": [
+                    "a"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "source_id": "character:playercandidatethirtyseven004f7d931e73",
+            "preview_identity": "2ef1ef8fb3733a645db3789a6c9d8b59b1c198b9b0d11374ae74b820e64b4de4",
+            "audio_sha256": "095a9c9651a2cc2f10f5d45eb16fcbc894d60f6930cf53621e42341741383623",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed! We can continue our journey!",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Thirty-seven",
+          "source_bank": "plotvoc_hero3066chapter7_part04.bnk",
+          "media_id": 534723770,
+          "source_sha256": "5e6d82569c0bbcccb148208f69e2e8d9342d1e434a8dd88070796f5d7b322fae",
+          "reference_sha256": "6f95f0fb92b5fd0c95734df6f4a1ec06f902c730ef5ab85527b186c64ae5b882",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Sophia": {
+      "listened_on_reference_sha256s": [
+        "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c"
+      ],
+      "final_reference_sha256s": [
+        "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 227,
+      "selection": {
+        "fit_count": 222,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 161,
+        "selected_sha256": "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c",
+        "typical_sha256": "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatesophiaec2645fdf43e",
+            "preview_identity": "327c0a4fe3f7bc11069198f1b95f461c7abb3f7478519b31ced5e13f0ee73ab0",
+            "audio_sha256": "a0806bb8dc5f23f0d9198c5df31569d7afb6c8d6893b09123182526a71ec7053",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatesophia00599feecbcc",
+            "preview_identity": "5dc4ec840b4e36e39698202c669e2bf675bb36a033b980ccee79313856dae584",
+            "audio_sha256": "affb4582ab774f37f3198c650ec1fa52f4dc6b12831a30c13da28fc5dad653b9",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatesophia039714384ac3",
+            "preview_identity": "692358840e6f58c8edb03dbc13643aad09d5529e95de055bd5ec8a00ec47385d",
+            "audio_sha256": "12adf1c4cea7f685999213af087ab117375b9f2903d3af75838cdb4e74a30d18",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Sophia",
+          "source_bank": "plotvoc_npc508301chapter7_part01.bnk",
+          "media_id": 402800471,
+          "source_sha256": "1e0128dc7e9aeb0966ac66167bbdc8c1361924e6e42e676d40b7f8bd8bd53d35",
+          "reference_sha256": "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Atticus": {
+      "listened_on_reference_sha256s": [
+        "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a"
+      ],
+      "final_reference_sha256s": [
+        "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 6,
+      "selection": {
+        "fit_count": 6,
+        "holdout_count": 0,
+        "selection_method": "typical",
+        "selection_reason": "no_steady_candidate",
+        "steady_pool_count": 6,
+        "selected_sha256": "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a",
+        "typical_sha256": "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidateatticus52e9ca134b12",
+            "preview_identity": "e89668593c6dcf4e0945543e49e851375784967bc52f7c1fc5e363882788d07f",
+            "audio_sha256": "e9a5b03977c073118feb2440d203b08bd96adc04fceb63272de4f80390527a7f",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidateatticus1733377f1378",
+            "preview_identity": "0333e7a5e10b976c4b130a619a1d331664e9e0a34e3c59703a77120266b0dc42",
+            "audio_sha256": "ede394e9dc2701e8c27807fc86904cfff282bf3525710de61d515380b0bba8ed",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidateatticus57adea6e27a8",
+            "preview_identity": "7841e1fdc25b4ca31f265a98ad9fab283f7ab25d46773bacd2a0d24fd249d0e1",
+            "audio_sha256": "f6a60e788aae23ac004c9f0359e77dd7da80ea9d4d62250f36d651ed39559fba",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Atticus",
+          "source_bank": "activityvoc_story_npc512701_qiutu.bnk",
+          "media_id": 967816686,
+          "source_sha256": "9453c8dd039542632b2d7dfe9e291da198fceb1ebe782066be4227cc09d7a964",
+          "reference_sha256": "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Believer": {
+      "listened_on_reference_sha256s": [
+        "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf"
+      ],
+      "final_reference_sha256s": [
+        "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 3,
+      "selection": {
+        "fit_count": 3,
+        "holdout_count": 0,
+        "selection_method": "typical",
+        "selection_reason": "no_steady_candidate",
+        "steady_pool_count": 3,
+        "selected_sha256": "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf",
+        "typical_sha256": "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatebeliever791ed55847f2",
+            "preview_identity": "7fe9bb5e64e63cf5c0780652cf7338ea812d10cc4c275dc299a74d33355d9830",
+            "audio_sha256": "19e2996547acfaf019866bb7976aa62df03c94e2f5b6684fcc4e3a57ffa24542",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatebeliever1aa08fd5a620",
+            "preview_identity": "bbb5b98e9d9f2d361de74738f40f19823d3deb57e68a0a2cb2805bf728e0c2a8",
+            "audio_sha256": "4f2db10f266156606f8fbd3a09130a4b6de215b0981bb6053b76cc79aaee2dc9",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatebelievere518b98b7cb5",
+            "preview_identity": "dcfee255c2fc991320949d3175980bb30c042e51b0187b6a9508a1067a24c491",
+            "audio_sha256": "14f152c15a0c46577681b806e7bcfd5e64f5feb2da43a5bef474c9790a0d577c",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Believer",
+          "source_bank": "activityvoc_npc626701b_2_0_feichi.bnk",
+          "media_id": 410580925,
+          "source_sha256": "383ccf541d9252ce72e725b4f3932bacec0475f907cb4e1f5b2953a8e9991402",
+          "reference_sha256": "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Alma": {
+      "listened_on_reference_sha256s": [
+        "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b"
+      ],
+      "final_reference_sha256s": [
+        "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 2,
+      "selection": {
+        "fit_count": 2,
+        "holdout_count": 0,
+        "selection_method": "baseline",
+        "selection_reason": "insufficient_originals",
+        "steady_pool_count": 0,
+        "selected_sha256": "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b",
+        "typical_sha256": "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatealma995c0dc77ab2",
+            "preview_identity": "ad893af7d400788933653752cf7074a0adfd0a743b1b73f088af5314ce007ee7",
+            "audio_sha256": "3fb403ecd649a652fce28b0680d4bae887e396ad0659a1089fe3639622a61651",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatealmaeee335825031",
+            "preview_identity": "de5926231d45b6260d2583366f7582da856d0dac3a19f465e08c83de1304080a",
+            "audio_sha256": "f1259bf46ce96c9477b9228ccbd1f67c7fda7c1f7fc6efdf9fa66d4291f66547",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Alma",
+          "source_bank": "activityvoc_story_npc513201_qiutu.bnk",
+          "media_id": 544116954,
+          "source_sha256": "87da2f4b606a5938351be4399cf62d6a90bc0be0e74ebcc6c399b42e05a04700",
+          "reference_sha256": "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Believer I": {
+      "listened_on_reference_sha256s": [
+        "03a90747f68df144f75ffce90082f14f2e816cf95857cf4b0e5ff2e5b5e59744"
+      ],
+      "final_reference_sha256s": [
+        "03a90747f68df144f75ffce90082f14f2e816cf95857cf4b0e5ff2e5b5e59744"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 18,
+      "selection": {
+        "fit_count": 17,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 17,
+        "selected_sha256": "03a90747f68df144f75ffce90082f14f2e816cf95857cf4b0e5ff2e5b5e59744",
+        "typical_sha256": "f9db642f1fe4d101141bca62aacde66de90b24540ec427e84e0156ed0d410732",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatebelieveri8b534508c8cc",
+            "preview_identity": "c95c5b5f991ebefb549b32362e9481ac3958b766b261960d20a41cfaf87d0767",
+            "audio_sha256": "4b55eb7bfd52ea2489c07111d6f00cdef39a08f5803451b4e3aa3473a3ab5f4b",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatebelievericf15f3b462b8",
+            "preview_identity": "6efdce9aa5b94e0e3e092ead5a06214cb1d3b642efc1a646bd6c54291cf79c3e",
+            "audio_sha256": "a02042bafb9e2aa61a6a066053c9ff67d315ec8f19ae6c3111b550534ef7fdaa",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatebelieveri1a1611ea63f4",
+            "preview_identity": "7c8446199e4ea8da130af2fc1bddfda1a78a995fb32a8c0abaa1a1f2a087008b",
+            "audio_sha256": "b481c0cf0a617a3c9d0ca99d2c64e12fc79c51a299c5ac139982e7e527dda30f",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Believer I",
+          "source_bank": "plotvoc_npc510701chapter6.bnk",
+          "media_id": 684870845,
+          "source_sha256": "1dba11ec9879aeaed9bb33241d275082a3ceeb0025bf1e4645a24157a728fd96",
+          "reference_sha256": "03a90747f68df144f75ffce90082f14f2e816cf95857cf4b0e5ff2e5b5e59744",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Believer II": {
+      "listened_on_reference_sha256s": [
+        "9755fa2056ac9bfc9b73998ad5c9d08eecf917dc167d8adbee91832a44381e38"
+      ],
+      "final_reference_sha256s": [
+        "9755fa2056ac9bfc9b73998ad5c9d08eecf917dc167d8adbee91832a44381e38"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-content-suggestion",
+      "inventory_count": 19,
+      "selection": {
+        "fit_count": 18,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 18,
+        "selected_sha256": "aec2acf3f62873e37e476b4f30b94a3eb9d3256231e05104deeb957c5b7733f3",
+        "typical_sha256": "9755fa2056ac9bfc9b73998ad5c9d08eecf917dc167d8adbee91832a44381e38",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatebelieveriib457250bdf64",
+            "preview_identity": "7b9ac4fe65d53c8a90f61da64c4cae9205b20da6494c91dbcf42741286c1dd2c",
+            "audio_sha256": "6eea8d99acc06ae531e920e31eaccef89700fa9f772671de3bc050e80eaa9af4",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "First day army. Then the emanation. The storm has passed. We can continue our journey.",
+              "status": "review_possible_content_mismatch",
+              "issues": [
+                {
+                  "kind": "possible_added_content",
+                  "expected_words": [],
+                  "observed_words": [
+                    "first",
+                    "day",
+                    "army",
+                    "then",
+                    "the",
+                    "emanation"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "source_id": "character:playercandidatebelieveriid23973c12f9f",
+            "preview_identity": "661d9459e66b9112032074bc4d6b253a2428311b536c8dff05dc037effa6b366",
+            "audio_sha256": "2de7887d064e80f81804b5de9bacee4d95d7cc17ce0f14398b45f0daf790761e",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatebelieverii06436a974552",
+            "preview_identity": "1ef3c3512c19b7e15d27b86c5cf1df5d2e45879815062b50541a1195c53c5a1d",
+            "audio_sha256": "db4cd55d7ad9606c45463ad5b9126e1bf87b8547791f1e9803330b0b1a90f701",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Believer II",
+          "source_bank": "plotvoc_npc510801chapter6.bnk",
+          "media_id": 118639161,
+          "source_sha256": "149daa890e8e536d9bf00354b739960e805b4ec236aa13c7f23d443c588d0c7c",
+          "reference_sha256": "9755fa2056ac9bfc9b73998ad5c9d08eecf917dc167d8adbee91832a44381e38",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    },
+    "Six": {
+      "listened_on_reference_sha256s": [
+        "a9f48cf254a5b5a3188750d417e396cd54a8a173659e33349c7b22434e340876"
+      ],
+      "final_reference_sha256s": [
+        "a9f48cf254a5b5a3188750d417e396cd54a8a173659e33349c7b22434e340876"
+      ],
+      "changed": false,
+      "route": "voice",
+      "resolution": "automatic-reference-selection",
+      "inventory_count": 178,
+      "selection": {
+        "fit_count": 176,
+        "holdout_count": 0,
+        "selection_method": "steady",
+        "selection_reason": "frozen_criteria_passed",
+        "steady_pool_count": 165,
+        "selected_sha256": "a9f48cf254a5b5a3188750d417e396cd54a8a173659e33349c7b22434e340876",
+        "typical_sha256": "c161bc6e08d56e553f56c0f5d163d2102aa068fcb7bb1fb48adffed43766777c",
+        "excluded_preflight_count": 0
+      },
+      "qualification": {
+        "automatic_qualifier_applied": true,
+        "checks": [
+          {
+            "source_id": "character:playercandidatesix727bc192e595",
+            "preview_identity": "f57042a7e2b354c49036905e32474e11d8543c256e5aa51e5e2190e8c3b74863",
+            "audio_sha256": "3c01d6729324fdc78fcbc63a782fa28743c244e5d19cbec011a10cf023e79750",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed, we can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatesixc66359a9073e",
+            "preview_identity": "19c2faee359cf8aa0521c5f4c53b6bc48689c2491ac9b80f2ba8ec94b010ec69",
+            "audio_sha256": "0113b984213c57c272f97740952092636f539cfc23db4affb2ba9915607a1394",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          },
+          {
+            "source_id": "character:playercandidatesix018e2ca621f7",
+            "preview_identity": "f8ab1938d301ba7b0441b2b215bcd1169b4285610738603956752245373eae8b",
+            "audio_sha256": "414ffdfbc40c50cce58d58996697e790fca79b5eb95787fd2387c871ecee67b6",
+            "text": "The storm has passed. We can continue our journey.",
+            "seed": 0,
+            "advice": {
+              "expected_text": "The storm has passed. We can continue our journey.",
+              "observed_text": "The storm has passed. We can continue our journey.",
+              "status": "no_asr_mismatch",
+              "issues": []
+            }
+          }
+        ],
+        "all_shortlist_checked": true
+      },
+      "reference_sources": [
+        {
+          "character": "Six",
+          "source_bank": "plotvoc_hero3079chapter7_part03.bnk",
+          "media_id": 92904850,
+          "source_sha256": "7e35057f6ce6b7b0fda30a2437dd7fed064833dc78c54eaa8814044ae0413158",
+          "reference_sha256": "a9f48cf254a5b5a3188750d417e396cd54a8a173659e33349c7b22434e340876",
+          "candidate_origin": "story_line_route"
+        }
+      ],
+      "noncomparative_narrator": false
+    }
+  },
+  "changed_roles": [],
+  "listening": {
+    "status": "not-needed-no-changed-voices",
+    "policy": "Only voices whose final reference checksum changed; prior ON outputs are copied byte-for-byte. Final target outputs use same real phrases, model, seed and stable profile; one cached output per text and reference SHA.",
+    "all_final_references_match_listened_on": true,
+    "existing_on_outputs_verified": true,
+    "original_anchors_verified": true,
+    "packet_created": false,
+    "new_target_renders_created": false
+  },
+  "limitations": [
+    "This replay verifies final assignments against existing listened audio; it makes no new subjective quality claim.",
+    "The manually assigned narrator is preserved and is not an automatic narrator-selection comparison."
+  ],
+  "qualification_policy": "Real ordinary preview generation and ASR qualification ran on the final shortlist. Previously cached exact preview identities were reused; newly exposed candidates were synthesized. No unavailable shortlist check was accepted."
+}

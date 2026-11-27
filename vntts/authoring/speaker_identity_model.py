@@ -1,4 +1,4 @@
-"""Pinned, diagnostic-only speaker-embedding model installation."""
+"""Pinned speaker-embedding model installation with immutable provenance."""
 
 from __future__ import annotations
 
@@ -109,6 +109,7 @@ def _metadata() -> JsonDocument:
         ],
         "runtime": {
             "device": "cpu",
+            # Historical provenance stays immutable after promotion to core runtime.
             "optional_dependency": "speaker-identity",
             "sample_rate_hz": 16000,
         },
@@ -116,14 +117,29 @@ def _metadata() -> JsonDocument:
     return {**body, "installation_id": canonical_document_sha256(body)}
 
 
-def _notice() -> str:
+def _notice(*, usage: str = "automatic") -> str:
+    usage_notice = {
+        "diagnostic": (
+            "This model is optional, local and diagnostic-only. It is not included in "
+            "game packs and cannot change voice assignments or review authority.\n"
+        ),
+        "opt-in": (
+            "This model is optional and local, and supports diagnostics and "
+            "opt-in reference selection. It is not included in game packs and "
+            "cannot change previously saved voice assignments or review authority.\n"
+        ),
+        "automatic": (
+            "This local model supports automatic reference selection and "
+            "diagnostics. It is downloaded on first use and is not included in "
+            "game packs. It cannot change previously saved voice assignments "
+            "or review authority.\n"
+        ),
+    }[usage]
     return (
         f"{REPOSITORY} at revision {REVISION}\n"
         f"Model snapshot license: {MODEL_LICENSE} ({MODEL_LICENSE_URL})\n"
         f"SpeechBrain {IMPLEMENTATION_VERSION} license: {IMPLEMENTATION_LICENSE} "
-        f"({IMPLEMENTATION_LICENSE_URL})\n"
-        "This model is optional, local and diagnostic-only. It is not included in "
-        "game packs and cannot change voice assignments or review authority.\n"
+        f"({IMPLEMENTATION_LICENSE_URL})\n" + usage_notice
     )
 
 
@@ -137,6 +153,7 @@ def managed_speaker_identity_status(
         _files(),
         metadata=metadata,
         notice=_notice(),
+        legacy_notices=(_notice(usage="opt-in"), _notice(usage="diagnostic")),
         error_type=SpeakerIdentityModelError,
     )
     status["licenses"] = metadata["licenses"]
@@ -186,6 +203,7 @@ def install_managed_speaker_identity_model(
         _files(),
         metadata=metadata,
         notice=_notice(),
+        legacy_notices=(_notice(usage="opt-in"), _notice(usage="diagnostic")),
         source=source,
         fetch_file=fetch,
         error_type=SpeakerIdentityModelError,

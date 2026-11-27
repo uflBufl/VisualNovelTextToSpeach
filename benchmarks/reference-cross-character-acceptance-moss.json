@@ -1,0 +1,363 @@
+{
+  "protocol": {
+    "recipe": "reference-named-heldout-moss.json: frozen full-pool Steady with Typical fallback",
+    "comparand": "Normal app planner after its ordinary bounded preview qualification on the same held-out inventory",
+    "seed": 0,
+    "profile": "stable",
+    "orientation": "Separate real game recording, same words as both generations, withheld from candidate selection",
+    "sides": {
+      "story": {
+        "A": "frozen",
+        "B": "app"
+      },
+      "playable": {
+        "A": "app",
+        "B": "frozen"
+      }
+    },
+    "primary_outcome": "Can A, B, both or neither be used for this character in game? Record preference separately only if volunteered. If both selectors choose the same bytes, present a single render for a usability judgment.",
+    "decision": "Close cases with both acceptable. Preserve absolute acceptability and distinct performer/role uncertainty. Reproduce one-sided failures on another line or seed before attributing them to the selector."
+  },
+  "cases": {
+    "Eudora": {
+      "cohort": "story",
+      "text": "Look at me.",
+      "listening_files": {
+        "original.wav": "6a1638fd638d3618708af7f0e10500e9a210d9120ee70be7a7085455c82b00f9",
+        "ref-A.wav": "9e9325f3e8e6c56a23f89d4d9197f4da994b1d42451259bb78c0886153e28689",
+        "A.wav": "66844f95fad373d53a252abd897bab8ec8a4e0d5e4d1bf65cd9a54e3cd70f2d8",
+        "ref-B.wav": "cc076483551bf42a695b78792ea4652ef0310d1836bf4193977402028dd0bd89",
+        "B.wav": "e5828ad750ddd1e0b7e449a467a21ed5046636a3074c9a97ee527e74cb5781d2"
+      },
+      "usability": null,
+      "inventory_check": {
+        "source_manifest_sha256": "68a522e544238bf3d4c55573ef648ef2d22dae180a9d114251df0a10576cc6c6",
+        "heldout_manifest_sha256": "78ceb1d8bbe853a7dee8700cff284c1dbcd318d6819892612f66d948916bfc5c",
+        "source_variants": 4,
+        "heldout_variants": 3,
+        "anchor_exclusion_verified": true
+      },
+      "technical_record": {
+        "original": [
+          {
+            "source_bank": "activityvoc_story_hero3156_chongran.bnk",
+            "media_id": 269757283,
+            "source_sha256": "7281c500014e688786ee96f74d15c5369d0be85ed037bde8ae7fbc03485ebac6",
+            "transcript_conflict": false,
+            "speaker_identity_conflict": false,
+            "lines": [
+              {
+                "id": "reverse1999:315603:5",
+                "text": "Look at me."
+              }
+            ]
+          }
+        ],
+        "app": {
+          "selected": [
+            {
+              "source_bank": "activityvoc_story_hero3156_chongran.bnk",
+              "media_id": 241041310,
+              "source_sha256": "8fc82e806322a1c612aadb650201c7f18e75fed09b64f5818faeab1dbcec2d2c",
+              "transcript_conflict": true,
+              "speaker_identity_conflict": false,
+              "lines": [
+                {
+                  "id": "reverse1999:315611:41",
+                  "text": "Haha, how pitiful! Next! Come, then!"
+                },
+                {
+                  "id": "reverse1999:315611:54",
+                  "text": "Hah, still you refuse to yield?"
+                }
+              ]
+            }
+          ],
+          "group_id": "bbcb40b6b41d946485a933fa50ff0938ad02513a07d0b6209ed4977ac444755a",
+          "settings": {
+            "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+            "language": "English",
+            "profile": "stable",
+            "seed": 0,
+            "text": "The storm has passed. We can continue our journey."
+          },
+          "bounded_checks": [
+            {
+              "reference_sha256": "cc076483551bf42a695b78792ea4652ef0310d1836bf4193977402028dd0bd89",
+              "preview_sha256": "f8c0014106d361bc4bbf46e6b8967ba0f2db58fad7eb2866685b79d18a9da313",
+              "status": "no_asr_mismatch",
+              "observed": "The storm has passed, we can continue our journey."
+            },
+            {
+              "reference_sha256": "a665a01a4a6c2b68711cd07807b4b2ddd6ebae4dc2309a449e7714525186c171",
+              "preview_sha256": "877888e8c76943eb4f344cdb0ebd88fe039b5117ee3787a6127177c9b4d84d88",
+              "status": "no_asr_mismatch",
+              "observed": "The storm has passed. We can continue our journey."
+            },
+            {
+              "reference_sha256": "9e9325f3e8e6c56a23f89d4d9197f4da994b1d42451259bb78c0886153e28689",
+              "preview_sha256": "091ef0d97f7cc01a646e4ebd6497c23c4fd082adc668422510b3bdac55dfb50e",
+              "status": "no_asr_mismatch",
+              "observed": "The storm has passed. We can continue our journey."
+            }
+          ],
+          "source_sha256": {
+            "pregeneration_voices.py": "b268e50e0e8076e6616f3f346cf392dca7b6a536943af3e42a56cc4a26acba6c",
+            "pregeneration_audition.py": "57eddb2bbf5189f2eebfd4b68295a7b47c4e312979c71818ed2f8f50ab6c9929",
+            "story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a",
+            "preview_content_advisor.py": "989c65da4fd5e289038bb770dec2e5ccd78636c4b6bb30e958ff1e2aff1e329e",
+            "reference_recommendation.py": "56bde445067547d74bde169a3790986347539b5bffe7407761235479497801c9",
+            "speech_backend.py": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163"
+          }
+        },
+        "frozen": {
+          "selected": [
+            {
+              "source_bank": "activityvoc_story_hero3156_chongran.bnk",
+              "media_id": 756139386,
+              "source_sha256": "dc2946c682f42f3c054f1bb890c46ab2366befe36cb3b697c8eb5c0fbf433248",
+              "transcript_conflict": false,
+              "speaker_identity_conflict": false,
+              "lines": [
+                {
+                  "id": "reverse1999:315603:10",
+                  "text": "No."
+                }
+              ]
+            }
+          ],
+          "fit_count": 3,
+          "method": "typical",
+          "reason": "no_steady_candidate",
+          "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+        },
+        "word_check": {
+          "asr_model_revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+          "utterances": {
+            "original": {
+              "sha256": "6a1638fd638d3618708af7f0e10500e9a210d9120ee70be7a7085455c82b00f9",
+              "observed": "Look at me!",
+              "matches_words": true
+            },
+            "app": {
+              "sha256": "e5828ad750ddd1e0b7e449a467a21ed5046636a3074c9a97ee527e74cb5781d2",
+              "observed": "Look at me.",
+              "matches_words": true
+            },
+            "frozen": {
+              "sha256": "66844f95fad373d53a252abd897bab8ec8a4e0d5e4d1bf65cd9a54e3cd70f2d8",
+              "observed": "Look at me!",
+              "matches_words": true
+            }
+          }
+        },
+        "provenance_sha256": "b20d9daa6fb54b277963c829ef0bc01cae21b2394579c4d977bd7d1b6d6b3375"
+      },
+      "shared_reference": false,
+      "listener_review": {
+        "status": "closed_unrated",
+        "reason": "The listener heard echo on the original game recordings, including both conditioning references, and did not hear the effect in the synthesized speech. They declined to judge either generation and requested that this case be closed."
+      },
+      "alternate_original": {
+        "text": "I yield.",
+        "line_id": "reverse1999:315611:66",
+        "source_bank": "activityvoc_story_hero3156_chongran.bnk",
+        "media_id": 146942839,
+        "wav_sha256": "a665a01a4a6c2b68711cd07807b4b2ddd6ebae4dc2309a449e7714525186c171",
+        "asr": "I yield.",
+        "asr_revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+        "status": "closed_without_comparison",
+        "limitations": "Only remaining distinct, unambiguous Eudora recording outside the two conditioning sources and the rejected original. It belongs to the same bank; processing has not been ruled out."
+      }
+    },
+    "Lilya": {
+      "cohort": "playable",
+      "text": "My former fellows had already searched this place from top to bottom.",
+      "listening_files": {
+        "original.wav": "0a06df612122fd19f7ebcf9fdf496eebb7812b985cbb7dc49db1b759a25062c7",
+        "ref-A.wav": "842b0353430901508ddec9cbd933fc381c06ceec2df646190ab7c7fa5fc359ad",
+        "A.wav": "b58915d10417d818677dce91f24322a1db5151f4702b44faee6ec1d17b416f18",
+        "ref-B.wav": "7ac447789b4793e5f5a60ca43ad5711222d5f261df88bbd80328d058e8bda80a",
+        "B.wav": "3766ce9e85a0286e1473c2292df0cc0cce5598b560c9bad397021eb1e219d2e4"
+      },
+      "usability": {
+        "A": false,
+        "B": true
+      },
+      "inventory_check": {
+        "source_manifest_sha256": "ec5510584f1d7a878a850b5c6bd0a45a03f5089598ae3f02b693b1929f631be1",
+        "heldout_manifest_sha256": "ba017b8b25a66b9b8eef8f41092202c7f976e672ad73be0ebe2fb1e05b282182",
+        "source_variants": 565,
+        "heldout_variants": 564,
+        "anchor_exclusion_verified": true
+      },
+      "technical_record": {
+        "original": [
+          {
+            "source_bank": "plotvoc_hero3004chapter5.bnk",
+            "media_id": 96264300,
+            "source_sha256": "476f92fda6912d73da2a485d0f57e2c183559dc3a96e1d130de7f17ab0250153",
+            "transcript_conflict": false,
+            "speaker_identity_conflict": false,
+            "lines": [
+              {
+                "id": "reverse1999:100502:72",
+                "text": "My former fellows had already searched this place from top to bottom."
+              }
+            ]
+          }
+        ],
+        "app": {
+          "selected": [
+            {
+              "source_bank": "plotvoc_hero3004chapter8.bnk",
+              "media_id": 66077049,
+              "source_sha256": "2d185e23d1466627de5e647ac2d6c39ff62140118fdc6a22535c75a813bd78d7",
+              "transcript_conflict": false,
+              "speaker_identity_conflict": false,
+              "lines": [
+                {
+                  "id": "reverse1999:100823:96",
+                  "text": "The Apostles Brotherhood? No, that's even less likely."
+                }
+              ]
+            }
+          ],
+          "group_id": "ccb7fe88290b3ffa27589d0268e708b21969f936ae6c646e986fca0ef0921e3c",
+          "settings": {
+            "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+            "language": "English",
+            "profile": "stable",
+            "seed": 0,
+            "text": "The storm has passed. We can continue our journey."
+          },
+          "bounded_checks": [
+            {
+              "reference_sha256": "842b0353430901508ddec9cbd933fc381c06ceec2df646190ab7c7fa5fc359ad",
+              "preview_sha256": "0f20b02ff78ba302faf86cc852f06408d6d3174f4e659e37f791882dba763db5",
+              "status": "no_asr_mismatch",
+              "observed": "The storm has passed. We can continue our journey."
+            },
+            {
+              "reference_sha256": "8bc473cfe61c3debe68a6f6638dfa0443043464584cc7f97c03a526c8e0a1446",
+              "preview_sha256": "1511fb2c8626b9f6403603d0e8b9de22599c3d4a4a0dd6e7d97a37d0299e846d",
+              "status": "uncertain_recognition",
+              "observed": "This storm has passed. We can continue our journey."
+            },
+            {
+              "reference_sha256": "85c805d5d7cadd4adb2dc44ed53f20d6fc5f49040135111cee92c1fd76203c33",
+              "preview_sha256": "694f4c69d00a355a6c889f486d01ffb02b6d2884bb6e51fbe4b76d29a2e28f8d",
+              "status": "no_asr_mismatch",
+              "observed": "The storm has passed. We can continue our journey."
+            }
+          ],
+          "source_sha256": {
+            "pregeneration_voices.py": "b268e50e0e8076e6616f3f346cf392dca7b6a536943af3e42a56cc4a26acba6c",
+            "pregeneration_audition.py": "57eddb2bbf5189f2eebfd4b68295a7b47c4e312979c71818ed2f8f50ab6c9929",
+            "story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a",
+            "preview_content_advisor.py": "989c65da4fd5e289038bb770dec2e5ccd78636c4b6bb30e958ff1e2aff1e329e",
+            "reference_recommendation.py": "56bde445067547d74bde169a3790986347539b5bffe7407761235479497801c9",
+            "speech_backend.py": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163"
+          }
+        },
+        "frozen": {
+          "selected": [
+            {
+              "source_bank": "plotvoc_hero3004chapter12_part02.bnk",
+              "media_id": 681575230,
+              "source_sha256": "23fce72093a379d2e841b53258689d6893a6272b0e8b7b5d40278af9acf0c3a4",
+              "transcript_conflict": false,
+              "speaker_identity_conflict": false,
+              "lines": [
+                {
+                  "id": "reverse1999:101206:58",
+                  "text": "Send her somewhere safe after she recovers. We'll decamp tomorrow morning, station in Tamarovka for a day, and then head to the city. Commander's orders."
+                }
+              ]
+            }
+          ],
+          "fit_count": 560,
+          "method": "steady",
+          "reason": "frozen_criteria_passed",
+          "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286"
+        },
+        "word_check": {
+          "asr_model_revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+          "utterances": {
+            "original": {
+              "sha256": "0a06df612122fd19f7ebcf9fdf496eebb7812b985cbb7dc49db1b759a25062c7",
+              "observed": "My former fellows had already searched this place from top to bottom.",
+              "matches_words": true
+            },
+            "app": {
+              "sha256": "b58915d10417d818677dce91f24322a1db5151f4702b44faee6ec1d17b416f18",
+              "observed": "My former fellows had already searched this place, from top to bottom.",
+              "matches_words": true
+            },
+            "frozen": {
+              "sha256": "3766ce9e85a0286e1473c2292df0cc0cce5598b560c9bad397021eb1e219d2e4",
+              "observed": "My former fellows had already searched, this place from top to bottom.",
+              "matches_words": true
+            }
+          }
+        },
+        "provenance_sha256": "93d7c11cc2bb999610e353a481e100765351498a60fdd760a71a74a807891b35"
+      },
+      "shared_reference": false,
+      "listener_review": {
+        "status": "rated",
+        "feedback": "B is good; A does not sound like Lilya.",
+        "scope": "First game line at seed 0."
+      },
+      "fixed_reference_followup": {
+        "text": "They just left her in a wooden box. What kind of safekeeping is this?",
+        "game_line": "reverse1999:202109:12",
+        "bank": "activityvoc_hero3004_2_1_wangshi_part01.bnk",
+        "media_id": 1044278773,
+        "source_sha256": "764f5414e69f99e7e2e56a8247c82c71d7a978608492176abbdffe79ba804428",
+        "previous_selector_pool_member": true,
+        "scope": "Fixed-reference transfer check on a distinct game line and separate bank; same generation settings and same A/B conditioning WAVs as the first Lilya comparison. No reranking.",
+        "pre_render_original_check": {
+          "file": "original.wav",
+          "sha256": "3b8daaa498fe668d47b430ea03f07f05abcbcb51f286b4e5839f67b825ea8bef",
+          "expected": "They just left her in a wooden box. What kind of safekeeping is this?",
+          "observed": "They just left her in a wooden box. What kind of safekeeping is this?",
+          "normalized_exact": true,
+          "asr_revision": "87c7102498dcde7456f24cfd30239ca606ed9063"
+        },
+        "listening_files": {
+          "original.wav": "3b8daaa498fe668d47b430ea03f07f05abcbcb51f286b4e5839f67b825ea8bef",
+          "A.wav": "4142dec946b136139d9a8ffccc1b9aa2fcffb7143ea70dcdcc0e13e5584d9a7f",
+          "B.wav": "c46949bad75ed2f1899290c62d9d66b372794000cf46e90c79a5c22c4c0b0e02"
+        },
+        "A_reference_sha256": "842b0353430901508ddec9cbd933fc381c06ceec2df646190ab7c7fa5fc359ad",
+        "B_reference_sha256": "7ac447789b4793e5f5a60ca43ad5711222d5f261df88bbd80328d058e8bda80a",
+        "usability": {
+          "A": false,
+          "B": true
+        },
+        "listener_review": {
+          "status": "rated",
+          "feedback": "B again sounds like Lilya. A sounds more like another character."
+        }
+      }
+    }
+  },
+  "generation": {
+    "model_id": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "language": "English",
+    "backend_source_sha256": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163",
+    "guard_source_sha256": "31e16d459c0467d3ee1b4c6660865523411ea2229dcee32185f7a2d405dd9aad",
+    "seed": 0
+  }
+}

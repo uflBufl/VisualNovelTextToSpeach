@@ -1,0 +1,822 @@
+{
+  "scope": "All distinct character pools with 1–64 unique story-line-routed WAV digests in six installed English game catalogs and one local English story import. Repeated identical character pools count once. Pool size precedes automatic eligibility and technical preflight. Several labels are incidental roles; these are coverage and latency observations, not identity or listening ratings.",
+  "selection": "Fresh unbound MOSS. Use the midpoint-percentile steady rule from reference-typicality-unseen-moss.json on the entire eligible pool. Use the typical clip when no steady clip qualifies; with fewer than three usable originals keep the first usable planner clip. No holdout bank in this deployment-path trial.",
+  "timing": "Wall seconds for select_reference on CPU with two PyTorch threads, in two fresh Python processes, one encoder initialization per process. Per-character timing includes catalog validation, planner inventory, preflight, embeddings and delivery analysis. OS caches may be warm, concurrent work may affect latency. Rendering and job creation are excluded.",
+  "initialization_seconds": [
+    {
+      "study_import_seconds": 1.205,
+      "encoder_init_seconds": 1.635
+    },
+    {
+      "study_import_seconds": 1.741,
+      "encoder_init_seconds": 1.614
+    }
+  ],
+  "replay": "Each selected digest was applied through the planner shortlist helper on its original catalog. Full VoicePlanStore.create replay also checked five fresh groups for the same choices; five archived story jobs could not validate their historical source checksum.",
+  "commands": [
+    "python -m scripts.study_reference_typicality MANIFEST CHARACTER --select",
+    "python -m scripts.replay_reference_trial STORY_INDEX MANIFEST REPORT --output-root OUTPUT_DIR"
+  ],
+  "cases": [
+    {
+      "character": "An-an Lee",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "distinct_routed": 56,
+      "usable": 51,
+      "steady_qualifying": 1,
+      "method": "steady",
+      "selected_sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+      "selected_line_ids": [
+        "reverse1999:202530:23"
+      ],
+      "baseline_sha256": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "verified",
+      "selection_seconds": [
+        7.365,
+        7.866
+      ]
+    },
+    {
+      "character": "Boy",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "distinct_routed": 5,
+      "usable": 5,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "9eb4d1ed50afbf1016ca1b5d4d50b9ee481ee6e795544a42d089f9f1656c9b42",
+      "selected_line_ids": [
+        "reverse1999:101223:65"
+      ],
+      "baseline_sha256": "234f6206c9d80c63384ba6228b9d65e2811f552ec1a95e2bdfa71b7c257128a5",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        1.255,
+        0.871
+      ]
+    },
+    {
+      "character": "Child",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "distinct_routed": 9,
+      "usable": 9,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "78ef8f547897e124fb6b48e8eaac935a365b06e7d201ef7528fb6ad5be2be755",
+      "selected_line_ids": [
+        "reverse1999:202529:83"
+      ],
+      "baseline_sha256": "0b5ca65d3aa38f8d2a5545fedb3b5c5a7ea1f1d6f725e0ab682c9a7bc5a11b81",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        1.259,
+        0.65
+      ]
+    },
+    {
+      "character": "Clerk",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "distinct_routed": 3,
+      "usable": 3,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "ff0033387d6fce9f7627f7bae603bcd7329aa6a7c16f0849705ee6a43ffc4b55",
+      "selected_line_ids": [
+        "reverse1999:100409:36"
+      ],
+      "baseline_sha256": "ff0033387d6fce9f7627f7bae603bcd7329aa6a7c16f0849705ee6a43ffc4b55",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        1.113,
+        1.082
+      ]
+    },
+    {
+      "character": "Communicator",
+      "manifest_sha256": "41849ca06ebae2e15f058352e4355f876b0fb5da33b17518c56889f177fded88",
+      "distinct_routed": 19,
+      "usable": 19,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "c1446d7510a492decfab101f9c6f0687c55f3a6a32d7e8ce37e2db4dd3eddf58",
+      "selected_line_ids": [
+        "reverse1999:202103:25"
+      ],
+      "baseline_sha256": "2c774b0484ed23d3ea9c384a605ec9a279482e921db9a7316d86fa3196590077",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        3.782,
+        4.727
+      ]
+    },
+    {
+      "character": "Elma",
+      "manifest_sha256": "85b3490e3bf51055c815ac66f16fd33fda0ccc18ba906147d248f51bc88ea7d8",
+      "distinct_routed": 2,
+      "usable": 2,
+      "steady_qualifying": 0,
+      "method": "baseline",
+      "selected_sha256": "372350eb9bd804e630e0f089df3728a1b78ff088dad5ca1aad230314f7bfd7ec",
+      "selected_line_ids": [
+        "reverse1999:315601:55",
+        "reverse1999:315609:14"
+      ],
+      "baseline_sha256": "372350eb9bd804e630e0f089df3728a1b78ff088dad5ca1aad230314f7bfd7ec",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 2,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.361,
+        0.319
+      ]
+    },
+    {
+      "character": "Eudora",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "distinct_routed": 4,
+      "usable": 4,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "6a1638fd638d3618708af7f0e10500e9a210d9120ee70be7a7085455c82b00f9",
+      "selected_line_ids": [
+        "reverse1999:315603:5"
+      ],
+      "baseline_sha256": "cc076483551bf42a695b78792ea4652ef0310d1836bf4193977402028dd0bd89",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.59,
+        0.447
+      ]
+    },
+    {
+      "character": "Eurus",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "distinct_routed": 5,
+      "usable": 5,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "199e52c12fb2adec1deaf4a09a346d0ab024ebb0c066dd27a313bc186d3aef7a",
+      "selected_line_ids": [
+        "reverse1999:315611:106"
+      ],
+      "baseline_sha256": "199e52c12fb2adec1deaf4a09a346d0ab024ebb0c066dd27a313bc186d3aef7a",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.883,
+        0.569
+      ]
+    },
+    {
+      "character": "Foundation Staff Member I",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "distinct_routed": 18,
+      "usable": 18,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+      "selected_line_ids": [
+        "reverse1999:202726:11"
+      ],
+      "baseline_sha256": "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "verified",
+      "selection_seconds": [
+        2.076,
+        2.934
+      ]
+    },
+    {
+      "character": "Foundation Staff Member II",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "distinct_routed": 16,
+      "usable": 16,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "4edece18db84e0bf8b05f806642f43a5a6460574a51faccbbd8cda481a2cb0ac",
+      "selected_line_ids": [
+        "reverse1999:202726:14"
+      ],
+      "baseline_sha256": "70cc308f7471e62dd5bdb5b5909730974d1aed76abf0c99da3324a90fc872f71",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "verified",
+      "selection_seconds": [
+        2.202,
+        2.853
+      ]
+    },
+    {
+      "character": "Honza",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "distinct_routed": 44,
+      "usable": 44,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+      "selected_line_ids": [
+        "reverse1999:203826:49"
+      ],
+      "baseline_sha256": "9ac3aab0202a5efcd52a2c1ff60307fe14d7fde4635ccd61d345e010ef35af57",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        4.377,
+        4.293
+      ]
+    },
+    {
+      "character": "Poet",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "distinct_routed": 3,
+      "usable": 3,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "7ccd769a4e25f159bcb69ad3845800356eca1fdcb07a8b8bf6f5863936ffb291",
+      "selected_line_ids": [
+        "reverse1999:308105:16",
+        "reverse1999:308108:106"
+      ],
+      "baseline_sha256": "7ccd769a4e25f159bcb69ad3845800356eca1fdcb07a8b8bf6f5863936ffb291",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.578,
+        0.54
+      ]
+    },
+    {
+      "character": "Puppeteer",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "distinct_routed": 3,
+      "usable": 3,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "66ce0615259918ca9712a52fab710affc7b2766ac1f6012b7fcdc22e96668bbc",
+      "selected_line_ids": [
+        "reverse1999:314506:53"
+      ],
+      "baseline_sha256": "ba176dfd40b40b0befa1953a7e6ea31976906d09d52fba9d443b103528978c35",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.701,
+        0.753
+      ]
+    },
+    {
+      "character": "Radio",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "distinct_routed": 12,
+      "usable": 12,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+      "selected_line_ids": [
+        "reverse1999:202706:6"
+      ],
+      "baseline_sha256": "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "verified",
+      "selection_seconds": [
+        2.701,
+        1.305
+      ]
+    },
+    {
+      "character": "Tourist",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "distinct_routed": 5,
+      "usable": 5,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+      "selected_line_ids": [
+        "reverse1999:202533:17"
+      ],
+      "baseline_sha256": "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+      "replaces_first": true,
+      "entered_from_outside_previous_shortlist": true,
+      "preview_slots": 3,
+      "full_job_replay": "verified",
+      "selection_seconds": [
+        1.775,
+        1.073
+      ]
+    },
+    {
+      "character": "Tribespeople",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "distinct_routed": 1,
+      "usable": 1,
+      "steady_qualifying": 0,
+      "method": "baseline",
+      "selected_sha256": "d6aae6e5107567314de5a6e9b17dc614396ce003486e3ba72b8242f3d8d2cfa3",
+      "selected_line_ids": [
+        "reverse1999:315612:37"
+      ],
+      "baseline_sha256": "d6aae6e5107567314de5a6e9b17dc614396ce003486e3ba72b8242f3d8d2cfa3",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 1,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.376,
+        0.401
+      ]
+    },
+    {
+      "character": "Volcano",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "distinct_routed": 9,
+      "usable": 9,
+      "steady_qualifying": 0,
+      "method": "typical",
+      "selected_sha256": "b6ca767cbd608309e39ceef244a75e999db826c377abc79829c4af13a9236014",
+      "selected_line_ids": [
+        "reverse1999:315610:43"
+      ],
+      "baseline_sha256": "b6ca767cbd608309e39ceef244a75e999db826c377abc79829c4af13a9236014",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 3,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        1.109,
+        0.605
+      ]
+    },
+    {
+      "character": "Zuzanna",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "distinct_routed": 1,
+      "usable": 1,
+      "steady_qualifying": 0,
+      "method": "baseline",
+      "selected_sha256": "51ceafef893f5f65902b621ac2005970f28013a0b13970ce2b54627174be7981",
+      "selected_line_ids": [
+        "reverse1999:314507:36"
+      ],
+      "baseline_sha256": "51ceafef893f5f65902b621ac2005970f28013a0b13970ce2b54627174be7981",
+      "replaces_first": false,
+      "entered_from_outside_previous_shortlist": false,
+      "preview_slots": 1,
+      "full_job_replay": "historical_source_checksum_changed",
+      "selection_seconds": [
+        0.835,
+        0.857
+      ]
+    }
+  ],
+  "listening_examples": {
+    "matched_settings": "reference-typicality-unseen-moss.json",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "texts": [
+      "The letter is still on the table. We should read it before we leave.",
+      "I thought you said it was empty. Can you hear that?"
+    ],
+    "seeds": [
+      0,
+      1
+    ],
+    "note": "All references were selected from the available originals. The extra original game line is for listening orientation. Normalized Whisper agreement is diagnostic.",
+    "renders": [
+      {
+        "character": "An-an Lee",
+        "method": "baseline",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "f8c2a8674f928b8ed67045091712b87375484cb9bc356119c0129f1e6d90a712",
+        "asr_normalized_exact": true,
+        "reference_sha256": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "representative",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "f82232e07ca2e63debb6b8d4ea5c1bdac1dd9441f84433b29750c86ca9600510",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "selected",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "c996dd4dd130e69136b6c98e796b74adb1e323874a974fb24691311244dc6775",
+        "asr_normalized_exact": false,
+        "reference_sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "baseline",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "120a22fb4ca23d1db161c8ad1edddb7d9dc706dfd284dea28d5e2f71f448f451",
+        "asr_normalized_exact": true,
+        "reference_sha256": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "representative",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "68d7277ed06f2426fac240327743c8c4133d4ca65c5355b886332bcaea0accc8",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "selected",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "5872a99126bb418f3f27beaf466d98903de83b63bc6fcf5d198ac16857c5ea7c",
+        "asr_normalized_exact": true,
+        "reference_sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "baseline",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "e33b82dd211578e667b5a4140e2eb2405f6d7d4b57cc34fefed75cb24a348327",
+        "asr_normalized_exact": true,
+        "reference_sha256": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "representative",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "909875ffb9691ad29415a59e64901411a9ee310a2d52cb158b6b2f88d78a4404",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "selected",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "4415fafcdb9980137e396928a4e37898031c843fc85e86957c02be583cf5afae",
+        "asr_normalized_exact": false,
+        "reference_sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "baseline",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "7fa454897cdde4e28768569a1c0d9ea448fcabcfa3b1b1941d861558e41cc9e7",
+        "asr_normalized_exact": true,
+        "reference_sha256": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "representative",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "68a3748b623529ba12d010c8f9380da0c881bcf161ed2825bed0a0c31d6ddb43",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      },
+      {
+        "character": "An-an Lee",
+        "method": "selected",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "ea040534a3b56dd8dcbf1963ae95b41e5ce8ae563b4d63936360042e971a5df1",
+        "asr_normalized_exact": true,
+        "reference_sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      },
+      {
+        "character": "Tourist",
+        "method": "baseline",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "56d8895b72ab259ea3c5c244348f04083caded5a1050f8b0fd6ba0142bae11bc",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28"
+      },
+      {
+        "character": "Tourist",
+        "method": "representative",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "1770730e78e01c89f124afe9ab732aaf6d071e91f3fbcd455b89eead17624515",
+        "asr_normalized_exact": false,
+        "reference_sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      },
+      {
+        "character": "Tourist",
+        "method": "baseline",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "e8ce467e0639617a46928416f5a0f44d454c24d3e1fde4c10bcf5f506d4c2da9",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28"
+      },
+      {
+        "character": "Tourist",
+        "method": "representative",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "dd05090d947e75e13062872cd96fddf7a5fd889e5eb3b11115f64fc635ad72a6",
+        "asr_normalized_exact": true,
+        "reference_sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      },
+      {
+        "character": "Tourist",
+        "method": "baseline",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "ab53d583318489040ce5370df66cdfd7c03f2ba7cac6f9e3cfc2acfd80902759",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28"
+      },
+      {
+        "character": "Tourist",
+        "method": "representative",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "d5c53f44d65d835adcee2f2658f89622590539a94f2ccdecaca397adc8ce1fd1",
+        "asr_normalized_exact": true,
+        "reference_sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      },
+      {
+        "character": "Tourist",
+        "method": "baseline",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "bf4315ea248206a73bad6ac9a296592a88a1b6f26d3a218bee7b52586a909cf2",
+        "asr_normalized_exact": true,
+        "reference_sha256": "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28"
+      },
+      {
+        "character": "Tourist",
+        "method": "representative",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "443e156e69da168e8e3eb594cf74d22c15118820b1a3b744c34290997be12f2d",
+        "asr_normalized_exact": true,
+        "reference_sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      }
+    ],
+    "orientation_originals": {
+      "An-an Lee": "406e9e21f6707b14c3972d1f974c6166c352bb924ee25f622a831505d6ec7bb8",
+      "Tourist": "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794"
+    }
+  },
+  "listening_feedback": {
+    "scope": "Overall listener impressions of the generated lines. No per-render votes.",
+    "An-an Lee": {
+      "baseline": "Robotic voice.",
+      "steady": "Better than the baseline, with some audible artifacts.",
+      "typical": "Clean and acceptable. Some resemblance to the original, with a noticeable difference from the character.",
+      "seed_preference": "The seeds sounded different. No consistent preference for either seed."
+    },
+    "Tourist": {
+      "preference": "Tentative preference for typical over baseline.",
+      "delivery": "Even neutral generated lines sounded emotional. The listener suspected the delivery came from the original recordings and associated this kind of delivery with the voice breaking or sounding robotic."
+    }
+  },
+  "heldout_regression": {
+    "comparison": "Re-ran --select --holdout-bank against the earlier listening recipes. Matched the source SHA-256 for each listed method exactly.",
+    "cases": [
+      {
+        "character": "Horropedia",
+        "holdout_bank": "activityvoc_hero3061lvhu1_2_part04.bnk",
+        "matched_methods": [
+          "current",
+          "typical",
+          "steady"
+        ]
+      },
+      {
+        "character": "Forget Me Not",
+        "holdout_bank": "plotvoc_hero3008chapter2_part02.bnk",
+        "matched_methods": [
+          "current",
+          "typical",
+          "steady"
+        ]
+      },
+      {
+        "character": "Vertin",
+        "holdout_bank": "plotvoc_hero5043chapter2_part02.bnk",
+        "matched_methods": [
+          "current",
+          "typical",
+          "steady"
+        ]
+      },
+      {
+        "character": "Isolde",
+        "holdout_bank": "plotvoc_hero3081chapter6_part03.bnk",
+        "matched_methods": [
+          "current",
+          "typical",
+          "steady"
+        ]
+      }
+    ]
+  },
+  "qualified_app_listening_trial": {
+    "scope": "Unrated roles in the same English catalog. Both had complete checksum-bound app qualification evidence and different full-pool Typical choices. Different A/B orders, one neutral sentence, repeated with two seeds. The orientation original was the distinct top-quality clip closest to four seconds and was available during selection. These small, role-labeled pools do not test Steady selection.",
+    "text": "The letter is still on the table. We should read it before we leave.",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "seeds": [
+      0,
+      1
+    ],
+    "roles": {
+      "Radio": {
+        "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+        "fit_count": 12,
+        "method": "typical",
+        "source_sha256s": {
+          "original": "09ba2a8edf29ef96737aabf0f6c844b05c783583d31d49cdd28a70232b86ef07",
+          "current": "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+          "full": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1"
+        },
+        "current_preview_statuses": [
+          "no_asr_mismatch",
+          "review_possible_content_mismatch",
+          "uncertain_recognition"
+        ],
+        "method_for_A_and_B": [
+          "full",
+          "current"
+        ],
+        "renders": [
+          {
+            "side": "A",
+            "seed": 0,
+            "wav_sha256": "1eee39dd80cd5077d3e8b80c3c3e31f2e5985061a5fe22146c19418b67d738c5"
+          },
+          {
+            "side": "B",
+            "seed": 0,
+            "wav_sha256": "681e4ae0db2601bbd33c69b3a3f5462c1ba38ad6a047d4a12d5491feccfbbfa1"
+          },
+          {
+            "side": "A",
+            "seed": 1,
+            "wav_sha256": "22634dd4c55b4c9506ba3f53694045ac3ec4ae94abf6624d3664c623d6682d9d"
+          },
+          {
+            "side": "B",
+            "seed": 1,
+            "wav_sha256": "3405d7bab0e253242d38ab9a0b986d046ce202206aa5c5a5ec190932b564fd30"
+          }
+        ],
+        "listener_preference": "both_acceptable",
+        "source_context": {
+          "listening_original": {
+            "line_ids": [
+              "reverse1999:202706:5"
+            ],
+            "bank": "activityvoc_npcnoname172_2_7_yuzhou.bnk"
+          },
+          "A": {
+            "line_ids": [
+              "reverse1999:202706:6"
+            ],
+            "bank": "activityvoc_npcnoname172_2_7_yuzhou.bnk"
+          },
+          "B": {
+            "line_ids": [
+              "reverse1999:200203:65"
+            ],
+            "bank": "activityvoc_npcnoname20.bnk"
+          },
+          "added_comparison_original": {
+            "line_ids": [
+              "reverse1999:200203:2"
+            ],
+            "bank": "activityvoc_npcnoname20.bnk",
+            "sha256": "28e24ab884788e5d4e7cbbc212b41a56a8a9ee9ed158bc4c372dd743a252accd",
+            "matches_scene_and_bank_of": [
+              "B"
+            ]
+          }
+        },
+        "listening_feedback": "The listener heard different voices in the references, describing the first as Russian-sounding and the second as English-speaking. Both generations worked as radio voices. No speaker-match preference was given."
+      },
+      "Foundation Staff Member I": {
+        "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+        "fit_count": 18,
+        "method": "typical",
+        "source_sha256s": {
+          "original": "581eb192dbfb9ea70baccb189b2324b5ffd06b4aa1c25c133d70701f70fabbe4",
+          "current": "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+          "full": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163"
+        },
+        "current_preview_statuses": [
+          "uncertain_recognition",
+          "no_asr_mismatch",
+          "no_asr_mismatch"
+        ],
+        "method_for_A_and_B": [
+          "current",
+          "full"
+        ],
+        "renders": [
+          {
+            "side": "A",
+            "seed": 0,
+            "wav_sha256": "c7cfc80a8952ae83c2c6f04c634784a88ab6b5771b6f23994ccf095163651e8a"
+          },
+          {
+            "side": "B",
+            "seed": 0,
+            "wav_sha256": "21ef40497f2600d7cb07d0c6d1ebdc77e048346174f4bb1de08c6bd763e8e71f"
+          },
+          {
+            "side": "A",
+            "seed": 1,
+            "wav_sha256": "8ef0493c3af26123e706c0b274e3d6ebbe1dd42b756ffab830bdb3db30775200"
+          },
+          {
+            "side": "B",
+            "seed": 1,
+            "wav_sha256": "4f3b2bc8e5e16b89e13d7a844b20cbbb383a085fca1155dae34ab4b9aff5d568"
+          }
+        ],
+        "listener_preference": "A",
+        "source_context": {
+          "listening_original": {
+            "line_ids": [
+              "reverse1999:203801:56"
+            ],
+            "bank": "activityvoc_npc506101_3_8_shiji.bnk"
+          },
+          "A": {
+            "line_ids": [
+              "reverse1999:202726:91"
+            ],
+            "bank": "activityvoc_npc506101_2_7_yuzhou.bnk"
+          },
+          "B": {
+            "line_ids": [
+              "reverse1999:202726:11"
+            ],
+            "bank": "activityvoc_npc506101_2_7_yuzhou.bnk"
+          },
+          "added_comparison_original": {
+            "line_ids": [
+              "reverse1999:202726:96"
+            ],
+            "bank": "activityvoc_npc506101_2_7_yuzhou.bnk",
+            "sha256": "c2b9e15babe53eeaa53f6e682e8d210c4932cbe95d28cd97c11de737c2b11f23",
+            "matches_scene_and_bank_of": [
+              "A",
+              "B"
+            ]
+          }
+        },
+        "listening_feedback": "The listener heard the same speaker in A and B and preferred A (current app) for generation quality. They suspected the previously presented game original was a different voice."
+      }
+    }
+  }
+}

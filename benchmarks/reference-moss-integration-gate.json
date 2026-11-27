@@ -1,0 +1,339 @@
+{
+  "schema": "vntts.reference-moss-integration-gate",
+  "schema_version": 1,
+  "status": "default_enablement_not_qualified",
+  "scope": "Evidence receipt for opt-in full-pool Steady/Typical selection in a fresh MOSS plan. Historical listening, reported runtime observations and current verification are separate. This is not a calibrated quality score or a default-enablement approval.",
+  "decision": {
+    "keep_opt_in": true,
+    "reason": "Historical listener judgments include improvements, ties and inferior delivery. Foundation Staff Member I and An-an Lee lack reproduced current normal-path qualification and fallback evidence. Content checks alone do not establish perceptual improvement."
+  },
+  "evidence_sources": [
+    {
+      "path": "benchmarks/reference-cross-character-acceptance-moss.json",
+      "sha256": "89597489d6774df6d6436dd48c0206d68a3e478a6efcbc6e297d466d83981c2d"
+    },
+    {
+      "path": "benchmarks/reference-named-heldout-moss.json",
+      "sha256": "9580e762160b7214037feb1afc757c134e7630cef776c9dbc69b547c18e18a48"
+    },
+    {
+      "path": "benchmarks/reference-typicality-moss.json",
+      "sha256": "1a4f6a70a86a8be3b27dbe4577a6033dcafb06d72b89a0ed1510ed23b93d5607"
+    },
+    {
+      "path": "benchmarks/reference-selection-small-catalogs.json",
+      "sha256": "0cb6871a6ab601300c094a04f666a91ce9ec9dbbfa4af217a69aac95fb44e9f3"
+    },
+    {
+      "path": "benchmarks/reference-preview-dual-moss.json",
+      "sha256": "dced7d5c72533244c9c0e4c5aef774553ec3c9f0233339b508c62155f734d988"
+    },
+    {
+      "path": "benchmarks/reference-source-transcript-moss.json",
+      "sha256": "7ebbbcb5df9c29c7487ab45b20643a3dde3189c4a759385f62a1d4ea34e689d4"
+    }
+  ],
+  "verification": {
+    "performed": "Parsed persisted benchmark records and independently hashed retained local WAV bytes. Checked installed catalog manifests for the missing Foundation Staff Member I and An-an Lee pools.",
+    "normal_app_rerun_performed": false,
+    "new_listening_performed": false,
+    "previous_runtime_receipt_retained": false,
+    "historical_listener_ratings_reinterpreted_as_new_ratings": false
+  },
+  "cases": {
+    "Lilya": {
+      "historical_receipt": "reference-cross-character-acceptance-moss.json#/cases/Lilya",
+      "manifest_sha256": "ba017b8b25a66b9b8eef8f41092202c7f976e672ad73be0ebe2fb1e05b282182",
+      "reference_sha256s": {
+        "baseline": "842b0353430901508ddec9cbd933fc381c06ceec2df646190ab7c7fa5fc359ad",
+        "steady": "7ac447789b4793e5f5a60ca43ad5711222d5f261df88bbd80328d058e8bda80a"
+      },
+      "historical_listening": {
+        "absolute_usability": {
+          "A": false,
+          "B": true
+        },
+        "mapping": {
+          "A": "baseline",
+          "B": "steady"
+        },
+        "followup_absolute_usability": {
+          "A": false,
+          "B": true
+        },
+        "conclusion": "Steady accepted and baseline rejected on the initial game line and fixed-reference followup."
+      },
+      "prior_runtime_observation": {
+        "status": "reported_execution_receipt_not_retained",
+        "selected_reference_sha256": "7ac447789b4793e5f5a60ca43ad5711222d5f261df88bbd80328d058e8bda80a",
+        "source": "Earlier release-validation agent reported normal MOSS planner and bounded preview qualification; temporary run state was lost."
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "original.wav": "0a06df612122fd19f7ebcf9fdf496eebb7812b985cbb7dc49db1b759a25062c7",
+          "ref-A.wav": "842b0353430901508ddec9cbd933fc381c06ceec2df646190ab7c7fa5fc359ad",
+          "A.wav": "b58915d10417d818677dce91f24322a1db5151f4702b44faee6ec1d17b416f18",
+          "ref-B.wav": "7ac447789b4793e5f5a60ca43ad5711222d5f261df88bbd80328d058e8bda80a",
+          "B.wav": "3766ce9e85a0286e1473c2292df0cc0cce5598b560c9bad397021eb1e219d2e4",
+          "followup/original.wav": "3b8daaa498fe668d47b430ea03f07f05abcbcb51f286b4e5839f67b825ea8bef",
+          "followup/A.wav": "4142dec946b136139d9a8ffccc1b9aa2fcffb7143ea70dcdcc0e13e5584d9a7f",
+          "followup/B.wav": "c46949bad75ed2f1899290c62d9d66b372794000cf46e90c79a5c22c4c0b0e02"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0
+      ]
+    },
+    "Blonney": {
+      "historical_receipt": "reference-named-heldout-moss.json#/roles/Blonney",
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "reference_sha256s": {
+        "baseline": "fa7263a3952e8b227de6c9ee264f9db02797d67fb2002aefab63c088d2868df2",
+        "steady": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51"
+      },
+      "historical_listening": {
+        "preference": "B",
+        "mapping": {
+          "A": "current",
+          "B": "proposal"
+        },
+        "feedback": "The listener preferred B (Steady) over A (current app) but felt B still sounded off. They did not identify which aspect of the voice or delivery was responsible.",
+        "same_game_line_followup": {
+          "preference": "B",
+          "mapping": {
+            "A": "baseline",
+            "B": "steady"
+          },
+          "feedback": "On the original game line, B (Steady) sounded good enough to the listener and had better pacing than A. The listener was unsure there was room for improvement."
+        }
+      },
+      "prior_runtime_observation": {
+        "status": "reported_execution_receipt_not_retained",
+        "selected_reference_sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+        "source": "Earlier release-validation agent reported normal MOSS planner and bounded preview qualification; temporary run state was lost."
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "current": "b875e2b7a67f1fb766d914b6019d94a90a4a82a79328a6722e2be8df7a3efef8",
+          "proposal": "e49493982cc09ad89c5de107c2f3ad101e4bf38b051f5000cd11a407e92d315e",
+          "followup/A": "84ebcc2a901ed336e22940d7b956313e2e9b07a95da6516321cd91801c2f90fa",
+          "followup/B": "1eb10818a45e69bd18ec43a3bd43cb74a001176a480e9f20a38a2c3590b996ae"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0
+      ]
+    },
+    "Bkornblume": {
+      "historical_receipt": "reference-named-heldout-moss.json#/roles/Bkornblume",
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "reference_sha256s": {
+        "baseline": "9122db40f4f882493782d07d164f4f0a6f4aa45a01dae13c372fe06ce354f981",
+        "steady": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb"
+      },
+      "historical_listening": {
+        "preference": "tie",
+        "mapping": {
+          "A": "proposal",
+          "B": "current"
+        },
+        "feedback": "Both generations sounded good. The listener could not choose between them."
+      },
+      "prior_runtime_observation": {
+        "status": "reported_execution_receipt_not_retained",
+        "selected_reference_sha256": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+        "source": "Earlier release-validation agent reported normal MOSS planner and bounded preview qualification; temporary run state was lost."
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "current": "5dc3d4039f6b1d0d831f8c5a55e0cce036913bae3e73c740b0e4911f412beb9d",
+          "proposal": "698ff081c40902379486acff88e83c4f0e86c6bedb3ade94c32dd9001739b83b"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0
+      ]
+    },
+    "Isolde": {
+      "historical_receipt": "reference-typicality-moss.json#/isolde_delivery_followup/full_pool_comparison",
+      "reference_sha256s": {
+        "steady": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+        "manual_declarative_control": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9"
+      },
+      "historical_listening": {
+        "neutral_line": "On the neutral sentence, the listener preferred the normal delivery of the blessing-line reference. The full-pool choice made Isolde sound on the verge of crying.",
+        "game_line": "On this game line, the listener found A much better than B and quite close to the original recording.",
+        "mapping": {
+          "A": "manual_declarative_control",
+          "B": "steady"
+        },
+        "conclusion": "Full-pool Steady is not established as a perceptual improvement; the preferred manual control is not the automatic Typical fallback."
+      },
+      "prior_runtime_observation": {
+        "status": "reported_execution_receipt_not_retained",
+        "selected_reference_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+        "source": "Earlier release-validation agent reported normal MOSS planner and bounded preview qualification; temporary run state was lost."
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "A": "ae136792333dc13f3e48ac1b9810553a2d0d52df9713ca53eb171c05eec6cd55",
+          "B": "5a0f4e9bedb80ae1d8dc2f8b59606d1b7f91729e7ea0e843b5a8c8faee932780"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0
+      ]
+    },
+    "Foundation Staff Member I": {
+      "historical_receipt": "reference-selection-small-catalogs.json#/cases/Foundation Staff Member I",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "reference_sha256s": {
+        "baseline": "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+        "typical": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163"
+      },
+      "historical_listening": {
+        "preference": "A",
+        "mapping": {
+          "A": "baseline",
+          "B": "typical"
+        },
+        "feedback": "The listener heard the same speaker in A and B and preferred A (current app) for generation quality. They suspected the previously presented game original was a different voice.",
+        "limitation": "Preference concerns synthesis quality; the original used for initial orientation may be a different speaker. Absolute unusability of Typical was not rated."
+      },
+      "current_runtime_validation": {
+        "status": "not_reproduced",
+        "reason": "The historical local English source catalog is absent from the installed catalogs after temporary state was lost. The retained audio and benchmark records do not recreate the exact catalog or current preview cache identity.",
+        "choice_and_fallback_verified": false
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "A/seed-0": "c7cfc80a8952ae83c2c6f04c634784a88ab6b5771b6f23994ccf095163651e8a",
+          "B/seed-0": "21ef40497f2600d7cb07d0c6d1ebdc77e048346174f4bb1de08c6bd763e8e71f",
+          "A/seed-1": "8ef0493c3af26123e706c0b274e3d6ebbe1dd42b756ffab830bdb3db30775200",
+          "B/seed-1": "4f3b2bc8e5e16b89e13d7a844b20cbbb383a085fca1155dae34ab4b9aff5d568"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0,
+        1
+      ]
+    },
+    "An-an Lee": {
+      "historical_receipt": "reference-selection-small-catalogs.json#/cases/An-an Lee",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "reference_sha256s": {
+        "baseline": "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9",
+        "steady": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+        "typical": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      },
+      "historical_listening": {
+        "baseline": "Robotic voice.",
+        "steady": "Better than the baseline, with some audible artifacts.",
+        "typical": "Clean and acceptable. Some resemblance to the original, with a noticeable difference from the character.",
+        "seed_preference": "The seeds sounded different. No consistent preference for either seed.",
+        "source_transcript_followup": "Typical was preferred again. Several words around proper names differ in the automatic transcript of the Steady reference, so this preference does not establish a caption error."
+      },
+      "current_runtime_validation": {
+        "status": "not_reproduced",
+        "reason": "The historical local English source catalog is absent from the installed catalogs after temporary state was lost. The retained audio and benchmark records do not recreate the exact catalog or current preview cache identity.",
+        "choice_and_fallback_verified": false
+      },
+      "retained_audio_verification": {
+        "status": "sha256_verified",
+        "references_present": true,
+        "render_sha256s": {
+          "baseline/text-0/seed-0": "f8c2a8674f928b8ed67045091712b87375484cb9bc356119c0129f1e6d90a712",
+          "representative/text-0/seed-0": "f82232e07ca2e63debb6b8d4ea5c1bdac1dd9441f84433b29750c86ca9600510",
+          "selected/text-0/seed-0": "c996dd4dd130e69136b6c98e796b74adb1e323874a974fb24691311244dc6775",
+          "baseline/text-0/seed-1": "120a22fb4ca23d1db161c8ad1edddb7d9dc706dfd284dea28d5e2f71f448f451",
+          "representative/text-0/seed-1": "68d7277ed06f2426fac240327743c8c4133d4ca65c5355b886332bcaea0accc8",
+          "selected/text-0/seed-1": "5872a99126bb418f3f27beaf466d98903de83b63bc6fcf5d198ac16857c5ea7c",
+          "baseline/text-1/seed-0": "e33b82dd211578e667b5a4140e2eb2405f6d7d4b57cc34fefed75cb24a348327",
+          "representative/text-1/seed-0": "909875ffb9691ad29415a59e64901411a9ee310a2d52cb158b6b2f88d78a4404",
+          "selected/text-1/seed-0": "4415fafcdb9980137e396928a4e37898031c843fc85e86957c02be583cf5afae",
+          "baseline/text-1/seed-1": "7fa454897cdde4e28768569a1c0d9ea448fcabcfa3b1b1941d861558e41cc9e7",
+          "representative/text-1/seed-1": "68a3748b623529ba12d010c8f9380da0c881bcf161ed2825bed0a0c31d6ddb43",
+          "selected/text-1/seed-1": "ea040534a3b56dd8dcbf1963ae95b41e5ce8ae563b4d63936360042e971a5df1"
+        },
+        "all_listed_renders_present": true
+      },
+      "historical_seeds": [
+        0,
+        1
+      ]
+    }
+  },
+  "other_backend_planning": {
+    "character": "Honza",
+    "status": "verified",
+    "setup": "Fresh voice library per offline engine with prefer_steady_references enabled. Pocket installed in public preset-only mode.",
+    "scope": "Reference assignment from actual installed English sources on an isolated single-line story. No synthesis or listening.",
+    "line_id": "reverse1999:314012:9",
+    "catalog_sha256": "19cb3dc05a40d6e5e660f881d46c4c108c433bd14bd909b2ea8b0f28695716d2",
+    "backends": {
+      "coqui-xtts": {
+        "route": "voice",
+        "resolution": "automatic-incidental-role",
+        "reference_sha256s": [
+          "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e"
+        ]
+      },
+      "qwen-tts": {
+        "route": "voice",
+        "resolution": "automatic-incidental-role",
+        "reference_sha256s": [
+          "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e"
+        ]
+      },
+      "chatterbox-nano": {
+        "route": "voice",
+        "resolution": "automatic-incidental-role",
+        "reference_sha256s": [
+          "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e"
+        ]
+      },
+      "pocket-tts": {
+        "route": "narrator",
+        "resolution": "automatic-narrator-fallback",
+        "reference_sha256s": []
+      }
+    }
+  },
+  "remaining_gates": [
+    "Recreate the checksum-matching Foundation Staff Member I and An-an Lee source catalogs, then record actual normal plan shortlists, bounded preview checks and final choices.",
+    "Do not infer a fallback to listener-preferred An-an Lee Typical or Foundation baseline without observing it in normal qualification.",
+    "Retain a portable execution receipt binding selected and preview WAV hashes to the exact model, codec, generation settings and catalog before claiming fresh integration validation."
+  ],
+  "historical_generation": {
+    "model_id": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "language": "English",
+    "backend_source_sha256": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163",
+    "guard_source_sha256": "31e16d459c0467d3ee1b4c6660865523411ea2229dcee32185f7a2d405dd9aad",
+    "scope": "Historical evidence settings only; not a fresh renderer or runtime verification. Seed scope is stated per case."
+  }
+}

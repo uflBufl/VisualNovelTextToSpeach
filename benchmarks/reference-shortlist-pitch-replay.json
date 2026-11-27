@@ -1,0 +1,424 @@
+{
+  "scope": "Offline shortlist replay for ten previously rated catalog/role pairs with an available full fit report. Named held-out anchors remain excluded. The purpose is to measure retention of known listening choices at the planner stage; adding a candidate does not establish the result of downstream preview qualification.",
+  "recipe": "Use the frozen full-pool selection as first priority. For the alternative slot, evaluate the same steady gates and peer ordering with just the median pitch position criterion removed. If the best relaxed clip differs from the first choice, use it as the second priority; otherwise keep the frozen Typical alternative. Invoke _eligible_candidates with those priorities and the existing three-slot limit and playable-source reservation. Cross-check default and frozen dual promotion on the same current inventory. No character-specific ranking weights.",
+  "label_scope": "Labels are exact WAVs previously preferred or considered acceptable in those comparisons. Tourist preference is tentative; Honza still had artifacts. Bkornblume was a tie. Radio is role plausibility across different voices; the Staff rating is generation quality. These are retrospective examples, not independent preference accuracy.",
+  "cases": {
+    "Isolde": {
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 231,
+      "qualified_frozen": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+      "typical": "c76c80a475501a8a3c61302fc631ee769e3f675c7df63aba5e1389ecfa9a12eb",
+      "extra": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+      "default_shortlist": [
+        "30acf8c3f76174293f140dda6f0d49f2d94197179128369698ab7be9e5b9af41",
+        "d18cd8cdcab03ec4c86aaf85f570ff56516949e61aff8b3bf53158ee99cc93f3",
+        "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488"
+      ],
+      "frozen_shortlist": [
+        "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+        "c76c80a475501a8a3c61302fc631ee769e3f675c7df63aba5e1389ecfa9a12eb",
+        "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488"
+      ],
+      "relaxed_shortlist": [
+        "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+        "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+        "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488"
+      ],
+      "relaxed_rank_top3": [
+        "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+        "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+        "a90ead010382b5e531d473429c36534710ef2754b57ebfe56307a4fc1b2b9fec"
+      ],
+      "playable_in_new": [
+        "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488"
+      ],
+      "listener_sources": [
+        "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [],
+        "relaxed_shortlist": []
+      }
+    },
+    "Hedone": {
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 288,
+      "qualified_frozen": "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8",
+      "typical": "01352b8ec0e8a5720edc424f78e7e4452834b48cd14bcf292b26ce1ca6a1dfca",
+      "extra": "01352b8ec0e8a5720edc424f78e7e4452834b48cd14bcf292b26ce1ca6a1dfca",
+      "default_shortlist": [
+        "5d52c01f018503ac8a3e35ee9d7900bb73af93a90bcda1477330d2176db972ec",
+        "f8c5c0886d5036ef0555665f717b07c3da94d3f70731a87991de6f191ceb37d2",
+        "8308d6566c615fe85e9982308fab749dd31db5bd8c1bb38df080483e3e87fc9d"
+      ],
+      "frozen_shortlist": [
+        "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8",
+        "01352b8ec0e8a5720edc424f78e7e4452834b48cd14bcf292b26ce1ca6a1dfca",
+        "8308d6566c615fe85e9982308fab749dd31db5bd8c1bb38df080483e3e87fc9d"
+      ],
+      "relaxed_shortlist": [
+        "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8",
+        "01352b8ec0e8a5720edc424f78e7e4452834b48cd14bcf292b26ce1ca6a1dfca",
+        "8308d6566c615fe85e9982308fab749dd31db5bd8c1bb38df080483e3e87fc9d"
+      ],
+      "relaxed_rank_top3": [
+        "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8",
+        "c481cd890ad580b3d0cebfc6d6ac96a583e9067a05b0b33377257cd1d180a047",
+        "693a49bec75059215b7235d7c913acc753ba3979464aa9b0dd3f38c98f9e4081"
+      ],
+      "playable_in_new": [
+        "8308d6566c615fe85e9982308fab749dd31db5bd8c1bb38df080483e3e87fc9d"
+      ],
+      "listener_sources": [
+        "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "Everecho": {
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 112,
+      "qualified_frozen": "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+      "typical": "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+      "extra": "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+      "default_shortlist": [
+        "f39dd2c54fc6eb824291ab253d4f6b63189292f7476a47dc2d9fa83cb981d75f",
+        "202650960376c79e526557de68f10342381427b72b03ae21a546dcc0084e2acd",
+        "ca2b21b27b1b08460193fe4a84492386fbe3d7eb330fd7fc67d1a291f01126b8"
+      ],
+      "frozen_shortlist": [
+        "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+        "f39dd2c54fc6eb824291ab253d4f6b63189292f7476a47dc2d9fa83cb981d75f",
+        "ca2b21b27b1b08460193fe4a84492386fbe3d7eb330fd7fc67d1a291f01126b8"
+      ],
+      "relaxed_shortlist": [
+        "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+        "f39dd2c54fc6eb824291ab253d4f6b63189292f7476a47dc2d9fa83cb981d75f",
+        "ca2b21b27b1b08460193fe4a84492386fbe3d7eb330fd7fc67d1a291f01126b8"
+      ],
+      "relaxed_rank_top3": [
+        "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+        "5a0510ee5ad17d34f01a6e0ef5ffdb6486596f01068074a4fe2fc532d933ff40",
+        "5e5057357520ee748d2bf22934686de70e8ba51de917feb0b55da78ce4eefcd4"
+      ],
+      "playable_in_new": [
+        "ca2b21b27b1b08460193fe4a84492386fbe3d7eb330fd7fc67d1a291f01126b8"
+      ],
+      "listener_sources": [
+        "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "Bkornblume": {
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "fit_count": 101,
+      "qualified_frozen": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+      "typical": "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+      "extra": "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+      "default_shortlist": [
+        "9122db40f4f882493782d07d164f4f0a6f4aa45a01dae13c372fe06ce354f981",
+        "7228815fa2a54840a7b0b6a4c530b7a56ffe4a7c993e460dccbe6ce1ad683b9a",
+        "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198"
+      ],
+      "frozen_shortlist": [
+        "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+        "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+        "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198"
+      ],
+      "relaxed_shortlist": [
+        "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+        "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+        "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198"
+      ],
+      "relaxed_rank_top3": [
+        "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+        "11595766c93d1f5217e790be996b2f13a6a9242c1b25cbe6287511e1b856fcf0",
+        "1ee57007efbca8bcb853338219caae4dd596c4f5f9a3bd32839f20c895b743f7"
+      ],
+      "playable_in_new": [
+        "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198"
+      ],
+      "listener_sources": [
+        "9122db40f4f882493782d07d164f4f0a6f4aa45a01dae13c372fe06ce354f981",
+        "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [
+          1
+        ],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "Blonney": {
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "fit_count": 196,
+      "qualified_frozen": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+      "typical": "a3453970c49c13598a460e5b410d28ef94bcd25b0883bef7dde505567cd42b34",
+      "extra": "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+      "default_shortlist": [
+        "fa7263a3952e8b227de6c9ee264f9db02797d67fb2002aefab63c088d2868df2",
+        "72b3142a2c4b5bef401a40a1c250f32c26c69900f3244b49f5e6e7c0c9c62a0e",
+        "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0"
+      ],
+      "frozen_shortlist": [
+        "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+        "a3453970c49c13598a460e5b410d28ef94bcd25b0883bef7dde505567cd42b34",
+        "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0"
+      ],
+      "relaxed_shortlist": [
+        "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+        "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+        "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0"
+      ],
+      "relaxed_rank_top3": [
+        "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+        "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51"
+      ],
+      "playable_in_new": [
+        "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0"
+      ],
+      "listener_sources": [
+        "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "An-an Lee": {
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 51,
+      "qualified_frozen": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+      "typical": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+      "extra": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+      "default_shortlist": [
+        "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9",
+        "406e9e21f6707b14c3972d1f974c6166c352bb924ee25f622a831505d6ec7bb8",
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ],
+      "frozen_shortlist": [
+        "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+        "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ],
+      "relaxed_shortlist": [
+        "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+        "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ],
+      "relaxed_rank_top3": [
+        "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      ],
+      "playable_in_new": [
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ],
+      "listener_sources": [
+        "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          2
+        ],
+        "relaxed_shortlist": [
+          2
+        ]
+      }
+    },
+    "Tourist": {
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 5,
+      "qualified_frozen": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+      "typical": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+      "extra": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+      "default_shortlist": [
+        "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+        "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794",
+        "193dd392c2b6105fc14cfb37637fdd5c17c58905c603d0357aacb6dbc644cf41"
+      ],
+      "frozen_shortlist": [
+        "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+        "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+        "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794"
+      ],
+      "relaxed_shortlist": [
+        "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+        "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+        "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794"
+      ],
+      "relaxed_rank_top3": [],
+      "playable_in_new": [],
+      "listener_sources": [
+        "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "Honza": {
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 44,
+      "qualified_frozen": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+      "typical": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+      "extra": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+      "default_shortlist": [
+        "9ac3aab0202a5efcd52a2c1ff60307fe14d7fde4635ccd61d345e010ef35af57",
+        "fd4f3b39d368d82ac07b635db7669ea0fff7b879af1d7dfe0c9cea9c1a7f4986",
+        "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2"
+      ],
+      "frozen_shortlist": [
+        "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "9ac3aab0202a5efcd52a2c1ff60307fe14d7fde4635ccd61d345e010ef35af57",
+        "fd4f3b39d368d82ac07b635db7669ea0fff7b879af1d7dfe0c9cea9c1a7f4986"
+      ],
+      "relaxed_shortlist": [
+        "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "9ac3aab0202a5efcd52a2c1ff60307fe14d7fde4635ccd61d345e010ef35af57",
+        "fd4f3b39d368d82ac07b635db7669ea0fff7b879af1d7dfe0c9cea9c1a7f4986"
+      ],
+      "relaxed_rank_top3": [],
+      "playable_in_new": [],
+      "listener_sources": [
+        "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [],
+        "frozen_shortlist": [
+          1
+        ],
+        "relaxed_shortlist": [
+          1
+        ]
+      }
+    },
+    "Radio": {
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 12,
+      "qualified_frozen": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+      "typical": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+      "extra": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+      "default_shortlist": [
+        "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+        "09ba2a8edf29ef96737aabf0f6c844b05c783583d31d49cdd28a70232b86ef07",
+        "1ebe7a57db55ac69aa5ce3967ecafdaa7ef15d93ed9d81fa3c93b00bb050ef62"
+      ],
+      "frozen_shortlist": [
+        "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+        "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+        "09ba2a8edf29ef96737aabf0f6c844b05c783583d31d49cdd28a70232b86ef07"
+      ],
+      "relaxed_shortlist": [
+        "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1",
+        "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+        "09ba2a8edf29ef96737aabf0f6c844b05c783583d31d49cdd28a70232b86ef07"
+      ],
+      "relaxed_rank_top3": [],
+      "playable_in_new": [],
+      "listener_sources": [
+        "f08da613dd3907f6a015a7294f986cdd470a40a7fb8e8fe61b2a6e13993f32e1",
+        "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [
+          1
+        ],
+        "frozen_shortlist": [
+          1,
+          2
+        ],
+        "relaxed_shortlist": [
+          1,
+          2
+        ]
+      }
+    },
+    "Foundation Staff Member I": {
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 18,
+      "qualified_frozen": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+      "typical": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+      "extra": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+      "default_shortlist": [
+        "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+        "581eb192dbfb9ea70baccb189b2324b5ffd06b4aa1c25c133d70701f70fabbe4",
+        "aa816e6b2d2c3bb53147009eefcc165809a7e61a1202d87e13d1e24873f33f9f"
+      ],
+      "frozen_shortlist": [
+        "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+        "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+        "581eb192dbfb9ea70baccb189b2324b5ffd06b4aa1c25c133d70701f70fabbe4"
+      ],
+      "relaxed_shortlist": [
+        "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163",
+        "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405",
+        "581eb192dbfb9ea70baccb189b2324b5ffd06b4aa1c25c133d70701f70fabbe4"
+      ],
+      "relaxed_rank_top3": [],
+      "playable_in_new": [],
+      "listener_sources": [
+        "9d75e36da10378035a1b45d63956dfef42c36ddb211a3aa25f92e1f6c0814405"
+      ],
+      "accepted_positions": {
+        "default_shortlist": [
+          1
+        ],
+        "frozen_shortlist": [
+          2
+        ],
+        "relaxed_shortlist": [
+          2
+        ]
+      }
+    }
+  },
+  "new_listening_example": {
+    "character": "Isolde",
+    "target_text": "People are always busy on a sunny day like this.",
+    "original_sha256": "0d6b8f757b75c3b5922ff252c4cd066fcf8ae3fd22c02c33de99d57da3d6f385",
+    "seed": 0,
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "comparison": "A is the previously preferred blessing reference with its matched render reused. B is the highest-ranked relaxed alternative admitted into the second slot.",
+    "A_reference_sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+    "A_wav_sha256": "ae136792333dc13f3e48ac1b9810553a2d0d52df9713ca53eb171c05eec6cd55",
+    "B_reference_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+    "B_wav_sha256": "45c95ee1ec9367ddf74173575cb5649a8abba29f4f2092ac3573428f3260a942",
+    "listener_preference": "near_tie",
+    "listening_feedback": "On this game line, the listener found the new B acceptable and almost the same as A.",
+    "accepted_sides": ["A", "B"],
+    "B_asr_observed": "People are always busy on a sunny day like this.",
+    "B_asr_normalized_match": true
+  }
+}

@@ -1,0 +1,585 @@
+{
+  "scope": "MOSS qualification of the experimental relaxed shortlist, followed by a separate held-out same-game-text diagnostic. One backend, three characters; this is not a change to the default planner.",
+  "protocol": [
+    "One-shot validation, before computing new metrics. Freeze relaxed shortlist order and actor/codec/profile.",
+    "Baseline: current production content qualification on Isolde; index 1 incumbent when evaluating acoustic promotions. Baseline and acoustic trial use different prompts, report separately.",
+    "Rehearsal: three references, identical real English original transcript, seed 0 and independent seed 1. Hold out original recordings and conditioning source hashes. Isolde sunny line (known listener judgments), Blonney party (known), Bkornblume visitors (neutral preference only), Isolde generosity (new line, for generalization). All retained renders included. Cached historical seed-0 audio reused only with matching identity. ASR is reported for all; a non-exact ASR is uncertain and triggers abstention for that comparison, not a quality label.",
+    "Freeze metrics: normalize to mono PCM16 at source rate. Speech span = total duration minus leading and trailing silence from app reference preflight. Pace distance=absolute log ratio of render/original speech span. Voice similarity = cosine of pinned ECAPA voice embeddings of render and original. Pace-only and similarity-only are diagnostics. On a given seed promote a new candidate only if both metrics have the same unique winner and all three normalized ASR transcripts match the game line. Otherwise keep slot 1. Across both seeds only recommend promoting if both seeds agree on the same non-incumbent. No parameter fitting on these samples. Unknown listener verdicts remain unknown. No production writes.",
+    "If a listening decision is needed, present only the independently selected Isolde generosity line, seed 0. Compare the app's actual qualification winner with the proposed promoted slot if it differs. Otherwise compare the incumbent with slot 2, the previously accepted alternate. Keep their identity keyed; retain every other render in the report."
+  ],
+  "generation": {
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "language": "English",
+    "backend_source_sha256": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163",
+    "guard_source_sha256": "31e16d459c0467d3ee1b4c6660865523411ea2229dcee32185f7a2d405dd9aad"
+  },
+  "speaker_encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+  "asr_model_revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+  "app_qualification": {
+    "Isolde": {
+      "group_id": "e5b347506f75500b840853f45293793530b4af54c8c804e874331789b9232ea2",
+      "manifest_sha256": "f6b9d9ac8e04e2683033e38a3874d9be64a2e3f312afcdfc577b5274ea646735",
+      "story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+      "settings": {
+        "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+        "language": "English",
+        "profile": "stable",
+        "seed": 0,
+        "text": "The storm has passed. We can continue our journey."
+      },
+      "app_sources_sha256": {
+        "pregeneration_voices.py": "b268e50e0e8076e6616f3f346cf392dca7b6a536943af3e42a56cc4a26acba6c",
+        "pregeneration_audition.py": "57eddb2bbf5189f2eebfd4b68295a7b47c4e312979c71818ed2f8f50ab6c9929",
+        "story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a",
+        "preview_content_advisor.py": "989c65da4fd5e289038bb770dec2e5ccd78636c4b6bb30e958ff1e2aff1e329e",
+        "reference_recommendation.py": "56bde445067547d74bde169a3790986347539b5bffe7407761235479497801c9",
+        "speech_backend.py": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163"
+      },
+      "candidates": [
+        {
+          "reference_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+          "preview_sha256": "3ad9fe2840db9b95bc0ffec52bcab1040b3ca94f16fbff0ec98c1f836b4a2465",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+          "preview_sha256": "53a3cf50b9f7c5276e23b44f57d9881b003b54fbc7ba40676c156ebe8f01f08c",
+          "asr": "the storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488",
+          "preview_sha256": "9486e9d585620bf81200c7b0c970aa4528c2e0ffddfa9994fc22cfb52f59e2af",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        }
+      ],
+      "selected_slot": 1,
+      "app_runtime_selected_source_id": "character:playercandidateisoldefadd7a818df2",
+      "app_runtime_preview_recheck_confirmed": true
+    },
+    "Blonney": {
+      "group_id": "8a6695cab157b17d264f12fca1ca4981b4b0cba2e8f9bf53cac9dcd84efc82b3",
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+      "settings": {
+        "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+        "language": "English",
+        "profile": "stable",
+        "seed": 0,
+        "text": "The storm has passed. We can continue our journey."
+      },
+      "app_sources_sha256": {
+        "pregeneration_voices.py": "b268e50e0e8076e6616f3f346cf392dca7b6a536943af3e42a56cc4a26acba6c",
+        "pregeneration_audition.py": "57eddb2bbf5189f2eebfd4b68295a7b47c4e312979c71818ed2f8f50ab6c9929",
+        "story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a",
+        "preview_content_advisor.py": "989c65da4fd5e289038bb770dec2e5ccd78636c4b6bb30e958ff1e2aff1e329e",
+        "reference_recommendation.py": "56bde445067547d74bde169a3790986347539b5bffe7407761235479497801c9",
+        "speech_backend.py": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163"
+      },
+      "candidates": [
+        {
+          "reference_sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+          "preview_sha256": "b4aa09be76edf800d6073a8eea2f57e03042bf6d6e0012eda97c2e6c701b49f3",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+          "preview_sha256": "cdf12490b6793c1a7d98a9b6e495faffe6e230672118ad0458d7fc538f43e0a4",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0",
+          "preview_sha256": "15aa9d20cf6f7a857d1aee9a58693de996aeea1e2357483d338df50226733709",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        }
+      ],
+      "selected_slot": 1,
+      "app_runtime_selected_source_id": "character:playercandidateblonney3831a00ba29b",
+      "app_runtime_preview_recheck_confirmed": true
+    },
+    "Bkornblume": {
+      "group_id": "7939ab0f59927851e1c9c3ca77cb051015082f6dedab73c2a37a2f891e3fba60",
+      "manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+      "settings": {
+        "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+        "language": "English",
+        "profile": "stable",
+        "seed": 0,
+        "text": "The storm has passed. We can continue our journey."
+      },
+      "app_sources_sha256": {
+        "pregeneration_voices.py": "b268e50e0e8076e6616f3f346cf392dca7b6a536943af3e42a56cc4a26acba6c",
+        "pregeneration_audition.py": "57eddb2bbf5189f2eebfd4b68295a7b47c4e312979c71818ed2f8f50ab6c9929",
+        "story_reference_qualification.py": "55622919cce0bcb8b2348c0d2895452b7e7492caab1b115bb3aee33bf6434f2a",
+        "preview_content_advisor.py": "989c65da4fd5e289038bb770dec2e5ccd78636c4b6bb30e958ff1e2aff1e329e",
+        "reference_recommendation.py": "56bde445067547d74bde169a3790986347539b5bffe7407761235479497801c9",
+        "speech_backend.py": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163"
+      },
+      "candidates": [
+        {
+          "reference_sha256": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+          "preview_sha256": "de60a5879b47066fe606a0ec234c225f48516cbe65df04faa2ae6bdfff6ffbce",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+          "preview_sha256": "0e9c6748ff0c5f4ca75f638a8bb8f46a54e0b324ed154941ed88cd1289d8b332",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        },
+        {
+          "reference_sha256": "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198",
+          "preview_sha256": "f7e5e9e6bf8bd83dc87ac2723e9fa9651a1348448c32bcb3f72c3666eac171bd",
+          "asr": "The storm has passed. We can continue our journey.",
+          "status": "no_asr_mismatch"
+        }
+      ],
+      "selected_slot": 1,
+      "app_runtime_selected_source_id": "character:playercandidatebkornblume996d9c323fe3",
+      "app_runtime_preview_recheck_confirmed": true
+    }
+  },
+  "matched_lines": {
+    "sunny": {
+      "character": "Isolde",
+      "text": "People are always busy on a sunny day like this.",
+      "anchor": {
+        "sha256": "0d6b8f757b75c3b5922ff252c4cd066fcf8ae3fd22c02c33de99d57da3d6f385",
+        "bank": "hero3081_mainvoc.bnk",
+        "line_id": "playable-voice:3081:1308102:2",
+        "media_id": 311149470,
+        "media_sha256": "093dae82cca2b16a4a8fb667cfbea8f7101acdce9476ef94904eb1f067c142d8",
+        "full_game_wav_sha256": "e68ddac24d8dfaf07870d2ae7f4c67a477cb541f5ad6475d2c2f374534e4666d",
+        "source_start_seconds": 1.12,
+        "source_end_seconds": 4.04
+      },
+      "anchor_seconds_after_edge_trim": 2.42,
+      "anchor_asr": "People are always busy on a sunny day like this.",
+      "seeds": {
+        "0": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+              "wav_sha256": "5a0f4e9bedb80ae1d8dc2f8b59606d1b7f91729e7ea0e843b5a8c8faee932780",
+              "reused": true,
+              "seconds_after_edge_trim": 3.5,
+              "pace_distance": 0.368995428326773,
+              "speaker_cosine": 0.36477074035744345,
+              "asr": "People are always busy on a sunny day like this.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+              "wav_sha256": "45c95ee1ec9367ddf74173575cb5649a8abba29f4f2092ac3573428f3260a942",
+              "reused": true,
+              "seconds_after_edge_trim": 3.06,
+              "pace_distance": 0.2346473757956944,
+              "speaker_cosine": 0.37752593879340834,
+              "asr": "People are always busy on a sunny day like this.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488",
+              "wav_sha256": "e4967d0d8812707f460e448cbfe2d91168b7c851b8c119a87eb6b889602baf8d",
+              "reused": false,
+              "seconds_after_edge_trim": 4.3,
+              "pace_distance": 0.5748474825309218,
+              "speaker_cosine": 0.16133961339981567,
+              "asr": "People are always busy on a sunny day like this.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 2,
+          "nearest_voice": 2,
+          "all_words_match": true,
+          "trial_slot": 2
+        },
+        "1": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+              "wav_sha256": "c862259dd6608e0c8257fe11530c72b3a92e48b4620ade2f8223fe6ea36a1a87",
+              "reused": false,
+              "seconds_after_edge_trim": 3.6,
+              "pace_distance": 0.3971663052934694,
+              "speaker_cosine": 0.4325726735206005,
+              "asr": "People are always busy on a sunny day like this.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+              "wav_sha256": "2a49e0d9ce197d1986382197d3f0c1d06ea6c608e5c000e992a19920c4ff8ec1",
+              "reused": false,
+              "seconds_after_edge_trim": 3.84,
+              "pace_distance": 0.4617048264310405,
+              "speaker_cosine": 0.4352706967543203,
+              "asr": "People are always busy on a sunny day, like this.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488",
+              "wav_sha256": "e5aba0793b37f70f241521521ce8b0f7745681bab22f5f2d6fdf3716b4b4fa59",
+              "reused": false,
+              "seconds_after_edge_trim": 4.2,
+              "pace_distance": 0.5513169851207278,
+              "speaker_cosine": 0.17758713796820014,
+              "asr": "People are always busy on a sunny day like this.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 1,
+          "nearest_voice": 2,
+          "all_words_match": true,
+          "trial_slot": 1
+        }
+      },
+      "trial_slot_across_seeds": 1
+    },
+    "party": {
+      "character": "Blonney",
+      "text": "Where's the lie? The party was very successful, even the host has sneaked away.",
+      "anchor": {
+        "sha256": "43ee78c2753f0485e7cd600e3454134b5303b8a400ca9b51001b019a8eecff3f",
+        "bank": "mianvoc_hero3060.bnk",
+        "line_ids": [
+          "playable-voice:3060:1306004:4"
+        ]
+      },
+      "anchor_seconds_after_edge_trim": 4.7,
+      "anchor_asr": "Where's the lie? The party was very successful, even the host has sneaked away.",
+      "seeds": {
+        "0": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+              "wav_sha256": "1eb10818a45e69bd18ec43a3bd43cb74a001176a480e9f20a38a2c3590b996ae",
+              "reused": true,
+              "seconds_after_edge_trim": 4.76,
+              "pace_distance": 0.012685159527315642,
+              "speaker_cosine": 0.562075961150073,
+              "asr": "Where's the lie? The party was very successful, even the host has sneaked away.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+              "wav_sha256": "52db55be174d4eb6be06a949dec80c27d3021b816f764aa0d8b1b149cfec390f",
+              "reused": false,
+              "seconds_after_edge_trim": 4.54,
+              "pace_distance": 0.03463549666275634,
+              "speaker_cosine": 0.4788193797031044,
+              "asr": "Where's the lie? The party was very successful, even the host is sneaked away.",
+              "exact_words": false
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0",
+              "wav_sha256": "7eb81aa7fcfb56a8080e3490322a162629b219db37cf67cbd56385235c1aa215",
+              "reused": false,
+              "seconds_after_edge_trim": 4.96,
+              "pace_distance": 0.05384323202082318,
+              "speaker_cosine": 0.41156097615840365,
+              "asr": "Where's the lie? The party was very successful, even the host has sneaked away.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 1,
+          "nearest_voice": 1,
+          "all_words_match": false,
+          "trial_slot": 1
+        },
+        "1": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+              "wav_sha256": "27ccd4a5842e87ff54698b88acc0ffd93da078d2fa57e39c464d384ecf45294f",
+              "reused": false,
+              "seconds_after_edge_trim": 4.48,
+              "pace_distance": 0.047939462289119064,
+              "speaker_cosine": 0.5620128839134544,
+              "asr": "Where's the lie? The party was very successful, even the host has sneaked away.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "6b6369c24d83cb29502df9dc434ac23c7b8d6f817c170de331fdc08ddd149cf3",
+              "wav_sha256": "e99c540c59d12a02fbbfdcf940507018c939e9fd7065372a9fbfef3528a45f7e",
+              "reused": false,
+              "seconds_after_edge_trim": 5.04,
+              "pace_distance": 0.06984357336726454,
+              "speaker_cosine": 0.45181646539610687,
+              "asr": "Where's the lie? The party was very successful, even the host has sneaked away.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0",
+              "wav_sha256": "65348be7c0afff2cdd491ec2c73fabb85db386dd8172b8aceaedb45a455020cb",
+              "reused": false,
+              "seconds_after_edge_trim": 4.74,
+              "pace_distance": 0.008474626990972236,
+              "speaker_cosine": 0.5767761922761063,
+              "asr": "Where's the lie? The party was very successful. Even the host has sneaked away.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 3,
+          "nearest_voice": 3,
+          "all_words_match": true,
+          "trial_slot": 3
+        }
+      },
+      "trial_slot_across_seeds": 1
+    },
+    "visitors": {
+      "character": "Bkornblume",
+      "text": "I'm not good at dealing with visitors ... It reminds me of something bad.",
+      "anchor": {
+        "sha256": "5c8153f3446895b92620f0ad23f027d549868e793337461f39980e6c4f6285f8",
+        "bank": "mianvoc_hero3020.bnk",
+        "line_ids": [
+          "playable-voice:3020:1302005:5"
+        ]
+      },
+      "anchor_seconds_after_edge_trim": 4.68,
+      "anchor_asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+      "seeds": {
+        "0": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+              "wav_sha256": "d34072539d43adb0ea3374676e1dd1eb03c600337de737532d39db457b18507f",
+              "reused": false,
+              "seconds_after_edge_trim": 4.12,
+              "pace_distance": 0.12744494656812025,
+              "speaker_cosine": 0.46631919934770844,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+              "wav_sha256": "a8484f186dc736a67ab4fc5a2b7531e3a5ae9d2dbd8d4f792e4d261dead8f056",
+              "reused": false,
+              "seconds_after_edge_trim": 5.08,
+              "pace_distance": 0.08201315166083528,
+              "speaker_cosine": 0.5649086068721123,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198",
+              "wav_sha256": "d6c3d63578e14ed12626a3e04681297cc47083688ab2ff8f53bb7c007b4dbfa9",
+              "reused": false,
+              "seconds_after_edge_trim": 3.78,
+              "pace_distance": 0.21357410029805918,
+              "speaker_cosine": 0.3240061336456711,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 2,
+          "nearest_voice": 2,
+          "all_words_match": true,
+          "trial_slot": 2
+        },
+        "1": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+              "wav_sha256": "d09473f77fa2445b490029d86145bfcc59efcd0aa9cab5318264b03e89bf4e28",
+              "reused": false,
+              "seconds_after_edge_trim": 4.3,
+              "pace_distance": 0.08468308723003856,
+              "speaker_cosine": 0.5552006459459293,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "9fdd04ae1df81974bf5452fdd2ede27c6ee33d8449d6892fd33a0fad3634317f",
+              "wav_sha256": "11198fc631ed2f758223cb603b4cf99d3787b8849c20a373fd2452db701778ae",
+              "reused": false,
+              "seconds_after_edge_trim": 4.28,
+              "pace_distance": 0.08934510033584998,
+              "speaker_cosine": 0.5696834860800641,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198",
+              "wav_sha256": "17c073c7578c2d1c1bf11e148145e13b6ed9a08d3ef739dbf1e1872eb8ca6ed5",
+              "reused": false,
+              "seconds_after_edge_trim": 3.66,
+              "pace_distance": 0.24583496251628065,
+              "speaker_cosine": 0.31365894207931455,
+              "asr": "I'm not good at dealing with visitors. It reminds me of something bad.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 1,
+          "nearest_voice": 2,
+          "all_words_match": true,
+          "trial_slot": 1
+        }
+      },
+      "trial_slot_across_seeds": 1
+    },
+    "generosity": {
+      "character": "Isolde",
+      "text": "Thank you for your generosity, miss. I think I'll stay here for a few days.",
+      "anchor": {
+        "sha256": "ebf74466a36a59e0dbd5b211b441e530f002625e3a8ff7ea768f376eb43b55a4",
+        "bank": "hero3081_mainvoc.bnk",
+        "line_id": "playable-voice:3081:1308101:0",
+        "media_id": 105511714,
+        "media_sha256": "6e74a75502ef7d73ac995128546293c69f61f13cbfb6b63a02cf3deb164a94aa",
+        "full_game_wav_sha256": "7d1c742c78a6736e07ad65f56321cca5adc24b94960d5e495f7304921b6d6d48",
+        "source_start_seconds": 0.0,
+        "source_end_seconds": 5.02
+      },
+      "anchor_seconds_after_edge_trim": 4.46,
+      "anchor_asr": "Thank you for your generosity, Miss. I think I'll stay here for a few days.",
+      "seeds": {
+        "0": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+              "wav_sha256": "284c0c9843fff3d572f1fbce04ca54607eaf9b8e0b38540ae620ea08f85c7d7a",
+              "reused": false,
+              "seconds_after_edge_trim": 5.12,
+              "pace_distance": 0.1380056730194439,
+              "speaker_cosine": 0.4956040303197873,
+              "asr": "Thank you for your generosity, Miss. I think I'll stay here for a few days.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+              "wav_sha256": "50c32edae9962b0ac7336a242d352a8b726a4d667643063dcca78fc3dba3ba2a",
+              "reused": false,
+              "seconds_after_edge_trim": 3.98,
+              "pace_distance": 0.11386694673562608,
+              "speaker_cosine": 0.4314388079301884,
+              "asr": "Thank you for your generosity, Miss. I think I'll stay here for a few days.",
+              "exact_words": true
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488",
+              "wav_sha256": "2118e9c6c740b7889b9665294c960f138ed3c8b46eb55ab189fef112665d6d1f",
+              "reused": false,
+              "seconds_after_edge_trim": 5.36,
+              "pace_distance": 0.18381520905073823,
+              "speaker_cosine": 0.27497226169333855,
+              "asr": "Thank you for your generosity, Mies. I think I'm staying here for a few days.",
+              "exact_words": false
+            }
+          ],
+          "nearest_pace": 2,
+          "nearest_voice": 1,
+          "all_words_match": false,
+          "trial_slot": 1
+        },
+        "1": {
+          "samples": [
+            {
+              "slot": 1,
+              "conditioning_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+              "wav_sha256": "d02abe2a5d806982996df408a2699612b076e46474d06146b2dbe7c537f5f193",
+              "reused": false,
+              "seconds_after_edge_trim": 4.1,
+              "pace_distance": 0.08416179232171023,
+              "speaker_cosine": 0.3921009891167029,
+              "asr": "Thank you for your generosity, Miss. I think I'll stay here for a few days.",
+              "exact_words": true
+            },
+            {
+              "slot": 2,
+              "conditioning_sha256": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1",
+              "wav_sha256": "b58c16d68edff0560c08d6158b68a0c553c32cf6d00caf918abf4546d3a6cf68",
+              "reused": false,
+              "seconds_after_edge_trim": 3.96,
+              "pace_distance": 0.11890474076558338,
+              "speaker_cosine": 0.3633132195566893,
+              "asr": "Thank you for your generosity, Ms. I think I'll stay here for a few days.",
+              "exact_words": false
+            },
+            {
+              "slot": 3,
+              "conditioning_sha256": "b7af386d50a1397a86dc7b184fb3024aa0146837c3e967ad4649ac01cd99b488",
+              "wav_sha256": "613d2ddf0b3db2c0e2aef183e92ac06d00ab5e0d57848cd3b9af59275eff491f",
+              "reused": false,
+              "seconds_after_edge_trim": 5.68,
+              "pace_distance": 0.24180246670108754,
+              "speaker_cosine": 0.14245058710749608,
+              "asr": "Thank you for your generosity, Miss. I think I'll stay here for a few days.",
+              "exact_words": true
+            }
+          ],
+          "nearest_pace": 1,
+          "nearest_voice": 1,
+          "all_words_match": false,
+          "trial_slot": 1
+        }
+      },
+      "trial_slot_across_seeds": 1
+    }
+  },
+  "prior_listener_evidence": {
+    "sunny": "The listener preferred the blessing reference over slot 1 and later judged slot 2 almost the same as the blessing reference. These were separate comparisons.",
+    "party": "Slot 1 was accepted for pacing against a different control.",
+    "visitors": "Previously rated on a different phrase; the matched line has no listening label.",
+    "generosity": "Held out before scoring. The subsequent seed-0 verdict is recorded in listening_example."
+  },
+  "isolde_catalog_rebuild": {
+    "old_manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+    "current_manifest_sha256": "f6b9d9ac8e04e2683033e38a3874d9be64a2e3f312afcdfc577b5274ea646735",
+    "current_story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+    "isolde_reference_sha256_inventory_unchanged": true
+  },
+  "listening_example": {
+    "case": "generosity",
+    "seed": 0,
+    "A_slot": 1,
+    "B_slot": 2,
+    "file_sha256": {
+      "original": "ebf74466a36a59e0dbd5b211b441e530f002625e3a8ff7ea768f376eb43b55a4",
+      "A": "284c0c9843fff3d572f1fbce04ca54607eaf9b8e0b38540ae620ea08f85c7d7a",
+      "ref-A": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+      "B": "50c32edae9962b0ac7336a242d352a8b726a4d667643063dcca78fc3dba3ba2a",
+      "ref-B": "453e254d29695bc513abd15105fa14f80efb67ddf5bd9a68d798b64b89b019f1"
+    },
+    "preference": "B",
+    "listening_feedback": "B is better, A is alright but i don't like it"
+  }
+}

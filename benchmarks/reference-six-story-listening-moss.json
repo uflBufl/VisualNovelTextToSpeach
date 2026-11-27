@@ -1,0 +1,448 @@
+{
+  "study": "Trudge in the Long Night: listener review of whole-game reference selection on MOSS",
+  "catalog_sha256": "9971150480d33f7d4a30ef3a59f8bc8b90007ab55c5a7a2bc7a67f3e776aefda",
+  "comparison_sha256": "1fc59b98c4d504262fa4c72a49d68d461704a5047f191b2d422a13815994e27e",
+  "backend": "MOSS MLX int8",
+  "profile": "stable",
+  "seed": 0,
+  "arms": {
+    "off": "ordinary app ordering",
+    "on": "prefer_steady_references"
+  },
+  "product_decision": {
+    "automatic_policy": "Use the new reference selector for fresh cloning assignments and remove the user-facing switch.",
+    "interpretation": "The listener accepted the overall tradeoff. Believer roles may represent different performers across stories. Their within-role comparisons do not establish actor identity or general superiority for either selector."
+  },
+  "roles": {
+    "Six": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "a9f48cf254a5b5a3188750d417e396cd54a8a173659e33349c7b22434e340876",
+        "B": "45055bf37475ce47ae5127ac97b984127475c462198d644ea92a5cc68ec5bf55"
+      },
+      "same_reference": false,
+      "listener_side": "A",
+      "selected_mode_in_feedback": "on",
+      "judgment": "Preferred A.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307902:40",
+          "render_sha256": {
+            "A": "81d6dc1f1d39b5a1f793af426d8c6433dc4dad0cb25d406edbefcf595af07cfd",
+            "B": "de3189b63670d79d9478ef47c552ebc51c83557131194b5fc90a4abaff1a07ec"
+          }
+        },
+        {
+          "line_id": "reverse1999:307904:124",
+          "render_sha256": {
+            "A": "ea0e93bb55c1ad17e60ea9f0e6996b913a3e6035d392366a021a6f8a7f9df30f",
+            "B": "c6d0ae06ccc56625a5049f3feb277dd0920348d2e33f092efbb36f737a23fba4"
+          }
+        },
+        {
+          "line_id": "reverse1999:307905:68",
+          "render_sha256": {
+            "A": "78ef5a361701105f13e3ba3a429563a15e093a1d505e3002a66e839cdea05860",
+            "B": "6c26f3e06b50ac8f405e446faae0745370fdb4890aa1f6cbc0fa102319e4bb51"
+          }
+        },
+        {
+          "line_id": "reverse1999:307910:26",
+          "render_sha256": {
+            "A": "2d9c04a751e56935a3fa8f25f0b4583b222de4db0bae0365c3a5e6f10042b717",
+            "B": "cea96fed4e318c0eda05bd8dce41e51b32966586f1096c86f5492c6ba4ac2b8d"
+          }
+        }
+      ]
+    },
+    "Atticus": {
+      "mapping": {
+        "A": "off",
+        "B": "on"
+      },
+      "reference_sha256": {
+        "A": "0a131eef9f903e60559ea870dfa553d7b6430189a15ae0786e2ea26b65e7e54a",
+        "B": "5e8b85ac185b07e3911304772bff1cd0fa9b5cc0cd16f19d79927d019b07201a"
+      },
+      "same_reference": false,
+      "listener_side": "B",
+      "selected_mode_in_feedback": "on",
+      "judgment": "Preferred B.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307901:107",
+          "render_sha256": {
+            "A": "e26db2225beabfde666a4033c1e141aae4fd83b123f95e67799e2f9fa3655c2b",
+            "B": "81545a87ce2a80c196ac4c9a7133a5532e1f0b8f41d572a768ca8ad033865830"
+          }
+        },
+        {
+          "line_id": "reverse1999:307903:119",
+          "render_sha256": {
+            "A": "a4b538e7edb35367ccb35d6d77fd8da74183a5dbed144605a4670ff7212ed4e6",
+            "B": "7454d3a76731de2a9ab9432dece49d606457f6a3469a174befa0754698fbc250"
+          }
+        },
+        {
+          "line_id": "reverse1999:307905:54",
+          "render_sha256": {
+            "A": "b04bae681cddc25a627a2de57cccd74ca54c86e52016dd4873cf0de6838449cc",
+            "B": "590cda0059370065831b903642d9959b7b68109a6155bd93f00efa4d1549e39d"
+          }
+        },
+        {
+          "line_id": "reverse1999:307910:27",
+          "render_sha256": {
+            "A": "639a9ec6458fcc5de7e1ec1bddf39a15fd61ca0b4d90f9c3edd3e5338b467316",
+            "B": "5b53d1b30f18157a9175fa15d44bd2f282ccfe6ba52d4a22f9d26f4b5338515e"
+          }
+        }
+      ]
+    },
+    "210": {
+      "mapping": {
+        "A": "off",
+        "B": "on"
+      },
+      "reference_sha256": {
+        "A": "b1c659074e638840548182deddbe83511087b03dd7a7eb72bee664f4721997f6",
+        "B": "c18410d34d8ab6e38d33839a38f5900c59fdd07cb3fdd3e8c8eea56b15965366"
+      },
+      "same_reference": false,
+      "listener_side": "B",
+      "selected_mode_in_feedback": "on",
+      "judgment": "Preferred B.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307901:5",
+          "render_sha256": {
+            "A": "7292569d7dc6d915aa8e15d04d1a427b4feee3d49283277f16bbaa804c3b82a8",
+            "B": "bf62e4253e101faae24d934ebe1d1539f4363b6d3f5d3f0a283ee96b84df5c22"
+          }
+        },
+        {
+          "line_id": "reverse1999:307901:97",
+          "render_sha256": {
+            "A": "7ca1cabe02393fff49e035d14d648977c49ec8b2bc69b86fa01a39a39a3e4b4d",
+            "B": "5ca8b3135d44e1db6b95cff2ab49547874b3c799182c39aba684c4433949eccd"
+          }
+        },
+        {
+          "line_id": "reverse1999:307904:33",
+          "render_sha256": {
+            "A": "1c42c0cbaf6e67cc11123a1d6dbe5e625a2e253f320298d115d5399fe0da5084",
+            "B": "77eeb01c61306217914664f6b25f548ac76cf26fd124a16e7856d7cfa9707ae7"
+          }
+        },
+        {
+          "line_id": "reverse1999:307905:75",
+          "render_sha256": {
+            "A": "615a6ff30377ac28bed285d94af2a0b47421f6928ab27fcc027c89be83807d8d",
+            "B": "e219a44dc98acd3bd27009865af5a72c8a6e649a419a1bba1789d93edab9cc9b"
+          }
+        }
+      ]
+    },
+    "Thirty-seven": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "6f95f0fb92b5fd0c95734df6f4a1ec06f902c730ef5ab85527b186c64ae5b882",
+        "B": "82b196c6a4638a99aed8d66e0fdc2fc9173ff2224ae0c737319a0d5bb3c54a84"
+      },
+      "same_reference": false,
+      "listener_side": "B",
+      "selected_mode_in_feedback": "off",
+      "judgment": "Neither usable. B was relatively better.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307901:18",
+          "render_sha256": {
+            "A": "e83462cec57e130cfe9afe02baf176d91e3454b0d159e6a4e8fe100125e6405e",
+            "B": "d0ebde138ee5a7243fe97431acd793a8138add294cc66f1e673cf6c1b72192a6"
+          }
+        },
+        {
+          "line_id": "reverse1999:307903:32",
+          "render_sha256": {
+            "A": "7503a0006e8afc4dacd834a1fe433316154b5f1a358cb079843dfe23c225ba62",
+            "B": "4a12f7e24a492fcd0c47ae65ab402ea9e6a285847db8b7522c2752acddd6d56d"
+          }
+        },
+        {
+          "line_id": "reverse1999:307904:52",
+          "render_sha256": {
+            "A": "c5a6696c12c326bb00fa187429b9fe0505a17887c96f4ee31839ed160caa77c1",
+            "B": "486777c3975000afa7f9621288b7c7f91ff1b81c8a265687176f1ce0e69c4e89"
+          }
+        },
+        {
+          "line_id": "reverse1999:307904:130",
+          "render_sha256": {
+            "A": "584fa3766e1d1af62f809ba36e0724fce4a4e5babdedf81f2a17972b916e1a20",
+            "B": "181a81e683642b39c147bdbc5e35c7f8ac0e9f930b0376b874aa29973d32aa4a"
+          }
+        }
+      ]
+    },
+    "Sophia": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "edd2307b1780c93b2eb02c83f3f8d84772bb90324e5a67122ca35fce207e9d4c",
+        "B": "643a4f759980302c09870c7fafcfe22ed66ddc975e457554fab63d9098668390"
+      },
+      "same_reference": false,
+      "listener_side": "A",
+      "selected_mode_in_feedback": "on",
+      "judgment": "Preferred A.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307901:20",
+          "render_sha256": {
+            "A": "ee707ee2b1c678cbd22d275506be983096815452bc56e36c05346b2dd9c81dd1",
+            "B": "e0b069c4b8a14daa879c36ef72ec8d4c8c6ee59ee181f164cc08f26e5a9b1f25"
+          }
+        },
+        {
+          "line_id": "reverse1999:307902:58",
+          "render_sha256": {
+            "A": "75c3c233ef01dab8c5ae12c8b8707fd9783b7dd0e39ffdf1d213dc6bdad53182",
+            "B": "3b5dff2c6d013a3d40b90240401ea3af4d409561b7798b43f4c7c1ad90221259"
+          }
+        },
+        {
+          "line_id": "reverse1999:307902:109",
+          "render_sha256": {
+            "A": "1fb64bc1a464c6b4e9d3c6b58e7a4103bdec2070822b30cc4fb8f0b4d31aa785",
+            "B": "ff7ca2f72d3eba27aedd5732ec3ae2f31b2d8d8811a5cca77a0e71836f923efc"
+          }
+        },
+        {
+          "line_id": "reverse1999:307912:18",
+          "render_sha256": {
+            "A": "4fff9de43c008241e977babdc595fd0a69ee61549635bdf67ffde418ea88e8c4",
+            "B": "a4651859a176743c9e24c064392321e8683f09257c0a5d41b3a4339b53eeb4b6"
+          }
+        }
+      ]
+    },
+    "Alma": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b",
+        "B": "6183be2b24227fc4864a7ca09155ddfbe0d0d9679e8e8c1b2e4549d186ec942b"
+      },
+      "same_reference": true,
+      "listener_side": null,
+      "selected_mode_in_feedback": null,
+      "judgment": "Identical audio, judged poor.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307906:32",
+          "render_sha256": {
+            "A": "0a4d5f9fe31ba0cc555a2c1c007aadadd1af85b0d24e56489cd1e9c95a943a29",
+            "B": "0a4d5f9fe31ba0cc555a2c1c007aadadd1af85b0d24e56489cd1e9c95a943a29"
+          }
+        },
+        {
+          "line_id": "reverse1999:307906:48",
+          "render_sha256": {
+            "A": "45749cc223fcb5b4ee8549e082eb1d7f2d0d4450a4a6f2e3a0faaf0d397c9f21",
+            "B": "45749cc223fcb5b4ee8549e082eb1d7f2d0d4450a4a6f2e3a0faaf0d397c9f21"
+          }
+        },
+        {
+          "line_id": "reverse1999:307907:59",
+          "render_sha256": {
+            "A": "10a59599fd60bc168fae832c70963cb6f0b7e644047ff13448e345a44cf14271",
+            "B": "10a59599fd60bc168fae832c70963cb6f0b7e644047ff13448e345a44cf14271"
+          }
+        },
+        {
+          "line_id": "reverse1999:307910:13",
+          "render_sha256": {
+            "A": "797c2db41580761d3b9ddf781edc7dba27da693a3332a68b66f8996283500256",
+            "B": "797c2db41580761d3b9ddf781edc7dba27da693a3332a68b66f8996283500256"
+          }
+        }
+      ]
+    },
+    "Believer": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf",
+        "B": "58d4e73dfedf59b124b58f0569b96e5453f056f4f986f454ba002d85f313ddaf"
+      },
+      "same_reference": true,
+      "listener_side": null,
+      "selected_mode_in_feedback": null,
+      "judgment": "Sounds acceptable; listener suspected identical audio.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307903:31",
+          "render_sha256": {
+            "A": "6fb66791959f5e94e83e193fc34fe3341d01bf8b027931a80cae28ec92552b76",
+            "B": "6fb66791959f5e94e83e193fc34fe3341d01bf8b027931a80cae28ec92552b76"
+          }
+        },
+        {
+          "line_id": "reverse1999:307903:49",
+          "render_sha256": {
+            "A": "34b006deea002925d6a8568d21971c53f8ada32f1200c6413dab51cbe156f540",
+            "B": "34b006deea002925d6a8568d21971c53f8ada32f1200c6413dab51cbe156f540"
+          }
+        },
+        {
+          "line_id": "reverse1999:307907:36",
+          "render_sha256": {
+            "A": "efa75f80a1b0ea59098497795b48ff146f43fd15e60d432127b471e1c6ff95e4",
+            "B": "efa75f80a1b0ea59098497795b48ff146f43fd15e60d432127b471e1c6ff95e4"
+          }
+        },
+        {
+          "line_id": "reverse1999:307903:3",
+          "render_sha256": {
+            "A": "6fafeff78e8a3d02d447e1a1ab130ba1f023a4fa543c093ed269597bec2d63e0",
+            "B": "6fafeff78e8a3d02d447e1a1ab130ba1f023a4fa543c093ed269597bec2d63e0"
+          }
+        }
+      ]
+    },
+    "Believer I": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "03a90747f68df144f75ffce90082f14f2e816cf95857cf4b0e5ff2e5b5e59744",
+        "B": "ffc756ff75cdc10176e3c5d72ce34324dad14b9a3d3d74774564234876447e49"
+      },
+      "same_reference": false,
+      "listener_side": "B",
+      "selected_mode_in_feedback": "off",
+      "judgment": "B sounds very good. Absolute usability of A was not stated.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307911:6",
+          "render_sha256": {
+            "A": "fe111b99b0c5ceb4d986b4ac162924ac5944189eba2bf75ac6d803d741bc1a99",
+            "B": "9e18568b92330bfdb2cbefcd135f5a335c0ea2cc605648dceb8ca590c4ce9b04"
+          }
+        },
+        {
+          "line_id": "reverse1999:307911:5",
+          "render_sha256": {
+            "A": "ac76e797310fef61bacf49edc867cadffb0f2cfbc42efd26cd6c6800d7ed3294",
+            "B": "137fc4482fe684ee1e6e349203c5cf27ad2182ba1c55af31e6a491b1f08233cb"
+          }
+        },
+        {
+          "line_id": "reverse1999:307911:11",
+          "render_sha256": {
+            "A": "d1734f7de7b330302390769cce1f5bee9ef51c0a92e4058fc43009a34ba38c2e",
+            "B": "650f02d48a1b0260b08f7e30fd50974f80eaf588bf6e0854a44202148210fdb0"
+          }
+        }
+      ]
+    },
+    "Believer II": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "9755fa2056ac9bfc9b73998ad5c9d08eecf917dc167d8adbee91832a44381e38",
+        "B": "5e9856ea9bed97a11f0d64a7e130ddf98c85c66a7f475d8bd52673c02a7eb9ea"
+      },
+      "same_reference": false,
+      "listener_side": null,
+      "selected_mode_in_feedback": null,
+      "judgment": "Possibly different performers to the listener. A adds words on the unfinished line. No overall preference stated.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307911:9",
+          "render_sha256": {
+            "A": "70b221ff98abd31e3f914a749f448d0372935686966e2a0ca22b2fac3c7d9724",
+            "B": "d42243805333dd3c56a1305c4c9d304172394df8f8b4c097754bc057299a7c21"
+          }
+        },
+        {
+          "line_id": "reverse1999:307911:12",
+          "render_sha256": {
+            "A": "60a97f6242bbfcf8519a358571bf782d7a27b2982ce19a8f9be36b42207bab9c",
+            "B": "e2f27b57a0752db47cd84d634ec6a7b2007e6b2c0b61cb41cdd8209e1ceefbe9"
+          }
+        }
+      ],
+      "content_issue": {
+        "line_id": "reverse1999:307911:12",
+        "text": "I’m so glad–",
+        "side": "A",
+        "mode": "on",
+        "completion": {
+          "A": "limited",
+          "B": "complete"
+        },
+        "speaker_verification": "Both source banks use npc510801. Performer identity unresolved."
+      }
+    },
+    "Narrator": {
+      "mapping": {
+        "A": "on",
+        "B": "off"
+      },
+      "reference_sha256": {
+        "A": "720416162f0b42251dde8372504472fc611d2da6ad4825105269fe81828cb630",
+        "B": "720416162f0b42251dde8372504472fc611d2da6ad4825105269fe81828cb630"
+      },
+      "same_reference": true,
+      "listener_side": null,
+      "selected_mode_in_feedback": null,
+      "judgment": "Reference contains yawning. Both arms use the same manually assigned Centurion Morning recording.",
+      "trials": [
+        {
+          "line_id": "reverse1999:307901:3",
+          "render_sha256": {
+            "A": "11e4703a534d7ce05170af8d1476f74fa9a430dc2faeaf3b261ea85a459ef45f",
+            "B": "11e4703a534d7ce05170af8d1476f74fa9a430dc2faeaf3b261ea85a459ef45f"
+          }
+        },
+        {
+          "line_id": "reverse1999:307903:108",
+          "render_sha256": {
+            "A": "fdedbc7520cc3db8f347115a9d0a6120d38b09d85460d15fb9ba3eb9329e3c97",
+            "B": "fdedbc7520cc3db8f347115a9d0a6120d38b09d85460d15fb9ba3eb9329e3c97"
+          }
+        },
+        {
+          "line_id": "reverse1999:307907:7",
+          "render_sha256": {
+            "A": "d6f376f1f248ae4efd67c17c40cc2eddbd137362e87d5e881507e8cc725aa2a7",
+            "B": "d6f376f1f248ae4efd67c17c40cc2eddbd137362e87d5e881507e8cc725aa2a7"
+          }
+        },
+        {
+          "line_id": "reverse1999:307911:45",
+          "render_sha256": {
+            "A": "5762cbaf94fe28e4525663818ce43293fdf40f25ae733d6a9f93c7730102ff63",
+            "B": "5762cbaf94fe28e4525663818ce43293fdf40f25ae733d6a9f93c7730102ff63"
+          }
+        }
+      ]
+    }
+  }
+}

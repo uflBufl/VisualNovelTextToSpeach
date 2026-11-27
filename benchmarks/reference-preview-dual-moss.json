@@ -1,0 +1,1389 @@
+{
+  "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+  "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+  "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+  "profile": "stable",
+  "generation_options": {
+    "audio_temperature": 1.7,
+    "audio_top_p": 0.8,
+    "audio_top_k": 25,
+    "audio_repetition_penalty": 1.0
+  },
+  "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+  "seeds": [
+    0,
+    1
+  ],
+  "texts": [
+    "The letter is still on the table. We should read it before we leave.",
+    "I thought you said it was empty. Can you hear that?"
+  ],
+  "scope": "Offline paired preview experiment. Three alternatives per text and seed. Repeats assess stability; ordinary preparation keeps its existing preview budget. The labeled cases are character-level listening reports, not rankings for each seed. All fresh characters are held out from those listening reports.",
+  "selection": "For each fresh character, exclude the largest bank other than that of the nearest four-second, highest-quality routed catalog clip (bank-name tie break). Apply the frozen steady/typical selector with this bank withheld. Orientation original is the highest passing quality clip nearest four seconds in the withheld bank; SHA-256 breaks ties.",
+  "render_status": {
+    "distinct_fresh_complete": 36,
+    "incomplete": []
+  },
+  "signal_rules": {
+    "qa": "Existing generated-speech silence gate, analysis version 2",
+    "asr": "Normalized exact text match; mismatch is advisory, not proven synthesis error",
+    "pitch_span": "Existing Praat 10th-90th percentile span; 1 semitone descriptive tie margin",
+    "terminal_pitch": "Median pitch of final voiced 300ms minus preceding voiced 300ms; contour only, not question classification",
+    "direction": "Every matched text/seed retained; opposite directions yield mixed",
+    "interpretation": "No signal establishes listener preference or neutral/questioning appropriateness; no automated ranking"
+  },
+  "additional_signal": {
+    "name": "DNSMOS P.835, non-personalized, SIG",
+    "model_sha256": "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd",
+    "source": "https://github.com/microsoft/DNS-Challenge/blob/master/DNSMOS/dnsmos_local.py",
+    "measurement": "Verified PCM, downmix, soxr 16 kHz, double short waveforms to fill 9.01 s segments, 1 s hops, SIG polynomial per segment then average. Higher is predicted speech quality. Report matched score directions including seed/text reversals; descriptive differences have no acceptance threshold."
+  },
+  "planner_replay": {
+    "An-an Lee": {
+      "baseline": [
+        "bc1c552f8104855bb909811e71286f197b279bb14f6a699f230d84b0462052b9",
+        "406e9e21f6707b14c3972d1f974c6166c352bb924ee25f622a831505d6ec7bb8",
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ],
+      "trial": [
+        "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+        "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+        "550a7316047431755d73b9eefeb4c03464834c2e8bb5012a5f9331f71f92fed5"
+      ]
+    },
+    "Tourist": {
+      "baseline": [
+        "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+        "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794",
+        "193dd392c2b6105fc14cfb37637fdd5c17c58905c603d0357aacb6dbc644cf41"
+      ],
+      "trial": [
+        "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3",
+        "dc8f82b875af4528340903f83527bcc3b7b4f56cd869d45159c1d33b59306a28",
+        "724e016b246e55901fe4899fe460320a2413f63290aaafa1028655a0c0778794"
+      ]
+    }
+  },
+  "reviewed": {
+    "Horropedia": {
+      "overall_listener_preference": "steady",
+      "directions": {
+        "matched_qa_failure_direction": "tie",
+        "matched_asr_error_direction": "tie",
+        "matched_pitch_span_direction": "mixed"
+      },
+      "mean_signal_quality": {
+        "current": 3.403,
+        "typical": 3.402,
+        "steady": 3.312
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "cd5f6bcc059a2c97404bf97bdc256c84f6fef7522df1fa03e36e429f3158b3a3",
+          "signal_quality": 3.5105
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "80d9212bfe9a04828ebd11ade5b67944e7e6b58480b5786a888afa3e26d8f1ba",
+          "signal_quality": 3.5015,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.84,
+          "pitch_span_st": 14.29,
+          "terminal_pitch_change_st": -2.561
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "bd25cd15ab2455bbafb497a6e8b25e3d08e9c134464dd2ced8caa92b05177e2d",
+          "signal_quality": 3.4577,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.84,
+          "pitch_span_st": 14.036,
+          "terminal_pitch_change_st": -6.258
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "0b7e47bd2cc0cad637b35f0bd7171a188729f31bf94709a7614ff7820aa95f54",
+          "signal_quality": 3.4481
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "1adcaa94c7b197aa40a3100519a6ae52c416711a05002deb2d5322b7105966eb",
+          "signal_quality": 3.4392,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.56,
+          "pitch_span_st": 15.419,
+          "terminal_pitch_change_st": -10.063
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "c682f03d853678e32ca1af7244da32595007c25f7da3b478d6997095012d6421",
+          "signal_quality": 3.3055,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.2,
+          "pitch_span_st": 11.677,
+          "terminal_pitch_change_st": -3.595
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "6be27f5be247036b8e8721603e0cc1240a78e2aa08e959baf63b10795c0f65a6",
+          "signal_quality": 3.3234
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "3c1a8046e8fa7cb8c5d8d46cd1b997da4d78f6e91877c52d1cb6341d32b7e076",
+          "signal_quality": 3.1356,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.04,
+          "pitch_span_st": 12.183,
+          "terminal_pitch_change_st": -5.24
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "6a18effc2c4db50fd65bfe755c8c9ddf0a14f8c5e46c7f38204f40187c15c1f7",
+          "signal_quality": 3.6641,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.44,
+          "pitch_span_st": 14.398,
+          "terminal_pitch_change_st": -8.098
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "55ce7e037cb75a605dd32f064e4477ecf0281903f0bcac2d61ffaa4161d59085",
+          "signal_quality": 3.3285
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "9d2978e53fc8bf6d686b1e2657a5f34c431323b92524061d2c941fa1963743d7",
+          "signal_quality": 3.1733,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.88,
+          "pitch_span_st": 9.001,
+          "terminal_pitch_change_st": 5.557
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "d91decb45ae0ca2d2cbf2d7912a1546f796d00e935b0c937086aa6ffd835953a",
+          "signal_quality": 3.1824,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.64,
+          "pitch_span_st": 15.152,
+          "terminal_pitch_change_st": 6.667
+        }
+      ]
+    },
+    "Forget Me Not": {
+      "overall_listener_preference": "steady",
+      "directions": {
+        "matched_qa_failure_direction": "steady_lower",
+        "matched_asr_error_direction": "steady_lower",
+        "matched_pitch_span_direction": "mixed"
+      },
+      "mean_signal_quality": {
+        "current": 3.593,
+        "typical": 3.506,
+        "steady": 3.679
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "71472c5c921d08b221e814438011475a74cbd1fbfd642dd2de7b1616619fcbfd",
+          "signal_quality": 3.6457
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "5f69c91676fb23c9ca7ad5858c01c23b244e856c4058294a6a6d0e50052b8b44",
+          "signal_quality": 3.7117,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.56,
+          "pitch_span_st": 8.41,
+          "terminal_pitch_change_st": -0.784
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "28d347ef274da81ddfd407873c704f58203ad96549da68092ac2f603f66efcce",
+          "signal_quality": 3.4983,
+          "asr_exact": true,
+          "qa_flags": [
+            "1.28s internal silence"
+          ],
+          "duration_seconds": 4.8,
+          "pause_classification": "sentence_boundary_pause_candidate",
+          "pitch_span_st": 4.336,
+          "terminal_pitch_change_st": -0.092
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "bdd93d46d187f61eca641a20cd9575ecb29d5d8ec7feeeedd98ad9c2c4a93f4e",
+          "signal_quality": 3.648
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "738445b06541a051020f8a60449041624d10bde4c23228eac8ce6cbb71e003b5",
+          "signal_quality": 3.746,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 5.76,
+          "pitch_span_st": 8.033,
+          "terminal_pitch_change_st": -1.568
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "8a5cf12abb04901d01adced19074e404af004605720508e3f7829a09fb7be390",
+          "signal_quality": 3.5027,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 9.272,
+          "terminal_pitch_change_st": -1.743
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "28deca533333064be2cb789275ae0e8e5994ab3764825441aa5378bae5d264d7",
+          "signal_quality": 3.6261
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "c071815e0ee673aa219a970b7afa8f64b2e57ef2800e6512f36bdcf31e63da57",
+          "signal_quality": 3.6196,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.44,
+          "pitch_span_st": 8.084,
+          "terminal_pitch_change_st": 3.765
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "8680aa51b92e17cfe55bbe5ca2d5c603e7f14189f3672f828f8e089c9d97bed2",
+          "signal_quality": 3.6486,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.8,
+          "pitch_span_st": 10.081,
+          "terminal_pitch_change_st": -6.767
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "a2b6f10973a90619f20c5bc3fa1a7366584ce98a8d868f5e7f003093b8e0eddc",
+          "signal_quality": 3.4542
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "71581d5bd030116c577b57179833baf15d91e3253f736b8c0521112d6971adf8",
+          "signal_quality": 3.6399,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 4.037,
+          "terminal_pitch_change_st": 0.213
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "2661a8bfa3a08692990f4e21d7fc4c0a1d97f6f0594ac49a1f4faee6089d7e16",
+          "signal_quality": 3.374,
+          "asr_exact": false,
+          "qa_flags": [],
+          "duration_seconds": 3.2,
+          "pitch_span_st": 9.095,
+          "terminal_pitch_change_st": 5.089
+        }
+      ]
+    },
+    "Vertin": {
+      "overall_listener_preference": "steady",
+      "directions": {
+        "matched_qa_failure_direction": "tie",
+        "matched_asr_error_direction": "typical_lower",
+        "matched_pitch_span_direction": "steady_lower"
+      },
+      "mean_signal_quality": {
+        "current": 3.407,
+        "typical": 3.349,
+        "steady": 3.356
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "766c3c1a9eb062a2b0154f292fea8123998ce4a5b273670f0fabb365615066e7",
+          "signal_quality": 3.4502
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "bc4babda4e121befd8b32a83d215b463b33d144df339bf8f88aee09fe5e2ad55",
+          "signal_quality": 3.2892,
+          "asr_exact": false,
+          "qa_flags": [],
+          "duration_seconds": 3.52,
+          "pitch_span_st": 6.583,
+          "terminal_pitch_change_st": -0.109
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "d29319e6621e8e357d3e72ecdeaee1edccaea81fc108c75ab94870e3415d9be5",
+          "signal_quality": 3.57,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.76,
+          "pitch_span_st": 6.18,
+          "terminal_pitch_change_st": 0.404
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "41c6894e4d7467fcbd499d9eb81b5d537444288cac929558b5607e9bbf3a0e13",
+          "signal_quality": 3.2957
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "499ae140d62d5d3dd915b023ed7cddb9e7bfd11c127a3419a5444ab576b53563",
+          "signal_quality": 3.4794,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 7.013,
+          "terminal_pitch_change_st": -0.487
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "4bc179e030e40adfaac897b4b956092d3c630d6c36a4418dc0a5ad113fb72dcd",
+          "signal_quality": 3.3951,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 7.538,
+          "terminal_pitch_change_st": -0.529
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "f8133d6be6f8cdc730af42c1fc13ec701c8bc0585309fe80b1df3f8331b4bae5",
+          "signal_quality": 3.4053
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "9cb77546236c1ef5f69cba654b69c8c71bcd113684062ac7abfeeaa24d89f236",
+          "signal_quality": 3.2436,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.72,
+          "pitch_span_st": 10.177,
+          "terminal_pitch_change_st": -4.527
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "56de79d6c92f404eac267aea2d00e29b60ea4df07225c144c83287e2ba0b34a0",
+          "signal_quality": 3.2826,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.96,
+          "pitch_span_st": 10.597,
+          "terminal_pitch_change_st": 5.159
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "1be1ffcb0c865a5976e813734eef6f36a56dec7d91f09d06fd83169df3b771c0",
+          "signal_quality": 3.4769
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "d261478b2bb6307c7a3aa8ea3e7eac0a8aaa824c65079898eb0451e760da2eb1",
+          "signal_quality": 3.4111,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.64,
+          "pitch_span_st": 8.844,
+          "terminal_pitch_change_st": 3.108
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "aae0b9a0ec3c14a57135e0791c0296ec964f80ebb6f781ec07c1d28f0c1978ee",
+          "signal_quality": 3.1489,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.36,
+          "pitch_span_st": 14.452,
+          "terminal_pitch_change_st": -5.249
+        }
+      ]
+    },
+    "An-an Lee": {
+      "overall_listener_preference": "typical",
+      "directions": {
+        "matched_qa_failure_direction": "tie",
+        "matched_asr_error_direction": "typical_lower",
+        "matched_pitch_span_direction": "mixed"
+      },
+      "mean_signal_quality": {
+        "current": 3.271,
+        "typical": 3.458,
+        "steady": 3.376
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "f8c2a8674f928b8ed67045091712b87375484cb9bc356119c0129f1e6d90a712",
+          "signal_quality": 3.3028
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "c996dd4dd130e69136b6c98e796b74adb1e323874a974fb24691311244dc6775",
+          "signal_quality": 3.4752,
+          "asr_exact": false,
+          "qa_flags": [],
+          "duration_seconds": 3.36,
+          "pitch_span_st": 7.353,
+          "terminal_pitch_change_st": 0.499
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "f82232e07ca2e63debb6b8d4ea5c1bdac1dd9441f84433b29750c86ca9600510",
+          "signal_quality": 3.417,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.32,
+          "pitch_span_st": 11.689,
+          "terminal_pitch_change_st": -3.061
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "120a22fb4ca23d1db161c8ad1edddb7d9dc706dfd284dea28d5e2f71f448f451",
+          "signal_quality": 3.2032
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "5872a99126bb418f3f27beaf466d98903de83b63bc6fcf5d198ac16857c5ea7c",
+          "signal_quality": 3.4143,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.16,
+          "pitch_span_st": 9.818,
+          "terminal_pitch_change_st": -3.287
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "68d7277ed06f2426fac240327743c8c4133d4ca65c5355b886332bcaea0accc8",
+          "signal_quality": 3.604,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 5.12,
+          "pitch_span_st": 14.741,
+          "terminal_pitch_change_st": 4.401
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "e33b82dd211578e667b5a4140e2eb2405f6d7d4b57cc34fefed75cb24a348327",
+          "signal_quality": 3.2179
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "4415fafcdb9980137e396928a4e37898031c843fc85e86957c02be583cf5afae",
+          "signal_quality": 3.388,
+          "asr_exact": false,
+          "qa_flags": [],
+          "duration_seconds": 3.04,
+          "pitch_span_st": 8.627,
+          "terminal_pitch_change_st": 2.374
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "909875ffb9691ad29415a59e64901411a9ee310a2d52cb158b6b2f88d78a4404",
+          "signal_quality": 3.4679,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 5.474,
+          "terminal_pitch_change_st": 1.389
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "7fa454897cdde4e28768569a1c0d9ea448fcabcfa3b1b1941d861558e41cc9e7",
+          "signal_quality": 3.3602
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "ea040534a3b56dd8dcbf1963ae95b41e5ce8ae563b4d63936360042e971a5df1",
+          "signal_quality": 3.2278,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.2,
+          "pitch_span_st": 7.475,
+          "terminal_pitch_change_st": 0.596
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "68a3748b623529ba12d010c8f9380da0c881bcf161ed2825bed0a0c31d6ddb43",
+          "signal_quality": 3.3429,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.2,
+          "pitch_span_st": 4.953,
+          "terminal_pitch_change_st": -2.547
+        }
+      ]
+    }
+  },
+  "fresh": {
+    "Everecho": {
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 77,
+      "holdout_bank": "activityvoc_hero3145_3_8_shiji_part03.bnk",
+      "holdout_count": 35,
+      "orientation_sha256": "5e5057357520ee748d2bf22934686de70e8ba51de917feb0b55da78ce4eefcd4",
+      "sources": {
+        "current": {
+          "sha256": "f39dd2c54fc6eb824291ab253d4f6b63189292f7476a47dc2d9fa83cb981d75f",
+          "source_line_ids": [
+            "reverse1999:203824:37"
+          ],
+          "source_bank": "activityvoc_hero3145_3_8_shiji_part02.bnk",
+          "seconds": 3.949
+        },
+        "typical": {
+          "sha256": "ed132282fe1a99b7276bbeb81b158005d94bb92e9559b2fd2a60fafd2c97f659",
+          "source_line_ids": [
+            "reverse1999:203814:4"
+          ],
+          "source_bank": "activityvoc_hero3145_3_8_shiji_part01.bnk",
+          "seconds": 2.31
+        },
+        "steady": {
+          "sha256": "a683ad3925989a3e38c343083c1d824683004dacef90e34b2f4979ded3ec0440",
+          "source_line_ids": [
+            "reverse1999:314511:30"
+          ],
+          "source_bank": "activityvoc_story_hero3145_shiji.bnk",
+          "seconds": 2.598,
+          "source_text_check": {
+            "catalog_excerpt": "I can't go with you. Someone has to stay behind to speak for the others.",
+            "local_whisper_transcript": "Someone needs to stay here.",
+            "scope": "The listener flagged the mismatch. The verified source WAV independently yielded a materially shorter automatic transcript. The game event links the clip to the written story line; the catalog admitted the clip using audio-only evidence."
+          }
+        }
+      },
+      "listening_key": {
+        "typical": "A",
+        "steady": "B",
+        "current": "Current"
+      },
+      "listening_status": "Rated",
+      "directions": {
+        "matched_qa_failure_direction": "typical_lower",
+        "matched_asr_error_direction": "tie",
+        "matched_pitch_span_direction": "typical_lower"
+      },
+      "mean_signal_quality": {
+        "current": 3.221,
+        "typical": 2.939,
+        "steady": 3.433
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "f4c270739cc46741bf34f14aeb464d08b0bb99bc0550548106106f719272cbf7",
+          "signal_quality": 3.5509,
+          "mean_heldout_speaker_cosine": 0.3751,
+          "asr_exact": true
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "f40561b560b4e7ce086c839fc684de8512d9d60bd42980f703955d378f51e8bf",
+          "signal_quality": 3.395,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 6.24,
+          "pitch_span_st": 4.186,
+          "terminal_pitch_change_st": -0.33,
+          "mean_heldout_speaker_cosine": 0.5126
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "eabfa1bbc149ccdac86122fe609282945ff08b5ee7061e74f8229cec979d1fe8",
+          "signal_quality": 3.2588,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 5.36,
+          "pitch_span_st": 4.005,
+          "terminal_pitch_change_st": -1.371,
+          "mean_heldout_speaker_cosine": 0.5258
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "3b5e77bcfaad551ca6c48b364601c1d063891a9af5f29b3920917f5d37f853d5",
+          "signal_quality": 3.4802,
+          "mean_heldout_speaker_cosine": 0.419,
+          "asr_exact": true
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "d5241ba50a090b8620e76639ec2f306c3200cdb4e354d5240bdfa4b8f176e080",
+          "signal_quality": 3.459,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.48,
+          "pitch_span_st": 3.486,
+          "terminal_pitch_change_st": -1.866,
+          "mean_heldout_speaker_cosine": 0.4717
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "f1726bbbf16d65b86d74be86cb1216a1a00be7bc9c4700d081561d2cb254fbd6",
+          "signal_quality": 3.0266,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 5.28,
+          "pitch_span_st": 2.509,
+          "terminal_pitch_change_st": -0.198,
+          "mean_heldout_speaker_cosine": 0.53
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "338226c689a90b81c75444131117e82e0239f300dde6c100dc481b522ab97fee",
+          "signal_quality": 2.8803,
+          "mean_heldout_speaker_cosine": 0.4898,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "27f28ac02ed43d21dd3375339c7c42f1a26a1f60776cbb08b83e246bac25ddac",
+          "signal_quality": 3.4651,
+          "asr_exact": true,
+          "qa_flags": [
+            "1.28s internal silence"
+          ],
+          "duration_seconds": 6.0,
+          "pause_classification": "sentence_boundary_pause_candidate",
+          "pitch_span_st": 10.347,
+          "terminal_pitch_change_st": -4.919,
+          "mean_heldout_speaker_cosine": 0.4168
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "77046831f9c85ee26a24beca897f43316af2f03df01db9b255d89828823802a0",
+          "signal_quality": 3.0048,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.44,
+          "pitch_span_st": 6.053,
+          "terminal_pitch_change_st": -2.834,
+          "mean_heldout_speaker_cosine": 0.4636
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "2023906c9752df8e26034ca4b5f4024009dbc42ad26061e77d0c93195b9dc192",
+          "signal_quality": 2.9724,
+          "mean_heldout_speaker_cosine": 0.3666,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "2f23d48996d46cc28867d6aff48b2901731da969758e6c37015d41f63a89a5b3",
+          "signal_quality": 3.4118,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.0,
+          "pitch_span_st": 6.516,
+          "terminal_pitch_change_st": 2.189,
+          "mean_heldout_speaker_cosine": 0.4676
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "54df103093b70eeb4a6cf4f5ced641dccc56dd065327756b3ae570cae104f421",
+          "signal_quality": 2.4646,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.08,
+          "pitch_span_st": 5.723,
+          "terminal_pitch_change_st": -0.006,
+          "mean_heldout_speaker_cosine": 0.5891
+        }
+      ],
+      "listening_feedback": {
+        "preferred_side": "B",
+        "preferred_method": "steady",
+        "confidence": "Repeat listening supersedes the initial tentative A preference. The listener found Steady slow but closer to the original voice.",
+        "source_feedback": "The listener reported that the original B recording differed from its displayed text."
+      },
+      "full_pool_followup": {
+        "question": "What selected the previous references, and what would the same selector pick with the validation bank restored?",
+        "reproduce": "python -m scripts.study_reference_typicality MANIFEST Everecho --select",
+        "catalog_manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+        "upstream_candidate_report_sha256": "dce0ad8580262735db6a919ba84abe022d376e15e9ba95efa1726b10e73f1f40",
+        "bank_index_sha256": "0e16dea0899d6aa5e20641412fbd86a006cfc3f08cdc98b2e78f68fedf6e20ee",
+        "source_inventory": {
+          "scope": "Installed English audio banks associated with hero3145 and skin hero314503. Bank membership also covers other speaker labels, including singing. Unique encoded WEMs and unique decoded WAVs are measured at different stages.",
+          "unique_encoded_media": 302,
+          "unique_candidate_wavs": 231,
+          "unique_imported_wavs": 131,
+          "excluded_candidate_quality_flags_overlapping": {
+            "too-short": 75,
+            "excessive-silence": 29,
+            "too-long": 3
+          },
+          "main_voice_lines_over_12s": 19,
+          "automatically_eligible": 112
+        },
+        "previous_comparison": {
+          "fit": 77,
+          "reserved_for_independent_voice_comparison": 35,
+          "perfect_technical_score": 55,
+          "measurable_steady_pool": 53,
+          "passed_acoustic_gates": 2,
+          "passed_written_punctuation": 1,
+          "typical": "Among clips tied for the top technical score, the highest mean speaker-embedding similarity to the other fit originals.",
+          "steady": "Start with technically top-scoring clips with measurable delivery. Require top-quartile speaker similarity, character-central pitch and relatively moderate pitch and loudness variation. Two passed these gates. The question “Do you want an audience so badly?” was excluded by written punctuation."
+        },
+        "full_pool": {
+          "fit": 112,
+          "reserved": 0,
+          "measurable_steady_pool": 77,
+          "passed_written_and_acoustic_gates": 2,
+          "typical_and_steady_choice": {
+            "source_line_ids": [
+              "reverse1999:203830:28"
+            ],
+            "source_bank": "activityvoc_hero3145_3_8_shiji_part03.bnk",
+            "seconds": 9.404,
+            "sha256": "328f6009caf14deda9d52ea3a1e237e84ab68d80b1d5e540b4bb0cd811dfb8f3",
+            "text": "It is so quiet I can hear the streets, the houses, and even the paving stones beneath my feet.",
+            "quality_score": 100
+          },
+          "source_whisper": "It is so quiet, I can hear the streets, the houses, and even the paving stones beneath my feet.",
+          "validation": "Same catalog, encoder and selection settings with no held-out bank. This source was unavailable to the two previous methods. Source previously used for independent measurement is now part of selection, so that earlier bank can no longer serve as an independent evaluation for this trial."
+        },
+        "generation_comparison": {
+          "control": "Previously preferred Steady WAVs from the fresh Everecho trial. Reused unchanged.",
+          "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+          "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+          "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+          "profile": "stable",
+          "seeds": [
+            0,
+            1
+          ],
+          "texts": [
+            "The letter is still on the table. We should read it before we leave.",
+            "I thought you said it was empty. Can you hear that?"
+          ],
+          "new_renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "wav_sha256": "15ff072410968a4cec8dbb0c63fe2f4d83e7308c958d0730dd21b41dc36023d4",
+              "duration_seconds": 5.36,
+              "normalized_asr_match": true
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "wav_sha256": "55be0d271bcf010550d0a1ca44aef1e5c8957762ae44e45ca58dcea5eedc110c",
+              "duration_seconds": 4.96,
+              "normalized_asr_match": true
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "wav_sha256": "5757f4a27eeb10759143f0b818c0522037e7cc3d29d1d3343a38b1c01e0eb314",
+              "duration_seconds": 3.44,
+              "normalized_asr_match": true
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "wav_sha256": "d4070b0020d386970140b5d739b914f926cbdbeccbea8245095dab7416e161dc",
+              "duration_seconds": 4.24,
+              "normalized_asr_match": true
+            }
+          ],
+          "listening_status": "Rated",
+          "preferred_reference": "full_pool",
+          "listening_feedback": "The listener preferred the new full-pool reference over the previous Steady reference for Everecho."
+        }
+      }
+    },
+    "Hedone": {
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 231,
+      "holdout_bank": "activityvoc_hero3156_3_9_chongran_part02.bnk",
+      "holdout_count": 57,
+      "orientation_sha256": "3f1f42d70545e3aea73faa45a9ff2f17eb0b06b02e1c6a9fcb1f6a1a0cfc1a09",
+      "sources": {
+        "current": {
+          "sha256": "5d52c01f018503ac8a3e35ee9d7900bb73af93a90bcda1477330d2176db972ec",
+          "source_line_ids": [
+            "reverse1999:203905:118"
+          ],
+          "source_bank": "activityvoc_hero3156_3_9_chongran_part01.bnk",
+          "seconds": 3.98
+        },
+        "typical": {
+          "sha256": "01352b8ec0e8a5720edc424f78e7e4452834b48cd14bcf292b26ce1ca6a1dfca",
+          "source_line_ids": [
+            "reverse1999:203923:18"
+          ],
+          "source_bank": "activityvoc_hero3156_3_9_chongran_part05.bnk",
+          "seconds": 9.48
+        },
+        "steady": {
+          "sha256": "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8",
+          "source_line_ids": [
+            "reverse1999:203917:50"
+          ],
+          "source_bank": "activityvoc_hero3156_3_9_chongran_part03.bnk",
+          "seconds": 8.676
+        }
+      },
+      "listening_key": {
+        "typical": "A",
+        "steady": "B",
+        "current": "Current"
+      },
+      "listening_status": "Rated",
+      "directions": {
+        "matched_qa_failure_direction": "tie",
+        "matched_asr_error_direction": "typical_lower",
+        "matched_pitch_span_direction": "steady_lower"
+      },
+      "mean_signal_quality": {
+        "current": 3.483,
+        "typical": 3.528,
+        "steady": 3.489
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "d2a6e1683817e82fc7b11c4c318dabdee840f5556fd909165a76001c89d82172",
+          "signal_quality": 3.5056,
+          "mean_heldout_speaker_cosine": 0.3331,
+          "asr_exact": true
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "8fe9a79478180ad288436a9b2cf5ddf7ccb28da5556f5b0b65f91aee44aa8ed7",
+          "signal_quality": 3.4556,
+          "asr_exact": false,
+          "qa_flags": [],
+          "duration_seconds": 3.92,
+          "pitch_span_st": 6.971,
+          "terminal_pitch_change_st": -4.436,
+          "mean_heldout_speaker_cosine": 0.4278
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "b6f2ac23b84f0908fac7bcaa25ab7ec4429d1b6af2991719e225845359564fd1",
+          "signal_quality": 3.4572,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 6.0,
+          "pitch_span_st": 8.846,
+          "terminal_pitch_change_st": -3.609,
+          "mean_heldout_speaker_cosine": 0.4776
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "6fbb331c958fa8a3da428aaf62ad923f12c253be25483009ab8ea8fb211ec452",
+          "signal_quality": 3.5201,
+          "mean_heldout_speaker_cosine": 0.3253,
+          "asr_exact": true
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "73e33884feb5cb5af5f18d26be8a073fe2ba73450864683755d9fb3e8117cd61",
+          "signal_quality": 3.5877,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.0,
+          "pitch_span_st": 4.556,
+          "terminal_pitch_change_st": -0.943,
+          "mean_heldout_speaker_cosine": 0.5078
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "8b4b44b49f50052f869e8b2023da7186f535774c08692a056abfe00401996040",
+          "signal_quality": 3.6003,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.64,
+          "pitch_span_st": 10.21,
+          "terminal_pitch_change_st": -1.672,
+          "mean_heldout_speaker_cosine": 0.5392
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "28872fd890c4d88048124716bcd7ccd651ef9a489e6a8b68534a561e3156c03e",
+          "signal_quality": 3.3358,
+          "mean_heldout_speaker_cosine": 0.4468,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "5a0cdeaeaf7113f00a3474db06e3809793cc6bafe0af4196f84226cef0fad5e7",
+          "signal_quality": 3.5858,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.04,
+          "pitch_span_st": 3.942,
+          "terminal_pitch_change_st": 0.694,
+          "mean_heldout_speaker_cosine": 0.4698
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "5cd7fa1a2d0643d7ff564f7e03da8ab4438068eefadc0c81ac8f5fd658eb40f8",
+          "signal_quality": 3.5386,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 6.894,
+          "terminal_pitch_change_st": 0.1,
+          "mean_heldout_speaker_cosine": 0.4895
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "621aea9be86f05a2d9b6a947abd6b822bf2317682809c9a4eeaa872d4ab22e82",
+          "signal_quality": 3.5693,
+          "mean_heldout_speaker_cosine": 0.2353,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "37c1cdca65d011e9cab1f2564db18bf841ac3e80501b168da2e675e47cd37c47",
+          "signal_quality": 3.3288,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.24,
+          "pitch_span_st": 4.535,
+          "terminal_pitch_change_st": -0.162,
+          "mean_heldout_speaker_cosine": 0.4543
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "d003fb0a14ad380e789691fe0699bd23afc142836e2c86c68a3f9202f85165bc",
+          "signal_quality": 3.5146,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.0,
+          "pitch_span_st": 7.796,
+          "terminal_pitch_change_st": 2.444,
+          "mean_heldout_speaker_cosine": 0.5237
+        }
+      ],
+      "listening_feedback": {
+        "preferred_side": "B",
+        "preferred_method": "steady",
+        "reason": "A sounded too slow, particularly on line 1 at seed 0. On line 2 at seed 1, B had unusual pauses that the listener found artistic and acceptable."
+      }
+    },
+    "Cornerstone": {
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 376,
+      "holdout_bank": "activityvoc_hero3140_3_8_shiji_part04.bnk",
+      "holdout_count": 57,
+      "orientation_sha256": "499d5d9d11fa24557deeff96e930211c52bb5a07d0ef694a460b36401a065a1f",
+      "sources": {
+        "current": {
+          "sha256": "7f61c03046d351634ec978d4f9620193f3ae80c1142003b6a9d396e66c4cc4df",
+          "source_line_ids": [
+            "reverse1999:203802:78"
+          ],
+          "source_bank": "activityvoc_hero3140_3_8_shiji_part01.bnk",
+          "seconds": 3.998
+        },
+        "typical": {
+          "sha256": "d7e84d7586f2b32c7c9b8ef5e9d091d45739d3aab83ef03fcd8bf65dde4bb84e",
+          "source_line_ids": [
+            "reverse1999:203823:17"
+          ],
+          "source_bank": "activityvoc_hero3140_3_8_shiji_part06.bnk",
+          "seconds": 11.047
+        },
+        "steady": {
+          "sha256": "06c9064b6025921d2087c348715241719f4de638131198a4cb9b85806aafca79",
+          "source_line_ids": [
+            "reverse1999:203806:87"
+          ],
+          "source_bank": "activityvoc_hero3140_3_8_shiji_part02.bnk",
+          "seconds": 7.922
+        }
+      },
+      "listening_key": {
+        "steady": "A",
+        "typical": "B",
+        "current": "Current"
+      },
+      "listening_status": "Rated",
+      "directions": {
+        "matched_qa_failure_direction": "tie",
+        "matched_asr_error_direction": "tie",
+        "matched_pitch_span_direction": "steady_lower"
+      },
+      "mean_signal_quality": {
+        "current": 3.437,
+        "typical": 3.481,
+        "steady": 3.357
+      },
+      "renders": [
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "b3b323377506cc9d8e9d654ac8d92ce6b1481cfc3001a3ce922438cec9df03cc",
+          "signal_quality": 3.5632,
+          "mean_heldout_speaker_cosine": 0.371,
+          "asr_exact": true
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "3b650667d46342ef7c55f2ee12b7feb8a3383021944a3e7b4922ff32a288b2d8",
+          "signal_quality": 3.5428,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.0,
+          "pitch_span_st": 6.736,
+          "terminal_pitch_change_st": -3.323,
+          "mean_heldout_speaker_cosine": 0.4791
+        },
+        {
+          "text_index": 0,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "8c84beec60b8bd81809908bdb737ff1cbe7086a9f4ada5b9aa60fb365eb122ca",
+          "signal_quality": 3.619,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.96,
+          "pitch_span_st": 10.979,
+          "terminal_pitch_change_st": -0.914,
+          "mean_heldout_speaker_cosine": 0.4025
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "77c1c78453bfafb19b7e2cbf5694b63626f287470938bdcffa05075900e68a93",
+          "signal_quality": 3.5102,
+          "mean_heldout_speaker_cosine": 0.4095,
+          "asr_exact": false
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "15cd85555f9d4b3a791dea5be59a04dc6b6ea65be82b003c590c45f98317dc93",
+          "signal_quality": 3.2919,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.64,
+          "pitch_span_st": 7.624,
+          "terminal_pitch_change_st": -3.208,
+          "mean_heldout_speaker_cosine": 0.4085
+        },
+        {
+          "text_index": 0,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "edb225405ed980d23f49fde38724ef1a8e0496866f87a279d620371c308bbd00",
+          "signal_quality": 3.3663,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 4.16,
+          "pitch_span_st": 9.959,
+          "terminal_pitch_change_st": -0.367,
+          "mean_heldout_speaker_cosine": 0.4516
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "current",
+          "wav_sha256": "efb28274515ce3f014bae2fd0bf79eca3365c4ed75c2d470c20d39cf4fd3ff0a",
+          "signal_quality": 3.2604,
+          "mean_heldout_speaker_cosine": 0.3348,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "steady",
+          "wav_sha256": "e7042706347bdaca9ea2fedaf955e5010bae34d2d6ec89efc107ec0ff32a5dc6",
+          "signal_quality": 3.1107,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 2.96,
+          "pitch_span_st": 9.314,
+          "terminal_pitch_change_st": 0.342,
+          "mean_heldout_speaker_cosine": 0.3771
+        },
+        {
+          "text_index": 1,
+          "seed": 0,
+          "method": "typical",
+          "wav_sha256": "95ab686723cb2043d48d9c072b6a73718df6ab76135a6103e8f8a8f056acacf4",
+          "signal_quality": 3.4271,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.44,
+          "pitch_span_st": 12.723,
+          "terminal_pitch_change_st": -11.02,
+          "mean_heldout_speaker_cosine": 0.3927
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "current",
+          "wav_sha256": "1b26bb9b3d3dbb822748887a8a7b3326763ddd2ead7d7d7b21f585fa91b146fd",
+          "signal_quality": 3.4153,
+          "mean_heldout_speaker_cosine": 0.3015,
+          "asr_exact": true
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "steady",
+          "wav_sha256": "33664d8f3cc471768a0bc19d04177dfaf0cb2f7fb2ba9c265a9af679f856cade",
+          "signal_quality": 3.4837,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.6,
+          "pitch_span_st": 10.786,
+          "terminal_pitch_change_st": 0.401,
+          "mean_heldout_speaker_cosine": 0.4224
+        },
+        {
+          "text_index": 1,
+          "seed": 1,
+          "method": "typical",
+          "wav_sha256": "52d2778dc8cdf76384d5621f7425548ae699b3f993f37679a5c092945fa7e4ee",
+          "signal_quality": 3.5102,
+          "asr_exact": true,
+          "qa_flags": [],
+          "duration_seconds": 3.2,
+          "pitch_span_st": 15.675,
+          "terminal_pitch_change_st": -13.571,
+          "mean_heldout_speaker_cosine": 0.3553
+        }
+      ],
+      "listening_feedback": {
+        "accepted_methods": [
+          "typical",
+          "steady",
+          "current"
+        ],
+        "preference": "All three sounded good. The listener heard no noticeable difference between seeds."
+      }
+    }
+  },
+  "fallback_only_control": {
+    "character": "Tourist",
+    "reason": "No distinct steady recording qualified. Its typical vs current comparison was retained as a fallback example and excluded from paired steady/typical statistics.",
+    "signal_quality": [
+      {
+        "method": "current",
+        "text_index": 0,
+        "seed": 0,
+        "wav_sha256": "56d8895b72ab259ea3c5c244348f04083caded5a1050f8b0fd6ba0142bae11bc",
+        "signal_quality": 3.4154914816175235
+      },
+      {
+        "method": "current",
+        "text_index": 0,
+        "seed": 1,
+        "wav_sha256": "e8ce467e0639617a46928416f5a0f44d454c24d3e1fde4c10bcf5f506d4c2da9",
+        "signal_quality": 2.8635472386804386
+      },
+      {
+        "method": "current",
+        "text_index": 1,
+        "seed": 0,
+        "wav_sha256": "ab53d583318489040ce5370df66cdfd7c03f2ba7cac6f9e3cfc2acfd80902759",
+        "signal_quality": 3.4191123723408783
+      },
+      {
+        "method": "current",
+        "text_index": 1,
+        "seed": 1,
+        "wav_sha256": "bf4315ea248206a73bad6ac9a296592a88a1b6f26d3a218bee7b52586a909cf2",
+        "signal_quality": 2.897683807495513
+      },
+      {
+        "method": "typical",
+        "text_index": 0,
+        "seed": 0,
+        "wav_sha256": "1770730e78e01c89f124afe9ab732aaf6d071e91f3fbcd455b89eead17624515",
+        "signal_quality": 3.2362851933724492
+      },
+      {
+        "method": "typical",
+        "text_index": 0,
+        "seed": 1,
+        "wav_sha256": "dd05090d947e75e13062872cd96fddf7a5fd889e5eb3b11115f64fc635ad72a6",
+        "signal_quality": 3.453783602053816
+      },
+      {
+        "method": "typical",
+        "text_index": 1,
+        "seed": 0,
+        "wav_sha256": "d5c53f44d65d835adcee2f2658f89622590539a94f2ccdecaca397adc8ce1fd1",
+        "signal_quality": 2.9338402424277574
+      },
+      {
+        "method": "typical",
+        "text_index": 1,
+        "seed": 1,
+        "wav_sha256": "443e156e69da168e8e3eb594cf74d22c15118820b1a3b744c34290997be12f2d",
+        "signal_quality": 3.2509366262311694
+      }
+    ]
+  },
+  "interpretation": "Steady was preferred for Hedone and, on repeat listening, Everecho. All three methods were acceptable for Cornerstone. The listener valued Everecho’s closer voice despite slower pacing and a source-caption mismatch. Pitch differences, pause flags and caption discrepancies do not independently establish an audible defect."
+}

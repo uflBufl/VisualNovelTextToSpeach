@@ -2893,6 +2893,24 @@ wheels = [
 ]
 
 [[package]]
+name = "praat-parselmouth"
+version = "0.4.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/28/2c1204fe3e7aeb6942051ff6776e31da52c7ab5b7df2ca438f371bd60d8a/praat_parselmouth-0.4.7.tar.gz", hash = "sha256:6dd81d246ce1eef5fd93d8cbdaf1bef61ca40ef1d2fc12aa23996a28071181e6", size = 22526491, upload-time = "2025-11-27T20:08:58.276Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/a6/50ab4dfee275a55cfe72383f861631f65753eac83b4dc6674ab173f04324/praat_parselmouth-0.4.7-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:f022783e8c7fbc3985194d62db64a9ccde60a3ce744633dab8b55f594c12f625", size = 17668901, upload-time = "2025-11-27T20:03:01.486Z" },
+    { url = "https://files.pythonhosted.org/packages/94/87/03cef2fc1365000c0bd20f87bf282b3a913a39a2cd9edfc9fb3239c85f4c/praat_parselmouth-0.4.7-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:d656eb4a18edcf52735e95b0a68c32edf7202c591c35afae74cfc54bead88277", size = 9049021, upload-time = "2025-11-27T20:03:21.658Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/8d/bb1121fd50ddcecd9e5d2d150c7a8656968c984e3562b623c64b02d90b10/praat_parselmouth-0.4.7-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:998138bf2acb15ae329caa217d523965b897417a1a2df130a2ecf41b664bfbf1", size = 8634455, upload-time = "2025-11-27T20:03:26.958Z" },
+    { url = "https://files.pythonhosted.org/packages/89/06/00003910356fb74284e9eb58c64bea0d0c85311061e7e39c080e370a86ef/praat_parselmouth-0.4.7-cp314-cp314-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:313710a579d47effa50652d1cb3e335d926c1c0d1cea13e62dde8041676498f0", size = 10711434, upload-time = "2025-11-27T20:03:30.22Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/fa/a9a2bb835c3c13e8212093f060831323c0cb1172223ba3af93f66212e4e0/praat_parselmouth-0.4.7-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:528cec1f4d2bbe02ed58fc6575071e9ccbf0d7ece815613c05d516e076b58a68", size = 10748994, upload-time = "2025-11-27T20:03:33.313Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/ef/399a0f8b0c64d8910dc75826ba8c5fbb9490fa4b2e0777fbda7293db55d5/praat_parselmouth-0.4.7-cp314-cp314-win32.whl", hash = "sha256:71ff8990d454d0fa164aef269d1b2acccb6778d5c26a303d7e668b053a81af56", size = 8232788, upload-time = "2025-11-27T20:03:36.432Z" },
+    { url = "https://files.pythonhosted.org/packages/38/d4/bbc8153bde9812b33714c210b41ddb50d5af56a6d155f23ee44a01724146/praat_parselmouth-0.4.7-cp314-cp314-win_amd64.whl", hash = "sha256:aa467b5839fa9dd6e1aff146a80e80e157aedc93825772dfb4258f772c062ebb", size = 9110034, upload-time = "2025-11-27T20:03:38.516Z" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4617,6 +4635,7 @@ dependencies = [
     { name = "numpy" },
     { name = "onnxruntime" },
     { name = "platformdirs" },
+    { name = "praat-parselmouth" },
     { name = "psutil" },
     { name = "pynput" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
@@ -4629,6 +4648,7 @@ dependencies = [
     { name = "sounddevice" },
     { name = "soundfile" },
     { name = "soxr" },
+    { name = "speechbrain" },
     { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version < '3.15' and sys_platform != 'linux' and sys_platform != 'win32'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32'" },
     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.15' and sys_platform != 'linux' and sys_platform != 'win32'" },
@@ -4643,11 +4663,6 @@ dependencies = [
     { name = "torchcodec", version = "0.16.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "sys_platform == 'linux'" },
     { name = "transformers" },
     { name = "vntts-artifacts", extra = ["audio"] },
-]
-
-[package.optional-dependencies]
-speaker-identity = [
-    { name = "speechbrain" },
 ]
 
 [package.dev-dependencies]
@@ -4671,6 +4686,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5,<3" },
     { name = "onnxruntime", specifier = ">=1.29,<2" },
     { name = "platformdirs", specifier = ">=4.11,<5" },
+    { name = "praat-parselmouth", specifier = "==0.4.7" },
     { name = "psutil", specifier = ">=7.2.2,<8" },
     { name = "pynput", specifier = ">=1.8.2,<2" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'", specifier = ">=12.2.2,<13" },
@@ -4683,7 +4699,7 @@ requires-dist = [
     { name = "sounddevice", specifier = ">=0.5.6,<0.6" },
     { name = "soundfile", specifier = ">=0.14,<0.15" },
     { name = "soxr", specifier = ">=1.1,<2" },
-    { name = "speechbrain", marker = "extra == 'speaker-identity'", specifier = "==1.1.1" },
+    { name = "speechbrain", specifier = "==1.1.1" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.13,<2.14", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.13,<2.14" },
@@ -4696,7 +4712,6 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.17,<6" },
     { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=146cf1fb41301f6a0733e1b6c1fbf48babcaab66" },
 ]
-provides-extras = ["speaker-identity"]
 
 [package.metadata.requires-dev]
 dev = [

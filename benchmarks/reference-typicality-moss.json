@@ -1,0 +1,284 @@
+{
+  "catalog_manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+  "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+  "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+  "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+  "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+  "profile": "stable",
+  "generation_options": {
+    "audio_temperature": 1.7,
+    "audio_top_p": 0.8,
+    "audio_top_k": 25,
+    "audio_repetition_penalty": 1.0
+  },
+  "cache_policy": "bypass",
+  "seeds": [
+    0,
+    1
+  ],
+  "texts": [
+    "The letter is still on the table. We should read it before we leave.",
+    "I thought you said it was empty. Can you hear that?"
+  ],
+  "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+  "selection": "Compare fresh, same-character, automatically eligible routed references. Hold out each listed bank. Among candidates in the highest passing catalog quality tier, select the clip with highest mean cosine to other passing originals in the selection set. Break ties in planner order.",
+  "duration_control_rule": "Within the representative bank and catalog quality tier, take a different eligible clip nearest to the representative duration, excluding baseline and representative. Break ties by SHA-256.",
+  "roles": [
+    {
+      "character": "Marcus",
+      "holdout_bank": "plotvoc_hero3065chapter6_part03.bnk",
+      "baseline": {
+        "source_line_ids": [
+          "reverse1999:100609:63"
+        ],
+        "sha256": "e74f0370d151fb54bfd9e466a889c5b0c10187bb6a58e9189395c5ec824cee06"
+      },
+      "representative": {
+        "source_line_ids": [
+          "reverse1999:100621:70"
+        ],
+        "sha256": "11ace4fb2a5449bfee4fa5925f3023d439d25f21a40972cd5bb50d749440e6e8"
+      }
+    },
+    {
+      "character": "Kakania",
+      "holdout_bank": "plotvoc_npc514501chapter6_part03.bnk",
+      "baseline": {
+        "source_line_ids": [
+          "reverse1999:100739:13"
+        ],
+        "sha256": "9d18704786e4414bdcb5af9f576a47ce1b05cb480a37e1e77563021d4679df23"
+      },
+      "representative": {
+        "source_line_ids": [
+          "reverse1999:100613:64"
+        ],
+        "sha256": "a0f0c715a57b689725c7520651215084e5fd4c670aa75fe240ddf36569070324"
+      }
+    },
+    {
+      "character": "Isolde",
+      "holdout_bank": "plotvoc_hero3081chapter6_part03.bnk",
+      "baseline": {
+        "source_line_ids": [
+          "reverse1999:100627:53"
+        ],
+        "sha256": "30acf8c3f76174293f140dda6f0d49f2d94197179128369698ab7be9e5b9af41"
+      },
+      "representative": {
+        "source_line_ids": [
+          "reverse1999:100615:9"
+        ],
+        "sha256": "c76c80a475501a8a3c61302fc631ee769e3f675c7df63aba5e1389ecfa9a12eb"
+      },
+      "duration_control": {
+        "source_line_ids": [
+          "reverse1999:100615:64"
+        ],
+        "sha256": "17718628697220e6ff6d54d19ebb06be39c6fe5cb0b58049cc12f8ca3c977a0c"
+      }
+    }
+  ],
+  "source_controls": {
+    "sources": "Use the representative originals for Marcus and Kakania. Decode mono float PCM and encode each control as PCM16 WAV.",
+    "gain": "Multiply samples by 0.5.",
+    "resampling": "Resample to 16000 Hz using soxr.",
+    "clipping": "Multiply by 8 then clip at +1/-1.",
+    "attenuated_clipping": "Multiply the clipped waveform by 0.5.",
+    "telephone": "Apply a causal sixth-order Butterworth 300-3400 Hz bandpass.",
+    "echo": "Add one copy delayed by 120 ms at gain 0.6. Scale down only if peak exceeds 0.95."
+  },
+  "listening_trials": [
+    {
+      "character": "Marcus",
+      "text_index": 0,
+      "seed": 0,
+      "original_line_ids": [
+        "reverse1999:100611:100"
+      ],
+      "original_sha256": "cc598008be30d44b134b5bed2c662cbdf5e0f30b1aabc407b06b03a529e24f91",
+      "arms": [
+        {
+          "side": "A",
+          "method": "proposed",
+          "render_sha256": "5462d6ba577a36071118c43ed663148bbc4445be605d12c00bb4d3b63f5ff5d7"
+        },
+        {
+          "side": "B",
+          "method": "baseline",
+          "render_sha256": "067fe8edecbfeefc4fbc68a9e6899c131eb6c8dbcf51ec59a7d212fd2d3b8188"
+        }
+      ],
+      "preferred_side": "B",
+      "listening_wav_sha256": "130878380a4911c9facce8ab4049c2d779b0288536e9cb6580ed700e94b5f5d0"
+    },
+    {
+      "character": "Kakania",
+      "text_index": 0,
+      "seed": 0,
+      "original_line_ids": [
+        "reverse1999:100613:77"
+      ],
+      "original_sha256": "b1374a2c056279d5501767f14a1d58409e551761ddcdcb32eb59cb0437bd28d1",
+      "arms": [
+        {
+          "side": "A",
+          "method": "baseline",
+          "render_sha256": "bfc4ba19df83a0941a99d89bb43f726aa7a4b7c499897081418878e9d4ec807e"
+        },
+        {
+          "side": "B",
+          "method": "proposed",
+          "render_sha256": "06c944de39c05d7ab37df7cd7d2cb2f153ef676c6823a3223ccdbbcbb2b42301"
+        }
+      ],
+      "preferred_side": "B",
+      "listening_wav_sha256": "63fd44d1d102f9f14fd438fb1ad5362b21d54caa23cad2f5f5fb1d85f080fdb8"
+    }
+  ],
+  "character_listening_feedback": {
+    "scope": "Subsequent overall listener assessment of the labeled baseline and representative examples. The listener did not specify a single text or seed. Exact earlier blind trials retain their original votes.",
+    "roles": {
+      "Marcus": {
+        "closer_voice": "representative"
+      },
+      "Kakania": {
+        "closer_voice": "representative"
+      },
+      "Isolde": {
+        "suitable": [],
+        "baseline": "Generated voice does not sound quite like Isolde.",
+        "representative": "Generated voice is excessively emotional, including where the text does not call for it.",
+        "hypothesis": "The conditioning clip may transfer emotional delivery into unrelated lines."
+      }
+    }
+  },
+  "isolde_delivery_followup": {
+    "selection_rule": "Catalog quality 100; >= 0.5 s of voiced frames; upper quartile of original mean peer cosine; middle half of median voiced pitch; voiced pitch and level spans both between the 10th and 50th percentiles of this character; highest peer cosine from the qualifying new clips. Held-out bank excluded.",
+    "pitch_analysis": "Praat via parselmouth 0.4.7; 10 ms step, 65-650 Hz, 10th to 90th percentile pitch in semitones and 25 ms RMS in dB on voiced frames. Ranks calculated on highest-quality selection originals with >= 50 voiced frames.",
+    "manual_control": "Manually selected an everyday conversational line among the top quartile of peer similarity as a control for the automatic prosody rule.",
+    "declarative_rule": "Apply the same acoustic constraints and exclude question marks, exclamations, ellipses and stage-direction asterisks in the source excerpt; take the highest remaining peer cosine. This is a text heuristic.",
+    "arms": {
+      "restrained": {
+        "sha256": "9d22022acace973d3ddfb6ec6476df545bd7173d491fb383a82ade09bef7185b",
+        "source_line_ids": [
+          "reverse1999:100629:13"
+        ],
+        "seconds": 7.758,
+        "source_excerpt": "Because I killed a person who shouldn't be killed? A person from the Foundation? After you befriended the young lady?"
+      },
+      "conversational": {
+        "sha256": "8658134ae7dc5e84367f36758c1f7c7439da59e60698fbe9d01f0396728d1b17",
+        "source_line_ids": [
+          "reverse1999:100614:66"
+        ],
+        "seconds": 3.575,
+        "source_excerpt": "The lady who just left? I bumped into her at the door."
+      },
+      "declarative": {
+        "sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+        "source_line_ids": [
+          "reverse1999:100739:53"
+        ],
+        "seconds": 8.71,
+        "source_excerpt": "Please accept my blessings, doctor. May your life be filled with joy and contentment, and may your courage guide you through all that comes your way."
+      }
+    },
+    "conditions": "Same Isolde held-out bank, MOSS model, texts and seeds as the original recipe.",
+    "listening_feedback": {
+      "arm": "declarative",
+      "assessment": "this is better",
+      "scope": "Overall response to the presented Isolde blessing-line examples."
+    },
+    "full_pool_comparison": {
+      "target_text": "The letter is still on the table. We should read it before we leave.",
+      "previous_declarative_sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+      "full_pool_steady_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+      "preferred": "previous_declarative",
+      "listening_feedback": "On the neutral sentence, the listener preferred the normal delivery of the blessing-line reference. The full-pool choice made Isolde sound on the verge of crying.",
+      "same_game_line_followup": {
+        "original": {
+          "sha256": "4a758031209866ea1bba27e442f5818e292ed276ce59159812eba1cc15b29563",
+          "text": "Look at me. Did I do a good job?",
+          "line_id": "reverse1999:100622:67",
+          "bank": "plotvoc_hero3081chapter6_part03.bnk",
+          "event": "play_plotvoc_chap6_hero3081_10359",
+          "media_id": 871930028,
+          "media_sha256": "4aeee91c2efa2c838f5b2188a79137f59aed32730fdce4fe02fe4815662cb50d",
+          "seconds": 2.244,
+          "observed": "Look at me! Did I do a good job?",
+          "asr_revision": "87c7102498dcde7456f24cfd30239ca606ed9063"
+        },
+        "seed": 0,
+        "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+        "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+        "profile": "stable",
+        "renders": {
+          "A": {
+            "reference_sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+            "wav_sha256": "e4d6c3e59d2a1145863c7082dc7a258fedd5ffe8283592c1b24f3cc8a9ea21c8",
+            "duration_seconds": 2.72,
+            "asr": {
+              "observed": "Look at me. Did I do a good job?",
+              "normalized_word_match": true
+            }
+          },
+          "B": {
+            "reference_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+            "wav_sha256": "6a9f4a8feaa5c744f2f921d05e0cc75c48b120f436b6103e3544ba1953ace255",
+            "duration_seconds": 2.72,
+            "asr": {
+              "observed": "Look at me. Did I do a good job?",
+              "normalized_word_match": true
+            }
+          }
+        },
+        "listener_preference": null,
+        "target_feedback": "The listener found the original game line unusual and asked for a different target. No A/B preference was given."
+      },
+      "replacement_game_line_followup": {
+        "original": {
+          "sha256": "0d6b8f757b75c3b5922ff252c4cd066fcf8ae3fd22c02c33de99d57da3d6f385",
+          "full_game_wav_sha256": "e68ddac24d8dfaf07870d2ae7f4c67a477cb541f5ad6475d2c2f374534e4666d",
+          "source_start_seconds": 1.12,
+          "source_end_seconds": 4.04,
+          "text": "People are always busy on a sunny day like this.",
+          "line_id": "playable-voice:3081:1308102:2",
+          "bank": "hero3081_mainvoc.bnk",
+          "event": "play_hero3081_mainvoc_2",
+          "media_id": 311149470,
+          "media_sha256": "093dae82cca2b16a4a8fb667cfbea8f7101acdce9476ef94904eb1f067c142d8",
+          "seconds": 2.92,
+          "observed": "People are always busy on a sunny day like this.",
+          "asr_revision": "87c7102498dcde7456f24cfd30239ca606ed9063"
+        },
+        "seed": 0,
+        "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+        "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+        "profile": "stable",
+        "renders": {
+          "A": {
+            "reference_sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9",
+            "wav_sha256": "ae136792333dc13f3e48ac1b9810553a2d0d52df9713ca53eb171c05eec6cd55",
+            "duration_seconds": 2.96,
+            "asr": {
+              "observed": "People are always busy on a sunny day like this.",
+              "normalized_word_match": true
+            }
+          },
+          "B": {
+            "reference_sha256": "e7e2967cfbd8fe553a6fd105d9acf62d10db11b71900cd00cf6d4f768e6c4d4d",
+            "wav_sha256": "5a0f4e9bedb80ae1d8dc2f8b59606d1b7f91729e7ea0e843b5a8c8faee932780",
+            "duration_seconds": 3.6,
+            "asr": {
+              "observed": "People are always busy on a sunny day like this.",
+              "normalized_word_match": true
+            }
+          }
+        },
+        "listener_preference": "A",
+        "listening_feedback": "On this game line, the listener found A much better than B and quite close to the original recording."
+      }
+    }
+  }
+}

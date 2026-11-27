@@ -50,6 +50,8 @@ required_modules = (
     "soxr",
     "torch",
     "torchaudio",
+    "speechbrain.inference.speaker",
+    "parselmouth",
 )
 
 ReportDocument: TypeAlias = dict[str, object]

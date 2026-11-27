@@ -5262,6 +5262,7 @@ class OfflineAudioPreparationDialog(QDialog):
             cancellation=self.voice_cancel_event,
             ignore_decisions=ignore_decisions,
             reference_qualifier=self._qualify_story_references,
+            progress=self.decoderProgress.emit,
         )
         record_background_operation(
             "pregeneration-voice-plan-store",

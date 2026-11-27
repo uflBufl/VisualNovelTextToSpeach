@@ -689,11 +689,15 @@ class SpeakerIdentityTest(unittest.TestCase):
                     inventory, labels, lambda payload: (1.0, 0.0), {"invalid": object()}
                 )
 
-    def test_runtime_matches_the_declared_optional_dependency(self):
+    def test_runtime_matches_the_declared_application_dependency(self):
         project = tomllib.loads(
             (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text("utf-8")
         )
-        declared = project["project"]["optional-dependencies"]["speaker-identity"]
+        declared = [
+            item
+            for item in project["project"]["dependencies"]
+            if item.startswith("speechbrain==")
+        ]
         self.assertEqual(len(declared), 1)
         package, separator, expected = declared[0].partition("==")
         self.assertEqual((package, separator), ("speechbrain", "=="))
@@ -733,6 +737,37 @@ class SpeakerIdentityTest(unittest.TestCase):
                 self.assertEqual(
                     json.loads(metadata)["implementation"]["version"], "1.0.3"
                 )
+                self.assertIn(b"automatic reference selection", notice)
+                notice_path = Path(installed["installation"], "THIRD_PARTY_NOTICES.txt")
+                self.assertIn(b"previously saved voice assignments", notice)
+                legacy_notice = (
+                    b"speechbrain/spkrec-ecapa-voxceleb at revision "
+                    b"0f99f2d0ebe89ac095bcc5903c4dd8f72b367286\n"
+                    b"Model snapshot license: Apache-2.0 "
+                    b"(https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb)\n"
+                    b"SpeechBrain 1.0.3 license: Apache-2.0 "
+                    b"(https://github.com/speechbrain/speechbrain/blob/v1.0.3/LICENSE)\n"
+                    b"This model is optional, local and diagnostic-only. It is not included in "
+                    b"game packs and cannot change voice assignments or review authority.\n"
+                )
+                notice_path.write_bytes(legacy_notice)
+                self.assertEqual(
+                    managed_speaker_identity_status(root=root / "managed")["status"],
+                    "installed",
+                )
+                self.assertEqual(
+                    install_managed_speaker_identity_model(
+                        root=root / "managed", source=source
+                    )["status"],
+                    "installed",
+                )
+                notice_path.write_bytes(legacy_notice + b"tampered")
+                self.assertEqual(
+                    managed_speaker_identity_status(root=root / "managed")["status"],
+                    "invalid",
+                )
+                notice_path.write_bytes(notice)
+
                 with patch.object(
                     speaker_identity,
                     "managed_speaker_identity_status",

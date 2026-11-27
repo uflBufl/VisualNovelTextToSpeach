@@ -91,6 +91,7 @@ def managed_model_status(
     *,
     metadata: JsonDocument,
     notice: str,
+    legacy_notices: tuple[str, ...] = (),
     error_type: type[RuntimeError] = RuntimeError,
 ) -> ManagedModelStatus:
     """Return common read-only status for one immutable model installation."""
@@ -128,7 +129,10 @@ def managed_model_status(
                         f"installation metadata is unavailable: {error}",
                     )
                 else:
-                    if actual_metadata != metadata or actual_notice != notice:
+                    if actual_metadata != metadata or actual_notice not in (
+                        notice,
+                        *legacy_notices,
+                    ):
                         status, reason = "invalid", "installation metadata changed"
                     else:
                         status = "installed"
@@ -156,6 +160,7 @@ def install_managed_model(
     *,
     metadata: JsonDocument,
     notice: str,
+    legacy_notices: tuple[str, ...] = (),
     source: PathInput | None = None,
     fetch_file: Callable[[str], PathInput],
     error_type: type[RuntimeError] = RuntimeError,
@@ -163,7 +168,12 @@ def install_managed_model(
 ) -> ManagedModelStatus:
     """Copy, verify and atomically publish one pinned local model."""
     existing = managed_model_status(
-        installation, model, metadata=metadata, notice=notice, error_type=error_type
+        installation,
+        model,
+        metadata=metadata,
+        notice=notice,
+        legacy_notices=legacy_notices,
+        error_type=error_type,
     )
     if existing["status"] == "installed":
         return existing
@@ -207,13 +217,19 @@ def install_managed_model(
                     model,
                     metadata=metadata,
                     notice=notice,
+                    legacy_notices=legacy_notices,
                     error_type=error_type,
                 )["status"]
                 != "installed"
             ):
                 raise error_type(str(error)) from error
         return managed_model_status(
-            installation, model, metadata=metadata, notice=notice, error_type=error_type
+            installation,
+            model,
+            metadata=metadata,
+            notice=notice,
+            legacy_notices=legacy_notices,
+            error_type=error_type,
         )
 
 

@@ -43,11 +43,8 @@ dependencies = [
     # "pyttsx3>=2.90",
     "vntts-artifacts[audio]",
     "durable-file",
-]
-
-[project.optional-dependencies]
-speaker-identity = [
     "speechbrain==1.1.1",
+    "praat-parselmouth==0.4.7",
 ]
 
 [project.scripts]

@@ -1,0 +1,527 @@
+{
+  "scope": "Frozen research selector on archived English source pools. Pools cover the small-catalog cohort, the fresh dual-preview cohort and the previously auditioned holdout runs for Forget Me Not, Horropedia, Vertin and Isolde. This measures selection sensitivity. Human listening is recorded separately.",
+  "method": "Hold each original fit pool, peer ranking, acoustic thresholds, fallback and tie order fixed. Transcribe every source that passes the acoustic gates, including those eliminated by game punctuation. Compare the original catalog-text decision with ASR punctuation alone, then ASR punctuation plus a material word-discrepancy veto for steady candidates. All three arms retain the same original fallback when no steady candidate qualifies. The veto was specified before examining these results.",
+  "discrepancy_rule": {
+    "minimum_token_edits": 3,
+    "minimum_edit_fraction": 0.25,
+    "unit": "Sum of maximum unequal span lengths from SequenceMatcher over normalized words, divided by the longer word count. A missing lexical transcript makes the decision uncertain."
+  },
+  "source_asr": {
+    "model_id": "openai-whisper-tiny.en",
+    "repository": "openai/whisper-tiny.en",
+    "revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+    "tree_sha256": "d69d7c69a342b4cf4274fe974559249fdb240d14813cd7d03cb9094955a7240b",
+    "input_conversion": "arithmetic channel mean; PCM16 WAV at source sample rate"
+  },
+  "replay_commands": [
+    "python -m scripts.study_reference_typicality MANIFEST CHARACTER --select [--holdout-bank BANK] > report.json",
+    "python -m scripts.study_reference_transcript_sensitivity MANIFEST report.json --transcribe-sources > cache.json",
+    "python -m scripts.study_reference_transcript_sensitivity MANIFEST report.json cache.json"
+  ],
+  "counts": {
+    "character_pools": 25,
+    "pools_with_acoustic_candidate": 11,
+    "unique_acoustic_candidates": 112,
+    "unknown_source_transcripts": 0,
+    "candidate_punctuation_eligibility_changed": 15,
+    "word_discrepancies": {
+      "lexical_match": 55,
+      "material": 7,
+      "minor_or_uncertain": 50
+    },
+    "catalog_to_asr_choice_changes": 1,
+    "additional_changes_from_veto": 2,
+    "catalog_to_combined_choice_changes": 3
+  },
+  "cases": [
+    {
+      "character": "An-an Lee",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 51,
+      "holdout_bank": null,
+      "acoustically_qualified": 1,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": true,
+      "veto_choice": {
+        "method": "typical",
+        "sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343"
+      }
+    },
+    {
+      "character": "Boy",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 5,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "9eb4d1ed50afbf1016ca1b5d4d50b9ee481ee6e795544a42d089f9f1656c9b42"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Child",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "fit_count": 9,
+      "holdout_bank": null,
+      "acoustically_qualified": 1,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "78ef8f547897e124fb6b48e8eaac935a365b06e7d201ef7528fb6ad5be2be755"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Clerk",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 3,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "ff0033387d6fce9f7627f7bae603bcd7329aa6a7c16f0849705ee6a43ffc4b55"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Communicator",
+      "manifest_sha256": "41849ca06ebae2e15f058352e4355f876b0fb5da33b17518c56889f177fded88",
+      "fit_count": 19,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "c1446d7510a492decfab101f9c6f0687c55f3a6a32d7e8ce37e2db4dd3eddf58"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Cornerstone",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 376,
+      "holdout_bank": "activityvoc_hero3140_3_8_shiji_part04.bnk",
+      "acoustically_qualified": 14,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "06c9064b6025921d2087c348715241719f4de638131198a4cb9b85806aafca79"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Elma",
+      "manifest_sha256": "85b3490e3bf51055c815ac66f16fd33fda0ccc18ba906147d248f51bc88ea7d8",
+      "fit_count": 2,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "baseline",
+        "sha256": "372350eb9bd804e630e0f089df3728a1b78ff088dad5ca1aad230314f7bfd7ec"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Eudora",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "fit_count": 4,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "6a1638fd638d3618708af7f0e10500e9a210d9120ee70be7a7085455c82b00f9"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Eurus",
+      "manifest_sha256": "c54ceb6c828c5c423e7869b778c0336e8d608d00278fa9e931ed6b8f8a56dcda",
+      "fit_count": 5,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "199e52c12fb2adec1deaf4a09a346d0ab024ebb0c066dd27a313bc186d3aef7a"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Everecho",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 77,
+      "holdout_bank": "activityvoc_hero3145_3_8_shiji_part03.bnk",
+      "acoustically_qualified": 2,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "a683ad3925989a3e38c343083c1d824683004dacef90e34b2f4979ded3ec0440"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": true,
+      "veto_choice": {
+        "method": "typical",
+        "sha256": "ed132282fe1a99b7276bbeb81b158005d94bb92e9559b2fd2a60fafd2c97f659"
+      }
+    },
+    {
+      "character": "Forget Me Not",
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 147,
+      "holdout_bank": "plotvoc_hero3008chapter2_part02.bnk",
+      "acoustically_qualified": 5,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "8608338e325a90eb27a06963e2c82600e1bedf5c39e51fd39bf53d08a3bd3a86"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Foundation Staff Member I",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 18,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "b493f70ea219a64908b8097872e5c7baa10a391c1049b81f938fa236ea89f163"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Foundation Staff Member II",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 16,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "4edece18db84e0bf8b05f806642f43a5a6460574a51faccbbd8cda481a2cb0ac"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Hedone",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 231,
+      "holdout_bank": "activityvoc_hero3156_3_9_chongran_part02.bnk",
+      "acoustically_qualified": 14,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "9d630d96ea76f1a5c1536f9f7ac8eaad1580d72d0816a12bd38e5bb2fb9a79a8"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Honza",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 44,
+      "holdout_bank": null,
+      "acoustically_qualified": 2,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e"
+      },
+      "asr_changed": true,
+      "veto_changed_from_asr": false,
+      "asr_choice": {
+        "method": "steady",
+        "sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2"
+      }
+    },
+    {
+      "character": "Horropedia",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 178,
+      "holdout_bank": "activityvoc_hero3061lvhu1_2_part04.bnk",
+      "acoustically_qualified": 8,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "73a6a1a9e614dbf672371aa21a8e7c37b56e4713f4a3ef547744f5adb47f6a72"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Isolde",
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 188,
+      "holdout_bank": "plotvoc_hero3081chapter6_part03.bnk",
+      "acoustically_qualified": 5,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "d92c6d8e87feaa99d08392fbbc0de0c448d6eadda7f01df75c6008a55de380f9"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Poet",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 3,
+      "holdout_bank": null,
+      "acoustically_qualified": 1,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "7ccd769a4e25f159bcb69ad3845800356eca1fdcb07a8b8bf6f5863936ffb291"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Puppeteer",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 3,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "66ce0615259918ca9712a52fab710affc7b2766ac1f6012b7fcdc22e96668bbc"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Radio",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 12,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "256fb2fa6454dbb0b018df2b7722b54dba5e21c193240aa7e761b160f66431d1"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Tourist",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 5,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "43540167bc8b7d0b254a66fb64df9d42423df28567d87157b8377fa308e3c6e3"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Tribespeople",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 1,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "baseline",
+        "sha256": "d6aae6e5107567314de5a6e9b17dc614396ce003486e3ba72b8242f3d8d2cfa3"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Vertin",
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 2270,
+      "holdout_bank": "plotvoc_hero5043chapter2_part02.bnk",
+      "acoustically_qualified": 59,
+      "catalog_choice": {
+        "method": "steady",
+        "sha256": "2ed8a777279978a016cba9369a50e7d0cbe222ecb0ff730a927a0bb9f82b863f"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Volcano",
+      "manifest_sha256": "5e59986e0f3f1cf71b5a20f9c437fd6c3c9df1704411441f0277316a5048f9ef",
+      "fit_count": 9,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "typical",
+        "sha256": "b6ca767cbd608309e39ceef244a75e999db826c377abc79829c4af13a9236014"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    },
+    {
+      "character": "Zuzanna",
+      "manifest_sha256": "0151e43c5a570c26d92fcc73dd27a8577b0bd7ceea62bb13aae83b0af7024700",
+      "fit_count": 1,
+      "holdout_bank": null,
+      "acoustically_qualified": 0,
+      "catalog_choice": {
+        "method": "baseline",
+        "sha256": "51ceafef893f5f65902b621ac2005970f28013a0b13970ce2b54627174be7981"
+      },
+      "asr_changed": false,
+      "veto_changed_from_asr": false
+    }
+  ],
+  "changed_sources": {
+    "An-an Lee": [
+      {
+        "sha256": "f4046d9ff3eb8d0f0d4e891b7522c3c69f25e709da9c5a698a7fb13c3deef58b",
+        "line_ids": [
+          "reverse1999:202530:23"
+        ],
+        "catalog": "One second, Uncle Zhōu. Lily's working on it.",
+        "asr": "One second, and go down. Lee Lee's working on it."
+      },
+      {
+        "sha256": "dccedf9c6325ee05eb1d9d2b04a5757735c01f3be2db389e0fa7cb5a69eef343",
+        "line_ids": [
+          "reverse1999:202527:44"
+        ],
+        "catalog": "Uncle Zhōu might be a little stubborn, but, you know gah-lah, that's just what he's like. Don't take it personally.",
+        "asr": "Uncle Joe might be a little stubborn, but you know Gala, that's just what he's like. Don't take it personally."
+      }
+    ],
+    "Everecho": [
+      {
+        "sha256": "a683ad3925989a3e38c343083c1d824683004dacef90e34b2f4979ded3ec0440",
+        "line_ids": [
+          "reverse1999:314511:30"
+        ],
+        "catalog": "I can't go with you. Someone has to stay behind to speak for the others.",
+        "asr": "Someone needs to stay here."
+      },
+      {
+        "sha256": "ed132282fe1a99b7276bbeb81b158005d94bb92e9559b2fd2a60fafd2c97f659",
+        "line_ids": [
+          "reverse1999:203814:4"
+        ],
+        "catalog": "You should not have come here.",
+        "asr": "You should not have come here."
+      }
+    ],
+    "Honza": [
+      {
+        "sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "line_ids": [
+          "reverse1999:203826:49"
+        ],
+        "catalog": "I kicked tomorrow yesterday, upsy-down and oopsy-ways. And when I came upon it today, dead-■■ing on the ground it stayed!",
+        "asr": "I can't tomorrow yesterday, I'll see you down in oopsie ways, and when I keep upon it today, then dine on the granted stay."
+      },
+      {
+        "sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2",
+        "line_ids": [
+          "reverse1999:203803:44"
+        ],
+        "catalog": "One, two, three, shadows slip into the mortuary!",
+        "asr": "One, two, three, shadow slip into the mortuary."
+      }
+    ]
+  },
+  "listening": {
+    "Everecho": "On repeat listening, the listener preferred Steady. It sounded slow but closer to the original voice. Its source-caption mismatch remains audible. The word-discrepancy veto switches away from the preferred recording.",
+    "An-an Lee": "Typical was preferred again. Several words around proper names differ in the automatic transcript of the Steady reference, so this preference does not establish a caption error.",
+    "Honza": "Typical was preferred over the counting-line reference promoted by Whisper punctuation. The listener heard intermittent voice breaks and suggested the childlike voice as a possible explanation. The cause was not tested."
+  },
+  "honza_synthesis": {
+    "model_id": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "seeds": [
+      0,
+      1
+    ],
+    "language": "English",
+    "backend_source_sha256": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163",
+    "guard_source_sha256": "31e16d459c0467d3ee1b4c6660865523411ea2229dcee32185f7a2d405dd9aad",
+    "renderer_sha256": "6d98cac007c67f57fe7a4f859508026d865dfa5feebd4f00e26c9f682160c749",
+    "texts": [
+      "The letter is still on the table. We should read it before we leave.",
+      "I thought you said it was empty. Can you hear that?"
+    ],
+    "renders": [
+      {
+        "ref_sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "57aff7998b7c05dd85d54f8d31ed43091d7942aea0cc5135cf7999b4df5a8ae9",
+        "seconds": 4.0,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "46d331215e42a31a7ac380d6f52a13e7f75978899acab24cc520b44ae4fda33d",
+        "seconds": 4.08,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "3f892db77f65aa778eb771863e970c20a3b13e2252ab7d5424bb7428c00047da",
+        "seconds": 2.96,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "1caa4e94a40b1a4724c968740013d9742212ee6b7a1fb8eb370684407b8af71e",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "bdfbb877d55eea2947eb36a75ec0dbe51a68d6ca365f5df5f899dc3e3c0032ba",
+        "seconds": 3.12,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2",
+        "text_index": 0,
+        "seed": 0,
+        "sha256": "813f9ea907a3c07e1baca4bb3f12431e88d0e29d47c07ec0c1ff55b1476e39ac",
+        "seconds": 4.24,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2",
+        "text_index": 0,
+        "seed": 1,
+        "sha256": "89a0ad964de45f7a4e2878dd3da18e9a1d2754cb2c9c196884fd398fb37396cf",
+        "seconds": 4.88,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2",
+        "text_index": 1,
+        "seed": 0,
+        "sha256": "6ea1f59e5d8ea63dca2a1272ccb88d2f2925bd00142b52f2220e61be03538ff4",
+        "seconds": 2.96,
+        "asr_exact": true
+      },
+      {
+        "ref_sha256": "43de9a91db0b921a5dbba5014f63cacc70e233d3941a36f6b4fcc899b31a5af2",
+        "text_index": 1,
+        "seed": 1,
+        "sha256": "df0e290866ab17605358c40813a8fc1962bb5005e3ae69340199b0802edc0c0a",
+        "seconds": 3.6,
+        "asr_exact": true
+      }
+    ]
+  }
+}

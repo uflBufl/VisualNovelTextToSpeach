@@ -430,13 +430,13 @@ def make_speechbrain_embedder(
 
 
 def require_speechbrain_runtime(*, device: str = "cpu") -> None:
-    """Fail before a model download when the exact optional runtime is unavailable."""
+    """Fail before a model download when the exact runtime is unavailable."""
     if device != "cpu":
         raise SpeakerIdentityError("Speaker-identity diagnostics currently require CPU")
     if find_spec("speechbrain") is None:
         raise SpeakerIdentityError(
-            "Speaker-identity runtime is unavailable. Run "
-            "'uv sync --extra speaker-identity'."
+            "Speaker-identity runtime is unavailable. "
+            "Repair the application installation and retry."
         )
     if version("speechbrain") != RUNTIME_VERSION:
         raise SpeakerIdentityError(f"SpeechBrain {RUNTIME_VERSION} is required")

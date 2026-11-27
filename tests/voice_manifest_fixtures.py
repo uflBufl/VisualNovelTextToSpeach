@@ -190,7 +190,12 @@ def write_player_candidate_manifest(
             audio.setnchannels(1)
             audio.setsampwidth(2)
             audio.setframerate(16_000)
-            audio.writeframes((index * 100).to_bytes(2, "little", signed=True) * 1_600)
+            amplitude = 1_000 + index * 100
+            cycle = (
+                amplitude.to_bytes(2, "little", signed=True) * 40
+                + (-amplitude).to_bytes(2, "little", signed=True) * 40
+            )
+            audio.writeframes(cycle * ((3 + index) * 200))
         variant_id = str(index) * 64
         voice_character = f"Player candidate Rhiannon {index}"
         voices.append(

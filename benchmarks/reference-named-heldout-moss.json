@@ -1,0 +1,327 @@
+{
+  "scope": "New named English game characters with distinct hero IDs and dedicated audio banks. One reference per character was selected and removed before both methods. Speaker corroboration uses named game routes and dedicated hero banks. Only differing choices were rendered. The anchor was not used for scoring or app qualification.",
+  "text": "The letter is still on the table. We should read it before we leave.",
+  "selection": "Frozen steady delivery rule, then typical fallback. Compare against the fresh app planner after its regular bounded preview content qualification.",
+  "roles": {
+    "Bkornblume": {
+      "hero_id": "3020",
+      "source_manifest_sha256": "abcdd41e306551afd62abbce854707a20c44d69333339fbdd46403b916a43356",
+      "fit_manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "eligible_after_holdout": 101,
+      "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+      "selection_method": "steady",
+      "same_choice": false,
+      "anchor": {
+        "sha256": "5c8153f3446895b92620f0ad23f027d549868e793337461f39980e6c4f6285f8",
+        "bank": "mianvoc_hero3020.bnk",
+        "portrait": null,
+        "line_ids": [
+          "playable-voice:3020:1302005:5"
+        ],
+        "event_ids": [
+          3276705853
+        ],
+        "caption": "I'm not good at dealing with visitors ... It reminds me of something bad.",
+        "seconds": 4.79,
+        "game_source": {
+          "bank_sha256": "e2294486cedb61221e23ade7243947fd950c267832faaa623f0d55cbba948b13",
+          "media_id": 568309258,
+          "media_sha256": "c79b7742e124626e2a29ac04c41e113033cb42d6dc8638108ab90e725c64f0f4",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "I'm not good at dealing with visitors. It reminds me of something bad.",
+          "normalized_words_match": true
+        }
+      },
+      "current": {
+        "sha256": "9122db40f4f882493782d07d164f4f0a6f4aa45a01dae13c372fe06ce354f981",
+        "bank": "activityvoc_hero3020_3_8_shiji_part01.bnk",
+        "portrait": null,
+        "line_ids": [
+          "reverse1999:203805:48"
+        ],
+        "event_ids": [
+          2662175884
+        ],
+        "caption": "They might have some idea what this place is and why it was immune.",
+        "seconds": 3.977,
+        "generation_sha256": "5dc3d4039f6b1d0d831f8c5a55e0cce036913bae3e73c740b0e4911f412beb9d",
+        "generation_seconds": 3.92,
+        "game_source": {
+          "bank_sha256": "1b0c663469cf31eaa40cfb8065919a68976c3141efb015070032c27ec5a5013d",
+          "media_id": 58685795,
+          "media_sha256": "73f7db6e193c5f923c96a8c875f3437c28e8d23529cd9cb16b4e226548973f77",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "They might have some idea what this place is, and why it was immune.",
+          "normalized_words_match": true
+        },
+        "generation_asr": {
+          "observed": "The latter is still on the table, we should read it before we leave.",
+          "normalized_words_match": false
+        }
+      },
+      "proposal": {
+        "sha256": "e012bc7e086ef86afb04ed1d0fa2cc781d4ef1a3ef237c367ab390072c863feb",
+        "bank": "activityvoc_hero3020_3_8_shiji_part01.bnk",
+        "portrait": null,
+        "line_ids": [
+          "reverse1999:203811:25"
+        ],
+        "event_ids": [
+          317770954
+        ],
+        "caption": "They're struggling. Maybe they've made things harder for you, but they're not your enemy. You should spend more time with them, like you did with me all those years ago.",
+        "seconds": 9.567,
+        "generation_sha256": "698ff081c40902379486acff88e83c4f0e86c6bedb3ade94c32dd9001739b83b",
+        "generation_seconds": 3.6,
+        "game_source": {
+          "bank_sha256": "1b0c663469cf31eaa40cfb8065919a68976c3141efb015070032c27ec5a5013d",
+          "media_id": 86480002,
+          "media_sha256": "93fe4398572f8635b9f9c6a328fe9fe4f51717ab6deeb5e2b7a5680d81a79c4a",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "they're struggling. Maybe they've made things harder for you, but they're not your enemy. You should spend more time with them, like you did with me all those years ago.",
+          "normalized_words_match": true
+        },
+        "generation_asr": {
+          "observed": "The letter is still on the table. We should read it before we leave.",
+          "normalized_words_match": true
+        }
+      },
+      "method_for_A_and_B": [
+        "proposal",
+        "current"
+      ],
+      "app_qualification": {
+        "story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+        "group_id": "7939ab0f59927851e1c9c3ca77cb051015082f6dedab73c2a37a2f891e3fba60",
+        "portrait": null,
+        "settings": {
+          "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+          "language": "English",
+          "profile": "stable",
+          "seed": 0,
+          "text": "The storm has passed. We can continue our journey."
+        },
+        "fresh_shortlist": [
+          {
+            "source_id": "character:playercandidatebkornblume7489f25b7f98",
+            "sha256": "9122db40f4f882493782d07d164f4f0a6f4aa45a01dae13c372fe06ce354f981",
+            "bank": "activityvoc_hero3020_3_8_shiji_part01.bnk",
+            "preview_audio_sha256": "568f72689664e5b6ae64ccaaaff3c62db793645f709866b18dfc5611cd7183c8",
+            "content_status": "no_asr_mismatch"
+          },
+          {
+            "source_id": "character:playercandidatebkornblume7e80bde37dcf",
+            "sha256": "7228815fa2a54840a7b0b6a4c530b7a56ffe4a7c993e460dccbe6ce1ad683b9a",
+            "bank": "activityvoc_hero3020_3_8_shiji_part02.bnk",
+            "preview_audio_sha256": "73183f7556d25e8ce8734a4004191ed4f00c2ae6d172dec3f3e24805f2fdabdc",
+            "content_status": "uncertain_recognition"
+          },
+          {
+            "source_id": "character:playercandidatebkornblume547e3a19aa44",
+            "sha256": "4e99edd9bb7230af4f6cd60015cb4fe1c0eb5f356c5f05842d21b6c0d37d8198",
+            "bank": "mianvoc_hero3020.bnk",
+            "preview_audio_sha256": "f7e5e9e6bf8bd83dc87ac2723e9fa9651a1348448c32bcb3f72c3666eac171bd",
+            "content_status": "no_asr_mismatch"
+          }
+        ],
+        "selected_source_id": "character:playercandidatebkornblume7489f25b7f98"
+      },
+      "listener_preference": "tie",
+      "source_report_sha256": "93f056fe841b2ca1fa4d143eed8dbfdf6c741d8117cfe363f6a7492f93dd5a25",
+      "app_story": "reverse1999:anecdote:hero-story:32:stage:302001",
+      "listening_feedback": "Both generations sounded good. The listener could not choose between them."
+    },
+    "Blonney": {
+      "hero_id": "3060",
+      "source_manifest_sha256": "abcdd41e306551afd62abbce854707a20c44d69333339fbdd46403b916a43356",
+      "fit_manifest_sha256": "e54b5b51f30009dd0c66e3382b8b4ffff8a1d3c03d20fb373d817a773e921528",
+      "eligible_after_holdout": 196,
+      "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+      "selection_method": "steady",
+      "same_choice": false,
+      "anchor": {
+        "sha256": "43ee78c2753f0485e7cd600e3454134b5303b8a400ca9b51001b019a8eecff3f",
+        "bank": "mianvoc_hero3060.bnk",
+        "portrait": null,
+        "line_ids": [
+          "playable-voice:3060:1306004:4"
+        ],
+        "event_ids": [
+          986846136
+        ],
+        "caption": "Where's the lie? The party was very successful, even the host has sneaked away.",
+        "seconds": 4.86,
+        "game_source": {
+          "bank_sha256": "f12c3208a2c0b262efa8333dda2ac8016846c65cf90c031e06ad9f5ce7ebffb8",
+          "media_id": 456514907,
+          "media_sha256": "db993781f75491c522bb72c7c3ba5bf1501dfc770e18d75f9fb99969f2413149",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "Where's the lie? The party was very successful, even the host has sneaked away.",
+          "normalized_words_match": true
+        }
+      },
+      "current": {
+        "sha256": "fa7263a3952e8b227de6c9ee264f9db02797d67fb2002aefab63c088d2868df2",
+        "bank": "activityvoc_hero3060lvhu1_2_part03.bnk",
+        "portrait": "300101.png",
+        "line_ids": [
+          "reverse1999:200217:24"
+        ],
+        "event_ids": [
+          3088958479
+        ],
+        "caption": "Does he always vex people like this? Or, is he just being annoying here?",
+        "seconds": 3.99,
+        "generation_sha256": "b875e2b7a67f1fb766d914b6019d94a90a4a82a79328a6722e2be8df7a3efef8",
+        "generation_seconds": 3.44,
+        "game_source": {
+          "bank_sha256": "4e8f43239630a50add299483076656d2e46eb4be235d1103bd66326e6a2d4937",
+          "media_id": 97953660,
+          "media_sha256": "98f4ec38ffcb6c950726cc36c565cb28ceec03865dc10069e95e0db14de08dbd",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "Does he always vex people like this? Or is he just being annoying here?",
+          "normalized_words_match": true
+        },
+        "generation_asr": {
+          "observed": "The letter is still on the table. We should read it before we leave.",
+          "normalized_words_match": true
+        }
+      },
+      "proposal": {
+        "sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+        "bank": "activityvoc_hero3060lvhu1_2_part03.bnk",
+        "portrait": null,
+        "line_ids": [
+          "reverse1999:200214:7"
+        ],
+        "event_ids": [
+          1723452411
+        ],
+        "caption": "No one is more suitable for this role than you. This is your part.",
+        "seconds": 3.66,
+        "generation_sha256": "e49493982cc09ad89c5de107c2f3ad101e4bf38b051f5000cd11a407e92d315e",
+        "generation_seconds": 3.44,
+        "game_source": {
+          "bank_sha256": "4e8f43239630a50add299483076656d2e46eb4be235d1103bd66326e6a2d4937",
+          "media_id": 742816164,
+          "media_sha256": "8edb6cfe192179caa4721b34b43ec50ba80069a002e0fc9b0b490c8a05f4ea6a",
+          "identity_evidence": "Named English speaker and voice route to dedicated hero bank.",
+          "reported_speaker_conflict": false
+        },
+        "source_asr": {
+          "observed": "No one is more suitable for this role than you. This is your part.",
+          "normalized_words_match": true
+        },
+        "generation_asr": {
+          "observed": "The letter is still on the table. We should read it before we leave.",
+          "normalized_words_match": true
+        }
+      },
+      "method_for_A_and_B": [
+        "current",
+        "proposal"
+      ],
+      "app_qualification": {
+        "story_index_sha256": "d3db0ca5008d09c727995f10faed77dfd7f85a05be287dc8fc7074d6f396e3d0",
+        "group_id": "8a6695cab157b17d264f12fca1ca4981b4b0cba2e8f9bf53cac9dcd84efc82b3",
+        "portrait": "306001.png",
+        "settings": {
+          "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+          "language": "English",
+          "profile": "stable",
+          "seed": 0,
+          "text": "The storm has passed. We can continue our journey."
+        },
+        "fresh_shortlist": [
+          {
+            "source_id": "character:playercandidateblonney31e910138fe2",
+            "sha256": "fa7263a3952e8b227de6c9ee264f9db02797d67fb2002aefab63c088d2868df2",
+            "bank": "activityvoc_hero3060lvhu1_2_part03.bnk",
+            "preview_audio_sha256": "303554c2c57a0deba75fc4ee8762701b55638ac78b39f74a3cb4ac61d68893f3",
+            "content_status": "no_asr_mismatch"
+          },
+          {
+            "source_id": "character:playercandidateblonneya10d6bdbd70a",
+            "sha256": "72b3142a2c4b5bef401a40a1c250f32c26c69900f3244b49f5e6e7c0c9c62a0e",
+            "bank": "activityvoc_hero3060lvhu1_2_part02.bnk",
+            "preview_audio_sha256": "c6272a21606c1fb9aa1ee1ca5dec243c9f634a011e951eee9f04f6c920e81ee7",
+            "content_status": "no_asr_mismatch"
+          },
+          {
+            "source_id": "character:playercandidateblonney1ed9d4fbadec",
+            "sha256": "8ba138b18abfcb37e6005f1f4e932c03e1a1c0b8d7162ddde0863a4f5590d1b0",
+            "bank": "mianvoc_hero3060.bnk",
+            "preview_audio_sha256": "15aa9d20cf6f7a857d1aee9a58693de996aeea1e2357483d338df50226733709",
+            "content_status": "no_asr_mismatch"
+          }
+        ],
+        "selected_source_id": "character:playercandidateblonney31e910138fe2"
+      },
+      "listener_preference": "B",
+      "source_report_sha256": "93f056fe841b2ca1fa4d143eed8dbfdf6c741d8117cfe363f6a7492f93dd5a25",
+      "app_story": "reverse1999:anecdote:1915:stage:306001",
+      "listening_feedback": "The listener preferred B (Steady) over A (current app) but felt B still sounded off. They did not identify which aspect of the voice or delivery was responsible.",
+      "same_line_followup": {
+        "text": "Where's the lie? The party was very successful, even the host has sneaked away.",
+        "original_game_wav_sha256": "43ee78c2753f0485e7cd600e3454134b5303b8a400ca9b51001b019a8eecff3f",
+        "seed": 0,
+        "conditions": "Same conditioning recordings, renderer, model, codec and options as the neutral comparison. Only the generated text changed to the independently held-out original transcript. The original game audio was used only for listening.",
+        "renders": {
+          "A": {
+            "method": "current",
+            "conditioning_sha256": "fa7263a3952e8b227de6c9ee264f9db02797d67fb2002aefab63c088d2868df2",
+            "wav_sha256": "84ebcc2a901ed336e22940d7b956313e2e9b07a95da6516321cd91801c2f90fa",
+            "duration_seconds": 7.04
+          },
+          "B": {
+            "method": "proposal",
+            "conditioning_sha256": "8f46a999e837df4c73c6a9e97a691e4b41781660a3e729798ee8d3dd63ce6a51",
+            "wav_sha256": "1eb10818a45e69bd18ec43a3bd43cb74a001176a480e9f20a38a2c3590b996ae",
+            "duration_seconds": 4.88
+          }
+        },
+        "listener_preference": "B",
+        "listening_feedback": "On the original game line, B (Steady) sounded good enough to the listener and had better pacing than A. The listener was unsure there was room for improvement."
+      }
+    }
+  },
+  "generation": {
+    "model_id": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+    "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+    "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+    "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+    "generation_profile": "stable",
+    "generation_options": {
+      "audio_temperature": 1.7,
+      "audio_top_p": 0.8,
+      "audio_top_k": 25,
+      "audio_repetition_penalty": 1.0
+    },
+    "seeds": [
+      0
+    ],
+    "language": "English",
+    "backend_source_sha256": "f64c07785b0e7de558f7f9076d841387857dc9231ee7de86b07ef50b02b65163",
+    "guard_source_sha256": "31e16d459c0467d3ee1b4c6660865523411ea2229dcee32185f7a2d405dd9aad"
+  },
+  "anchor_policy": "One named playable voice recording per role was fixed before selection; remove every variant of that exact WAV SHA-256 before both selectors. Preserve all other admitted source variants. Anchors chosen by source identity and English text, without embedding, pitch, planner or synthesis results.",
+  "asr_model_revision": "87c7102498dcde7456f24cfd30239ca606ed9063",
+  "review_protocol": "Listen to the held-out original first. Compare blind A/B for speaker similarity and natural delivery on one neutral line at seed 0. Record a tie or neither where appropriate. If ambiguous, compare a second text or seed before drawing conclusions.",
+  "app_control": "Fresh automatic voice plan on the anchor-excluded catalog; all three candidates per character completed normal seed-0 preview content qualification. Replay with the application runtime reproduced the same selections.",
+  "identity_note": "English game records name the character as speaker and voice owner and link each source event to their hero bank. For Blonney, the app-selected story line displays a different portrait from the target group; both game voice fields and the dedicated bank still identify Blonney. There is no independent performer credit for these individual clips."
+}

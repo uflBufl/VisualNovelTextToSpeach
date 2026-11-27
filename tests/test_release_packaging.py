@@ -18,6 +18,26 @@ dependency_collection_spec.loader.exec_module(dependency_collection)
 
 
 class ReleasePackagingTest(unittest.TestCase):
+    def test_reference_runtime_metadata_is_required_in_a_bundle(self):
+        def metadata(distribution):
+            if distribution == "speechbrain":
+                raise RuntimeError("missing runtime metadata")
+            return []
+
+        with (
+            patch.object(dependency_collection, "collect_data_files", return_value=[]),
+            patch.object(
+                dependency_collection, "collect_all", return_value=([], [], [])
+            ),
+            patch.object(
+                dependency_collection,
+                "copy_metadata",
+                side_effect=metadata,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing runtime metadata"):
+                dependency_collection.collect_packaged_dependencies([], [], [])
+
     def test_bundled_x11_worker_dispatches_before_desktop_imports(self):
         worker = ModuleType("vntts.x11_capture_worker")
         worker.main = Mock(return_value=0)
@@ -38,10 +58,13 @@ class ReleasePackagingTest(unittest.TestCase):
                 raise RuntimeError("metadata unavailable")
             return [(f"{distribution}-metadata", "metadata")]
 
-        packages = "r1999extractor TTS coqpit gruut ko_speech_tools trainer rapidocr rapidfuzz onnxruntime".split()
+        packages = (
+            "r1999extractor TTS coqpit gruut ko_speech_tools trainer rapidocr "
+            "rapidfuzz onnxruntime speechbrain hyperpyyaml parselmouth"
+        ).split()
         distributions = (
             "coqui-tts coqpit gruut ko-speech-tools torch torchaudio torchcodec "
-            "trainer transformers reverse1999-extractor"
+            "trainer transformers reverse1999-extractor speechbrain praat-parselmouth"
         ).split()
         datas, binaries, hidden_imports = [], [], []
         with (

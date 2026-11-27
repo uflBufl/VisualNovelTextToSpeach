@@ -7,6 +7,7 @@ import io
 import wave
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
@@ -89,6 +90,15 @@ from vntts.voices import (
 )
 
 JsonObject: TypeAlias = dict[str, object]
+
+
+class ReferenceRanking(NamedTuple):
+    preferred: str | None
+    typical: str | None
+    excluded: frozenset[str] = frozenset()
+
+
+ReferenceSelector: TypeAlias = Callable[[str], ReferenceRanking]
 
 
 class VariantEvidence(NamedTuple):
@@ -562,6 +572,32 @@ def _voice_library_selection(
     )
 
 
+@dataclass(frozen=True)
+class ReferenceTrial:
+    """Precomputed research choices, bound to the exact input voice catalog."""
+
+    manifest_sha256: str
+    selections: Mapping[str, str]
+    typical_selections: Mapping[str, str] = dataclass_field(default_factory=dict)
+
+    def choices_for(self, character: str) -> ReferenceRanking:
+        key = normalize_character_name(character)
+
+        def lookup(choices: Mapping[str, str]) -> str | None:
+            return next(
+                (
+                    value
+                    for name, value in choices.items()
+                    if normalize_character_name(name) == key
+                ),
+                None,
+            )
+
+        return ReferenceRanking(
+            lookup(self.selections), lookup(self.typical_selections)
+        )
+
+
 class VoicePlanStore:
     def __init__(
         self,
@@ -587,6 +623,8 @@ class VoicePlanStore:
         cancellation: Cancellation | None = None,
         ignore_decisions: bool = False,
         reference_qualifier: Callable[[VoicePlan], Mapping[str, str]] | None = None,
+        reference_trial: ReferenceTrial | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> VoicePlan:
         operation_token = performance_operation_id.set(uuid4().hex)
         started, cpu_started = perf_counter(), process_time()
@@ -605,6 +643,8 @@ class VoicePlanStore:
                 ignore_decisions=ignore_decisions,
                 rollback=rollback,
                 reference_qualifier=reference_qualifier,
+                reference_trial=reference_trial,
+                progress=progress,
             )
             outcome = "complete"
             return plan
@@ -655,6 +695,8 @@ class VoicePlanStore:
         ignore_decisions: bool = False,
         rollback: VoiceBindingRollback | None = None,
         reference_qualifier: Callable[[VoicePlan], Mapping[str, str]] | None = None,
+        reference_trial: ReferenceTrial | None = None,
+        progress: Callable[[str], None] | None = None,
     ) -> VoicePlan:
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -684,6 +726,20 @@ class VoicePlanStore:
         phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
+        if reference_trial is not None and (
+            reference_trial.manifest_sha256 != manifest_sha256
+            or not all(
+                isinstance(character, str) and character.strip() and is_sha256(checksum)
+                for choices in (
+                    reference_trial.selections,
+                    reference_trial.typical_selections,
+                )
+                for character, checksum in choices.items()
+            )
+        ):
+            raise PregenerationVoiceError(
+                "Reference trial does not match the voice catalog"
+            )
         registry, library_snapshot = self._prepared_voice_library(
             registry,
             records.values(),
@@ -704,6 +760,24 @@ class VoicePlanStore:
             speech_backend=settings.speech_backend,
             reference_facts=reference_facts,
         )
+        reference_selector: ReferenceSelector | None = None
+        if reference_trial is not None and settings.speech_backend == "moss-tts":
+            reference_selector = reference_trial.choices_for
+        elif (
+            manifest_path is not None
+            and manifest_sha256 is not None
+            and PLAYER_VOICE_CANDIDATES_FIELD in manifest_document
+            and not _public_pocket_mode(settings)
+        ):
+            from vntts.reference_selection import make_reference_selector
+
+            reference_selector = make_reference_selector(
+                manifest_path,
+                speech_backend=settings.speech_backend,
+                expected_manifest_sha256=manifest_sha256,
+                progress=progress,
+                check_cancelled=lambda: _raise_if_cancelled(cancellation),
+            )
         if self.voice_library is not None:
             manifest_path = _materialize_voice_catalog(
                 self.job_store,
@@ -762,6 +836,7 @@ class VoicePlanStore:
             reference_files,
             reference_bytes,
             reference_facts,
+            reference_selector,
         )
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -823,6 +898,7 @@ class VoicePlanStore:
         reference_files: int,
         reference_bytes: int,
         reference_facts: _VoiceReferenceFacts,
+        reference_selector: ReferenceSelector | None,
     ) -> tuple[list[VoiceGroup], CharacterVoiceRegistry, dict[str, str]]:
         phase_started, cpu_started = perf_counter(), process_time()
         person_aliases = (
@@ -859,6 +935,7 @@ class VoicePlanStore:
                     library_snapshot,
                     cancellation,
                     reference_facts,
+                    reference_selector,
                 )
             )
         if self.voice_library is not None:
@@ -1140,6 +1217,7 @@ class VoicePlanStore:
         library_snapshot: VoiceLibraryReadSnapshot | None,
         cancellation: Cancellation | None,
         reference_facts: _VoiceReferenceFacts,
+        reference_selector: ReferenceSelector | None = None,
     ) -> VoiceGroup:
         records = tuple(value.record for value in values)
         character = values[0].character
@@ -1299,6 +1377,24 @@ class VoicePlanStore:
             )
             if previous_choice is not None:
                 prior_source, decision_context_sha256 = previous_choice
+        if (
+            reference_selector is not None
+            and any(c.candidate_origin == STORY_LINE_ROUTE for c in eligible_candidates)
+            and prior_source is None
+            and assignment_source is None
+            and bound_source is None
+            and not is_narrator(character)
+        ):
+            ranking = reference_selector(character)
+            eligible_candidates = _eligible_candidates(
+                tuple(
+                    candidate
+                    for candidate in candidate_inventory
+                    if ranking.excluded.isdisjoint(candidate.reference_sha256s)
+                ),
+                preferred_reference_sha256=ranking.preferred,
+                typical_reference_sha256=ranking.typical,
+            )
         if prior_source is not None:
             if prior_source == default_voice_choice_id:
                 selected = (
@@ -1688,7 +1784,7 @@ def _candidate_inventory(
 ) -> tuple[VoiceCandidate, ...]:
     assignment = assignment_source
     candidates: dict[str, VoiceCandidate] = {}
-    candidate_ranks: dict[str, tuple[float, float]] = {}
+    candidate_quality: dict[str, int] = {}
     target = normalize_character_name(character)
     linked_targets = {
         target,
@@ -1737,18 +1833,10 @@ def _candidate_inventory(
         )
         previous = candidates.get(source_id)
         quality = variant.get("quality_score")
-        duration = variant.get("duration_seconds")
-        rank = (
-            -(
-                quality
-                if isinstance(quality, int) and not isinstance(quality, bool)
-                else -1
-            ),
-            (
-                abs(float(duration) - 4.0)
-                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
-                else float("inf")
-            ),
+        quality_score = (
+            quality
+            if isinstance(quality, int) and not isinstance(quality, bool)
+            else -1
         )
         duplicate = next(
             (
@@ -1763,15 +1851,15 @@ def _candidate_inventory(
             if candidates[duplicate].match_score >= candidate.match_score:
                 return
             del candidates[duplicate]
-            del candidate_ranks[duplicate]
+            del candidate_quality[duplicate]
         if (
             previous is None
             or candidate.match_score > previous.match_score
             or candidate.match_score == previous.match_score
-            and rank < candidate_ranks[source_id]
+            and quality_score > candidate_quality[source_id]
         ):
             candidates[source_id] = candidate
-            candidate_ranks[source_id] = rank
+            candidate_quality[source_id] = quality_score
 
     if assignment and assignment != default_voice_choice_id:
         add(assignment, 120, "Your saved voice assignment")
@@ -1813,7 +1901,7 @@ def _candidate_inventory(
             candidates.values(),
             key=lambda value: (
                 -value.match_score,
-                *candidate_ranks[value.source_id],
+                -candidate_quality[value.source_id],
                 value.source_character.casefold(),
                 value.source_id,
             ),
@@ -2164,6 +2252,8 @@ def _eligible_candidates(
     candidates: tuple[VoiceCandidate, ...],
     *,
     manually_selected_source: str | None = None,
+    preferred_reference_sha256: str | None = None,
+    typical_reference_sha256: str | None = None,
 ) -> tuple[VoiceCandidate, ...]:
     candidates = tuple(
         candidate
@@ -2184,6 +2274,25 @@ def _eligible_candidates(
         for candidate in candidates
         if best_score - candidate.match_score < _CLEAR_WINNER_MARGIN
     )
+    # Promote in reverse order so the selected reference retains first priority.
+    for checksum in (typical_reference_sha256, preferred_reference_sha256):
+        if checksum is None:
+            continue
+        preferred = next(
+            (
+                candidate
+                for candidate in eligible
+                if candidate.reference_sha256s == (checksum,)
+                and candidate.candidate_origin == STORY_LINE_ROUTE
+                and candidate.match_score == best_score
+            ),
+            None,
+        )
+        if preferred is not None:
+            eligible = (
+                preferred,
+                *(candidate for candidate in eligible if candidate != preferred),
+            )
     shortlist = list((eligible or candidates[:1])[:_MAX_AUDITION_CANDIDATES])
     playable = next(
         (
@@ -2713,6 +2822,7 @@ def _raise_if_cancelled(cancellation: Cancellation | None) -> None:
 __all__ = [
     "PregenerationVoiceCancelled",
     "PregenerationVoiceError",
+    "ReferenceTrial",
     "VoiceDecisionStore",
     "VoiceCandidate",
     "VoiceGroup",

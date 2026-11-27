@@ -1,0 +1,643 @@
+{
+  "model": "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+  "model_revision": "d6bd9f7d63d0416fc89e3db7c05766060395e9d2",
+  "codec_revision": "adcbaf63992be657d29a1a90c5900edac3519077",
+  "model_weights_sha256": "a0a25bdb1ecc8008188b52ab3fb5800c8f2832aba51aac5b61436a25d5a45e44",
+  "profile": "stable",
+  "generation_options": {
+    "audio_temperature": 1.7,
+    "audio_top_p": 0.8,
+    "audio_top_k": 25,
+    "audio_repetition_penalty": 1.0
+  },
+  "seeds": [
+    0,
+    1
+  ],
+  "texts": [
+    "The letter is still on the table. We should read it before we leave.",
+    "I thought you said it was empty. Can you hear that?"
+  ],
+  "encoder_revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+  "selection": {
+    "current": "First eligible preflight-passing original in the existing fresh planner order.",
+    "typical": "Compare fresh, same-character, automatically eligible routed references. Hold out each listed bank. Among candidates in the highest passing catalog quality tier, select the clip with highest mean cosine to other passing originals in the selection set. Break ties in planner order.",
+    "steady": "Apply the Isolde pitch, level and peer-cosine percentile constraints and punctuation exclusions in the linked development recipe. Rank by peer cosine; identical selections share a render. Abstain if empty.",
+    "duration": "Within the representative bank and catalog quality tier, take a different eligible clip nearest to the representative duration, excluding baseline and representative. Break ties by SHA-256.",
+    "original": "From the withheld bank choose a passing original in the highest quality tier nearest four seconds, breaking ties by SHA-256."
+  },
+  "measurement": "ECAPA and independent Resemblyzer mean cosine to all passing held-out originals. Whisper normalized text equality and voiced pitch/level spans are diagnostic. Two texts and seeds are paired repeats per character. The duration control is an additional research arm.",
+  "development_recipe": "reference-typicality-moss.json",
+  "listening_feedback": {
+    "scope": "One listener's overall assessment across characters. Individual phrases and seeds were not rated separately.",
+    "overall": "Preferred steady delivery for all three characters and judged the current baseline worse overall. Typical and duration-matched references also sounded good.",
+    "Horropedia": "The duration-matched control sounded slightly slowed down for this character. The listener considered this minor.",
+    "Forget Me Not": "Little audible difference among the alternatives.",
+    "Vertin": "Little audible difference among the alternatives. The steady and duration-matched methods used the same recording and renders."
+  },
+  "characters": [
+    {
+      "name": "Horropedia",
+      "bank": "activityvoc_hero3061lvhu1_2_part04.bnk",
+      "manifest_sha256": "32fc47cfe1ca83f373359d9d48fea3efca9c9b2d13c0eed99cf4d733e7f3b14b",
+      "fit_count": 178,
+      "holdout_count": 12,
+      "steady_candidates": 8,
+      "failures": [],
+      "original": {
+        "sha256": "5378a76afb48922c71502b4188ab8cc77cbb111dcc333f1c01264a815a8de8dd",
+        "source_line_ids": [
+          "reverse1999:200219:57"
+        ]
+      },
+      "methods": {
+        "current": {
+          "sha256": "a228d4c7c9f6200faa3c701d843625ff4847c8b551b267b47d52dbe24df6959d",
+          "source_line_ids": [
+            "reverse1999:200209:23"
+          ],
+          "source_bank": "activityvoc_hero3061lvhu1_2_part02.bnk",
+          "seconds": 4.0,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "cd5f6bcc059a2c97404bf97bdc256c84f6fef7522df1fa03e36e429f3158b3a3",
+              "asr_exact": true,
+              "cosine": 0.4618,
+              "resemblyzer_cosine": 0.8003,
+              "pitch_span_st": 9.8823
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "0b7e47bd2cc0cad637b35f0bd7171a188729f31bf94709a7614ff7820aa95f54",
+              "asr_exact": false,
+              "cosine": 0.4731,
+              "resemblyzer_cosine": 0.8137,
+              "pitch_span_st": 8.6224
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "6be27f5be247036b8e8721603e0cc1240a78e2aa08e959baf63b10795c0f65a6",
+              "asr_exact": true,
+              "cosine": 0.4281,
+              "resemblyzer_cosine": 0.788,
+              "pitch_span_st": 8.9189
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "55ce7e037cb75a605dd32f064e4477ecf0281903f0bcac2d61ffaa4161d59085",
+              "asr_exact": true,
+              "cosine": 0.4496,
+              "resemblyzer_cosine": 0.7748,
+              "pitch_span_st": 10.0872
+            }
+          ]
+        },
+        "typical": {
+          "sha256": "64e5ba2f7dd6144a4e4cf4cad84f86b05c2b46d2a50c59a3fff2cbde7397ec71",
+          "source_line_ids": [
+            "reverse1999:200223:66"
+          ],
+          "source_bank": "activityvoc_hero3061lvhu1_2_part03.bnk",
+          "seconds": 10.38,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "bd25cd15ab2455bbafb497a6e8b25e3d08e9c134464dd2ced8caa92b05177e2d",
+              "asr_exact": true,
+              "cosine": 0.3833,
+              "resemblyzer_cosine": 0.7449,
+              "pitch_span_st": 14.0364
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "c682f03d853678e32ca1af7244da32595007c25f7da3b478d6997095012d6421",
+              "asr_exact": true,
+              "cosine": 0.3435,
+              "resemblyzer_cosine": 0.7516,
+              "pitch_span_st": 11.6771
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "6a18effc2c4db50fd65bfe755c8c9ddf0a14f8c5e46c7f38204f40187c15c1f7",
+              "asr_exact": true,
+              "cosine": 0.2961,
+              "resemblyzer_cosine": 0.7461,
+              "pitch_span_st": 14.3983
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "d91decb45ae0ca2d2cbf2d7912a1546f796d00e935b0c937086aa6ffd835953a",
+              "asr_exact": true,
+              "cosine": 0.3516,
+              "resemblyzer_cosine": 0.7205,
+              "pitch_span_st": 15.1517
+            }
+          ]
+        },
+        "steady": {
+          "sha256": "73a6a1a9e614dbf672371aa21a8e7c37b56e4713f4a3ef547744f5adb47f6a72",
+          "source_line_ids": [
+            "reverse1999:200214:10"
+          ],
+          "source_bank": "activityvoc_hero3061lvhu1_2_part03.bnk",
+          "seconds": 5.91,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "80d9212bfe9a04828ebd11ade5b67944e7e6b58480b5786a888afa3e26d8f1ba",
+              "asr_exact": true,
+              "cosine": 0.3339,
+              "resemblyzer_cosine": 0.7333,
+              "pitch_span_st": 14.2898
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "1adcaa94c7b197aa40a3100519a6ae52c416711a05002deb2d5322b7105966eb",
+              "asr_exact": true,
+              "cosine": 0.4008,
+              "resemblyzer_cosine": 0.7586,
+              "pitch_span_st": 15.4188
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "3c1a8046e8fa7cb8c5d8d46cd1b997da4d78f6e91877c52d1cb6341d32b7e076",
+              "asr_exact": true,
+              "cosine": 0.4067,
+              "resemblyzer_cosine": 0.7662,
+              "pitch_span_st": 12.183
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "9d2978e53fc8bf6d686b1e2657a5f34c431323b92524061d2c941fa1963743d7",
+              "asr_exact": true,
+              "cosine": 0.3848,
+              "resemblyzer_cosine": 0.7197,
+              "pitch_span_st": 9.0011
+            }
+          ]
+        },
+        "duration": {
+          "sha256": "ba95cc89be276fa77c3f58ffa4485b1c12bd1cfad9d25883c71516c703590112",
+          "source_line_ids": [
+            "reverse1999:200217:12"
+          ],
+          "source_bank": "activityvoc_hero3061lvhu1_2_part03.bnk",
+          "seconds": 9.4,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "a468f86771223ecf66983a41a7df7168e55d5514355df5e58b158faf10b9e578",
+              "asr_exact": true,
+              "cosine": 0.3408,
+              "resemblyzer_cosine": 0.7368,
+              "pitch_span_st": 7.1163
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "8cb397d92e91737cc80ec230990ddcd11f4f5ac756b819c3fa2ba25a963139f1",
+              "asr_exact": true,
+              "cosine": 0.372,
+              "resemblyzer_cosine": 0.7372,
+              "pitch_span_st": 8.2572
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "cff745095833dea6d367680475fdee7654c4dec22ef7600d0b84c43d9228326f",
+              "asr_exact": true,
+              "cosine": 0.464,
+              "resemblyzer_cosine": 0.7745,
+              "pitch_span_st": 13.2247
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "fc66c8a452dd621a86800f2a65b991a90e66b9320c460f5728b3ea2a60297dc2",
+              "asr_exact": true,
+              "cosine": 0.3502,
+              "resemblyzer_cosine": 0.7623,
+              "pitch_span_st": 13.1055
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Forget Me Not",
+      "bank": "plotvoc_hero3008chapter2_part02.bnk",
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 147,
+      "holdout_count": 29,
+      "steady_candidates": 4,
+      "failures": [],
+      "original": {
+        "sha256": "5080ecd9a3fd0db318bd7786f475285dcd807cf6f85d5935cc81d950ea9d2f62",
+        "source_line_ids": [
+          "reverse1999:100119:30"
+        ]
+      },
+      "methods": {
+        "current": {
+          "sha256": "2da32350f2491b2fd81541dbfcdc9a0c60673cd376490c9c428a00d2954c6501",
+          "source_line_ids": [
+            "reverse1999:100222:70"
+          ],
+          "source_bank": "plotvoc_hero3008chapter2_part03.bnk",
+          "seconds": 4.0,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "71472c5c921d08b221e814438011475a74cbd1fbfd642dd2de7b1616619fcbfd",
+              "asr_exact": true,
+              "cosine": 0.3876,
+              "resemblyzer_cosine": 0.8146,
+              "pitch_span_st": 7.9926
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "bdd93d46d187f61eca641a20cd9575ecb29d5d8ec7feeeedd98ad9c2c4a93f4e",
+              "asr_exact": true,
+              "cosine": 0.3825,
+              "resemblyzer_cosine": 0.7916,
+              "pitch_span_st": 6.707
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "28deca533333064be2cb789275ae0e8e5994ab3764825441aa5378bae5d264d7",
+              "asr_exact": true,
+              "cosine": 0.3802,
+              "resemblyzer_cosine": 0.7543,
+              "pitch_span_st": 9.4164
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "a2b6f10973a90619f20c5bc3fa1a7366584ce98a8d868f5e7f003093b8e0eddc",
+              "asr_exact": true,
+              "cosine": 0.4456,
+              "resemblyzer_cosine": 0.786,
+              "pitch_span_st": 6.9177
+            }
+          ]
+        },
+        "typical": {
+          "sha256": "7b5d9dc738ae9fc7ccbbf329dc64368b09ea1870452d198a8dbec43ab57d7538",
+          "source_line_ids": [
+            "reverse1999:100118:82"
+          ],
+          "source_bank": "plotvoc_hero3008chapter2.bnk",
+          "seconds": 7.44,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "28d347ef274da81ddfd407873c704f58203ad96549da68092ac2f603f66efcce",
+              "asr_exact": true,
+              "cosine": 0.4877,
+              "resemblyzer_cosine": 0.8055,
+              "pitch_span_st": 4.3361
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "8a5cf12abb04901d01adced19074e404af004605720508e3f7829a09fb7be390",
+              "asr_exact": true,
+              "cosine": 0.3913,
+              "resemblyzer_cosine": 0.8119,
+              "pitch_span_st": 9.2724
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "8680aa51b92e17cfe55bbe5ca2d5c603e7f14189f3672f828f8e089c9d97bed2",
+              "asr_exact": true,
+              "cosine": 0.4622,
+              "resemblyzer_cosine": 0.7842,
+              "pitch_span_st": 10.0808
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "2661a8bfa3a08692990f4e21d7fc4c0a1d97f6f0594ac49a1f4faee6089d7e16",
+              "asr_exact": false,
+              "cosine": 0.4167,
+              "resemblyzer_cosine": 0.796,
+              "pitch_span_st": 9.0948
+            }
+          ]
+        },
+        "steady": {
+          "sha256": "8608338e325a90eb27a06963e2c82600e1bedf5c39e51fd39bf53d08a3bd3a86",
+          "source_line_ids": [
+            "reverse1999:100116:20"
+          ],
+          "source_bank": "plotvoc_hero3008chapter2.bnk",
+          "seconds": 5.75,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "5f69c91676fb23c9ca7ad5858c01c23b244e856c4058294a6a6d0e50052b8b44",
+              "asr_exact": true,
+              "cosine": 0.4719,
+              "resemblyzer_cosine": 0.8117,
+              "pitch_span_st": 8.4096
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "738445b06541a051020f8a60449041624d10bde4c23228eac8ce6cbb71e003b5",
+              "asr_exact": true,
+              "cosine": 0.5695,
+              "resemblyzer_cosine": 0.8289,
+              "pitch_span_st": 8.0327
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "c071815e0ee673aa219a970b7afa8f64b2e57ef2800e6512f36bdcf31e63da57",
+              "asr_exact": true,
+              "cosine": 0.5406,
+              "resemblyzer_cosine": 0.8037,
+              "pitch_span_st": 8.0841
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "71581d5bd030116c577b57179833baf15d91e3253f736b8c0521112d6971adf8",
+              "asr_exact": true,
+              "cosine": 0.5207,
+              "resemblyzer_cosine": 0.7846,
+              "pitch_span_st": 4.0368
+            }
+          ]
+        },
+        "duration": {
+          "sha256": "5df2c8f9a3bb4a8bdda35e8b1e54a44e5a2aed33e82cf5af7db64310ce4dbffa",
+          "source_line_ids": [
+            "reverse1999:100116:17"
+          ],
+          "source_bank": "plotvoc_hero3008chapter2.bnk",
+          "seconds": 6.88,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "dfa3d183fad0551550fa12b6270706f74e3b5bbf97500f126ff4c2d53e278e37",
+              "asr_exact": true,
+              "cosine": 0.4995,
+              "resemblyzer_cosine": 0.8052,
+              "pitch_span_st": 7.8679
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "6c1028aa554766bb962a6088eeb3fbe1b4727f78297721f10128bc4c67c3556b",
+              "asr_exact": true,
+              "cosine": 0.549,
+              "resemblyzer_cosine": 0.8521,
+              "pitch_span_st": 10.5228
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "e27f48cb127b2300e7d15b414d97a9c95241318d9fc85c875cffe5a6461c39f6",
+              "asr_exact": true,
+              "cosine": 0.5091,
+              "resemblyzer_cosine": 0.7408,
+              "pitch_span_st": 6.4259
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "6e685bb94f5ccfce65fdf594f4c455805a2d58c65fd800a7c73e3ba15dc8a93a",
+              "asr_exact": true,
+              "cosine": 0.4731,
+              "resemblyzer_cosine": 0.7403,
+              "pitch_span_st": 11.485
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Vertin",
+      "bank": "plotvoc_hero5043chapter2_part02.bnk",
+      "manifest_sha256": "c68c10532b52c92fd2f5f66c63b12cc77332e1caab2297a3ac4bd5c6b5fd0dc4",
+      "fit_count": 2270,
+      "holdout_count": 59,
+      "steady_candidates": 51,
+      "failures": [],
+      "original": {
+        "sha256": "ce4e25fa4d1bf06185cc7737ff22e1f0e4030f26642c340050471cf4c106633b",
+        "source_line_ids": [
+          "reverse1999:100219:20"
+        ]
+      },
+      "methods": {
+        "current": {
+          "sha256": "fe2adf5c6e7cb53c09b7455dbc53dcc94ba4f839f6601d0529c24ef9847417c3",
+          "source_line_ids": [
+            "reverse1999:2038502:10"
+          ],
+          "source_bank": "activityvoc_hero5043_s02_langchao_part01.bnk",
+          "seconds": 3.998,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "766c3c1a9eb062a2b0154f292fea8123998ce4a5b273670f0fabb365615066e7",
+              "asr_exact": true,
+              "cosine": 0.3304,
+              "resemblyzer_cosine": 0.7423,
+              "pitch_span_st": 8.3673
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "41c6894e4d7467fcbd499d9eb81b5d537444288cac929558b5607e9bbf3a0e13",
+              "asr_exact": true,
+              "cosine": 0.3391,
+              "resemblyzer_cosine": 0.7683,
+              "pitch_span_st": 8.1648
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "f8133d6be6f8cdc730af42c1fc13ec701c8bc0585309fe80b1df3f8331b4bae5",
+              "asr_exact": true,
+              "cosine": 0.3369,
+              "resemblyzer_cosine": 0.7338,
+              "pitch_span_st": 12.2356
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "1be1ffcb0c865a5976e813734eef6f36a56dec7d91f09d06fd83169df3b771c0",
+              "asr_exact": true,
+              "cosine": 0.3458,
+              "resemblyzer_cosine": 0.7369,
+              "pitch_span_st": 9.1909
+            }
+          ]
+        },
+        "typical": {
+          "sha256": "975abbd8281030b4040003297f261e199cdcb446f600bd47eebfe1db1c5eb61a",
+          "source_line_ids": [
+            "reverse1999:101003:68"
+          ],
+          "source_bank": "plotvoc_hero5043chapter10_part01.bnk",
+          "seconds": 8.389,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "d29319e6621e8e357d3e72ecdeaee1edccaea81fc108c75ab94870e3415d9be5",
+              "asr_exact": true,
+              "cosine": 0.502,
+              "resemblyzer_cosine": 0.7999,
+              "pitch_span_st": 6.1797
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "4bc179e030e40adfaac897b4b956092d3c630d6c36a4418dc0a5ad113fb72dcd",
+              "asr_exact": true,
+              "cosine": 0.4721,
+              "resemblyzer_cosine": 0.7849,
+              "pitch_span_st": 7.5379
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "56de79d6c92f404eac267aea2d00e29b60ea4df07225c144c83287e2ba0b34a0",
+              "asr_exact": true,
+              "cosine": 0.4191,
+              "resemblyzer_cosine": 0.7602,
+              "pitch_span_st": 10.5971
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "aae0b9a0ec3c14a57135e0791c0296ec964f80ebb6f781ec07c1d28f0c1978ee",
+              "asr_exact": true,
+              "cosine": 0.4337,
+              "resemblyzer_cosine": 0.7517,
+              "pitch_span_st": 14.4517
+            }
+          ]
+        },
+        "steady": {
+          "sha256": "2ed8a777279978a016cba9369a50e7d0cbe222ecb0ff730a927a0bb9f82b863f",
+          "source_line_ids": [
+            "reverse1999:101003:67"
+          ],
+          "source_bank": "plotvoc_hero5043chapter10_part01.bnk",
+          "seconds": 9.48,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "bc4babda4e121befd8b32a83d215b463b33d144df339bf8f88aee09fe5e2ad55",
+              "asr_exact": false,
+              "cosine": 0.4536,
+              "resemblyzer_cosine": 0.7688,
+              "pitch_span_st": 6.583
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "499ae140d62d5d3dd915b023ed7cddb9e7bfd11c127a3419a5444ab576b53563",
+              "asr_exact": true,
+              "cosine": 0.4758,
+              "resemblyzer_cosine": 0.7891,
+              "pitch_span_st": 7.0127
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "9cb77546236c1ef5f69cba654b69c8c71bcd113684062ac7abfeeaa24d89f236",
+              "asr_exact": true,
+              "cosine": 0.2975,
+              "resemblyzer_cosine": 0.7563,
+              "pitch_span_st": 10.1765
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "d261478b2bb6307c7a3aa8ea3e7eac0a8aaa824c65079898eb0451e760da2eb1",
+              "asr_exact": true,
+              "cosine": 0.3764,
+              "resemblyzer_cosine": 0.7753,
+              "pitch_span_st": 8.8442
+            }
+          ]
+        },
+        "duration": {
+          "sha256": "2ed8a777279978a016cba9369a50e7d0cbe222ecb0ff730a927a0bb9f82b863f",
+          "source_line_ids": [
+            "reverse1999:101003:67"
+          ],
+          "source_bank": "plotvoc_hero5043chapter10_part01.bnk",
+          "seconds": 9.48,
+          "renders": [
+            {
+              "text_index": 0,
+              "seed": 0,
+              "sha256": "bc4babda4e121befd8b32a83d215b463b33d144df339bf8f88aee09fe5e2ad55",
+              "asr_exact": false,
+              "cosine": 0.4536,
+              "resemblyzer_cosine": 0.7688,
+              "pitch_span_st": 6.583
+            },
+            {
+              "text_index": 0,
+              "seed": 1,
+              "sha256": "499ae140d62d5d3dd915b023ed7cddb9e7bfd11c127a3419a5444ab576b53563",
+              "asr_exact": true,
+              "cosine": 0.4758,
+              "resemblyzer_cosine": 0.7891,
+              "pitch_span_st": 7.0127
+            },
+            {
+              "text_index": 1,
+              "seed": 0,
+              "sha256": "9cb77546236c1ef5f69cba654b69c8c71bcd113684062ac7abfeeaa24d89f236",
+              "asr_exact": true,
+              "cosine": 0.2975,
+              "resemblyzer_cosine": 0.7563,
+              "pitch_span_st": 10.1765
+            },
+            {
+              "text_index": 1,
+              "seed": 1,
+              "sha256": "d261478b2bb6307c7a3aa8ea3e7eac0a8aaa824c65079898eb0451e760da2eb1",
+              "asr_exact": true,
+              "cosine": 0.3764,
+              "resemblyzer_cosine": 0.7753,
+              "pitch_span_st": 8.8442
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -21,6 +21,9 @@ def collect_packaged_dependencies(datas, binaries, hidden_imports):
         "rapidocr",
         "rapidfuzz",
         "onnxruntime",
+        "speechbrain",
+        "hyperpyyaml",
+        "parselmouth",
     ):
         package_datas, package_binaries, package_imports = collect_all(package)
         datas.extend(package_datas)
@@ -38,8 +41,12 @@ def collect_packaged_dependencies(datas, binaries, hidden_imports):
         "trainer",
         "transformers",
         "reverse1999-extractor",
+        "speechbrain",
+        "praat-parselmouth",
     ):
         try:
             datas.extend(copy_metadata(distribution))
         except Exception:
+            if distribution in {"speechbrain", "praat-parselmouth"}:
+                raise
             pass
