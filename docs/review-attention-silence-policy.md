@@ -5,25 +5,18 @@ decides whether a WAV may be published at all. The review-attention policy only
 decides which already valid WAVs must be included in a cohort's human sample.
 An attention flag is never an automatic rejection.
 
-## Policy v2
+## Current review policy
 
-New cohort plans use review-attention policy version 2:
+New cohort plans use policy v3. It flags an internal pause of at least 1.2
+seconds for listening and has no overall silence-ratio attention threshold.
+Near-clipping can still require attention. Generated speech rate and related
+pace metrics are advisory context. A review flag is never a quality verdict.
 
-| Advisory flag | Version 1 | Version 2 |
-| --- | ---: | ---: |
-| `notable silence` | silence ratio at least `0.15` | silence ratio at least `0.30` |
-| `notable pause` | longest internal silence at least `0.5 s` | longest internal silence at least `1.0 s` |
+Published v1 and v2 plans keep their original thresholds and sample membership.
+V1 used a ratio of 0.15 and a pause of 0.5 seconds. V2 used 0.30 and 1.0
+seconds. A new policy version applies to newly generated review plans.
 
-The comparison is inclusive. A ratio of exactly `0.30` and a pause of exactly
-`1.0 s` are selected. Near-clipping and speech-rate attention rules are
-unchanged.
-
-Version 2 is stored explicitly in each new cohort plan together with both
-thresholds. Version-1 plans and bundles remain readable and retain their exact
-original flags and mandatory samples. The application never silently rebuilds
-or shrinks an already published review bundle after a policy update.
-
-## Evidence
+## Historical calibration evidence
 
 The completed primary Centurion/MOSS/stable review contained 129 WAVs. Its
 immutable version-1 plan marked 27 WAVs for technical attention, including 24
@@ -50,10 +43,9 @@ These measurements are calibration evidence, not new human decisions. The
 existing Centurion, Pocket and Dobharchu bundle files and progress documents are
 not mutated.
 
-## Unchanged safety gate
+## Synthesis validation
 
-Version 2 does not change synthesis validation. Publication still fails closed
-when any of these strict limits is exceeded:
+Publication fails when any of these strict limits is exceeded:
 
 - leading silence over `0.8 s`;
 - trailing silence over `0.8 s`;

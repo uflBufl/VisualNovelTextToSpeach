@@ -43,6 +43,8 @@ source review, exact portrait bytes and deterministic similarity result.
 
 ## Dobharchú decision
 
+This section records the historical Character Story outcome.
+
 The Character Story quality review produced exactly one suggestion at distance
 3: portraits `534703` and `534704`, both Dobharchú variants from
 `activityvoc_story_npcnoname323_beiai.bnk`. The user confirmed that these show

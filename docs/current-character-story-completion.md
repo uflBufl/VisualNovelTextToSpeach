@@ -1,8 +1,35 @@
-# Current Character Story completion sequence
+# Character Story completion archive
 
-This document records the fail-closed order for completing the current
-`The You That's Meant To Be` authoring workspace. It is an operational plan,
-not authority to generate, review, approve or publish any item.
+**Status:** Historical execution and acceptance record, ending with the
+2026-08-31 production-cutover decision. This page is not a live task list or a
+procedure to resume an old workspace. Earlier statements about remaining work,
+"current" state, JSON state files and adjacent manifests describe their dated
+checkpoints and are superseded by the final result below.
+
+## Final recorded outcome
+
+The published artifact is `current-character-story-3.7-v4-semantic`, from
+workspace `resume-395a5e5eec0327a3a793b66d-8cecffe7a1e59436`. It covers the
+606 queue identities with 485 approved WAVs, 114 explicit live fallbacks and
+seven pure-event omissions. Its exact pack/story/sequence hashes and publication
+evidence are retained under [Semantic v4 publication and activation](#semantic-v4-publication-and-activation).
+
+The operator accepted production cutover with real-game acceptance deferred.
+Physical playback, focus ownership, end-to-end latency and auto advance remain
+outside this evidence.
+
+For current procedures use [workspaces](authoring-workspaces.md),
+[reconciliation](authoring-authority-reconciliation.md),
+[audio events](authoring-audio-events.md) and
+[pack publication](authoring-game-pack-publication.md). New working outputs use
+`generation-state.sqlite3`; historical recorded JSON hashes remain evidence of
+the original bytes and must not be relabelled as database hashes.
+
+## Chronological execution record
+
+The following record preserves the fail-closed completion sequence for
+`The You That's Meant To Be`. Its intermediate instructions and pending gates
+are historical; use the final recorded outcome above to interpret them.
 
 ## Verified checkpoint
 
@@ -1929,3 +1956,202 @@ production cutover without spending time on that real-game run. This is an
 accepted-risk deferral, not positive hardware evidence: mixed-rate playback,
 real focus ownership, end-to-end latency and physical auto-advance remain
 unverified until a later release-qualification pass or a reproduced failure.
+
+## Earlier workspace acceptance archive
+
+These checkpoints predate the final semantic pack. Their local state and
+manifest hashes identify historical artifacts, not the current SQLite working
+format. They are retained here so operational workspace instructions have one
+place to link to the original evidence.
+
+### Early narrator rollout (2026-08-17 to 2026-08-18)
+
+The completed Rhiannon workspace was exercised read-only against a temporary
+Paper Heron target on 2026-08-17. The operation carried exactly 15 terminal
+Rhiannon decisions: 10 approved and 5 rejected. Fourteen matched the immutable
+imported generation seed (`review-only`); the one later successful retry matched
+all current synthesis controls and was copied as `full-outcome`. No Narrator
+item was carried, the derived manifest contained exactly the 10 approved entries,
+and the source workspace tree digest remained
+`738258bd3e9f1733e8d9115f916b5c119ba41a78f6bb817696fb2e985240418c` before
+and after the operation. This was an integrity acceptance only; Paper Heron was
+not selected as Narrator and the temporary target was not used for generation.
+
+The final manual narrator decision on 2026-08-17 selected **Centurion**. A final
+Centurion-configured workspace must carry forward the same reviewed Rhiannon
+outcomes, then regenerate only the explicit Narrator scope before any new
+review or game-pack publication. The earlier Paper Heron workspace remains
+historical integrity evidence and must not be reused as the final narrator
+workspace.
+
+The first bounded Centurion rollout on 2026-08-18 selected eight exact Narrator
+queue IDs with `retries=0`, base seed 0 and `--regenerate-existing`. Four typed
+renders completed and passed manual listening review across 4, 7, 10 and 43-word
+lines. Their approved WAV SHA-256 values are, in ascending line order:
+
+- `129fdb220b072d0399f6ec7070bc9f830ea8fdae4e346673eddff801368a17b9`;
+- `4416a880a758cd364f9e913fad5e39fd960a4906fda40a796b410afc5e77a835`;
+- `9020984cda82bd49bfa45d990806e2bb196286418f01662b7942293bf0f69b21`;
+- `2a55cccc32dbb8679339ca3962ed46cb909ff06e0e14f0ecd5d9b554be00c399`.
+
+The other four selected renders failed closed: three reached their bounded audio
+limit before EOS and one failed the internal-silence quality gate. None
+published a new WAV. After the four compare-and-swap approvals, exactly those
+four authoritative items changed, all other 334 state items were unchanged,
+all 15 existing Rhiannon decisions remained unchanged, and the approved-only
+manifest increased from 10 to 14 exact entries. The idle state and manifest
+SHA-256 values are respectively
+`af758d292e411d6222804a5669076537463c52e157510b332f666a1b2c0797fd`
+and
+`2acd86bec929de2bb5e6dcad1282bb9cca8c07969b861e83d503dbfb4a05fe8b`.
+This pilot proves scoped Centurion regeneration and review, not completion of
+the remaining Narrator queue or final-pack publication.
+
+The subsequent bounded rollout replaced all 175 remaining legacy
+generated/pending-review Narrator seeds in eight explicit-ID batches. It
+published 114 complete Centurion WAVs and preserved 61 bounded or quality-gated
+failures without a WAV. A separate first-attempt batch covered all 10 Narrator
+items that previously had no state: one completed and nine failed closed. No
+legacy Narrator seed or absent Narrator item remains.
+
+One diagnostic batch then retried the 24 shortest legacy failures whose stored
+outcomes predated the current synthesis-control provenance. Only three
+completed; 21 failed closed again. That low yield is the stop gate for blind
+mass retries: the other 99 legacy failures remain preserved until a specific
+model, text or quality-gate diagnosis justifies another attempt. The final
+Narrator state is 4 approved, 118 generated/pending-review and 195 failed; 96
+of those failures have already been exercised under the current Centurion
+controls.
+
+Across the rollout, all 19 pre-existing approved/rejected decisions remained
+byte-identical. The final state is idle with no lease or partial WAV; its
+SHA-256 is
+`e5ece47ba13d7b68b44cb9628cb180dcac8ddb516ed58d481d49770f4f6194ba`.
+The approved-only manifest still contains exactly 14 entries and has SHA-256
+`3370b864105d85c431227f5cc283e7b95890687d4fd30c70148367c254832af1`.
+No rollout result beyond the four pilot WAVs was approved automatically.
+
+A read-only technical audit of the 118 pending Centurion WAVs verifies complete
+stored duration, peak and speech-silence metrics for every item and finds no
+duplicate audio digest. Twenty-seven items are prioritized for listening by
+conservative attention heuristics: 14 fast-pace, 11 near-clipping, two
+slow-pace, two notable-pause and one notable-silence flags, with overlaps. These
+flags are review ordering aids, not approval or rejection decisions. The 195
+failed Narrator items separate into 161 bounded missed-EOS/audio-limit outcomes
+and 34 speech-silence failures; even the limit cohort contains short two- to
+five-word lines, so the evidence does not justify a global cap increase.
+
+
+### Controlled real retry evidence (historical)
+
+Clean commit `c77b87c` was used for one real, selection-scoped retry in workspace
+`resume-395a5e5eec0327a3a793b66d-4b727b4671cb0ba2`. The child command contained
+only queue ID `reverse1999:314605:15:d65edc619e8d32c4`, used `retries=0` and
+base seed `0`, and skipped the other 591 queue records. The authoritative
+failure record advanced from attempt 3/seed 2 to attempt 4/seed 3.
+
+The typed MOSS render completed as `limited`, so the executor retained a failed
+record and did not publish a WAV. Post-run verification established all of the
+following:
+
+- the other 337 authoritative state records were byte-for-byte unchanged;
+- the workspace WAV inventory remained exactly the original 197 files, with no
+  added, missing or partial WAV;
+- the approved-only manifest remained empty;
+- the immutable workspace, import and source queue hashes still agreed;
+- all 201 recorded import/source artifacts and both external input hashes still
+  matched their immutable inventory; and
+- `active` was cleared and the generation lease was removed.
+
+This proves safe selected resume, cumulative attempt/seed continuation and
+limited-result non-publication on the real imported history. It is not evidence
+of successful synthesis: the selected line remains failed and no review or
+final-pack decision was made.
+
+### Patch resume and bounded missed-EOS follow-up (historical)
+
+Commit `81073bf` corrected two issues exposed by controlled real resumes. MOSS
+keeps the strict three-second hesitation guard, gives longer natural sentences
+a bounded 90-wpm cadence reserve, and retains the existing 20-second absolute
+ceiling. Typed LIMITED failures now retain sample/chunk/token/audio-limit
+diagnostics. Authoring also downmixes typed frames-by-one/two-channel PCM before
+the mono writer instead of flattening channels into time. The focused 54-test
+set and the full 790-test suite passed; an independent review found no P1/P2
+issues and repeated the focused, formatting and adversarial shape checks.
+
+The first selected Patch attempt exposed the channel bug: queue ID
+`reverse1999:101335:98:07f14a785de5037a` produced a mono-declared 384,000-frame
+WAV whose even/odd lanes were near-identical stereo channels. That invalid
+8.0-second workspace is preserved as
+`resume-14d28505d16f4729c363c2de-e8a8270d7eef0826-invalid-stereo-fdf67d29ac81`
+under `authoring/interrupted-workspaces`; it was never approved.
+
+While the clean workspace was being recreated, a parallel source-mapping task
+changed the external story index from SHA-256
+`8af6bce1422b4cced8519f6d5a10e446981106717b3b8c81f362909522b81665` to
+`93cc48052f4e022b1271d0932f5f16af614dcdbc1bc638f178281bea860f7376`.
+The resulting unstarted workspace is separately preserved with suffix
+`unstarted-source-change-93cc48052f4e`; no generation child used it. The real
+retry instead copied the prior immutable story snapshot (`8af6...`) and voice
+snapshot (`ce06030de942ab043f5bc88197c3890aaa05536fc9e0b490e74d116ce9d56eda`),
+restoring the original `e8a8270d7eef0826` config identity.
+
+The corrected Patch retry generated exactly one pending-review WAV on attempt
+1/seed 0: 192,000 finite mono frames at 48 kHz (4.0 seconds), SHA-256
+`ae357b956a8cadafa29af19e320e5e0a49529a84eaa3f438d4660ede846fc3ff`,
+with no measured leading, trailing or internal silence. Its text-derived cap
+was 8.5 seconds/850 tokens. The other 680 state records retained aggregate
+SHA-256 `3a12107a9ab870e06e51a0a0f8c32f15b67df574764c36bbc0284e11433adbac`;
+approved count remained zero and the WAV count changed only from 680 to 681.
+
+The one permitted post-fix retry for the newer history used exact queue ID
+`reverse1999:314606:68:fe4e011250eda914`. It advanced cumulative state from
+attempt 4/seed 3 to attempt 5/seed 4, then reached the expanded bound exactly:
+408,000 samples, 36 chunks, 8.5 seconds and 850 tokens. It therefore remains a
+typed LIMITED failure with no WAV. The other 337 records retained aggregate
+SHA-256 `198f8d504e402acad1431d63edd43e44e6c68d83167fc3283de23a40cc1a4db2`,
+the WAV count stayed 197, approved count stayed zero, and the lease/active
+attempt were cleared.
+
+Both imported directories and both source job directories retained their
+pre-run tree digests. Queue, contained story and voice snapshots remained
+`1831f95d...`/`49f8b0fa...`, `8af6bce1...`, and `ce06030d...` respectively.
+No review decision or final game pack was published.
+
+The remaining newer-history resume gate was completed on pushed commit
+`3c8764c` with a different exact queue item,
+`reverse1999:314605:68:7ee2d4821f58d242`: Rhiannon's seven-word complete line
+“Sorry, I can't tell you exactly where.” Preflight selected exactly one failed
+item and reported it ready with three available Rhiannon references and no
+missing voice; approved count was zero. The run used `retries=0` and base seed
+zero, advancing the existing cumulative state from attempt 3/seed 2 to attempt
+4/seed 3.
+
+The result is one pending-review PCM16 mono WAV at 48 kHz: 157,440 samples,
+3.28 seconds, SHA-256
+`d713178a4596f5e6805df3f3acbef09584567f2d271764dd578f8c451107ccb9`.
+Measured leading, trailing and internal silence and the silence ratio were all
+zero. All 197 seed WAVs retained their expected hashes and the only added WAV
+was `audio/rhiannon/f6f1e3ae6c1431e089b4204b.wav`. The other 337 state records
+retained aggregate SHA-256
+`efe09ad022e91d7b533e4a358a5ccacd6cdb30224b7df518ba946fb65882b197`.
+
+Workspace controls and inputs, the immutable import and source job, and the
+external story and voice-manifest controls retained their pre-run hashes. The
+approved count and approved-only manifest entry count remained zero; active
+attempt, lease, job-process record and partial-file inventory were empty. The
+generated line remained pending review at that controlled-generation boundary:
+the acceptance itself performed no review, approval, rejection or final-pack
+publication.
+
+Manual Rhiannon review was completed on 2026-08-17. The current workspace has
+no Rhiannon outcome awaiting review: ten are approved, five rejected and sixteen
+retain their explicit failed state. The controlled line above is now approved.
+The authoritative state is idle and has SHA-256
+`763f6a632f90b9776d9a26e9a9005730b26e09e343de0b15d68e43ddc75b01a7`;
+the derived approved-only manifest contains ten entries and has SHA-256
+`58cb1c9f97fe723025305d686b385ebeee58bb1623b3a764000f584f49f6ab6e`.
+These decisions remain workspace authority, not a final game-pack publication.
+Changing Narrator configuration must preserve them only through an explicit
+per-item control-equivalence check; a new workspace may not silently discard or
+reinterpret the completed Rhiannon review.

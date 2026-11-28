@@ -1,9 +1,17 @@
 # Control-level desktop UI/UX audit
 
-Reviewed 2026-09-03. This document consolidates the parallel review defined in
-[`ui-ux-review-plan.md`](ui-ux-review-plan.md). It supersedes the completeness
-claim in [`ui-ux-audit.md`](ui-ux-audit.md), whose behavioral baseline predates
-several shipped surfaces.
+**Status: historical findings and implementation record, reviewed September
+2026.** The tables below describe the interface at that review, not a current
+list of defects to implement. The source/offscreen implementation pass is
+recorded under [Implementation update](#implementation-update); native and
+human qualification was left open. The older [baseline audit](ui-ux-audit.md)
+is superseded for inventory and completeness. The retained
+[review method](ui-ux-review-plan.md) explains how evidence was collected.
+
+Current player behavior belongs in [Playing](playing.md), intended UX in
+[Reader experience](reader-experience.md), and pending implementation work in
+[the root TODO](../todo.md). Revalidate a historical finding against code before
+reopening it.
 
 ## Outcome
 
@@ -24,30 +32,16 @@ not build a new UI framework.
 
 ## Evidence and coverage
 
-The audit covers 11 application launch routes, 31 application-designed
-surfaces/components, three tray notification states, and every identified
-native chooser, name prompt, confirmation and warning call site in `VisualNovelTextToSpeach` and
-`reverse1999-extractor`. `vntts-artifacts` has no UI.
+The review covered application launch routes, designed surfaces, tray
+notifications and native-dialog call sites in VNTTS and the extractor.
+Runtime/setup, daily-tool and authoring reviews used focused tests and offscreen
+state/layout inspection; the extractor stale-review defect was independently
+reproduced. This evidence predates the implementation update below and does not
+establish native-platform acceptance.
 
-Parallel evidence:
-
-- runtime/setup: 194 focused tests passed and 17 offscreen states inspected;
-- daily tools: 188 focused tests passed plus recursive offscreen control and
-  scale inspection;
-- authoring: 110 focused UI tests passed;
-- extractor: 14 focused UI tests passed and the stale-review defect was
-  independently reproduced.
-
-The app integration suite appears in both the runtime/setup and daily-tools
-passes, so these are execution counts rather than a claimed unique-test total.
-This evidence was collected before the implementation pass summarized below.
-
-Detailed control accounting is retained in:
-
-- `.codex/investigations/ui-ux/runtime-setup.md`;
-- `.codex/investigations/ui-ux/daily-tools.md`;
-- `.codex/investigations/ui-ux/specialist-tools.md`;
-- `.codex/investigations/ui-ux/integration.md`.
+Detailed ledgers and screenshots were local investigation artifacts. They are
+not part of the repository and cannot serve as a reproducible current test
+result; the durable findings are retained here.
 
 ## Target information architecture
 
@@ -81,7 +75,7 @@ Detailed control accounting is retained in:
 - Linear decision tools must offer a safe revision path when the authority
   model permits it, or explicitly confirm an irreversible action.
 
-## Ranked implementation backlog
+## Findings at review time
 
 ### P0: protect identity and data
 
@@ -144,7 +138,7 @@ Do not add a design-system dependency, custom file browser, custom media player,
 mega-review framework, profile-icon system, OCR rule import/export or general
 undo framework without new evidence.
 
-## Implementation order
+## Recorded implementation order
 
 1. UI-002: identity/data safety.
 2. UI-003 through UI-009: incorrect state, consequence and authorization.
@@ -171,9 +165,9 @@ Implemented 2026-09-03:
   natural-playback authorization, unify runtime control policy, expose durable
   offline-generation progress, simplify tray and specialist hierarchy, and add
   responsive/accessibility coverage at 150% and 200% text scale.
-- Verification passed all 2,062 discovered `VisualNovelTextToSpeach` tests and
-  all 21 extractor UI tests with the main UI runtime, plus Ruff and diff checks
-  in both repositories.
+- The implementation pass recorded successful application/extractor UI tests,
+  Ruff and diff checks. This is a historical report, not a fresh validation of
+  the current checkout.
 
 Retired 2026-09-25: UI-001 no longer applies because the source voice mapping
 window was removed.
@@ -195,5 +189,6 @@ requires:
 - representative novice first-run and returning-player observation;
 - specialist review with long text, large candidate counts and slow storage.
 
-These gaps affect confidence and acceptance, not the two reproduced P0 defects
-or the source-verified state inconsistencies above.
+These were the outstanding qualification gaps at review time. Their present
+status requires fresh platform evidence; the historical defect tables are not
+an active task list.

@@ -35,10 +35,10 @@ uv run vntts-conflict-review REVIEW_DIRECTORY
 The interface initially presents a deterministic blind A/B order derived from
 the review/case/candidate identities rather than historical approval state.
 Playback bytes are prepared outside the Qt thread. A candidate counts as heard
-only at `EndOfMedia`; stop and playback errors do not unlock a decision. After
-both complete listens, the controls reveal the exact consequence: keeping an
-approved candidate places it in the derived manifest, while keeping a rejected
-candidate preserves the explicit rejection outside the manifest. `Neither
+only after playback completes. Stop and playback errors leave it unheard. After
+both complete listens, the controls reveal the consequence. An approved
+candidate becomes eligible for pack publication. A rejected candidate retains
+its explicit rejection. `Neither
 candidate is acceptable` requires a new repair hypothesis. Saving runs outside
 the Qt thread and shows that the source reconciliation, workspace state, queue
 and candidate WAVs are being rechecked. The mutable `progress.json` is separate
@@ -98,18 +98,21 @@ workspace. Otherwise it requires one source or identical state-item authority;
 ambiguous state metadata fails closed. It copies the selected terminal state
 item and the resolution-owned WAV into a new config-addressed workspace, binds
 the report, successor, resolution, source workspace/state/item and WAV hashes,
-and rebuilds the approved-only manifest. Existing `outcome_merge` provenance in
+and validates approved WAVs against the new SQLite state. Existing `outcome_merge` provenance in
 the selected item remains intact beneath the new terminal-conflict ledger.
 
 The merge and final-pack publisher use the same generation-lease set and atomic
 no-replace publication primitives. The merge acquires every source lease in
 stable path order, then rechecks every source while those leases remain held
 through publication. It never changes the primary or historical workspaces.
-Approved choices enter the derived manifest, rejected choices remain explicit terminal
-rejections outside it, and any `neither` choice prevents workspace creation
+Approved choices become eligible for pack publication and rejected choices
+remain terminal rejections. Any `neither` choice prevents workspace creation
 until a separately versioned repair hypothesis exists.
 
 ## Verified current Character Story bundle
+
+The following sections record historical Character Story runs and the
+manifest layout used at the time.
 
 On 2026-08-26 the current original-scope reconciliation was published as the
 app-data review bundle

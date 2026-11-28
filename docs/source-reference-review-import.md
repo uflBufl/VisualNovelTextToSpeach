@@ -1,5 +1,8 @@
 # Variant-aware source-reference review import
 
+**Status:** Current expert source-review import and binding procedure, followed by
+historical Character Story evaluation evidence.
+
 The extractor owns game-specific discovery and human source-voice decisions.
 VNTTS consumes that evidence without importing extractor Python modules and
 without changing an existing manifest or authoring workspace.
@@ -65,7 +68,7 @@ After a bounded generation run, publish a dedicated composite quality card:
 ```bash
 uv run vntts-reference-review create-composite \
   --composite /new/hotelier-reference-composite \
-  --state /mutable/hotelier-evaluation/generation-state.json \
+  --state /mutable/hotelier-evaluation/generation-state.sqlite3 \
   --output /new/hotelier-composite-quality-review
 ```
 
@@ -101,7 +104,7 @@ quality review from the exact evaluation and generation state:
 uv run vntts-reference-review create \
   --plan /new/source-reference-plan \
   --evaluation /new/source-reference-evaluation \
-  --state /mutable/evaluation-run/generation-state.json \
+  --state /mutable/evaluation-run/generation-state.sqlite3 \
   --portrait-directory /prepared/exact-game-portraits \
   --output /new/source-reference-quality-review
 
@@ -149,7 +152,38 @@ generated sample exposes its kind, duration and full text separately.
 selection: fixed-text comparisons between different character clusters answer
 which voice is preferred, not whether either voice belongs to its character.
 
-## Verified Character Story evaluation (2026-08-18)
+## Publish reviewed bindings
+
+After every cluster card has an explicit decision, publish the accepted set.
+The binding CLI verifies that the review is complete and belongs to the exact
+plan; direct variant IDs are not accepted at this boundary:
+
+```bash
+uv run vntts-pregenerate build-reference-bindings \
+  --plan /new/source-reference-plan \
+  --voice-manifest /path/to/base/voice-manifest.json \
+  --narrator-character Centurion \
+  --include-base-character Rhiannon \
+  --quality-review /new/source-reference-quality-review/review.json \
+  --output /new/source-reference-bindings
+```
+
+The command publishes a new, self-contained partial voice manifest; it never
+edits the base manifest, decision plan or review. Every accepted variant is
+bound to the exact story-derived queue IDs from its cluster. Rejected and
+`needs_sample` clusters remain missing-reference preflight outcomes. Bulk
+generation records the effective synthetic voice, binding-map checksum and
+source queue ID in each result. Resume and final-pack publication reject a
+changed map, an unselected manifest voice, or state whose effective voice no
+longer agrees with that exact binding.
+
+`--include-base-character` is explicit and repeatable. It checksum-copies only
+the named base-manifest voices into the self-contained output. Use it when a
+new workspace must carry reviewed full outcomes for that character; omit it to
+retain the default partial-manifest behavior. Unknown, duplicate and narrator
+entries fail closed.
+
+## Historical Character Story evaluation (2026-08-18)
 
 The first real plan contains four accepted variants: Dobharchú portraits
 `534704` and `534703`, Poacher `505601`, and Aderyn's Father `534604`. Their
@@ -191,35 +225,6 @@ overwritten. Exact installed game sprites exist for
 both Dobharchú cards (`534704`, `534703`) and Aderyn's Father (`534604`). The
 exact Poacher sprite `505601` was not found in the installed bundle inventory,
 so its card intentionally renders the missing-asset placeholder.
-
-After every cluster card has an explicit decision, publish the accepted set.
-The binding CLI verifies that the review is complete and belongs to the exact
-plan; direct variant IDs are not accepted at this boundary:
-
-```bash
-uv run vntts-pregenerate build-reference-bindings \
-  --plan /new/source-reference-plan \
-  --voice-manifest /path/to/base/voice-manifest.json \
-  --narrator-character Centurion \
-  --include-base-character Rhiannon \
-  --quality-review /new/source-reference-quality-review/review.json \
-  --output /new/source-reference-bindings
-```
-
-The command publishes a new, self-contained partial voice manifest; it never
-edits the base manifest, decision plan or review. Every accepted variant is
-bound to the exact story-derived queue IDs from its cluster. Rejected and
-`needs_sample` clusters remain missing-reference preflight outcomes. Bulk
-generation records the effective synthetic voice, binding-map checksum and
-source queue ID in each result. Resume and final-pack publication reject a
-changed map, an unselected manifest voice, or state whose effective voice no
-longer agrees with that exact binding.
-
-`--include-base-character` is explicit and repeatable. It checksum-copies only
-the named base-manifest voices into the self-contained output. Use it when a
-new workspace must carry reviewed full outcomes for that character; omit it to
-retain the default partial-manifest behavior. Unknown, duplicate and narrator
-entries fail closed.
 
 The real portrait-enabled review was completed `4/4` with all four variants
 accepted. `build-reference-bindings` published 53 exact queue-ID bindings under

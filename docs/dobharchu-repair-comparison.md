@@ -1,5 +1,7 @@
 # Dobharchú repair comparison
 
+> Historical Character Story case study and experimental comparison recipe. Later decisions are recorded in the [Character Story archive](current-character-story-completion.md#final-recorded-outcome).
+
 The current Character Story workspace contains 50 exact Dobharchú queue
 items. The checksum-bound census on 2026-08-21 found:
 

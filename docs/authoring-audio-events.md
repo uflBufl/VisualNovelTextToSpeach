@@ -1,5 +1,9 @@
 # Inline non-verbal audio events
 
+**Status:** Current audio-event contract with historical Character Story experiments and
+acceptance evidence. The ordinary speech path remains fail-closed for unsupported
+events.
+
 Canonical story text may contain non-verbal directions such as `*gasp*`,
 `*gurgle*`, or a vocal interjection such as `Tsk!`. These tokens are not normal
 speech. Passing them unchanged to TTS produced literal spoken words in real
@@ -49,6 +53,8 @@ event-only text, changed projection, or pre-existing full-text seed result is
 rejected. The literal event marker is therefore never sent to TTS or mistaken
 for a synthesized effect.
 
+### Historical Character Story source scan (2026-08)
+
 A read-only scan of composed Character Story workspace
 `resume-395a5e5eec0327a3a793b66d-9ec4454f35d082e4` found ten exact event lines:
 seven pure effects (`whimper`, `yelp`, `pop`, three `bang` lines and `buzzzzz`),
@@ -56,12 +62,13 @@ event-only `Tsk!`, mixed `N-No! *gurgle*`, and mixed
 `Wh-What! *gasp*`. All ten now return false from the ordinary speech filter.
 The scan changed no queue, state, WAV or review authority.
 
-The regenerated patch 3.7 source index now exposes the underlying evidence.
+The regenerated patch 3.7 source index exposed the underlying evidence.
 Some `pop`, `bang`, `buzzzzz` and `gasp` lines have adjacent configured story
 cues, but none of those media is installed in the current game data. The two
 `gasp`-line cues are stream and water-flow events, not a proven human gasp.
 `Tsk!`, `gurgle`, and the relevant `whimper`/`yelp` lines have no source cue.
-Therefore the current ten-line production boundary remains fail-closed.
+That checkpoint therefore remained fail-closed; subsequent event decisions are
+recorded below and in the [completion archive](current-character-story-completion.md).
 
 A read-only queue plan over the regenerated `The You That's Meant To Be`
 collection produced 11 event items: the ten historical workspace items plus a
@@ -86,8 +93,9 @@ v2 model supersedes that architecture for text-to-audio quality. A third-party
 MLX conversion exists, but it is not an official parity guarantee and is not a
 production dependency today.
 
-There is no CUDA machine available for the current project acceptance. Model
-acceptance therefore remains deferred. The experiment code is prepared without
+The recorded experiment had no CUDA host for acceptance; its model acceptance
+was deferred. This is historical availability, not a claim about the reader's
+hardware. The experiment code is prepared without
 adding a production provider. It pins upstream code revision
 `c0880299e8b8d0f7119efab17e4e776fffe7b8fa` and model revision
 `e35df4d82fbe87fcd5d14e5d100e349c0c3c076d` in a separate Python 3.12,
@@ -121,7 +129,9 @@ pronunciation/IPA candidate because it is a character vocalization; it still
 requires blind comparison and must never fall back to reading the letters as a
 word.
 
-The bounded local pronunciation experiment is now complete. The official
+### Historical pronunciation and source-candidate experiment (2026-08)
+
+The bounded local pronunciation experiment completed. The official
 MOSS-TTS v1.5 syntax accepts pure IPA inside slashes, and the installed Local
 4B tokenizer round-trips both dental click `/ǀ/` and alveolar click `/ǃ/`
 without an unknown token. That tokenizer fact did not translate into usable
@@ -220,6 +230,8 @@ ordinary individual review is still required. On approval, the same additive
 ledger is projected into the approved-only manifest and is revalidated before
 final-pack publication. Missing, changed or forged composition authority fails
 closed.
+
+### Historical approved source-event composition (2026-08-27)
 
 The real Character Story review was published at
 `authoring/audio-event-reviews/current-character-story-tsk-game-v1` under the

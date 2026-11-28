@@ -1,5 +1,7 @@
 # Alternative-reference render census, 2026-08-25
 
+> Historical render-only experiment from August 2026. For the reusable comparison workflow, see [Model evaluation](authoring-model-evaluation.md).
+
 This document records the bounded render-only experiment for the seven exact
 Character Story failures that remained after the merged-state census. It is
 evidence, not a review decision: no generation state, WAV authority, review

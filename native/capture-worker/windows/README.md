@@ -23,47 +23,17 @@ cargo test --locked --manifest-path native/capture-worker/windows/Cargo.toml
 
 ## Transport
 
-Stdin carries UTF-8 JSON lines, including the newline at most 64 KiB each.
-A request has `version: 2`, a positive integer `id`, UUID `session_id` and `op`.
-An oversized or unterminated line ends the helper with no partial response.
-Other invalid requests get a bounded error response, with `id: 0` if no numeric
-request ID can be recovered. There is no unsolicited startup message.
+See the [shared capture protocol](../PROTOCOL.md) for request and frame fields.
+Windows attaches the parent-owned file mapping with `OpenFileMappingW` and
+`MapViewOfFile`. It closes its view and handle on reopen, error or shutdown.
+The Windows worker uses QPC seconds for its clock and WGC SystemRelativeTime
+for source timestamps. Its recording mode hands its owned pixels to the
+encoder directly.
 
-- `open` requires `target: {kind: "window", window_id: HWND, pid: PID}` or
-  `target: {kind: "display", display_id: HMONITOR}`. Display ID 0 selects the
-  primary monitor. It also requires `frame_buffer: {name, capacity}` identifying
-  a parent-owned `multiprocessing.shared_memory.SharedMemory` mapping. The name
-  contains only ASCII letters, digits, `_` or `-` and has length 1 through 128;
-  capacity is an integer from 1 through 128 MiB. These fields are accepted only
-  on `open`. Optional `max_fps` defaults to 10, must be an integer between 1 and
-  60. Opening a new session closes the previous one first.
-- `capture` accepts `timeout_ms` (1 through 10000, default 2000).
-- `close` invalidates pixels immediately and waits at most two seconds for the
-  native source thread. Stdin EOF performs the same cleanup. A native startup
-  timeout (ten seconds) or shutdown timeout reports an error and exits the
-  helper. A parent must still impose its own process deadline and kill a
-  nonresponsive helper; GPU/COM calls themselves cannot safely be cancelled.
-
-Each response consists of exactly one JSON header plus a newline. Headers
-have `version: 2`, matching `id`, `ok`, `frame_bytes` and either `result` or
-`error: {code, message}`. Pixels are never written to stdout. Before acknowledging
-`capture`, the helper copies the complete BGRA8 frame to the attached mapping;
-`frame_bytes` reports its length. `open`, `close` and errors report zero bytes.
-A frame larger than capacity fails without writing or acknowledging a partial
-frame. The helper attaches with `OpenFileMappingW` and `MapViewOfFile`, and closes
-its view and handle on reopen, error or shutdown. The parent owns mapping deletion
-and must keep it alive until the helper stops. The native recording mode keeps
-its direct owned-pixel path to the encoder.
-
-`open` returns `backend`, `session_id` and QPC `clock_now` seconds. `close`
-returns an empty result. `capture` returns full native window/display BGRA8
-pixels and metadata: `scope`, `session_id`, selected `window_id`/`pid` (null for
-displays), `width`, `height`, `row_stride`, `pixel_format`, `content_rect`,
-`desktop_bounds`, `frame_sequence`, `source_time`, `acquired_at` and
-`layout_epoch`. `content_rect` is the physical client rectangle inside the
-returned pixels. Display bounds are diagnostic and do not select window pixels.
-Times use QPC seconds; source time comes from WGC SystemRelativeTime. Static
-content may return the same frame identity/time, rather than inventing a frame.
+Opening a new session closes the previous one. Stdin EOF performs the same
+cleanup as `close`. The Windows source bounds native startup and teardown.
+The parent separately enforces its request deadline and can terminate an
+unresponsive worker because GPU and COM calls can block.
 
 ## Native behavior and qualification
 
@@ -87,10 +57,11 @@ HDR and unidentified outputs use RGBA16F scRGB. This path encodes linear Rec.709
 as sRGB, mapping 80-nit white to SDR white and scaling brighter pixels by their
 peak channel. Both paths produce the same packed BGRA8 transport format.
 
-Real-game capture, occlusion, volume HUD, fullscreen, lifecycle/DPI transitions,
-device failures and packaged execution remain unverified on Windows. There is
-no desktop or legacy capture fallback. Build/check/unit-test success alone does
-not establish native runtime correctness.
+For clean-package qualification, use the
+[Windows release matrix](../../../packaging/windows/README.md). The
+[remaining native checks](../../../todo.md) track adverse recording paths.
+Portable tests validate the protocol. Interactive acceptance covers real
+window capture, geometry changes, device loss and recorder ownership.
 
 Microsoft references: [screen capture and HDR pipeline](https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture),
 [HWND item creation](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow).

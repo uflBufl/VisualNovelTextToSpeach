@@ -1,13 +1,14 @@
 # Desktop interface UX audit
 
-> Historical baseline: the 2026-09-03
-> [control-level audit](ui-ux-control-audit.md) supersedes this document's
-> surface inventory and completeness claims. Keep this file for the behavioral
-> decisions and regressions it records.
+> Status: historical baseline from August 2026. The later
+> [control-level audit](ui-ux-control-audit.md) supersedes its inventory,
+> accessibility-gap statements and implementation priorities. Entries marked
+> Complete or P3 describe that snapshot, not current validation or pending work.
+> Keep the behavioral rationale as history; use [Reader experience](reader-experience.md)
+> for product direction and [Playing](playing.md) for operating instructions.
 
-This document records the baseline desktop-interface audit performed on
-2026-08-22. It covers every shipped Qt surface and the operator-facing CLI
-entry points that open those surfaces. It is a design and verification input,
+This document records the desktop-interface baseline reviewed on 2026-08-22,
+including the Qt surfaces and their operator launch routes present then. It is a design and verification input,
 not a claim that every workflow has already been redesigned.
 
 ## Audit method
@@ -120,13 +121,13 @@ not currently set accessible names/descriptions or explicit tab order. Native
 labels and button text help, but composite selectors, tables, preview regions,
 status banners and icon/color state need explicit metadata.
 
-Apply the existing invariants in `desktop-accessibility.md` to every composite
+For current changes, apply [Desktop accessibility](desktop-accessibility.md) to every composite
 form row. Add one keyboard-only offscreen test per operator task, not one test
 per widget. A passing test must reach the primary action, hear or inspect the
 current evidence, recover from a blocked action and close without using a
 mouse.
 
-## Implementation order and completion gates
+## Historical implementation order and completion gates
 
 1. Normalize the three evidence-review surfaces around the specialist cohort
    contract. Preserve blinding and exact authority. Real incomplete and complete

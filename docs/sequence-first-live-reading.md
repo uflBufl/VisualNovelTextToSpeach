@@ -1,662 +1,189 @@
 # Sequence-first live reading
 
-## Implemented foundation
+**Status: current runtime architecture and acceptance limits.** Sequence modes
+are implemented, but deterministic replay does not qualify native input or
+real audio hardware. Use [Playing](playing.md) for player operation,
+[Typed live audio routing](live-audio-routing.md) for audio selection, and
+[Replay acceptance](live-replay-acceptance.md) for capture/seal commands.
 
-The first two runtime-safe slices landed on 2026-08-29. They deliberately do
-not control the game yet:
+## Purpose and modes
 
-- released `vntts-artifacts` v0.7.1 owns the schema-version-1 sequence reader
-  and writer, exact story-index SHA-256 binding, source-extract provenance and
-  producer identity. VNTTS retains only its runtime cursor;
-- validation rejects unknown or duplicated story line bindings, speech lines
-  from another chapter, dangling successors, unreachable events, invalid
-  automatic/choice/terminal control, cross-chapter edges and unguarded
-  automatic cycles. Runtime-transparent passive transitions are part of cycle
-  detection, so they cannot hide an automatic loop behind a non-user-controlled
-  event;
-- invalid input is validated in a temporary candidate before publication, so a
-  rejected write does not replace or create the requested output;
-- the session-only `StoryCursor` implements the seven planned states and
-  explicit anchor, playback, one-key dispatch, transition confirmation and
-  fail-closed desynchronization operations;
-- `shadow` rollout mode can be selected with a validated plan and story index.
-  It observes only exact canonical story-index line IDs, reports cursor state,
-  event/line IDs, next-event count and reason through the privacy-safe pipeline
-  event callback, and never changes speech routing or sends an advance key;
-- an explicit linear chain of automatic silent and passive transition events
-  may be crossed by a later exact speech observation in shadow mode. A choice,
-  wait, branch or unplanned line still fails closed, and later observations
-  cannot implicitly recover a desynchronized cursor;
-- a `transition` event uses passive control: the game advances its own timed
-  background, effect or title step and VNTTS observes the successor without
-  sending a key. This is distinct from an automatic `speech` or `silent` event,
-  where VNTTS may eventually send exactly one configured advance key.
-- `audio-manual` and `audio-auto` bootstrap inside the configured sequence plan.
-  Exact matching remains first; a complete line with minor OCR substitutions is
-  accepted only when bounded comparison leaves one high-confidence plan line.
-  Typewriter prefixes, low-coverage similarity and close competing candidates
-  remain unsynchronized. The captured Hotelier line from chapter `314601`, where
-  Tesseract read `Dŵr` as `DWr` at 95% confidence, resolves uniquely to line 20
-  and is replaced by its checksum-bound canonical speaker/text before existing
-  original/generated/live routing. Once locked, an unmatched, unplanned or
-  desynchronized observation is not spoken. An unsynchronized miss is consumed
-  without enqueueing an empty Pocket TTS request. `audio-manual` forces whole
-  dialogue chunks and suppresses auto advance even if the saved general toggle
-  is enabled; the player remains responsible for every transition.
-- `audio-manual` binds the first exact anchoring dialogue fingerprint. After its
-  typed playback completes successfully, a changed fingerprint must be observed
-  identically twice; the first observation suppresses OCR while the frame
-  settles, and the second follows only one deterministic graph path to a speech
-  or silent event. Speech uses the exact story-index speaker and text,
-  including one full canonical live fallback when no reviewed WAV exists. A
-  branch, manual boundary, failed playback or still-playing event remains
-  closed. Passive non-dialogue events may be crossed, but a silent dialogue box
-  is retained as its own cursor event. Successful canonical live fallback is
-  sealed against late OCR suffixes just like generated/source WAV playback.
-- Schema 27 makes `audio-auto` with guarded advancement the new-install
-  default. A missing or invalid plan still leaves the cursor unavailable and
-  sends no key. Settings saved before the cutover retain their previous
-  `off`/disabled values when those fields were absent, while every explicit
-  `off`, `shadow`, `audio-manual` or `audio-auto` choice survives migration.
-- every sequence speech path now crosses one canonical authority boundary. It
-  resolves the cursor-owned event to its plan-bound line ID, requires the story
-  line's text SHA-256 to match its exact UTF-8 text, and only then exposes that
-  line's speaker and text to audio routing. OCR may identify a bounded event but
-  cannot supply, replace or repair the spoken payload; an integrity mismatch
-  desynchronizes instead of speaking the observation.
-- production sequence audio authorizes full OCR by cursor purpose rather than
-  merely by frame change. It runs for initial anchoring, a bounded ambiguous
-  branch/manual window or explicit desynchronization recovery. Locked linear
-  frames, playback, focus transitions and prefix completion stay visual-only;
-  replay can acknowledge those frames without feeding their text into the
-  incremental OCR tracker. Completion-cue and owner-bound render-quiet probes
-  close early-playback barriers without another recognition pass.
-- every cursor anchor owns a monotonic event occurrence. Playback completion
-  carries an immutable `(event_id, occurrence_id)` lease, so a late callback
-  from before an explicit resync cannot complete the revisited event. A
-  per-occurrence terminal ledger accepts exactly one successful original,
-  generated or live route (or intentional silence), and guarded auto advance
-  requires that terminal record. A second key request for the same lease is
-  rejected even if a callback or focus transition is repeated.
-- cursor reads and transitions are serialized by one controller-owned re-entrant
-  lock across OCR, playback and UI threads. Stable-frame candidates carry both
-  their cursor owner and a frame-route epoch; an explicit frame bind invalidates
-  in-flight routing before it can overwrite a newer user selection. Invisible
-  or unfocused frames are rejected before even the initial OCR bootstrap path.
-- a changed fingerprint during manual advancement is not evidence that exactly
-  one dialogue box was crossed. OCR-free routing is therefore limited to a graph
-  window with exactly one visible candidate. When two or more visible events are
-  reachable, the bounded canonical recognizer identifies the actual box before
-  the cursor moves, preventing a rapid two-line skip from speaking the skipped
-  intermediate line.
-- the control window and tray expose `Set story position / resync` only in
-  `audio-manual`. The chooser lists visible speech/silent events with chapter,
-  sequence, speaker, text and event ID. A stopped-session choice establishes the
-  next start anchor and story scope. During live reading it clears stale queued
-  speech, binds the latest frame and routes the selected canonical speech event
-  immediately; silent events update position without synthesizing text. Invalid
-  or non-visible event IDs fail closed.
-- explicit expected-event selection and resync route their canonical line ID in
-  the immutable speech chunk. Repeated identical speaker/text pairs cannot be
-  re-resolved to the wrong occurrence by mutable chapter proximity. Voice
-  deferral leaves the cursor unchanged; a later queueing failure moves it to a
-  published fail-closed state and records the terminal outcome instead of
-  leaving an invisible partial mutation.
-- the same control window now keeps a persistent sequence-first card rather than
-  relying on transient status text. It shows cursor state/reason,
-  chapter/sequence, event and line IDs, canonical speaker/text and the count of
-  explicit next candidates. Plan load, session reset, OCR anchor, playback
-  start/outcome, visual transition and resync all publish immutable snapshots.
-  Failed playback, desynchronization and branch/manual boundaries make recovery
-  guidance durable and emphasize the story-position control; off and shadow
-  modes do not present it as a manual action.
-- live replay schema version 2 binds the exact story index and sequence plan by
-  contained path and SHA-256, revalidates and snapshots both immediately before
-  execution, and drives the production `AppController`, cursor, route and
-  playback callbacks. Reports bind ordered canonical event/line IDs, distinct
-  OCR-routed frames, raw OCR invocations, bounded recoveries, key attempts and
-  confirmed keys. Every routed frame states whether OCR or the locked canonical
-  path supplied it.
-- the tracked shadow and audio-manual sequence corpora pass deterministically.
-  Together they cover typewriter prefixes, a lost nameplate, internal ellipsis,
-  original/generated/missing-WAV routes, focus loss, manual multi-line recovery
-  and duplicate/stale ledger protection. Focused tests additionally prove that a
-  pure `...` event advances without synthesis, identical ambiguous initial lines
-  produce no speech and branch/choice recovery selects only an explicit bounded
-  candidate.
-- the real-game recorder writes every distinct crop to a checksum-bound
-  observation ledger before deriving dialogue groups. With a story authority,
-  typewriter prefixes, transient nameplates and corrupted OCR remain unresolved
-  evidence; only exact canonical identities and standalone ellipses are
-  promoted. Exact capture binding locks to the first canonical chapter. A
-  visual three-dot detector recovers `...` even when OCR sees only the
-  nameplate/background, and the nameplate speaker may be restored only from the
-  bound story's speaker names. This prevents animation states from becoming
-  false boundaries and prevents short text from escaping to another chapter;
-- `vntts-recover-live-replay-capture` validates and copies a branch-free exact
-  run into a separate raw corpus without changing the source capture. Bounded
-  prefix, OCR-suffix and high-margin similarity recovery is limited to the
-  checksum-bound plan line IDs. Intervening noise is absorbed only across the
-  current event or its unique explicit successor, and only one best
-  representative frame is retained per event. It never crosses a branch,
-  skipped event or numeric gap, and it emits an exact next-capture segment
-  instead of hiding unresolved evidence when the gate is insufficient;
-- raw real-game capture remains immutable schema version 1 evidence. The
-  `vntts-seal-live-replay` bridge publishes a separate schema-version-2 bundle
-  only after copying and hashing its exact story/plan authorities, mapping every
-  captured screen to the unique next explicit event, snapshotting only referenced
-  generated WAVs, measuring the production controller and reproducing the sealed
-  counters in a second run. Its review report never records a human acceptance
-  automatically.
-- schema-version-2 dialogue identity is event-first. Speech binds both event ID
-  and story line ID; a visible line-less silent event binds the event ID with a
-  null line ID and cannot declare playback. Exact ellipsis OCR may acknowledge
-  such an event only when it is the unique explicit successor. This closes the
-  real chapter's previously unrepresentable sequences 18, 19 and 78 without
-  pronouncing punctuation or inferring numeric gaps.
+When a verified story index and event plan exist, OCR identifies the visible
+event; the plan-bound story line supplies canonical speaker and text. Recognition
+noise cannot replace the spoken payload. A general OCR session remains available
+for games without those assets.
 
-`vntts-artifacts` v0.7.0 introduced game-pack schema version 2 with an optional
-checksum-bound `live_sequence_plan` core component. Its loader deliberately
-retains schema-v1 compatibility, while schema v1 still rejects the new component
-because its v0.6.x readers cannot understand it. The pinned v0.7.1 safety patch
-also rejects automatic cycles hidden behind passive transitions. Reverse: 1999 source-pack
-export can include the plan, and VNTTS pack import selects that exact path or
-clears a stale plan when the imported pack has none.
+| Mode | Routing and control |
+| --- | --- |
+| `off` | Ordinary OCR-driven reading; no sequence cursor authority |
+| `shadow` | Observe canonical matches and report cursor predictions without changing production speech or key dispatch |
+| `audio-manual` | Canonical event routing; every game transition remains the player's action |
+| `audio-auto` | Canonical routing with one guarded application key per eligible automatic event |
 
-The cross-repository acceptance fixture for chapter `314601` contains 104
-events (89 speech, 3 silent ellipses, 11 passive transitions and 1 terminal
-event). A real source pack with 13 voice references was published by the
-extractor and accepted through `vntts-preflight-game-pack`, proving the shared
-writer, version-2 manifest and VNTTS consumer against the same files.
+`AppSettings.live_sequence_mode` currently defaults to `off`.
+`auto_advance_enabled` is a separate setting and defaults to true; ordinary
+window-based OCR reading can therefore use auto advance without a sequence
+plan. In `audio-auto`, sequence control remains unavailable without its verified
+index and plan. Migrated settings preserve explicit mode choices; older missing
+fields and a historical `audio-auto` setting without a plan have dedicated
+migration rules in `settings.py`.
 
-The Reverse: 1999 producer now preserves explicit raw choice targets, treats
-only a present `sequence + 1` record as a linear successor and exposes multiple
-entry anchors for disconnected branch segments. A complete installed-corpus
-round trip through this loader accepted 2,075 chapters and 152,989 events:
-125,875 bound speech, 3,205 silent, 21,143 transitions, 19 standalone choices
-and 2,747 manual waits. This full graph check is the evidence that no numeric gap
-or serialized array position is being turned into an inferred key press.
+## Producer authority
 
-## Problem and evidence
+The shared `vntts-artifacts` package owns sequence serialization and validation;
+`vntts/live_sequence.py` owns the runtime cursor. A game-pack schema-version-2
+manifest may include a checksum-bound `live_sequence_plan`; schema version 1
+remains readable and cannot declare that component.
 
-The legacy live pipeline treated OCR observations as the authority for speaker,
-text, dialogue boundaries and line identity. The story index and generated
-manifest are consulted only after OCR has produced a stable-enough string. This
-puts the least reliable component on the critical path even when the game pack
-already knows the chapter, ordered dialogue, canonical speaker, canonical text,
-source-audio metadata and approved generated WAV.
+A chapter plan carries stable event IDs, source provenance, entry points,
+explicit successors and terminal boundaries. Speech references a story line and
+its text hash. Visible ellipses remain typed silent events; passive transitions,
+choices and manual waits are represented explicitly. Array position and numeric
+gaps never create a key press.
 
-The 2026-08-29 Character Story trace demonstrated the failure mode. One indexed
-Rhiannon line was emitted as two Pocket chunks, while an approved Hotelier WAV
-was bypassed after OCR lost the nameplate and exposed an incomplete prefix as
-Narrator. Local generated playback itself reached first PCM within a few
-milliseconds once routing finally occurred; recognition and synchronization,
-not WAV decoding, dominated the delay and errors.
+Validation rejects mismatched or duplicated line bindings, dangling successors,
+unreachable events, cross-chapter edges and unguarded automatic cycles,
+including cycles hidden behind passive transitions. Candidate output is
+validated before publication, so a rejected write does not replace its target.
 
-The first full raw replay capture provided 262 distinct frames but the former
-typewriter grouping emitted 190 dialogue groups and 186 inferred boundaries.
-Only 28 groups mapped to canonical lines; 162 were animation/nameplate noise.
-Strict checksum-bound recovery treats the 162 unresolved legacy groups as
-barriers rather than assuming they are harmless animation; its longest explicit
-run is therefore one speech event, with no silent event. It correctly did not
-publish a sealable 20-event corpus. The recovery report identifies sequences
-4-23 as the shortest explicit 20-visible-event follow-up, including silent
-sequences 18 and 19. This is evidence for the grouping repair, not a passed
-real-game acceptance gate. The repaired follow-up capture retained 86 distinct
-frames and recovered 21 consecutive visible events, sequences 4-23 and 25,
-including the separate Hotelier and Rhiannon silent events at sequences 18 and
-19. Its production `audio-manual`, `live-tts-only` seal passed twice with 21/21
-frame and event identities, 19 speech routes, two silent routes, zero skipped
-frames and zero key dispatches. This closes the 20-event software replay gate;
-the Hotelier and Rhiannon silent mappings received human approval on 2026-08-29.
-The later full-chapter capture proved that an arbitrary 100-visible-event gate
-was impossible: the plan has 104 total events but only 92 dialogue-box events
-(89 speech and three silent). Recovery now derives a complete-visible-chapter
-gate from the plan. The immutable full capture recovered all 92 events after
-bounded fixes for nameplate-contaminated text, curly apostrophes, truncated
-short lines and faded representative frames. Its first frame was already
-fading and therefore correctly failed the production presence gate; the prior
-accepted seal supplies event 4, while a new overlapping suffix seal passed
-twice for all 91 events from 5 through 101. The checksum-bound union report at
-`rhiannon-visible-chapter-coverage-2026-08-30-v3.json` proves 92/92 technical
-coverage with no missing event. The unique silent frontier at event 78 received
-explicit human mapping approval on 2026-08-30; together with the earlier
-approval for events 18 and 19, the report now proves complete human acceptance.
+An externally selected matching plan can accompany a pack that omits one.
+Reapplying that same pack preserves the external plan and mode; switching to a
+different pack clears an unowned plan, and an embedded plan takes precedence.
 
-The existing story index is useful but not yet sufficient to drive the game
-blindly. Chapter `314601` contains 89 indexed lines across sequences 4 through
-101, with seven missing ranges: 18-19, 24, 32, 51, 61, 78 and 89-90. Inspection
-of the exact installed Unity asset on 2026-08-29 showed that the source actually
-contains 104 raw steps with declared order. Sequences 18, 19 and 78 are visible `...` lines
-that the speakability filter removed; 24, 32, 51, 61, 89 and 90 are timed
-background, camera, audio or effect transitions with empty English text; 1-3
-and 102-104 are opening/closing transition and title-card steps. This confirms
-that numeric gaps must not be interpreted as key presses and that the producer
-must classify the raw array before filtering text. The index still contains no
-successor edges or choice boundaries. The active generated manifest covers 60
-of its 89 indexed lines, while 15 declare installed source audio.
-
-## Target principle
-
-In a validated game-pack session, the runtime sequence plan is authoritative.
-OCR is used only to acquire an initial anchor, disambiguate a branch and recover
-from proven desynchronization. While the cursor is locked, VNTTS never speaks
-OCR text and never chooses a voice from an OCR nameplate. It routes the expected
-line ID directly to original game audio, approved generated audio, or live TTS
-of the canonical indexed text.
-
-The control flow becomes:
+## Runtime ownership
 
 ```text
-bootstrap anchor -> locked story cursor -> route expected event
-                 -> wait for audio and visual readiness
-                 -> send at most one key -> confirm visual transition
-                 -> advance through an explicit successor edge
+initial anchor -> locked cursor -> route canonical event
+               -> wait for audio and visual readiness
+               -> send at most one guarded key
+               -> confirm a changed stable frame
+               -> follow an explicit successor
 
-unexpected transition -> desynchronized -> bounded OCR recovery
-                                      or explicit manual resync
+unexpected transition -> bounded recovery or explicit resynchronization
 ```
 
-## Producer contract
+Initial OCR must identify an exact or uniquely strong plan-bound line.
+Low-coverage prefixes and close competing candidates do not establish an
+initial anchor. Once locked, every speech path resolves the cursor event to its
+line ID and verifies the text SHA-256 against exact UTF-8 text before routing.
+Unmatched, unplanned and desynchronized observations cannot escape into generic
+live TTS, history updates or unknown-speaker prompts.
 
-Add a checksum-bound optional `live_sequence_plan` component to a game pack.
-Keep it separate from the general story index so corpus search and runtime
-control-flow semantics do not become one ambiguous schema.
+A controller-owned re-entrant lock serializes cursor transitions across OCR,
+playback and UI threads. Frame-route epochs invalidate in-flight work after an
+explicit frame bind. Each anchor creates an event occurrence; playback carries
+an immutable `(event_id, occurrence_id)` lease. Late completion from an earlier
+visit cannot complete a newly reanchored event. Its terminal ledger accepts one
+successful canonical route or intentional silence and rejects duplicate keys.
 
-Each chapter plan must contain:
+Focus, visibility, cursor ownership and stable-frame evidence are checked before
+routing and again before dispatch. Focus-probe failure is a retryable
+`focus-wait`, never permission to send input. A pending key is confirmed from a
+subsequent explicit visual transition; it is not blindly retried. Passive timed
+events do not receive keys. Choices, waits, manual boundaries and ambiguity
+pause automatic control.
 
-- stable event IDs and the source chapter/sequence provenance;
-- every advanceable dialogue-box event, including speakable lines, `...`, typed
-  audio events, intentional omissions and other silent boxes;
-- a story-index line ID for every speakable event, binding canonical speaker and
-  text hash without duplicating mutable text;
-- explicit event kind: `speech`, `silent`, `transition`, `choice`, `wait` or
-  another validated
-  game-specific kind;
-- explicit successor event IDs, entry points and terminal events;
-- branch/choice metadata sufficient to know when automatic advancement must
-  pause;
-- the producer version and hashes of the exact story index and source extract
-  from which the plan was derived.
+A manual advance during playback suppresses stale audio. A changed frame does
+not prove that exactly one event was crossed. OCR-free manual routing is limited
+to a graph window with one visible candidate; rapid skips and competing
+successors require bounded recognition. A visible line-less silent successor
+can be confirmed from an exact ellipsis or the restricted sequence-owned visual
+gate without pronouncing punctuation.
 
-Publication must fail when a successor is missing, a referenced line identity
-does not match the story index, an auto-advanceable cycle has no explicit guard,
-or an unexplained producer omission could correspond to a visible dialogue box.
-VNTTS must never reconstruct missing events from sequence-number gaps.
+## Early playback and visual completion
 
-## Runtime state machine
+Full OCR serves initial anchoring, bounded ambiguous recovery and explicit
+resynchronization. Locked linear progression can use the canonical cursor and
+visual evidence instead of re-recognizing every line. The production timeline
+distinguishes canonical routing authority from actual OCR evidence.
 
-Introduce a session-owned `StoryCursor` independent of the incremental OCR
-tracker. Its externally visible states are:
+During current playback, a unique immediate generated speech successor can be
+prefetched on the synthesis executor. Verification reads, hashes and decodes one
+WAV snapshot. The reservation binds backend authority, owner event, line ID and
+text hash; stale results cannot route as another event. Prefetch neither
+synthesizes live audio nor crosses branches, silence, choices or waits.
 
-- `unsynchronized`: no trustworthy chapter/event anchor;
-- `anchoring`: one bounded OCR operation is resolving an exact or uniquely safe
-  indexed line;
-- `locked`: one current plan event and its allowed successors are authoritative;
-- `playing`: the current event route is active;
-- `waiting-transition`: one advance key was sent and no second key is permitted;
-- `desynchronized`: captured evidence conflicts with the expected transition;
-- `manual`: a choice or unsupported event requires the player.
+A reserved generated immediate successor can start after an application-owned
+single key and a focused, visible, changed stable frame. Bounded unique generated
+prefixes can also start after checksum/metadata preflight. These paths retain a
+separate canonical-full-text barrier: audio may start before typewriter rendering
+finishes, but the next key must wait. Cursor-supplied text cannot satisfy that
+barrier as if it were OCR.
 
-Bootstrap should use one exact or unique current-chapter OCR match. A user may
-also select a chapter/start event explicitly, avoiding OCR altogether. The
-cursor persists only session progress, never mutates the immutable pack.
+Completion can be established by canonical OCR, a continue cue or 800 ms of
+owner-bound render quiet on the same focused visible event. Render quiet cannot
+select a successor. The capture loop retains fast cadence while this barrier is
+open; changed typewriter glyphs reset the quiet timer. Missing/corrupt WAVs,
+ambiguous prefixes and live-only prefix routes retain the ordinary exact gate.
 
-For a locked speech event, routing receives the event's line ID directly. The
-speaker and text come from the checksum-bound story index. If an approved WAV
-exists, it is prefetched and played. If it does not, Pocket or another selected
-fallback synthesizes the full canonical line once. OCR output cannot replace or
-append to that text.
+Audio policy and semantic source completeness are owned by
+[Typed live audio routing](live-audio-routing.md). Full authoritative original
+speech remains game-owned in live mode. A partial cue can precede the full
+reading; unknown completeness cannot masquerade as a complete source route.
 
-For a locked silent event, VNTTS schedules no TTS but still waits for visual
-readiness before it may advance. Choice and unsupported events pause automatic
-control and explain the required manual action.
+## Manual recovery and diagnostics
 
-## Visual synchronization without full OCR
+Recovery searches the current event and explicit successors, then a small
+monotonic same-chapter window. Full OCR must leave one safe canonical candidate;
+otherwise the user chooses position. Numeric sequence gaps and a single changed
+frame never imply how many lines the player skipped.
 
-The capture loop remains necessary, but its normal locked-mode job is cheaper:
+Manual-audio mode exposes bounded expected-event recovery and full story-position
+resync. A stopped-session selection establishes the next anchor. During reading,
+a valid choice clears stale speech, binds the latest frame and routes the
+canonical line, or preserves a typed silent event without synthesis. Candidates
+are recomputed when applied so a stale UI event ID cannot move the cursor. The
+compact controls share the bounded action; full chapter selection remains in
+the full window.
 
-1. detect that the dialogue region is present;
-2. detect a changed dialogue-region fingerprint after an advance;
-3. detect that typewriter rendering has settled for a bounded interval; and
-4. confirm focus before any key dispatch.
+The cursor snapshot carries chapter/sequence, event/line IDs, state/reason,
+canonical content and candidate count. Expected audio is a non-mutating
+policy/manifest prediction; rendering status does not prepare audio or hash
+WAVs. Actual audio is displayed only when its typed route trace belongs to the
+current line. Technical diagnostics and recovery use those shared snapshots.
 
-Audio completion alone is insufficient because a short WAV can end while text
-is still rendering. Visual stability alone is insufficient because animation or
-an unchanged repeated line can create false transitions. The advance gate is
-therefore `audio complete or silent event`, plus `dialogue render settled`, plus
-`game focused`, plus `cursor still owns the same event`.
+Manual diagnostics refresh requests fresh capture/OCR and uses a generation to
+reject late results. A screen-capture diagnostic window conceals itself during
+capture and must restore on success, failure or timeout. Passive pipeline
+snapshots do not substitute for a requested refresh.
 
-In a linear successor step, a verified dialogue-region transition is enough to
-move without full OCR only when the bounded graph window contains exactly one
-visible candidate. A longer linear window still requires bounded recognition:
-manual input can cross multiple boxes between captures. There is one narrower
-exception for a line-less silent successor. In `audio-auto`, while exactly one
-application-owned key dispatch is awaiting confirmation, a focused, changed and
-settled dialogue frame may bind the unique immediate silent successor even when
-later speech events also exist in the bounded lookahead. This does not apply in
-manual mode, across a branch, or to an immediate speech successor. The resulting
-`expected-silent-ellipsis` route schedules no audio and owns one subsequent
-advance. The implemented gate requires plausible bright glyphs in the lower
-dialogue band, rejects empty and mostly bright popup-like crops, waits for two
-equal changed fingerprints for at least 120 ms, rechecks game focus in the
-consuming worker, and binds the candidate to the cursor event and frame-route
-epoch that first observed it.
-Visibility loss, focus loss, a changed fingerprint, a changed owner or an
-explicit frame bind resets or invalidates the candidate. The three-pixel lower
-bound intentionally preserves a small anti-aliased `...` as a visible dialogue
-screen.
+Routine timeline records use stable IDs, shortened fingerprints and allowed
+metadata instead of dialogue text. Declared stages include stable-frame gates,
+cursor transitions, canonical-prefix visual rechecks, canonical-full-text,
+successor prefetch and withheld-advance reasons. Observational recording must
+not abort routing. Speaker-announcement completion is separate from canonical
+dialogue completion and never owns an advance key.
 
-The glyph fingerprint excludes the reserved bottom-right continue-indicator
-area before it measures the brightest dialogue pixel or builds the binary glyph
-mask. Reverse: 1999 animates a bright triangle in that margin after text is
-complete. Including it changed both the pixels and the global glyph threshold,
-so an early-prefix frame could never converge with the visibly unchanged full
-dialogue. The exclusion is limited to the rightmost 8% below 68% of the crop;
-speaker and dialogue glyph changes outside that game-chrome area remain part of
-the fingerprint. Tests vary indicator position, fill and peak brightness while
-also proving that a bottom-line glyph immediately left of the reserved margin
-still changes identity.
+## Acceptance evidence and limits
 
-That reserved indicator is also an independent completion cue for the narrow
-case where an exact generated WAV has already started from a verified canonical
-prefix but OCR never recovers the short suffix. It may close only the current
-owner-bound event after the dialogue frame is visible and stable. It records
-canonical full-text completion and updates the routed fingerprint, but never
-selects or advances to a successor. Missing indicators, empty captures and
-mostly bright popup-like crops remain in OCR recovery, so game chrome cannot
-silently move the story cursor.
+[Replay acceptance](live-replay-acceptance.md) owns corpus schemas, capture,
+recovery, sealing and coverage-union instructions. The tracked shadow,
+manual, automatic and automatic-safety corpora exercise the production
+controller with device-free capture/input/audio adapters. Assertions bind event
+order, speaker, source, per-frame consumption, recovery and attempted/confirmed
+keys. Route integrity requires no wrong, duplicate, stale or app-skipped dialogue.
 
-Indicator component thresholds scale with the captured dialogue width rather
-than using a fixed pixel count. The same game marker occupies about `10x9`
-pixels in a 1898-pixel crop but only `4x3` pixels in the active 861-pixel crop.
-Detection additionally constrains its normalized bottom-right center, compact
-aspect ratio and component bounds; tiny punctuation and text elsewhere in the
-dialogue band do not count as completion cues.
+Historical motivation came from a Rhiannon line split into live typewriter
+chunks and a generated Hotelier recording bypassed after nameplate loss.
+The chapter `314601` plan has 104 total events but only 92 visible speech/silent
+boxes; complete-visible acceptance derives its target from the plan. The
+August 2026 capture/seal work reported full technical coverage and explicit
+human mapping approval for its silent events. These are dated corpus results,
+not a present-day production qualification claim; the external artifacts are
+not shipped as a reproducible repository gate.
 
-Some completed dialogue screens do not show that indicator, and a short
-typewriter prefix can collide with the full line's downsampled glyph
-fingerprint. While and only while the current owner-bound event has canonical
-prefix confirmation pending, capture keeps a bounded fast visual cadence. A
-completion cue or owner-bound render quiet closes the barrier without running
-OCR; ordinary stable frames remain cached. Rechecks require a visible focused
-capture, carry no text in telemetry, and cannot select a successor or schedule
-a second canonical utterance.
+Production qualification still requires a real-game focus/choice run, listening
+for correct voice and timing, driver underrun/stop behavior, Windows input and
+capture, and long-session behavior. Keep these distinct from a passing software
+replay. In particular, require:
 
-When there are multiple successors, repeated identical lines, an early manual
-advance, or an unexpected fingerprint, use a small expected-candidate recognizer
-first. It compares only the allowed successor speakers and discriminating text
-anchors. Full OCR is a last recovery stage, never the default loop.
+- canonical payloads while locked, with no OCR guesses spoken;
+- correct line/speaker/order and an approved WAV whenever eligible;
+- bounded full-OCR recovery with reasons recorded;
+- one key per eligible event, with focus loss and unsupported boundaries safe;
+- no early advance while text is still rendering;
+- local generated playback latency measured separately from source cues and
+  optional speaker announcements.
 
-The bounded recovery recognizer is implemented for settled branch, manual and
-desynchronized frames. It searches only the current speech event and visible
-events reachable through declared graph edges, capped at three visible events
-and 24 total nodes. Exact speaker/text is preferred; a corrupted or missing
-nameplate may be ignored only when canonical text selects exactly one allowed
-line. The cursor can then recover directly to that explicit event. Ambiguous
-repeated text and observations outside the bounded set remain silent and leave
-the cursor closed. Candidate misses record event IDs and a match-result enum,
-never OCR or canonical dialogue text.
-
-## Desynchronization and manual play
-
-Fail closed rather than speaking an OCR guess. A mismatch must stop automatic
-key dispatch and preserve the current route evidence. Recovery proceeds in this
-order:
-
-1. match the current event or its explicit successors using lightweight anchors;
-2. search a small monotonic lookahead window in the same chapter;
-3. run full OCR and require an exact or uniquely safe current-chapter match;
-4. offer explicit `Use detected line`, `Previous expected`, `Next expected` and
-   `Choose chapter/line` recovery actions.
-
-A manual click during playback interrupts or suppresses stale audio. One
-observed successor transition advances the cursor once. Multiple rapid manual
-advances require lookahead recovery; the system must not assume one key press or
-one changed frame equals one skipped line.
-
-## UI and diagnostics
-
-`Refresh now` always requests a new capture and OCR result, including while the
-live reader is active. The diagnostic window is concealed before capture so it
-cannot photograph itself, and is restored after success, failure or timeout.
-Each request has a monotonically increasing generation; a late worker result
-from a timed-out or superseded refresh is ignored instead of replacing newer
-evidence. The passive live-pipeline snapshot remains available separately and
-is not treated as a manual refresh result.
-
-The tray/dashboard should expose one consistent live-session card:
-
-- chapter and `current / total` event position;
-- current canonical speaker, abbreviated text and line/event ID;
-- expected route and actual route: game, generated or live fallback;
-- cursor state, allowed next event count and last synchronization reason;
-- whether full OCR is idle, anchoring or recovering;
-- a visible desync explanation and explicit recovery actions.
-
-The persistent dashboard card implements these fields for manual-audio mode.
-Its expected-audio value is a non-mutating policy/manifest prediction: status
-rendering never prepares audio and never hashes a WAV. The actual-audio value
-comes from the typed route trace and is shown only when that trace's line ID is
-the current cursor line; a previous line's trace is hidden. OCR activity
-distinguishes initial full-OCR anchoring, recovery availability and the normal
-locked state where full OCR is idle.
-
-Manual bounded recovery is available from both the dashboard and tray. When
-the cursor has one allowed visible lookahead event, `Use expected next line`
-selects it directly; this is the explicit escape hatch for consecutive
-identical dialogue boxes whose fingerprint cannot change. Multiple allowed
-events open a compact chooser containing only the current three-visible-event,
-24-node graph window. The controller recomputes the candidates when the action
-is applied, so a stale UI event ID cannot move the cursor. Selection clears
-stale speech, binds the current frame and routes canonical speech (or preserves
-a silent event). Full chapter/line resync remains a separate final recovery
-tool.
-
-Compact in-game controls expose the same bounded expected-event action whenever
-manual mode has at least one current candidate. It recomputes controller options
-when pressed and follows controller lifecycle readiness; full chapter resync
-remains in the full dashboard. Game profiles preserve `audio-manual` across
-serialization, restart and profile switching.
-
-Timeline diagnostics should record event ID, line ID, previous/next cursor,
-route, fingerprint transition, readiness gates, branch candidates, recovery
-stage and confidence. Text remains represented by stable IDs/hashes in routine
-logs.
-
-The implemented `stable-frame-gate` timeline event records only a shortened
-dialogue fingerprint, visibility, focus, cursor owner event ID, candidate-frame
-count, settled milliseconds and the final readiness boolean. Cursor observation
-and visual-transition events include previous/current event IDs and the cursor
-reason. They do not record dialogue text.
-
-Production timeline recording accepts the reader's stable-frame/suppression
-events and the controller's declared sequence and speaker-announcement stages
-as well as generation stages. The accepted fields remain allow-listed; an
-observational event must never abort dialogue routing.
-`canonical-prefix-visual-recheck` is one of those declared observational
-stages. It records only the shortened fingerprint, visibility/focus booleans,
-cursor owner and recheck interval. Keeping it in the production allow-list is a
-runtime invariant: a same-frame visual retry must not raise from diagnostics
-and therefore prevent completion-cue or render-quiet confirmation.
-`auto-advance-withheld` records a reason enum for focus, owned-frame visibility
-and callback/cursor refusal without retaining dialogue text.
-
-Cursor-bounded text recovery also tolerates a small amount of OCR decoration
-before or after the canonical line. This is needed for portrait/nameplate crops
-such as a visible `???` speaker, where OCR may report Narrator and append frame
-glyphs around otherwise exact dialogue. The recovery remains fail-closed: only
-explicit current/successor line IDs are searched and exactly one sufficiently
-strong canonical candidate must remain. The visible `???` label is announced
-as Unknown while its story binding may still route the line through the
-configured Narrator voice.
-An announcement is considered heard only after its typed playback outcome is
-`completed`. Preparation reserves no durable speaker state: a stale/discarded,
-interrupted or failed cue is eligible again on the next playable line. If two
-same-speaker lines were prepared concurrently, playback rechecks the committed
-speaker key so only the first successfully heard cue is emitted.
-
-OCR profile selection must also distinguish confidence from structural
-completeness. A high-confidence profile that contains only a decorated
-nameplate, such as `: Hotelier`, or mistakes a short uppercase background token
-for a speaker and the real nameplate for dialogue, is not a complete dialogue
-result. The recognizer continues through its bounded preprocessing profiles
-instead of returning that result early. Once geometry proves a plausible
-nameplate above an aligned dialogue row, a complete row as short as three
-characters is valid; `This ...`, `No.` and `...` must not be discarded by a
-minimum-length heuristic. This does not weaken story matching: the resulting
-speaker/text still has to resolve uniquely inside the current checksum-bound
-cursor frontier before it can route audio or confirm a transition.
-
-## Migration and acceptance gates
-
-Implement behind a `sequence-first` feature flag and keep current OCR-driven
-mode available during evaluation.
-
-The automated `shadow`, `audio-manual` and production `audio-auto`
-phases and their deterministic replay gates are implemented. Shadow records predictions and exercises the production
-dispatch gate through a device-free key adapter. Audio-manual uses full OCR for
-its initial anchor, then the visibility/focus/ownership/render-settled gate can
-route deterministic successors without another OCR call while leaving all
-advancement to the player. Explicit manual resynchronization, bounded
-branch/skip recovery and the persistent cursor-status card are implemented.
-Audio-auto queues an exact cursor-owned canonical line immediately, waits for
-successful playback (or a typed silent event), requires the latest accepted
-frame to remain visible, rechecks game focus under the cursor dispatch lock and
-sends at most one key. A changed stable frame confirms that pending key before
-the next event can advance. While that confirmation is pending, an unmatched
-OCR observation is transition noise: it is consumed without opening a voice
-decision, updating dialogue history, enqueueing live TTS or changing generation
-ownership. An OCR-empty transition frame is likewise not a dialogue boundary
-and cannot close the pending confirmation generation. Exact bounded successors
-remain immediate. A uniquely bounded prefix of at least 20 normalized
-characters may confirm immediately only when it selects one cursor-authorized
-line and that line's generated WAV has already passed checksum/metadata
-preflight. Playback uses the complete canonical text and line ID, never the OCR
-fragment. A prefix-started event retains a separate canonical-full-text barrier.
-Screen identity and render completion deliberately use different evidence: the
-compact dialogue fingerprint owns transitions, while a higher-fidelity
-dialogue-glyph fingerprint only measures typewriter activity. Changed
-typewriter frames reset an owner-bound quiet timer and continue through
-recognition rather than being mistaken for the next deterministic successor.
-After playback, the barrier may close from canonical OCR, the continue cue, or
-800 ms of unchanged render activity on the focused, visible frame owned by the
-same current event. Render quiet can confirm only that current line; it cannot
-select or route a successor. The timeline records `canonical-full-text` with
-`owner-render-quiet` and the settled duration when that fallback is used,
-without retaining dialogue text. The user-facing wait says that the current
-line is still rendering instead of claiming that an already stable scene is
-unstable. A synthetic replay uses a generated WAV shorter than the remaining
-typewriter animation and proves one playback with no early key. Missing,
-corrupt, ambiguous and live-TTS-only prefix candidates keep waiting for the
-ordinary exact route. Choice, wait and manual boundaries retain the pending
-no-second-key state and expose bounded expected-event/resync actions.
-
-The same fail-closed rule applies while the cursor is `playing`. OCR continues
-to be available for a matched observation of the current line because that can
-close its canonical-full-text barrier, but an unmatched observation is consumed
-as visual noise. It cannot escape to the generic unknown-speaker path, mutate
-dialogue history or enqueue live TTS. This prevents transient nameplate/frame
-fragments such as `WP` from interrupting checksum-bound generated playback with
-a voice-decision dialog.
-
-When the current canonical line begins playback, the controller also inspects
-the sequence graph without changing cursor state. If exactly one next visible
-event is a generated speech line, its checksum-bound WAV is read, verified and
-decoded on the synthesis executor while the current line plays. The
-reservation key includes backend authority, owner event, line ID and text hash;
-focus/cursor/backend changes make the result stale, and the exact checksum key
-prevents stale bytes from routing as another line. This preflight never invokes
-live TTS, chooses a voice, plays audio or authorizes a key. Branch, silent,
-choice and manual frontiers are not crossed.
-
-The 2026-08-31 full-chapter trace isolated a remaining Narrator delay from the
-same boundary. Generated WAV playback reached first PCM 2-6 ms after route
-selection, but several long Narrator lines waited 4.8-6.1 seconds for an OCR
-prefix. The cursor had sent exactly one guarded key, knew one deterministic
-immediate successor and had already reserved its checksum-valid generated WAV;
-the stable-frame route nevertheless expanded its recovery window to three
-visible lines and refused to select the immediate event. `audio-auto` now uses
-that application-owned single dispatch as the narrow authority it actually is:
-after a focused, visible changed dialogue frame passes the existing stability
-gate, a reserved generated immediate successor routes without OCR. The shortcut
-does not apply to original-audio routes, live TTS, manual overrides, branches,
-choices or waits. It also opens the existing canonical-full/render-completion
-barrier, so audio may start during typewriter rendering while the next key stays
-blocked until that same cursor-owned line is complete. The cursor-supplied
-canonical text is tagged as routing authority rather than OCR evidence, so it
-cannot satisfy its own full-render barrier. Capture also remains on its fast
-cadence while this barrier is open; later typewriter frames and the final exact
-OCR observation cannot be skipped by the ordinary static-dialog backoff. This
-changes start latency only; it does not time-stretch, accelerate or alter the
-WAV.
-
-Focus refusal at the final dispatch check is a typed `focus-wait`, not a hard
-generation failure. It schedules another guarded attempt after focus returns.
-This avoids the former race where several consecutive macOS focus probes could
-observe `false` and then `true`, causing a focused dialogue to be permanently
-marked blocked, while still failing closed and never sending a key to an
-unfocused application. New installations select guarded `audio-auto` and enable
-auto-advance, but the mode stays dormant until a valid story index and matching
-sequence plan are present. Migrated installations retain their prior rollout
-choice. Production qualification remains gated on a real-game focus/choice run
-even though complete chapter route and human acceptance are already 92/92.
-
-Original game audio retains route ownership when the indexed source is declared
-available and semantic completeness is `full` or still unknown. Missing timing
-or unknown completeness seals the route without Pocket/live-TTS duplication and
-pauses automatic advance. A checksum-bound `partial` cue instead finishes
-before the full generated/live reading starts; that final route owns completion
-and advance. Manual game advance remains safe because the next stable canonical
-frame moves the cursor. A successfully completed cursor event cannot start
-canonical audio again unless the operator explicitly reanchors it.
-
-A checksum-bound sequence plan may be selected externally when an otherwise
-valid game pack does not ship one. Reapplying that same pack while saving or
-loading settings preserves the explicit external plan and rollout mode. An
-actual switch to a different pack still clears an unowned plan, while a plan
-embedded in the newly selected pack always replaces it.
-
-Required automated cases include long typewriter text, a lost nameplate,
-punctuation-only silent dialogue, source audio, generated audio, missing-WAV
-canonical fallback, consecutive identical lines, a branch/choice, manual single
-and multi-line skips, focus loss, stale preparation and desync recovery.
-Every sequence replay report carries a `route_integrity` verdict with separate
-counts for wrong line order, wrong canonical speaker, duplicate event routes,
-stale routes and application-skipped dialogue. Replay success requires all five
-counts to be zero. The synthetic long-line case deliberately repeats a paused
-typewriter prefix and supplies noisy and `???` nameplates; only the initial
-anchor may invoke OCR, while the locked route must still speak the canonical
-Centurion line exactly once. The tracked safety corpus retains focus loss and
-return, choice boundaries and bounded recovery; the manual corpus retains a
-rapid multi-line skip into the selected branch.
-
-Production acceptance requires:
-
-- zero speech from OCR text while locked;
-- zero wrong-line, wrong-speaker, duplicate or app-skipped dialogue in the
-  reviewed replay corpus and a complete-visible-chapter real-game run;
-- every visited line with an eligible approved WAV routes to that WAV;
-- no full OCR during ordinary linear locked transitions, with full-OCR rate and
-  recovery reasons reported explicitly;
-- one and only one automatic key per cursor event;
-- focus loss, choices, ambiguity and unsupported events pause safely;
-- generated playback starts within the existing local-WAV latency target after
-  the visual transition is detected.
-
-The privacy-safe timeline records `sequence-successor-prefetch` with target
-identity, result and preflight duration. `first-pcm` records elapsed time from
-the latest visible-text, OCR-stable, generation-start and playback-start marks.
-When a verified prefix starts audio before the final glyph, a later
-`canonical-full-text` event records how far PCM preceded full-text confirmation;
-when confirmation comes first, `first-pcm` records the ordinary forward delta.
-Partial original-game cues are included in `first_audio_ms` and reported as a
-separate `source_audio_lead_ms` component. Speaker announcements retain their
-own route and outcome, and their playback duration is aggregated separately.
-The persisted timeline and support bundle aggregate retained samples as p50/p95
-without dialogue text. These component measurements are diagnostics only;
-real-game acceptance must still separate intentional speaker announcements and
-partial source cues from avoidable route/decode/device delay.
-
-After these gates pass, remove OCR text from the locked-mode speech path and
-retire the old incremental tracker as a fallback-only recovery component.
+The incremental tracker remains necessary for ordinary OCR reading; retiring
+that supported path is not an outstanding migration step of sequence mode.

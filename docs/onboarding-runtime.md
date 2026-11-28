@@ -1,41 +1,39 @@
 # Onboarding runtime behavior
 
-## First-run contract
+**Status: current implementation reference.** Use [Playing](playing.md) for
+reader instructions and [Speech engines](speech-engines.md) for model setup.
+This page describes setup ownership and cancellation in `onboarding_ui.py`,
+`onboarding.py`, `app.py` and `durable_settings.py`.
 
-The recommended first run is intentionally usable without knowledge of OCR
-engines, model identifiers, manifests or sequence plans:
+## Setup and the initiating action
 
-1. Start the game in windowed or borderless mode.
-2. Select its automatically discovered window. A manually entered title is
-   preserved across refreshes.
-3. Optionally select one verified game-pack JSON. The pack is fully preflighted
-   before any draft setting changes; when valid it supplies story, character
-   voices, pregenerated audio and the sequence plan as one atomic configuration.
-4. Let diagnostics verify capture, OCR, audio and speech. The first blocking
-   result is selected and exposes one direct remediation action. External tools
-   that cannot be repaired in-app point to the Requirements documentation.
-5. Confirm the dialogue region and the wider story area, run one OCR-to-speech test, then
-   choose `Finish setup`.
+Reading setup carries the selected game window into the wizard. The reader
+confirms the dialogue area and the wider story area, can preview the current
+line, and saves a validated draft. The story area must include the dialogue
+area. A game pack is optional; a new game can use OCR and a general TTS voice
+without an extracted catalogue or prepared audio. Pocket TTS is the default
+engine; advanced engine and authority settings belong in their dedicated setup
+controls.
 
-Pocket TTS is the recommended default. Hotkeys, backend/model selection,
-language codes, narrator references, voice manifests and gated-model terms are
-available under `Advanced options`; they do not block or dominate that default
-path. A game pack is optional, so a new user can validate basic live narration
-with only a selected window.
+Opening ordinary setup and choosing `Finish setup` saves the draft, returns to
+Reading and focuses Start. It does not replay the preview. When setup was opened
+by **Set up and start** or an explicit prepared-story reading request, successful
+completion may continue that initiating request once. Cancellation, save failure,
+a different capture target or shutdown invalidates the pending start. Prepared
+chapter and playback settings travel with the initiating request instead of
+being replaced by an unrelated saved selection.
 
-`Finish setup` saves the validated draft and returns to the dashboard with
-`Start live reading` focused. It never replays the test line, starts capture or
-sends an auto-advance key. The dashboard keeps status, current dialogue and
-reading/playback controls visible. Technical telemetry and sequence-cursor state
-are collapsed under `Show technical details`; specialist setup shortcuts are
-collapsed under `More setup options` behind the single `Setup and diagnostics`
-entry.
+Diagnostics select a blocking result and offer its direct remediation when
+available. OCR/audio tests are deliberate preview actions; they do not advance
+the game. Screen Recording permission is required for window capture on macOS.
+Accessibility is required when auto advance can send a key: window capture with
+auto advance enabled, except manual sequence mode. In `audio-auto`, a missing
+story index or sequence plan leaves that sequence behavior dormant. The current
+settings default to sequence mode `off`; ordinary OCR auto advance can still be
+enabled and must retain the permission/focus guard. Screen-region capture never
+has authority to send a global advance key.
 
-The default `audio-auto` value is dormant until both a story index and sequence
-plan are loaded. Dormant auto advance does not trigger an Accessibility
-permission request because the runtime has no action it can perform. Screen
-Recording is still required for window capture. Once an actionable automatic
-sequence is configured, Accessibility becomes a blocking diagnostic on macOS.
+## Worker lifetime and cancellation
 
 The end-to-end OCR-to-speech test has one cancellation scope across model
 download, backend startup and OCR/playback. The page exposes `Cancel test`,

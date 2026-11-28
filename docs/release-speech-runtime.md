@@ -89,12 +89,10 @@ from that copied tree. The same relocation probe is mandatory on Windows; a uv
 or CPython change that breaks the portable launcher must fail the build rather
 than ship a package that silently uses a machine-local Python.
 
-The application and staged Pocket runtime require CPython 3.14 or newer. The
-application lock keeps Torch and Torchaudio on the matching 2.10 release: macOS
-uses the official CPU index, Linux uses the CUDA 12.9 index, and Windows uses
-the standard package index because the CUDA 12.9 index does not publish Windows
-CPython 3.14 wheels. Experimental backends retain their isolated, model-specific
-Python environments.
+The app and staged Pocket runtime use CPython 3.14 or newer. The
+[application dependency recipe](../pyproject.toml) and
+[Pocket dependency recipe](../backends/pocket-tts/pyproject.toml) own their
+respective locked versions and wheel indices.
 
 Staging removes managed-CPython alias symlinks and its `include`, `share` and
 `lib/pkgconfig` development trees because they are not needed to execute the
@@ -124,21 +122,22 @@ imports cannot add bytecode caches to the sealed application. The clean-bundle
 verifier runs only after that injection and signature pass, and verifies the
 seal again after inference.
 
-## Cross-platform source quality execution
+## Native playback packaging
 
-CI uses the frozen CPython 3.14 dependency graph. Linux runs under Xvfb with
-EGL, PipeWire and PortAudio runtime libraries so window input and Qt Multimedia
-imports exercise their X11 path. macOS and Windows run the Qt application
-module, Qt asset module and remainder in three fresh processes. Each shard has
-a bounded timeout and captures output in a temporary file; failures publish the
-unittest traceback or last verbose test identity as a GitHub annotation.
+The package scripts stage the capture worker and Pocket speech runtime. The
+current macOS and Windows packaging recipes still need to stage the Rust audio
+worker required by ordinary playback. A successful render-only Pocket
+self-test establishes synthesis readiness. Release playback also needs a clean
+package to find the worker and open the output device. The
+[source build](development.md#source-build) builds both required native workers.
 
-UI tests mock native media players unless native playback is under test. Test-
-owned top-level PySide dialogs receive their scoped deferred-delete event because
-the suite has no continuously running Qt event loop. Real display, hotkey, GPU
-and audio-device qualification remains a release gate.
+For ordinary source tests, see [Development and testing](development.md).
+The platform [Windows build](../packaging/windows/README.md) and
+[macOS build](../packaging/macos/README.md) guides own release commands.
 
 ## Verified unsigned macOS evidence
+
+This is a historical run on the package and interpreter named below.
 
 On 2026-08-31 the arm64 build completed both the direct-app and mounted-DMG
 self-tests with an ad-hoc signature. Each clean-cache render produced 46,080

@@ -1,5 +1,9 @@
 # Authoring resume workspaces
 
+**Status:** Current expert workspace reference with explicitly labelled historical
+acceptance evidence. Working generation state is SQLite; see [bulk
+generation](authoring-bulk-generation.md) for its storage and review contract.
+
 `vntts.authoring.workbench` turns a validated, immutable legacy import into a
 separate mutable resume workspace. The import, its review state and its audio
 are never edited. Queue/state/audio bytes are copied through staging and an
@@ -86,31 +90,25 @@ new source-item hash binds the complete prior ledger, so historical voice
 labels are not re-resolved or flattened.
 
 The successor snapshots both workspace/state authorities and the source input
-controls. Its approved-only manifest retains an additive `config_rebase`
-record. Workspace loading, manifest rebuilding and final game-pack publication
-all validate the same ledger, so copied state outside its canonical successor,
-tampered snapshots and orphaned provenance fail closed. Previously nonterminal
+controls. State retains the additive `config_rebase` record, and package
+publication projects it into the approved-only generated-audio index. Workspace
+loading and final game-pack publication validate the same ledger, so copied
+state outside its canonical successor, tampered snapshots and orphaned
+provenance fail closed. Previously nonterminal
 items remain owned by the new target configuration and may be generated later;
 the rebase itself performs no synthesis and creates no human decision.
 
-Cohort review treats generation state as authority and the approved-only
-manifest as a derived projection. Terminal acceptance commits authority before
-publication, so a failed manifest replacement cannot publish an uncommitted
-approval. Rejection revokes the manifest entry before committing the rejected
-state, so a partial failure can leave the item pending but can never leave a
-rejected WAV published. Every decision is validated against its exact plan,
-cohort, policy, target identities, sample and reviewed evidence before immutable
-review evidence is created.
+Cohort review commits exact decisions in a leased SQLite transaction. Package
+publication derives its generated-audio index from validated state; review does
+not create or replace a working `manifest.json`. A mixed approved/rejected
+cohort therefore commits as one state change, without an intermediate manifest.
+Every decision binds its plan, cohort, policy, target identities, sample and
+reviewed evidence.
 
-Cohort commit cost is scoped to the decision, not to the workspace's inherited
-history. The transaction revalidates every exact target WAV whose approval it
-introduces before staging and again before manifest publication. Unrelated
-approved entries are projected from their checksum-bound state records without
-reopening and decoding all historical WAVs. This does not weaken delivery:
-explicit manifest rebuild, immutable game-pack publication and pack preflight
-still validate every approved file against its recorded checksum and PCM
-quality. An unrelated damaged historical WAV therefore cannot corrupt the
-current decision, but it still blocks publication until repaired.
+Cohort commit cost is scoped to the decision. It validates the exact target
+WAVs and checksum-bound state authority without decoding every unrelated
+historical WAV. Immutable game-pack publication and pack preflight still
+validate every shipped approved file against its checksum and PCM quality.
 
 An optional `vntts.authoring.reference_selection` voice-manifest extension is
 validated against every copied candidate WAV before workspace publication. See
@@ -147,7 +145,7 @@ not guessed.
 not a mutation of either workspace: the target is assembled and validated in a
 staging directory, then published with the same atomic no-replace rename as an
 ordinary workspace. The exact imported seed generation state is retained under
-`provenance/seed-generation-state.json`.
+`provenance/seed-generation-state.sqlite3`.
 
 The source and target must share one byte-identical queue and immutable import,
 and must use the same backend, model identity and generation profile. Narrator
@@ -566,7 +564,7 @@ fails closed. Explicit fallbacks remain a separate typed workflow because they
 have no generated WAV to copy.
 
 The config-addressed successor preserves every unrelated base item, copies only
-the selected exact outcomes, writes an approved-only manifest and records a
+the selected exact outcomes in SQLite and records a
 schema-v2 outcome ledger containing the source reconciliation ID plus every
 source state/item/WAV digest. Source workspaces are never mutated, destination
 publication is atomic no-replace, and repeating the same report is idempotent.
@@ -595,8 +593,8 @@ unlisted source outcomes.
 
 The config-addressed successor binds the base and source workspace, config and
 state digests, the queue digest, each base/source item digest and each fallback
-decision digest. It preserves unrelated base items, rebuilds the approved-only
-manifest, publishes atomically with no replacement and is idempotent for the
+decision digest. It preserves unrelated base items in the successor SQLite
+state, publishes atomically with no replacement and is idempotent for the
 same inputs. The resulting `explicit_fallback_merge` ledger remains part of
 workspace identity and is revalidated by later workbench, rebase, cohort and
 terminal-conflict operations.
@@ -659,7 +657,7 @@ decision for one exact queue identity. This does not create or approve a WAV:
 
 ```sh
 uv run vntts-pregenerate live-fallback \
-  --state WORKSPACE/generated-audio/generation-state.json \
+  --state WORKSPACE/generated-audio/generation-state.sqlite3 \
   --queue WORKSPACE/queue.jsonl \
   --reason offline_fallback_exhausted \
   --model pocket-tts \
@@ -670,8 +668,8 @@ The other accepted reasons are `reference_unavailable_after_audit` for an
 absent item or an exact typed reference-unavailable failure, and
 `generated_audio_rejected` for a generated WAV already reviewed as rejected.
 The command requires the exact Pocket `pocket-tts`/`default` model/profile,
-binds the queue line/text/speaker and prior result hash, and rebuilds the
-approved-only manifest under the generation lease. Raw failed or pending-review
+binds the queue line/text/speaker and prior result hash, and updates SQLite
+under the generation lease. Raw failed or pending-review
 items remain nonterminal until this explicit decision is recorded.
 
 A completed missing-role review whose every candidate arm failed does not
@@ -693,7 +691,7 @@ writing a lease or state file.
 
 Applying the policy requires the deliberately verbose flag
 `--accept-known-role-narrator-fallback`. All exact items are written under one
-generation lease and one state/manifest transaction as Pocket/default live
+generation lease and one SQLite state transaction as Pocket/default live
 fallbacks with schema-v4 evidence. Each item retains its requested character,
 cohort, binding bundle/decision, plan, source workspace and common batch ID.
 An exact repeat is idempotent; the command never represents Pocket as a cloned
@@ -710,12 +708,12 @@ rejects active/partial evidence, validates only the selected failed repair item
 a `sentence_boundary_segmentation` result whose carry-forward item hash equals
 the current failed item. The decision embeds the canonical failed result plus
 workspace, state, queue and item hashes, then rechecks every source before the
-atomic state/manifest commit. It never derives exhaustion from aggregate
+atomic SQLite state commit. It never derives exhaustion from aggregate
 attempt counters and never represents Pocket as pregenerated audio:
 
 ```sh
 uv run vntts-pregenerate live-fallback \
-  --state WORKSPACE/generated-audio/generation-state.json \
+  --state WORKSPACE/generated-audio/generation-state.sqlite3 \
   --queue WORKSPACE/queue.jsonl \
   --reason generation_hypotheses_exhausted \
   --model pocket-tts \
@@ -740,7 +738,7 @@ WAV:
 
 ```sh
 uv run vntts-pregenerate live-fallback \
-  --state WORKSPACE/generated-audio/generation-state.json \
+  --state WORKSPACE/generated-audio/generation-state.sqlite3 \
   --queue WORKSPACE/queue.jsonl \
   --reason generation_hypotheses_exhausted \
   --model pocket-tts \
@@ -771,80 +769,9 @@ import and the preserved seed state remain available as immutable evidence.
 Programmatic callers of `generation_command()` must supply exact queue IDs when
 requesting the same mode, preventing an empty-selection/all-items ambiguity.
 
-The completed Rhiannon workspace was exercised read-only against a temporary
-Paper Heron target on 2026-08-17. The operation carried exactly 15 terminal
-Rhiannon decisions: 10 approved and 5 rejected. Fourteen matched the immutable
-imported generation seed (`review-only`); the one later successful retry matched
-all current synthesis controls and was copied as `full-outcome`. No Narrator
-item was carried, the derived manifest contained exactly the 10 approved entries,
-and the source workspace tree digest remained
-`738258bd3e9f1733e8d9115f916b5c119ba41a78f6bb817696fb2e985240418c` before
-and after the operation. This was an integrity acceptance only; Paper Heron was
-not selected as Narrator and the temporary target was not used for generation.
-
-The final manual narrator decision on 2026-08-17 selected **Centurion**. A final
-Centurion-configured workspace must carry forward the same reviewed Rhiannon
-outcomes, then regenerate only the explicit Narrator scope before any new
-review or game-pack publication. The earlier Paper Heron workspace remains
-historical integrity evidence and must not be reused as the final narrator
-workspace.
-
-The first bounded Centurion rollout on 2026-08-18 selected eight exact Narrator
-queue IDs with `retries=0`, base seed 0 and `--regenerate-existing`. Four typed
-renders completed and passed manual listening review across 4, 7, 10 and 43-word
-lines. Their approved WAV SHA-256 values are, in ascending line order:
-
-- `129fdb220b072d0399f6ec7070bc9f830ea8fdae4e346673eddff801368a17b9`;
-- `4416a880a758cd364f9e913fad5e39fd960a4906fda40a796b410afc5e77a835`;
-- `9020984cda82bd49bfa45d990806e2bb196286418f01662b7942293bf0f69b21`;
-- `2a55cccc32dbb8679339ca3962ed46cb909ff06e0e14f0ecd5d9b554be00c399`.
-
-The other four selected renders failed closed: three reached their bounded audio
-limit before EOS and one failed the internal-silence quality gate. None
-published a new WAV. After the four compare-and-swap approvals, exactly those
-four authoritative items changed, all other 334 state items were unchanged,
-all 15 existing Rhiannon decisions remained unchanged, and the approved-only
-manifest increased from 10 to 14 exact entries. The idle state and manifest
-SHA-256 values are respectively
-`af758d292e411d6222804a5669076537463c52e157510b332f666a1b2c0797fd`
-and
-`2acd86bec929de2bb5e6dcad1282bb9cca8c07969b861e83d503dbfb4a05fe8b`.
-This pilot proves scoped Centurion regeneration and review, not completion of
-the remaining Narrator queue or final-pack publication.
-
-The subsequent bounded rollout replaced all 175 remaining legacy
-generated/pending-review Narrator seeds in eight explicit-ID batches. It
-published 114 complete Centurion WAVs and preserved 61 bounded or quality-gated
-failures without a WAV. A separate first-attempt batch covered all 10 Narrator
-items that previously had no state: one completed and nine failed closed. No
-legacy Narrator seed or absent Narrator item remains.
-
-One diagnostic batch then retried the 24 shortest legacy failures whose stored
-outcomes predated the current synthesis-control provenance. Only three
-completed; 21 failed closed again. That low yield is the stop gate for blind
-mass retries: the other 99 legacy failures remain preserved until a specific
-model, text or quality-gate diagnosis justifies another attempt. The final
-Narrator state is 4 approved, 118 generated/pending-review and 195 failed; 96
-of those failures have already been exercised under the current Centurion
-controls.
-
-Across the rollout, all 19 pre-existing approved/rejected decisions remained
-byte-identical. The final state is idle with no lease or partial WAV; its
-SHA-256 is
-`e5ece47ba13d7b68b44cb9628cb180dcac8ddb516ed58d481d49770f4f6194ba`.
-The approved-only manifest still contains exactly 14 entries and has SHA-256
-`3370b864105d85c431227f5cc283e7b95890687d4fd30c70148367c254832af1`.
-No rollout result beyond the four pilot WAVs was approved automatically.
-
-A read-only technical audit of the 118 pending Centurion WAVs verifies complete
-stored duration, peak and speech-silence metrics for every item and finds no
-duplicate audio digest. Twenty-seven items are prioritized for listening by
-conservative attention heuristics: 14 fast-pace, 11 near-clipping, two
-slow-pace, two notable-pause and one notable-silence flags, with overlaps. These
-flags are review ordering aids, not approval or rejection decisions. The 195
-failed Narrator items separate into 161 bounded missed-EOS/audio-limit outcomes
-and 34 speech-silence failures; even the limit cohort contains short two- to
-five-word lines, so the evidence does not justify a global cap increase.
+The initial Rhiannon carry-forward and Centurion narrator rollout are retained
+in the [historical completion archive](current-character-story-completion.md#early-narrator-rollout-2026-08-17-to-2026-08-18).
+They are acceptance evidence, not instructions to regenerate the final pack.
 
 ## Truthful inspection and focused retry
 
@@ -944,7 +871,7 @@ workspace and verifies queue/output paths, run configuration, narrator, voice
 manifest and every reference hash before backend construction. It passes those
 expected hashes and the output directory's device/inode identity into bulk
 generation, which rechecks them after backend construction, around rendering
-publication and before manifest publication. Queue/output symlinks, directory
+publication and before final-pack publication. Queue/output symlinks, directory
 swaps and control changes fail before generated work can escape or be
 misattributed.
 
@@ -1056,7 +983,7 @@ A valid workspace with no review outcomes says that review is complete; an
 empty filtered projection says that no outcomes match the active filters.
 Neither successful state is presented as a failed workspace load.
 
-Read-only acceptance against the real 592-line workspace on 2026-08-17 returned
+**Historical UI acceptance (2026-08-17):** the real 592-line workspace returned
 the dialog constructor in 0.139 seconds while the 16.331-second full integrity
 projection ran in the background. Qt delivered 469 25-ms heartbeat callbacks
 with a maximum observed 0.300-second gap. The resulting default view contained
@@ -1125,12 +1052,9 @@ DECISION.json` reloads only the controls bound by the exact plan, rejects any
 changed workspace/configuration identity, state, queue, item or WAV authority,
 and commits every target item in one leased state
 transaction. Approved-manifest projection retains the decision, sample and
-target-audio provenance. A split transaction projects an exact per-queue-ID
-approved/rejected map. It publishes a conservative manifest before changing
-state and publishes the final approved-only manifest only after the exact mixed
-state is authoritative; an interrupted transaction can temporarily omit a new
-approval but cannot publish a rejected WAV. `expand` decisions cannot be
-applied.
+target-audio provenance. A split transaction commits the exact per-queue-ID approved/rejected map
+atomically in SQLite. Package projection retains the decision, sample and
+target-audio provenance. `expand` decisions cannot be applied.
 
 The workbench exposes the same flow under `Checksum-bound cohort review`.
 Planning and projection run off the Qt thread. A visible ordered table shows
@@ -1286,18 +1210,10 @@ reconciled in about 0.12 seconds and loaded all 78 remaining operator samples in
 another 0.06 seconds; the previous full-workspace rebuild path exceeded 60
 seconds and is deliberately not used.
 
-Terminal save follows the same narrow authority boundary. A read-only
-2026-08-22 profile of a real 592-item source measured the former broad workspace
-inspection at 2.707 seconds and its redundant full state/WAV validation at
-1.268 seconds. Exact plan-bound workspace/queue/state loading now took 0.002
-seconds, approved-only manifest validation stayed below 0.04 seconds, and the
-ten-source reconciliation plus 78-sample preload took about 0.25 seconds. A
-complete accept/checkpoint/next-cohort transaction on an APFS clone of a real
-source took 0.087 seconds (0.062 commit, 0.017 checkpoint, 0.008 preload). The
-clone was isolated; no real review state or decision was changed by the timing
-run. Unrelated pending WAVs are no longer decoded during another cohort's
-commit, but every already-approved manifest WAV and every target cohort WAV is
-still checksum/PCM validated before canonical replacement.
+Terminal save uses exact plan-bound workspace, queue, state, item and WAV
+authority. Unrelated pending WAVs are not decoded during another cohort's
+transaction. Every target WAV is validated before the SQLite commit; final-pack
+publication validates the complete approved payload.
 
 Every cohort still shown in the bundle is required. The selector numbers it as
 `Required N/M`, and the operation status states both why an action is disabled
@@ -1351,7 +1267,7 @@ largest current 22-target cohort reduced authority capture from 0.0364 seconds
 with repeated per-target state/queue reads to 0.0096 seconds with one shared
 state and queue snapshot, a 3.8x improvement. Every target item and WAV digest
 is still checked, followed by a final state/queue/WAV rehash. The full decision
-performs the durable state/manifest transaction and writes the next
+performs the durable SQLite state transaction and writes the next
 checksum-bound progress document off the Qt thread. A terminal decision no
 longer rebuilds every workspace before committing or fully projects the
 selected workspace afterwards: its embedded plan and transaction retain
@@ -1359,7 +1275,7 @@ state/queue/item/WAV/lease authority, then the fast exact-evidence reconciler
 derives the successor. Expansion still rebuilds only the selected source plan
 because its sample policy intentionally changes.
 
-A read-only acceptance on 2026-08-20 against the current 592-line Character
+**Historical UI acceptance (2026-08-20):** the 592-line Character
 Story workspace first projected 141 awaiting-review rows and one remaining
 checksum-bound Centurion cohort. Its one exact sample appeared as
 `Narrator -> Centurion`, selected but not heard, with Replay enabled. The
@@ -1394,7 +1310,7 @@ readiness provenance lives in `Readiness details`; source audition lives in
 All four secondary areas are named disclosure panels, and only the primary
 review task is expanded in a fresh layout.
 
-Read-only visual acceptance on 2026-08-20 covered the real workspace at the
+**Historical visual acceptance (2026-08-20):** this covered the real workspace at the
 900x640 minimum and at 1600x1000. At the minimum size, navigation/audio controls
 occupy a stable first row and Approve/Reject/Retry occupy a stable second row;
 every label fits without horizontal movement during playback. The wide review
@@ -1477,119 +1393,12 @@ manifests omit them cleanly, so the UI says that source time is unavailable
 instead of guessing from file timestamps. Every workspace records its own
 timezone-aware `created_at` in the validated core document.
 
-## Controlled real retry evidence
+## Historical real-backend acceptance
 
-Clean commit `c77b87c` was used for one real, selection-scoped retry in workspace
-`resume-395a5e5eec0327a3a793b66d-4b727b4671cb0ba2`. The child command contained
-only queue ID `reverse1999:314605:15:d65edc619e8d32c4`, used `retries=0` and
-base seed `0`, and skipped the other 591 queue records. The authoritative
-failure record advanced from attempt 3/seed 2 to attempt 4/seed 3.
-
-The typed MOSS render completed as `limited`, so the executor retained a failed
-record and did not publish a WAV. Post-run verification established all of the
-following:
-
-- the other 337 authoritative state records were byte-for-byte unchanged;
-- the workspace WAV inventory remained exactly the original 197 files, with no
-  added, missing or partial WAV;
-- the approved-only manifest remained empty;
-- the immutable workspace, import and source queue hashes still agreed;
-- all 201 recorded import/source artifacts and both external input hashes still
-  matched their immutable inventory; and
-- `active` was cleared and the generation lease was removed.
-
-This proves safe selected resume, cumulative attempt/seed continuation and
-limited-result non-publication on the real imported history. It is not evidence
-of successful synthesis: the selected line remains failed and no review or
-final-pack decision was made.
-
-## Verified Patch resume and bounded missed-EOS follow-up
-
-Commit `81073bf` corrected two issues exposed by controlled real resumes. MOSS
-keeps the strict three-second hesitation guard, gives longer natural sentences
-a bounded 90-wpm cadence reserve, and retains the existing 20-second absolute
-ceiling. Typed LIMITED failures now retain sample/chunk/token/audio-limit
-diagnostics. Authoring also downmixes typed frames-by-one/two-channel PCM before
-the mono writer instead of flattening channels into time. The focused 54-test
-set and the full 790-test suite passed; an independent review found no P1/P2
-issues and repeated the focused, formatting and adversarial shape checks.
-
-The first selected Patch attempt exposed the channel bug: queue ID
-`reverse1999:101335:98:07f14a785de5037a` produced a mono-declared 384,000-frame
-WAV whose even/odd lanes were near-identical stereo channels. That invalid
-8.0-second workspace is preserved as
-`resume-14d28505d16f4729c363c2de-e8a8270d7eef0826-invalid-stereo-fdf67d29ac81`
-under `authoring/interrupted-workspaces`; it was never approved.
-
-While the clean workspace was being recreated, a parallel source-mapping task
-changed the external story index from SHA-256
-`8af6bce1422b4cced8519f6d5a10e446981106717b3b8c81f362909522b81665` to
-`93cc48052f4e022b1271d0932f5f16af614dcdbc1bc638f178281bea860f7376`.
-The resulting unstarted workspace is separately preserved with suffix
-`unstarted-source-change-93cc48052f4e`; no generation child used it. The real
-retry instead copied the prior immutable story snapshot (`8af6...`) and voice
-snapshot (`ce06030de942ab043f5bc88197c3890aaa05536fc9e0b490e74d116ce9d56eda`),
-restoring the original `e8a8270d7eef0826` config identity.
-
-The corrected Patch retry generated exactly one pending-review WAV on attempt
-1/seed 0: 192,000 finite mono frames at 48 kHz (4.0 seconds), SHA-256
-`ae357b956a8cadafa29af19e320e5e0a49529a84eaa3f438d4660ede846fc3ff`,
-with no measured leading, trailing or internal silence. Its text-derived cap
-was 8.5 seconds/850 tokens. The other 680 state records retained aggregate
-SHA-256 `3a12107a9ab870e06e51a0a0f8c32f15b67df574764c36bbc0284e11433adbac`;
-approved count remained zero and the WAV count changed only from 680 to 681.
-
-The one permitted post-fix retry for the newer history used exact queue ID
-`reverse1999:314606:68:fe4e011250eda914`. It advanced cumulative state from
-attempt 4/seed 3 to attempt 5/seed 4, then reached the expanded bound exactly:
-408,000 samples, 36 chunks, 8.5 seconds and 850 tokens. It therefore remains a
-typed LIMITED failure with no WAV. The other 337 records retained aggregate
-SHA-256 `198f8d504e402acad1431d63edd43e44e6c68d83167fc3283de23a40cc1a4db2`,
-the WAV count stayed 197, approved count stayed zero, and the lease/active
-attempt were cleared.
-
-Both imported directories and both source job directories retained their
-pre-run tree digests. Queue, contained story and voice snapshots remained
-`1831f95d...`/`49f8b0fa...`, `8af6bce1...`, and `ce06030d...` respectively.
-No review decision or final game pack was published.
-
-The remaining newer-history resume gate was completed on pushed commit
-`3c8764c` with a different exact queue item,
-`reverse1999:314605:68:7ee2d4821f58d242`: Rhiannon's seven-word complete line
-“Sorry, I can't tell you exactly where.” Preflight selected exactly one failed
-item and reported it ready with three available Rhiannon references and no
-missing voice; approved count was zero. The run used `retries=0` and base seed
-zero, advancing the existing cumulative state from attempt 3/seed 2 to attempt
-4/seed 3.
-
-The result is one pending-review PCM16 mono WAV at 48 kHz: 157,440 samples,
-3.28 seconds, SHA-256
-`d713178a4596f5e6805df3f3acbef09584567f2d271764dd578f8c451107ccb9`.
-Measured leading, trailing and internal silence and the silence ratio were all
-zero. All 197 seed WAVs retained their expected hashes and the only added WAV
-was `audio/rhiannon/f6f1e3ae6c1431e089b4204b.wav`. The other 337 state records
-retained aggregate SHA-256
-`efe09ad022e91d7b533e4a358a5ccacd6cdb30224b7df518ba946fb65882b197`.
-
-Workspace controls and inputs, the immutable import and source job, and the
-external story and voice-manifest controls retained their pre-run hashes. The
-approved count and approved-only manifest entry count remained zero; active
-attempt, lease, job-process record and partial-file inventory were empty. The
-generated line remained pending review at that controlled-generation boundary:
-the acceptance itself performed no review, approval, rejection or final-pack
-publication.
-
-Manual Rhiannon review was completed on 2026-08-17. The current workspace has
-no Rhiannon outcome awaiting review: ten are approved, five rejected and sixteen
-retain their explicit failed state. The controlled line above is now approved.
-The authoritative state is idle and has SHA-256
-`763f6a632f90b9776d9a26e9a9005730b26e09e343de0b15d68e43ddc75b01a7`;
-the derived approved-only manifest contains ten entries and has SHA-256
-`58cb1c9f97fe723025305d686b385ebeee58bb1623b3a764000f584f49f6ab6e`.
-These decisions remain workspace authority, not a final game-pack publication.
-Changing Narrator configuration must preserve them only through an explicit
-per-item control-equivalence check; a new workspace may not silently discard or
-reinterpret the completed Rhiannon review.
+Scoped real-retry, PCM downmix and early manual-review evidence is preserved in
+the [completion archive](current-character-story-completion.md#controlled-real-retry-evidence-historical).
+Those runs used the state format and controls recorded at that time; they do
+not establish that a current local workspace or model is healthy.
 
 ## Comparison-only composite voices and failed controls
 

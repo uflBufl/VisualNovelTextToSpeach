@@ -33,3 +33,6 @@ for the Developer ID certificate and App Store Connect notary credentials.
 The builder compiles and self-tests the capture helper before PyInstaller
 collects and signs it. The packaged self-test checks helper provenance and IPC
 without requesting Screen Recording permission or capturing the desktop.
+See the [speech runtime release policy](../../docs/release-speech-runtime.md)
+for clean-package validation, including the outstanding Rust audio worker
+staging requirement.

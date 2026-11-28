@@ -1,5 +1,7 @@
 # Mrs. Owen and Hotelier source-reference audit, 2026-08-25
 
+> Historical evidence for the August 2026 census. Use [Source reference review import](source-reference-review-import.md) for current procedures.
+
 This is the exhaustive local evidence boundary for the two Character Story
 roles still marked `needs_sample`. It does not assign a voice or change a
 manifest. Display-name or portrait similarity alone is not identity evidence.

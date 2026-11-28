@@ -1,7 +1,9 @@
 # Native window recorder
 
-This is the tracked replacement for the ignored live-session `capture_helper.swift`.
-Requires macOS 15+ SDK, Swift, and existing Screen Recording permission. All capture
+Use this standalone fixture to qualify exact-window video and audio capture.
+For the desktop recorder, see [CLI and diagnostics](../../docs/diagnostics.md#readiness-and-support).
+The fixture requires the macOS 15 or newer SDK, Swift and existing Screen
+Recording permission. All capture
 commands require an explicit PID and window ID. Missing permission fails at preflight;
 there is no prompt, window search heuristic, or desktop fallback. Window removal,
 owner changes, stream errors, missing video/audio, and encoder/finalization

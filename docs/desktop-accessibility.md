@@ -1,5 +1,10 @@
 # Desktop accessibility invariants
 
+**Status: current implementation invariants.** These constraints apply to Qt
+changes and synthetic input. Native screen-reader and platform qualification
+remain separate from offscreen tests. See [Reader experience](reader-experience.md)
+for the product acceptance scenarios.
+
 Qt form rows that contain more than one control must expose the same semantics
 as an ordinary `QFormLayout` field. Create an explicit label, bind it to the
 primary input with `QLabel.setBuddy()`, and give the input and adjacent action

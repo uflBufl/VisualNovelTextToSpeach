@@ -1,5 +1,8 @@
 # Authoring module boundaries
 
+**Status:** Current developer architecture reference. Compatibility notes describe
+supported exports, not a refactoring backlog.
+
 Authoring wire records must remain below orchestration, UI and final-publication
 modules in the import graph. This keeps checksum validation reusable without
 making runtime consumers import the workflows that create the artifacts.
@@ -174,9 +177,10 @@ their historical bulk-generation pickle and introspection identity.
 
 `vntts.authoring` publicly exposes only `MissingVoicePolicy`, `NARRATOR_ROLES`
 and `publish_final_game_pack`. Normal Python submodule imports remain available.
-The former flat compatibility names still resolve lazily with a deprecation
-warning so existing callers can migrate to their owning modules. Importing the
-package or a leaf such as `generation_state` does not import workbench or PySide.
+These declared exports resolve lazily. Other former flat names raise
+`AttributeError`; consumers must import them from their owning modules.
+Importing the package or a leaf such as `generation_state` does not import
+workbench or PySide.
 
 ## Generation state foundation
 
@@ -195,8 +199,9 @@ this API directly; bulk generation re-exports it and retains
 
 ## Bulk orchestration public boundary
 
-Production modules consume named bulk-generation APIs for checksum-bound cohort
-commits, typed PCM normalization, sentence and inline-pause repair eligibility,
+Production modules use `generation_review` for checksum-bound SQLite review
+transactions and bulk-generation APIs for typed PCM normalization, sentence and
+inline-pause repair eligibility,
 and immutable generation-control snapshots. The historical
 `_review_generation_cohort`, `_generated_mono_pcm`,
 `_sentence_repair_matches_failure`, `_inline_pause_matches_failure` and
@@ -273,7 +278,7 @@ blind-listening import commands. `cli_delivery` owns delivery annotation,
 workspace creation and immutable outcome merges. `cli_speech_robustness` owns
 corpus publication/checking, diagnostic ASR and managed-ASR installation/status;
 it translates its implementation errors through one family error so `cli.py`
-does not import those workflow modules. `cli_audio_events` owns all nine exact
+does not import those workflow modules. `cli_audio_events` owns the exact
 omission, projection-fallback, source-review, production-composition and
 composition-workspace commands. It registers its workspace and review parsers at
 their two historical composition points so top-level help order remains stable,
@@ -323,7 +328,7 @@ implicit and explicit comparison profiles, document results and argv JSON output
 Shared missing-voice and failure-repair flags live in
 `cli_generation_options`, which is reused by generation and workspace families
 without coupling them to each other. `cli_generation` now owns generation,
-review, state publication/status and bounded repair planning. `cli_references`
+review, state status and bounded repair planning. `cli_references`
 owns failure-reference, missing-voice, portrait-alias and source-reference
 workflows. `cli_workspace_transitions` owns immutable reviewed/fallback/config
 successors, while `cli_pack` owns final publication. `cli_errors` is the one

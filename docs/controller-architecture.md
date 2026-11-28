@@ -1,53 +1,43 @@
 # Application controller boundaries
 
-`AppController` remains the stable application-facing facade and composition
-root. UI adapters, replay and tests may continue calling its established public
-methods, but those methods delegate to one of four explicit coordination
-components:
+**Status: current implementation reference.** The public facade is in
+`vntts/controller.py`; coordination components are in
+`vntts/controller_components.py`.
 
-- `RuntimeLifecycleComponent` owns startup, settings replacement and shutdown.
-  Its request-scoped settings guard serializes runtime apply, defines the atomic
-  commit point and releases only the matching live-reader wait on cancellation;
-- `LiveSessionComponent` owns live-reading controls and auto-advance state;
-- `VoiceAssignmentComponent` owns assignment, preview and narrator-fallback
-  operations;
-- `DiagnosticsComponent` owns capture inspection and pipeline diagnostics.
+`AppController` is the application-facing facade and composition root. UI
+adapters, replay and tests use its public methods; the facade delegates the
+following responsibilities:
 
-The components are created once by `AppController.__init__`. Each retains its
-own typed private port: lifecycle cannot see voice or diagnostics operations,
-live-session cannot reach lifecycle state, and diagnostics cannot mutate voice
-assignment. `controller_components.py` is part of the non-shrinkable mypy scope.
-This keeps the existing cancellation, routing, callback and thread-safety
-behavior intact while separating the application entry points by responsibility.
-Stateful implementation methods are private and are not a supported caller
-surface. `DiagnosticsComponent` owns capture geometry, the latest snapshot,
-pipeline metrics and the explicit inspect/test flows directly; these are no
-longer proxy callbacks on `AppController`. It receives only the capture, OCR,
-voice and reporting collaborators described by its narrow protocol.
-`LiveSessionComponent` also owns the one-shot read, playback queue controls,
-story-scope identification, session preflight/start/stop, emergency stop and
-auto-advance setting. Its capture
-helper lives in `live_snapshot.py`, so the component does not depend circularly
-on the compatibility facade. Low-level sequence publication, backend live-mode
-switching and speaker-corpus revalidation remain injected collaborators.
-`VoiceAssignmentComponent` owns voice inventory, assignment mutations,
-narrator-fallback staging, scoped chapter/corpus preflight discovery and voice
-preview lifecycle. Backend preview, narrator application and cache invalidation
-remain injected low-level collaborators rather than parallel public operations.
-`RuntimeLifecycleComponent` owns startup, runtime settings reconfiguration, its
-exact cancellation/commit boundary, ordered shutdown and executor cleanup.
-Startup cancellation is terminal until an explicit `prepare_startup()` begins a
-new user-requested start. Quit sets that cancellation before UI task invalidation
-and applies the live reader's persistent emergency-stop guard before executor
-shutdown, so late OCR or synthesis completions cannot enqueue playback.
-`AppController` injects backend, executor, reader, registry/router and scheduler
-factories as the composition root; lifecycle public operations no longer proxy
-back into controller implementations.
+| Component | Responsibility |
+| --- | --- |
+| `RuntimeLifecycleComponent` | Startup, runtime settings replacement, ordered shutdown and executor cleanup |
+| `LiveSessionComponent` | One-shot reading, story-scope identification, live start/stop, transport, emergency stop and auto-advance settings |
+| `VoiceAssignmentComponent` | Voice inventory, assignment, narrator-fallback decisions, scoped preflight discovery and preview lifecycle |
+| `DiagnosticsComponent` | Capture geometry, snapshots, pipeline metrics and explicit inspect/test flows |
 
-New application operations belong to the component responsible for their
-behavior. `tests/test_controller_components.py` exercises playback outcomes,
-cancellation, shutdown and settings propagation; the tests follow the
-[behavior-focused testing principles](testing-principles.md). Static analysis
-checks collaborator types. Internal class layout, annotation spelling and the
-number of statements in facade methods can change while preserving those
-behaviors and the established application-facing API.
+Each component currently retains an `AppController` reference and accesses its
+shared state and collaborators. This is a responsibility split, not an enforced
+capability boundary: the implementation does not give each component an
+isolated private port. Backend protocols type specific collaborators, and mypy
+checks the application modules through the `vntts` scope in `pyproject.toml`.
+Private helpers and component layout are not an extension API.
+
+The lifecycle component's request-scoped settings guard serializes runtime
+apply, defines the commit point and releases only the matching live-reader
+wait on cancellation. Startup cancellation remains terminal until an explicit
+`prepare_startup()`. Quit sets cancellation before invalidating UI tasks and
+applies the reader's persistent emergency-stop guard before executor shutdown,
+so late OCR or synthesis cannot restart playback.
+
+`AppController` supplies backend, executor, reader, registry/router and scheduler
+factories. Shared sequence publication, backend live-mode switching and corpus
+revalidation remain controller collaborators. One-shot capture helpers live in
+`live_snapshot.py`; diagnostics and voice components coordinate their flows
+without creating another public controller API.
+
+New operations belong with their responsible component. Relevant behavior is
+covered by `tests/test_controller_components.py` and affected controller/live
+consumer tests. Preserve cancellation, callback ownership, routing, settings
+propagation and shutdown outcomes; follow the
+[testing principles](testing-principles.md), rather than asserting facade size
+or an internal class arrangement.

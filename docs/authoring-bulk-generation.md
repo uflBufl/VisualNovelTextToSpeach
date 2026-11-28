@@ -1,96 +1,76 @@
 # Resumable bulk voice generation
 
+**Status:** Current expert workflow. For the player workflow, see
+[self-service pregeneration](self-service-pregeneration.md).
+
 `vntts.authoring.bulk_generation` owns the game-independent executor that turns
 a validated `vntts.voice-generation-queue` v1 document into reviewed PCM WAVs.
-It calls only `render(SynthesisRequest)` with `cache_policy=bypass`; generation
-never opens a playback device or creates a discard audio sink.
+It renders through the typed `render(SynthesisRequest)` boundary and never
+opens a playback device. `--cache-directory` enables the shared content-addressed
+synthesis cache; without it, expert runs use an isolated temporary cache.
 
 ## State is authoritative
 
-New output uses `vntts.authoring-generation-state` version 1. The reader also
-accepts preserved `r1999.bulk-generation-state` version 1 documents and keeps
-that schema when resuming them. Queue identity is the SHA-256 of the exact raw
-queue bytes. A different queue, unknown queue ID, changed line/text identity,
-unsafe path, missing WAV, changed file hash, invalid PCM or changed stored
-quality blocks resume rather than silently regenerating or overwriting work.
+The sole working-state authority is `generation-state.sqlite3` in the output
+directory, owned by `vntts.generation_database`. The semantic state document is
+still `vntts.authoring-generation-state` version 1, but the working file is
+SQLite, not JSON. Renaming an old JSON file does not migrate it. Existing output
+without its registered database is rejected; immutable legacy imports are a
+separate preservation boundary described in
+[legacy import](authoring-legacy-import.md).
 
-The legal item states are:
+Queue identity is the SHA-256 of the exact captured queue bytes. Unknown queue
+IDs, changed line/text identity, unsafe paths, missing or modified WAVs, invalid
+PCM and inconsistent stored quality block resume.
 
 | State | Review | Meaning |
 | --- | --- | --- |
-| `failed` | absent | sparse failure that can be retried |
+| `failed` | absent | typed failure eligible only for supported repairs |
 | `generated` | `pending_review` | valid WAV awaiting a decision |
-| `generated` | `rejected` | valid WAV intentionally unpublished |
-| `approved` | `approved` | valid WAV included in the derived manifest |
+| `generated` | `rejected` | reviewed WAV excluded from publication |
+| `approved` | `approved` | valid WAV eligible for package publication |
+| `live_fallback` | `live_fallback` | explicit runtime route, without a successful WAV |
+| `omitted` | `omitted` | explicit pure-event omission, without fabricated audio |
 
-Legacy sparse failures keep their queue IDs, cumulative attempts, seed and last
-error. Successful legacy records keep their line/text hashes, path, file hash,
-provider/model/prompt provenance, quality and review decision. Rejected audio is
-not regenerated automatically and can be approved later.
-
-Before each render, `active` is atomically persisted with the queue/line/voice,
-phase, local and cumulative attempt numbers, seed, provider/model/profile,
-exact synthesis-text hash, unapplied queue-annotation hash, timestamps and
-latest error. A stale active record is preserved under
-`interrupted_attempts` and counted as a consumed attempt, so resume advances to
-the next deterministic seed rather than repeating an uncertain render.
+Cancellation remains resumable work; it is not successful generation or an
+exhausted failure. Attempts, interrupted work, synthesis controls, effective
+voice, exact synthesis text and review provenance remain in state.
 
 ## Publication and recovery
 
-Each attempt renders typed PCM into an adjacent partial WAV, validates PCM16
-mono at 16 kHz or higher, a 0.1-180 second duration, non-silence and no clipping,
-then hashes it before atomic publication. Only `completion=complete` with
-matching backend/seed/profile diagnostics can publish. An additional frame
-analysis rejects excessive leading, trailing or internal silence and outputs
-whose silent-frame ratio exceeds 50%. Limited, cancelled, invalid and failed
-attempts never become generated audio. Known failure removes only its
-temporary partial; a pre-existing orphan or stale partial is moved into the
-output's `interrupted/` directory before retry.
+Each attempt renders into an adjacent partial WAV and validates PCM16 mono,
+format, duration, non-silence, clipping and speech-silence limits before atomic
+WAV publication. Only typed complete output with matching requested diagnostics
+may publish. Limited, cancelled and failed attempts never become generated
+audio. Interrupted partial or orphaned audio is preserved for diagnosis rather
+than treated as an approved result.
 
-The queue is parsed from one exact captured byte snapshot. The CLI captures the
-voice manifest, every resolved reference and a local model file or complete
-model-directory tree before constructing the backend. Their exact SHA-256
-values form `synthesis_provenance_sha256` and are rechecked after each render
-and before manifest publication. Remote model IDs cannot provide byte
-provenance; their configured ID and backend-reported model identity are recorded
-instead. Queue delivery/prompt annotations are not currently inputs of
-`SynthesisRequest`: state records their canonical hash separately, sets
-`prompt_applied=false`, and uses the SHA-256 of an empty prompt rather than
-claiming that an unapplied annotation changed audio.
+An exclusive `.generation-lease.json` prevents concurrent writers. PID and
+process-start checks plus the persistent advisory guard serialize lease
+creation, stale recovery and cleanup. Inaccessible processes remain
+conservatively live. Resume uses durable state and bounded attempt history;
+it does not infer completion from a WAV filename.
 
-An exclusive `.generation-lease.json` prevents concurrent writers. A live PID
-in that lease, or in a colocated preserved pregeneration `job.json`, blocks the
-run. A dead lease is preserved under `interrupted/` and the run may resume. If a
-process stops after WAV publication but before state publication, the orphan is
-preserved and a later attempt uses the next seed. If it stops after state but
-before manifest publication, the manifest is simply rebuilt from state.
-Process inspection is non-destructive on every supported platform: Unix uses a
-signal-zero permission probe, while Windows opens a query-only process handle
-and reads its exit state. An inaccessible process remains conservatively live;
-lease inspection never sends a Windows termination signal.
+The queue, selected voice manifest, references and local model controls are
+checksum-bound. Remote model IDs retain their configured and reported identity
+without claiming local weight-byte provenance. Delivery annotations currently
+remain metadata: `SynthesisRequest` does not apply them, and state records
+`prompt_applied=false` with the empty-prompt digest.
 
-`manifest.json` is always a derived `vntts.generated-audio` version 1 projection
-of only `approved` + `approved` records, sorted by `(line_id, text_sha256)`.
-Missing or stale manifests do not override review state. Approval/rejection
-writes state first and then rebuilds the manifest; a rebuild error reports that
-the review decision was already saved and can be recovered with `publish`.
-Workbench decisions additionally carry the displayed queue, state-item, state
-and WAV SHA-256 snapshot into this transaction. The replacement state and
-derived manifest are fully validated and staged under unique temporary names.
-The workbench enables Approve and Reject only after that exact queue/state/WAV
-identity reaches end-of-media. Stops and playback failures do not grant heard
-credit, and any authority checksum change requires replay before another
-decision.
-Under the exclusive lease, all four identities and the complete lease document
-are checked again immediately before the canonical state is replaced; the lease
-is checked once more before the manifest replace. If ownership changes in that
-narrow interval, the durable state decision is reported as saved while the
-older derived manifest remains fail-closed until recovery.
-Additive raw entry fields retain generation profile, synthesis/control hashes,
-voice, text transform and silence measurements. The pinned vntts-artifacts
-0.6.2 lossless generated-audio document API exposes those extensions to typed
-consumers. Generation state remains the mutable review and retry authority;
-the generated manifest is still a derived approved-only projection.
+Generation and review update SQLite transactions; they do not write an adjacent
+`manifest.json`. There is no separate `publish` command to rebuild a working
+manifest. Package publication derives the approved-only generated-audio index
+from a stable database snapshot, copies the eligible WAVs and validates the
+staged pack. Exported immutable state snapshots retain their own identity;
+do not hash or copy a live SQLite database as if it were a JSON document.
+
+Expert review binds the displayed queue, state snapshot, item and WAV digests.
+The workbench requires the exact audio to reach end-of-media before enabling a
+decision. Playback failure grants no listening credit. Under the generation
+lease, the transaction rechecks the bound authority and commits the decision
+atomically; changed authority requires refresh and replay. The default player
+workflow instead records explicit automatic technical-gate acceptance, as
+described in [self-service pregeneration](self-service-pregeneration.md).
 
 ## Command line
 
@@ -111,7 +91,8 @@ uv run vntts-pregenerate generate \
 `--limit` is applied to the candidate slice before already-completed items are
 skipped, matching legacy resume semantics. `--character` can be repeated, and
 `--include-prefer-source` explicitly opts recoverable source-audio records into
-generation. The CLI skips characters without configured local references and
+generation. The CLI skips cloning voices without configured local references;
+allowlisted embedded Pocket voices need no reference file. It also skips
 legacy pure `*sound effect*` lines. Mixed inline directions such as
 `N-No! *gurgle*`, `Wh-What! *gasp*`, and event-only `Tsk!` are also excluded
 from ordinary TTS through the typed policy documented in
@@ -137,9 +118,6 @@ uv run vntts-pregenerate status \
   --queue /path/to/generation-queue.jsonl
 ```
 
-Generation and review do not create an adjacent `manifest.json`. Package
-publication projects its generated-audio index directly from SQLite.
-
 Config-addressed resume workspaces use repeated `--queue-id` arguments for an
 exact focused retry. Their child process also supplies expected voice-control
 hashes and the output directory identity; a changed reference or directory swap
@@ -162,9 +140,9 @@ Failure repairs add exact-ID-only controls:
 
 The flags are workspace configuration, synthesis-control provenance and state
 provenance, not ad-hoc transforms. Their set must exactly match `--queue-id`,
-the current state must still contain a typed matching failure, and every
-repaired artifact remains pending manual review. Use
-`failure-repair-plan` first; it is a read-only selector and never runs a model.
+the current state must still contain a typed matching failure. Expert repair
+outputs remain pending review unless an explicit automatic acceptance path is
+selected. Use `failure-repair-plan` first; it is a read-only selector and never runs a model.
 
 The headless projection and safety contract are documented in
 [authoring-workspaces.md](authoring-workspaces.md). The Qt workbench projects
@@ -173,4 +151,4 @@ that attempt into a live elapsed-time display without persisting derived time.
 After a dedicated selected queue has complete terminal review coverage, use
 the [final game-pack publication boundary](authoring-game-pack-publication.md)
 to stage and checksum-bind the story, voices and approved generated audio. The
-publisher does not rewrite this authoritative state or its source manifest.
+publisher does not rewrite this authoritative state or its source inputs.

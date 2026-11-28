@@ -1,5 +1,7 @@
 # Character Story authoring census, 2026-08-25
 
+> Historical inventory from August 2026. See the [final Character Story record](current-character-story-completion.md#final-recorded-outcome) for the later outcome.
+
 This is a read-only reconciliation of the current checksum-bound application
 data for `The You That's Meant To Be`. Paths below use workspace and bundle
 identities rather than a user-specific application-data prefix. The census is

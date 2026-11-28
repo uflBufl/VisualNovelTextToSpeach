@@ -28,7 +28,10 @@ The build discovers Tesseract from `PATH`, then the standard Program Files
 locations. Pass `-TesseractDirectory` to override discovery. The output is
 `dist\VisualNovelTextToSpeech-windows-x64.zip`. The bundle contains Python, Qt,
 all Python dependencies, the capture helper, Tesseract, English OCR data, and
-eSpeak-NG; speech models remain user-managed downloads.
+eSpeak-NG. The builder also stages the isolated Pocket Python runtime. Models
+are prepared separately. See the
+[speech runtime release policy](../../docs/release-speech-runtime.md) for
+clean-package validation and the outstanding Rust audio worker staging requirement.
 
 On a clean Windows machine, unpack the archive and verify it with:
 

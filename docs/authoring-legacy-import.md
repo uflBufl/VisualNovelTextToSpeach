@@ -1,5 +1,9 @@
 # Non-destructive legacy authoring import
 
+**Status:** Current preservation/import reference with historical migration evidence.
+The importer expects SQLite generation state; older JSON-only outputs are not
+automatically migrated. Dated census figures do not describe a live installation.
+
 VNTTS keeps offline pregeneration work in the isolated `vntts.authoring`
 package. The primary player does not import extractor modules or start legacy
 generation commands. The separate `vntts-pregenerate` entry point supports
@@ -9,14 +13,14 @@ blind-listening preservation snapshots.
 
 ## Supported legacy documents
 
-The importer reads the following current contracts without importing
+The importer reads the following contracts without importing
 `r1999extractor`:
 
 - `r1999.pregeneration-job` version 1 `job.json`;
 - `vntts.voice-generation-queue` version 1 JSONL through the shared
-  `vntts-artifacts` v0.6 reader, including producer extension fields and older
+  pinned `vntts-artifacts` reader, including producer extension fields and older
   records that omit newer optional source-audio fields;
-- `r1999.bulk-generation-state` version 1 from the job output directory;
+- a validated `generation-state.sqlite3` snapshot from the job output directory;
 - an optional `vntts.generated-audio` version 1 manifest through the shared
   reader.
 
@@ -52,7 +56,7 @@ never inferred from filesystem modification times.
 
 Standalone import never guesses from filenames, timestamps, directory names or
 truncated hashes. The caller must select both the queue and output directory.
-The output is accepted only when `generation-state.json.queue_sha256`, or a
+The output is accepted only when the SQLite state's `queue_sha256`, or a
 manifest-only snapshot's `source_queue_sha256`, equals the SHA-256 of the exact
 queue bytes. A colocated state remains authoritative and a stale manifest is
 quarantined under `legacy/` exactly as it is for job-backed import. Different
@@ -159,7 +163,7 @@ review decisions, or publish a final pack. Those are separate explicit
 authoring operations, so preserving a snapshot is not evidence that it has
 resumed successfully.
 
-## Verified legacy census
+## Historical legacy census (2026-08-17)
 
 The read-only discovery gate was repeated on 2026-08-17 and validated all three
 current job-backed Reverse: 1999 shapes as compatible immutable snapshots. The
@@ -186,7 +190,7 @@ assignments and 90 relative WAV aliases, including the legacy `dimensions`
 form, exact key binding, source-report hashes and recomputed report. No legacy
 audio or application data was copied during either dry-run.
 
-## Verified application-data migration
+## Historical application-data migration (2026-08-17)
 
 The three stable job-backed snapshots were imported from clean commit
 `fb6452a` on 2026-08-17. Destination names are deterministic immutable import

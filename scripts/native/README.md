@@ -1,10 +1,11 @@
-# Opt-in native MOSS timing build
+# Native OpenMOSS qualification
 
 ## Windows adaptive runtime
 
-This is an **opt-in developer runtime**, not normal app setup. One Windows x64
-Vulkan build selects its auxiliary CPU worker count and Local audio-frame GPU
-placement at process start. It never switches a loaded model in place: fallback
+Use this guide to qualify Windows OpenMOSS candidates and reproduce native
+measurements. For ordinary setup, see [Speech engines](../../docs/speech-engines.md#moss-tts-local-v15).
+One Windows x64 Vulkan build selects its auxiliary CPU worker count and Local
+audio-frame GPU placement at process start. It never switches a loaded model in place: fallback
 is an owned-server restart without `--local-gpu`. The persistent CPU pool stays
 OFF and remains a separate experiment.
 
@@ -41,8 +42,9 @@ It emits schema `vntts.openmoss.capabilities`, version `1`, and booleans
 `vulkan_optional`, `vulkan_available`, `local_gpu`, `aux_cpu_threads`, plus
 default/min/max thread fields. `local_gpu` means the binary compiled the path;
 `vulkan_available` is no-model backend-device enumeration for this machine.
-The adaptive Python contract is already present, but the pinned v0.3.0 runtime
-remains legacy until an immutable adaptive runtime release is available.
+The application now pins an adaptive runtime. See
+[`moss_cpp_installation.py`](../../vntts/moss_cpp_installation.py) for the
+managed archive URL and checksum.
 
 After a successful load, `/info.placement` reports actual `backbone`, `device`,
 `local`, `auxiliary`, `gpu_layers`, and `aux_cpu_threads`. `device` is the
@@ -86,7 +88,7 @@ Do not download and upload the runtime again. In the OpenMOSS repository, run
 the **Promote qualified VNTTS runtime** workflow with:
 
 - `build_run_id`: the numeric ID in the qualified adaptive build's Actions URL;
-- `release_tag`: a new tag such as `v0.3.0-vntts-timing-2`.
+- `release_tag`: a new, unused tag for the candidate.
 
 The workflow accepts only a successful adaptive push build from `main`, downloads
 that exact retained Actions artifact, verifies its source manifest and checksum,
@@ -112,10 +114,9 @@ creating or loading the optional Local GPU owner are `local_gpu`, so the retry
 keeps the backbone placement and moves only Local to CPU; model corruption and
 ordinary request failures are not classified as fallback candidates.
 
-The existing two-artifact `moss_native_compare` workflow intentionally remains
-for the legacy runtime until the immutable adaptive runtime is released. Do not
-feed it this single adaptive artifact yet. The native contract is safe to inspect with
-`--version`, `--help`, and `--capabilities-json` without model weights.
+Use the adaptive qualification script above for the adaptive archive.
+The two-artifact legacy comparison below requires its own legacy binaries.
+Inspect server version, help and capabilities without loading model weights.
 
 Windows qualification still needs a real Local v1.5 GGUF pair, a Vulkan-capable
 device and an owned-process restart test: CPU Local with 4 and 8 workers must
@@ -124,6 +125,8 @@ listening approval. CI compilation and no-model checks do not prove GPU kernels,
 VRAM headroom, model ownership or speech quality.
 
 ## Native source details
+
+The timing1 identifiers below describe the earlier comparison build.
 
 The [VNTTS OpenMOSS fork](https://github.com/AlexRedby/openmoss) is based on
 Apache-2.0 openmoss v0.3.0 revision

@@ -1,11 +1,13 @@
 # Final game-pack publication
 
+**Status:** Current expert publication contract and CLI reference.
+
 `vntts.authoring.publish_final_game_pack` is the final, non-destructive
 authoring boundary. It creates a portable `vntts.game-pack` version 2 directory
 from a fully reviewed bulk-generation state plus the exact queue, story index
 and voice manifest that produced it. The implementation uses only the released
-vntts-artifacts v0.7.1 game-pack, binding and lossless generated-audio APIs;
-review authority remains in generation state. The live-sequence component is
+vntts-artifacts game-pack, binding and lossless generated-audio APIs pinned in
+`pyproject.toml`; review authority remains in generation state. The live-sequence component is
 optional and is never inferred from story records alone; existing version-1
 packs remain readable through the shared compatibility loader.
 
@@ -15,7 +17,7 @@ Final publication requires all of the following:
 
 - state is bound to the SHA-256 of the exact raw queue bytes;
 - state contains exactly the selected queue IDs, with every item terminal as
-  approved, rejected or explicitly authorized `live_fallback`; active, raw
+  approved, rejected or explicitly authorized `live_fallback`/`omitted`; active, raw
   failed, pending or partial state is rejected;
 - queue metadata contains source paths and SHA-256 bindings for its original
   story index and voice manifest. A legacy queue that predates those fields is
@@ -42,9 +44,9 @@ Final publication requires all of the following:
 - every generated WAV still matches authoritative state hashes, PCM quality and
   its approved review decision.
 
-The original generated-audio manifest may be absent or stale. It is not the
-review authority and is never rewritten by this command. A fresh approved-only
-manifest is built inside staging from the exact state snapshot. Rejected audio,
+Working generation and review state is SQLite; there is no adjacent generated-
+audio manifest to rebuild. A fresh approved-only manifest is built inside pack
+staging from the exact validated state snapshot. Rejected audio,
 partial WAVs, queue/state files and review diagnostics remain in application
 data and are not shipped. The generated-audio metadata carries a checksum-bound
 `vntts.authoring.live_fallback` ledger for every deliberate fallback identity.
@@ -135,7 +137,7 @@ idempotent and never mutates the base workspace.
 
 ```sh
 uv run vntts-pregenerate publish-pack \
-  --state /path/to/app-data/generated/generation-state.json \
+  --state /path/to/app-data/generated/generation-state.sqlite3 \
   --queue /path/to/app-data/generation-queue.jsonl \
   --story-index /path/to/app-data/story-index.jsonl \
   --voice-manifest /path/to/app-data/voice-manifest.json \

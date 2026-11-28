@@ -1,5 +1,7 @@
 # Delivery-annotation authoring
 
+**Status:** Current annotation policy reference; annotations are not applied TTS prompts.
+
 `vntts.authoring.delivery` owns the game-independent delivery annotation policy
 used when an authoring source has no delivery metadata. The policy is explicit
 and non-destructive: queue planning preserves source-owned `annotation_version`,

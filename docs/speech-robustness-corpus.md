@@ -109,6 +109,8 @@ publication authority.
 
 ## Current Character Story baseline
 
+This section records the historical Character Story outcome.
+
 The first real publication on 2026-08-27 produced corpus
 `40dd06ed800465a00b75aa0fa6fef014a15dff9e43327bdd3a365ef60662e9a8`
 with 178 unique labelled WAVs and 15 typed failures. It is stored under the

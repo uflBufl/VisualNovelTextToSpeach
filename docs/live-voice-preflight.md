@@ -1,12 +1,16 @@
 # Live voice preflight
 
+**Status: current implementation reference.** This is the scoped voice-decision
+contract in `controller_components.py` and the desktop start flow in `app.py`.
+For ordinary setup and voice selection, use [Playing](playing.md).
+
 Story-index-backed live reading checks upcoming named speakers before capture
 starts. The preflight scope is the current inferred chapter beginning at the
 current matched line and is capped by the configured chapter lookahead. It does
 not scan unrelated chapters or claim whole-story coverage.
 
-If the story index is loaded but the current chapter is not known, one Start
-request performs a silent OCR bootstrap in the background. The visible line
+If the story index is loaded but the current chapter is not known, the desktop
+Start flow performs a silent OCR bootstrap in the background. The visible line
 must resolve to one exact checksum-bound story identity. That match establishes
 the chapter and position, after which the same request reruns the scoped
 preflight and starts live reading. The bootstrap updates the visible dialogue
@@ -40,10 +44,10 @@ Other lines for that speaker may already be covered. The decision dialog states
 this explicitly so a mostly pregenerated character does not look wholly
 unconfigured.
 
-The controller enforces the same preflight for every start, including the
-historical command-line hotkey and restarts after modal voice/history windows.
-The tray is the richer decision UI, but direct callers cannot bypass the
-controller guard. A voice satisfies the guard only through the same exact
+The controller enforces the start guard for direct callers and restarts after
+modal voice/history windows. The desktop owns asynchronous scope bootstrap and
+the decision prompt; a direct caller with unknown scope must identify it before
+starting. A voice satisfies the guard only through the same exact
 registry resolution used by the synthesis backend after high-confidence OCR
 canonicalization; a nearby name such as `Selene` does not silently resolve to
 `Selone`.
@@ -53,7 +57,11 @@ prompt opened. The tray recomputes the current scoped set, requires an exact
 match, stages that set, and then the controller recomputes it again immediately
 before starting. Any change refreshes the prompt or blocks the start.
 
-An unexpected OCR speaker outside the established lookahead still fails closed:
+Ordinary OCR reading can explicitly start without story scope when its runtime
+policy permits a general voice; automatic prepared reading and `live-tts-only`
+also have policy-specific scope exemptions. Those paths do not claim that a
+chapter's named speakers have been checked. An indexed session that requires
+voice decisions still fails closed for an unexpected speaker outside lookahead:
 speech waits and the existing voice-choice prompt opens. A session without a
 story index can instead configure `live_speaker_corpus`, a version 1 JSON object
 with a non-empty, case-insensitively unique `speakers` list. The entire explicit
@@ -67,4 +75,5 @@ settings, revalidates its canonical non-symlink path and SHA-256 through the
 same central preflight guard. A changed file remains blocked until settings are
 applied again. A loaded story index still takes precedence over this explicit
 no-story scope. `VNTTS_LIVE_SPEAKER_CORPUS` provides the equivalent environment
-override. See `samples/rhiannon-live-speakers.json` for a representative file.
+override. See [the sample corpus](../samples/rhiannon-live-speakers.json) for a
+representative file.

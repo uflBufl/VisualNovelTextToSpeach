@@ -1,5 +1,4 @@
-# Full-package static typing
+# Static typing
 
-`uv run --frozen mypy` checks every production module under `vntts`. CI runs
-the same command with the locked development dependencies, so local and CI
-typing results use one scope.
+See [Development tools](development.md#development-tools) for the current
+mypy scope and command.

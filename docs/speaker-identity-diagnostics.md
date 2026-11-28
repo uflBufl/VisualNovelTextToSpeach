@@ -1,5 +1,8 @@
 # Speaker identity diagnostics
 
+**Status:** Current diagnostic reference. The recorded baseline is historical evidence,
+not a calibrated production threshold.
+
 Speaker embeddings may reduce repeated voice choices only after a labelled,
 held-out evaluation. They never grant synthesis authority and never modify a
 voice manifest, source-reference decision, workspace, review or game pack.
@@ -99,9 +102,9 @@ only when held-out data contains both positive and negative pairs and has zero
 false merges. Even an eligible report remains diagnostic until its exact corpus
 and policy are explicitly approved for a downstream consumer.
 
-## Verified implementation baseline
+## Historical implementation baseline
 
-The repository's current 408-reference manifest produced inventory ID
+The recorded 408-reference evaluation manifest produced inventory ID
 `45dfd6f13ca85ecfafdae123f9c709524486f7da4e7ee98f7b55f5b1cb581229`.
 A local offline smoke test loaded the pinned five-file snapshot, produced finite
 192-dimensional embeddings and measured cosine distance `0.306610107421875`

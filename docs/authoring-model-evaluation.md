@@ -1,5 +1,8 @@
 # Authoring model evaluation
 
+**Status:** Current benchmark/listening reference with dated experimental evidence.
+Recorded model results are specific to their exact corpus and controls.
+
 VNTTS owns the generic model-comparison and blind-listening runtime in
 `vntts.authoring`. Neither workflow imports an extractor, understands game
 chapters or interprets game-specific line IDs.
@@ -106,7 +109,7 @@ published `voice-controls` file is read once through a no-follow descriptor,
 with inode and size/mtime checks before and after the read, so a path swap cannot
 copy unrelated host data into benchmark output.
 
-### Verified Centurion and Paper Heron narrator comparison
+### Historical Centurion and Paper Heron comparison (2026-08-17)
 
 On 2026-08-17, the extractor-owned playable-voice index supplied one compact
 Paper Heron reference from `hero3141_mainvoc.bnk`, media ID `354191196`. The
@@ -163,7 +166,7 @@ overrides that narrow result and selects **Centurion** as Narrator. Preserve the
 report as historical evidence; do not rewrite its rating to manufacture
 agreement with the later decision.
 
-### Paper Heron reference and duration-control follow-up
+### Historical Paper Heron reference and duration-control follow-up
 
 A later controlled probe used another official Paper Heron playable line,
 Chitchat II from `hero3141_mainvoc.bnk`, media ID `856018807`. The decoded
@@ -250,7 +253,7 @@ identity and WAV hashes, so its reports can use the same `start-reports`
 boundary. Historical schema-less reports are intentionally rejected and must
 be regenerated.
 
-### Rhiannon MOSS 4B timing checkpoint, 2026-09-01
+### Historical Rhiannon MOSS 4B timing checkpoint (2026-09-01)
 
 The first proposed source/codec/synthesis representative,
 `reverse1999:101341:41`, was rejected by its objective gate before listening:

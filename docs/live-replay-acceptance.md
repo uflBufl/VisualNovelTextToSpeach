@@ -1,5 +1,11 @@
 # Device-free live replay acceptance
 
+**Status: current developer procedure and software acceptance contract.**
+Capture/recovery/seal operate on explicit byte-bound artifacts; they do not
+establish real device or OS-input qualification. For general diagnostics use
+[Diagnostics](diagnostics.md), and for sequence ownership use
+[Sequence-first reading](sequence-first-live-reading.md).
+
 ## Capture a real session without synthesizing audio
 
 `vntts-capture-live-replay OUTPUT_DIRECTORY` uses the current calibrated
@@ -164,31 +170,23 @@ animation. Besides one route and no early key, it requires a privacy-safe
 `canonical-full-text` event proving that first PCM occurred before the final
 glyph. This makes early playback measurable without retaining dialogue text.
 
-### Repaired chapter 314601 capture evidence
+### Historical chapter 314601 evidence
 
-The 2026-08-29 repaired Rhiannon capture retained 86 distinct real frames. The
-fail-closed recovery selected 21 consecutive visible events, sequences 4-23 and
-25, including the separate Hotelier and Rhiannon silent events at sequences 18
-and 19. It retained one representative frame per event and absorbed the other
-typewriter/background observations in provenance. The production sealer then
-passed two consecutive `audio-manual`, `live-tts-only` runs with all 21 frame
-identities consumed, all 21 canonical event identities reproduced, 19 speech
-routes, two silent routes, zero skipped frames and zero key dispatches. OCR was
-invoked for all 21 representative frames and 18 observations used bounded
-recovery. This closes the 20-event software replay gate; operator mapping review
-of the Hotelier and Rhiannon silent events was accepted on 2026-08-29. The
-later full capture recovered all 92 visible chapter events. Its stable 91-event
-suffix passed the production sealer twice, and the checksum-bound union with
-this accepted 21-event seal proves 92/92 technical coverage. Silent event 78
-received explicit human mapping approval on 2026-08-30, so the union report now
-also proves complete human acceptance for all three silent events.
+The August 2026 Rhiannon investigation reported a repaired branch-free capture,
+a passing repeated production seal and later complete 92-visible-event coverage
+from overlapping captures. Human approval of the silent-event mappings was
+recorded separately from technical replay coverage. The full chapter has 104
+plan events, so treating all events as visible dialogue was an invalid gate.
 
-An original-game route must declare `source_audio_duration_seconds` when replay
-is expected to advance automatically. Without observable completion, production
-correctly returns `passthrough-unobserved` and blocks the key rather than
-guessing when the game's audio ended. The tracked smoke corpus declares a 1 ms
-device-free completion duration for this reason; it passes with both routes,
-all four frames and exactly two completion-bound advances.
+Those external capture/coverage artifacts are historical evidence, not shipped
+fixtures or a fresh result for this checkout. Recreate and review a capture with
+the commands above before claiming current real-game acceptance.
+
+An original-game route must bind authoritative full-source completeness and
+`source_audio_duration_seconds`. Duration alone does not make unknown semantic
+completeness a full original reading. Replay must use the same source-authority
+rules as production; it cannot invent timing to make auto advance pass. A synthetic device-free duration is useful for a routing fixture, but proves
+only the declared software completion behavior, not game-audio alignment.
 
 Corpus frame entries may remain a path string for real OCR replay, or use an
 object with `path`, `sha256`, `observed_character` and `observed_text`. The object
@@ -319,32 +317,18 @@ not compare Centurion/Paper Heron perceptually. Exact generated-manifest lookup,
 manual-override bypass, corrupt/missing/checksum/metadata fallback and reserved
 prefix behavior are covered by generated-audio tests and the replay matrix.
 
-## Pregenerated playback latency boundary
+## Playback latency measurement
 
-A 2026-08-29 trace of the current Character Story pack showed that local WAV
-preparation was not the reported post-text delay. Three generated routes reached
-first PCM within 0.8-2.2 ms after their route decision, while five repeated OCR
-runs on the retained 738x128 dialogue crop took 0.33-0.42 s each. The removable
-latency was before routing: after a static dialogue the split capture loop could
-observe a changed fingerprint and still sleep once more on the previous 600 ms
-idle interval before capturing the stability-confirming frame.
+Keep visual detection, OCR/recovery, route/decode, first PCM, source-cue lead
+and speaker-announcement time separate. A fast local-WAV route does not prove
+that a line began promptly after appearing on screen. Device-free PCM
+consumption cannot demonstrate driver underrun, output alignment or perceived
+latency.
 
-The capture loop now caps the next interval at the fast interval immediately
-when the dialogue fingerprint changes. It still requires two stable
-observations, so the optimization does not turn one transient OCR frame into
-speech. Unfocused mode performs no OCR and probes focus at most 500 ms apart,
-instead of allowing the former 1.6 s focus-return delay. Generated-prefix
-resolution searches the current chapter first; a global same-speaker scan is
-retained only when the current chapter has no matching candidate. On the same
-real index this reduced a warm Narrator-prefix lookup from 90-96 ms to
-0.14-0.18 ms (0.9 ms on its first verified-WAV lookup).
-
-The sequence-owned path no longer adds the former fixed 1.5-second prefix
-dwell. A unique bounded prefix can route immediately only after its exact WAV
-passes checksum/metadata preflight; a live fallback is never started from that
-prefix. The visual frame must still settle before automatic key delivery. The
-unique next generated speech event is preflighted during current playback, so
-the later prefix route normally consumes reserved PCM rather than reopening the
-WAV. Replay and real-game acceptance still need to prove zero wrong, duplicate,
-skipped or early-advanced lines under slow typewriter, truncation, branches,
-focus loss and rapid manual skips.
+The historical Character Story investigation attributed substantial delay to
+pre-route OCR/stability waits, rather than WAV decoding. Current sequence
+prefetch, early generated playback and render-completion barriers are documented
+in [Sequence-first reading](sequence-first-live-reading.md); stream ownership
+and sample-rate handling belong in [Typed live audio routing](live-audio-routing.md).
+Reproduce timing on the actual target platform instead of reusing historical
+measurements as a performance guarantee.

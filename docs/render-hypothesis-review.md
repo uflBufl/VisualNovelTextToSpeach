@@ -44,6 +44,8 @@ idempotent; changing a terminal decision is rejected.
 
 ## Current Character Story evidence
 
+This section records the historical Character Story outcome.
+
 Two reviews were published on 2026-08-27 from immutable comparison
 `current-character-story-narrator-alternative-reference-v2`, without a model
 run or generation-state write:

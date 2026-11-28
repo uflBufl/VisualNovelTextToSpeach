@@ -1,11 +1,281 @@
 # Pregeneration coverage plan
 
+**Status:** Coverage policy and historical planning evidence. The August census
+and instructions inside its dated checkpoints are superseded by the
+[final Character Story record](current-character-story-completion.md#final-recorded-outcome).
+Use [self-service pregeneration](self-service-pregeneration.md) for the default
+player workflow and [bulk generation](authoring-bulk-generation.md) for current
+SQLite state handling. This page is not an outstanding-work queue.
+
+The policy below describes the expert authoring workflow. The default player
+workflow uses automatic technical-gate acceptance and explicit terminal routing
+as described in [self-service pregeneration](self-service-pregeneration.md).
+
 Pregeneration should maximize usable offline speech before live play while
 preserving speaker identity, source-audio candidates and exact synthesis
 provenance. Coverage is not permission to assign a merely similar voice, raise
 the bounded audio limit until a render completes, or publish a failed result.
 
-## Current Character Story evidence
+## Coverage order
+
+Pregeneration follows a fixed order so a fallback cannot hide recoverable game
+audio or a missed extraction path:
+
+1. Preserve and route exact installed source audio where the game supplies it.
+2. Mine the full story index, playable-character config, portrait/NPC mapping
+   and installed bank index for same-speaker reference candidates.
+3. Import, checksum, score and listen to compact reference clips. Keep distinct
+   portrait/bank voice variants separate until listening proves they are one
+   performer and presentation.
+4. Generate with the selected primary backend and immutable model/profile,
+   reference and text controls.
+5. Apply bounded, cohort-specific repairs to failures.
+6. Pregenerate the remaining eligible cohort with an explicitly configured
+   offline fallback backend when the primary backend still cannot complete.
+7. Use an explicit Narrator fallback only for roles that remain unresolved
+   after the source audit.
+8. Publish only exact source or approved generated artifacts. Retain an
+   explicit live-fallback decision for genuinely unresolved lines rather than
+   pretending a failed render is complete.
+
+## Semi-automatic reference selection
+
+The source-reference review contract is defined in the extractor's
+`docs/reference-audition-automation.md`. Automation should eliminate repetitive
+listening, not guess identity. The extractor can reject non-speech, align local
+ASR to the exact transcript, estimate contamination and speaker count, cluster
+embeddings within exact portrait/bank groups and rank groups by coverage. A
+human still approves the first anchor for every ambiguous group.
+
+VNTTS then consumes checksum-bound decisions, keeps portrait variants separate
+and synthesizes one fixed evaluation corpus per accepted anchor. Blind
+source/result comparison is the second gate. Only candidates passing both the
+source and generated-quality gates may enter a new config-addressed workspace;
+changed WAV or decision hashes invalidate only affected controls.
+
+Human review has two different lifetimes. Voice/reference acceptance is
+reusable across stories only while the exact age/portrait variant, ordered
+reference hashes and model/profile remain unchanged. Generated-WAV authority is
+line-specific, but it does not require listening to every clean line: every
+technical-attention item plus a deterministic short/medium/long sample can
+authorize an explicit cohort decision. That decision must retain the sampled
+queue IDs and WAV hashes and project terminal decisions to each covered item.
+A new story samples its new generated cohort; it does not repeat source-voice
+discovery or a full listen-all pass unless the sample exposes a defect. The
+authoring pipeline now owns this checksum-bound cohort-decision transaction,
+including reusable voice-control gates and line-specific terminal projection.
+Final publication still requires explicit terminal authority for every selected
+line; an accepted voice gate alone is never line approval.
+
+## Explicit unknown-role Narrator policy
+
+The default missing-voice policy is `block`. A config-addressed workspace may
+opt into `narrator_roles` for an exact list or
+`narrator_all_unresolved` for every still-unresolved named role. The CLI carries
+those choices as repeated `--narrator-fallback-role` values or the deliberately
+broad `--narrator-fallback-all` flag. Each affected state and manifest record
+retains:
+
+- original `speaker` and requested `voice_character`;
+- effective `synthesis_character=Narrator` and the selected narrator character;
+- the fallback policy/version and reason;
+- exact narrator reference and model/profile provenance; and
+- the original line/text identity.
+
+The workbench must display source role and effective synthesis voice
+separately. This makes `Poacher I -> Narrator -> Centurion` visible instead of
+claiming that Centurion is Poacher I.
+
+The policy document and exact requested-to-effective mapping are included in
+the synthesis-control digest. A changed policy creates a different immutable
+workspace. Generation fails closed if a requested override is not authorized,
+if it targets anything other than Narrator, or if the selected narrator has no
+bound reference. The workbench review table already presents source `Speaker`
+and effective `Character` separately, while its header identifies the selected
+Narrator character. Old workspaces without this field read as `block` and are
+never broadened in place.
+
+Canonical generated speech contains only the story text. Automatically
+prepending phrases such as "Poacher I says" would change the script, duplicate
+the visible nameplate and make ordinary dialogue unnatural. Optional spoken
+speaker identification is therefore a separate, disabled-by-default live route.
+It announces only a changed visible speaker with the configured Narrator voice,
+records independent route/outcome provenance, and stays outside canonical story
+WAVs and review authority. It never creates an auto-advance action, and original
+game-audio routes skip it rather than overlaying speech.
+
+## Failure cohorts and preventive generation
+
+Failure handling must use typed state fields rather than parsing volatile error
+strings. At minimum, persist `missed_eos_audio_limit`, `speech_silence`,
+`reference_unavailable`, `backend_error`, `cancelled` and `interrupted`, plus
+the backend/model/profile, reference digest, attempt/seed, word and punctuation
+features, audio/token limit utilization and measured silence spans.
+
+Limit and silence failures need separate treatment:
+
+- For missed EOS, compare word count, punctuation, stutters, ellipses, attempt
+  seeds and exact limit utilization. Keep the 20-second safety ceiling. Use a
+  small bounded seed cohort, and stop when its completion yield is poor.
+- For long or punctuation-heavy text, test sentence-boundary segmentation and
+  checksum-bound concatenation with a deliberate pause. Never split inside a
+  phrase or reintroduce token-level duration control; listening already found
+  that forced mid-phrase timing creates bad pauses.
+- For silence failures, distinguish intentional sentence pauses from leading,
+  trailing or hallucinated internal silence. Compare reference choice and seed;
+  trim only safe edge silence and never delete semantic internal timing merely
+  to pass the gate.
+- Revalidate short ellipsis/stutter normalization and pure-SFX classification
+  before synthesis so non-speech or incomplete text does not consume retries.
+- When bounded MOSS repairs still fail, render the exact cohort offline with
+  Pocket TTS using the chosen role or Narrator reference. Record the different
+  provider/model and provider-specific seed semantics per item. A Pocket
+  artifact must pass the same WAV, silence, checksum and manual-review gates as
+  a MOSS artifact.
+
+Current VNTTS generation writes a versioned `failure` record for every new
+failed attempt. It includes the stable kind, exact text-shape features and, when
+available, typed completion limits/utilization or measured silence spans. The
+read-only report also projects historical string-only states into the same
+taxonomy without rewriting their authoritative bytes:
+
+```bash
+uv run vntts-pregenerate failure-report \
+  --state WORKSPACE/generated-audio/generation-state.sqlite3 \
+  --queue WORKSPACE/queue.jsonl > failure-report.json
+```
+
+The report groups records by kind, source/effective role, backend/model/profile,
+synthesis-control digest, attempt/seed, text shape, limit utilization and
+silence measurements. Against the historical 2026-08-18 snapshot it
+reconciles all 211 failures exactly as 167 `missed_eos_audio_limit` and 44
+`speech_silence`: 186 Narrator, 16 Rhiannon and nine unattributed-source lines
+whose established effective voice is Narrator. This classification is a retry
+planning input, not permission to regenerate a whole low-yield cohort.
+
+Before changing state, derive an exact-ID repair plan:
+
+```bash
+uv run vntts-pregenerate failure-repair-plan \
+  --state WORKSPACE/generated-audio/generation-state.sqlite3 \
+  --queue WORKSPACE/queue.jsonl > failure-repair-plan.json
+```
+
+The read-only versioned plan never starts synthesis. It separates
+multiple-sentence limit failures for sentence-boundary segmentation, low-attempt
+limit failures for a bounded seed retry, exhausted limits for the offline
+fallback backend, edge-only measured silence for trim-and-listen review, other
+silence for reference comparison, unavailable references for source discovery,
+cancelled/interrupted work for safe resume and remaining backend failures for
+manual diagnosis. Every recommendation carries the exact queue ID and current
+state/queue hashes, so later execution can require a fresh authority snapshot
+instead of mass retrying a stale cohort.
+
+The core repairs have executable, config-addressed paths. Create
+a new workspace with repeated `--sentence-segment-failed QUEUE_ID` and/or
+`--trim-edge-silence-failed QUEUE_ID`, or
+`--bounded-seed-failed QUEUE_ID`. An exhausted exact failure instead creates a
+Pocket workspace with `--carry-forward-from MOSS_WORKSPACE` and
+`--offline-fallback-failed QUEUE_ID`. The generated child command carries the
+same exact queue IDs. Before any render, bulk generation requires the selected ID
+set to equal the repair policy, reloads authoritative state, requires a current
+typed `failed` outcome and verifies that its failure kind and metrics still
+match the requested strategy. Historical string-only failures remain planning
+evidence and must first produce a typed current failure; they are not silently
+authorized.
+
+The offline fallback path also requires a carried source item from a different
+backend and a Pocket target. It preserves the MOSS workspace byte-for-byte,
+binds source state/item/reference hashes, and retains cumulative attempts while
+recording Pocket's attempt identity without claiming an applied sampling seed.
+Terminal non-Narrator decisions may be copied explicitly with their original
+provider provenance; no pending or failed item becomes approved through
+carry-forward.
+
+Sentence repair uses only complete, substantial sentence boundaries. Each
+segment is an independent typed render with a deterministic successive seed;
+complete results are concatenated with a bounded 180 ms pause. The original
+queue text, every segment and segment text SHA-256, planned segment seeds,
+pause, provider controls and outer attempt/seed remain in state and the package projection. Edge repair is
+available only for a typed speech-silence failure whose excessive silence is
+strictly leading and/or trailing, never internal. It retains 80 ms boundary
+padding, then runs the ordinary WAV and speech-quality gates. These paths refuse
+an obsolete cohort and never publish a limited, cancelled or still-invalid
+result.
+
+Bounded seed repair is available only for a typed missed-EOS/audio-limit
+failure with fewer than three cumulative attempts. It uses the existing
+deterministic cumulative seed rule and clamps the run to at most three total
+attempts even if a caller supplies a larger `--retries` value. Reopening the
+policy after the third failed attempt is rejected without changing state.
+
+Reference comparison and selection are implemented as a separate immutable
+manifest workflow, documented in
+[`authoring-reference-selection.md`](authoring-reference-selection.md).
+`reference-report` checksum-binds objective metrics for every candidate;
+`select-reference` publishes a new no-overwrite manifest only after a human
+chooses the candidate number. Workspace creation verifies the selection
+extension against its copied WAV bytes. Because a reference change affects the
+whole character, generation still requires an explicit queue-ID cohort and all
+new WAVs remain pending review.
+
+Example workspace creation for one sentence repair:
+
+```bash
+uv run vntts-pregenerate create-workspace IMPORT_DIRECTORY \
+  --story-index STORY_INDEX.jsonl \
+  --voice-manifest VOICES/manifest.json \
+  --narrator-character Centurion \
+  --backend moss-tts --model MODEL_DIRECTORY \
+  --generation-profile stable \
+  --sentence-segment-failed QUEUE_ID
+```
+
+The read-only 2026-08-18 plan for the Character Story snapshot reconciles all
+211 failures into 58 conservative sentence-boundary segmentation candidates,
+26 bounded seed retries, 83 exhausted primary items for an offline fallback backend and 44
+reference-comparison cases. Its state SHA-256 is the same
+`10ad11119a57fda8ffccf37f31e1a949ee03d4bbd1092c99d867c36be866b875` as the
+source failure report. These counts are selection evidence only; no generation
+state or WAV was changed.
+
+A fallback backend chain is part of immutable workspace configuration. It must
+not mutate an existing MOSS-only workspace in place. Either create a new
+config-addressed workspace that can safely carry forward exact terminal
+decisions or add a versioned multi-provider control contract before mixed
+artifacts are generated.
+
+## Review and terminal routing
+
+Automated checks run for every generated artifact. Human review is mandatory
+for every technical flag and for a stratified sample of clean output across
+roles, text lengths, punctuation and backend/profile/reference combinations.
+If a sample reveals a substantive defect, expand review to that complete
+cohort. Unchanged WAV hashes retain their decisions; regeneration invalidates
+the old decision.
+
+The final hybrid route distinguishes approved generated audio from a deliberate
+live fallback. Pending review and raw failure remain nonterminal. The
+`live-fallback` authoring command records the exact queue/text/speaker, prior
+result hash, reason and fixed Pocket model/profile only after source/reference
+discovery and offline fallback generation were exhausted. Final publication
+ships that decision in a checksum-bound metadata ledger; runtime accepts it
+only with the matching Pocket backend. Runtime routing then becomes:
+
+1. verified original game audio when policy permits;
+2. approved pregenerated audio;
+3. Pocket live synthesis with the explicitly selected role voice or configured
+   Narrator fallback; and
+4. fail-closed voice preflight for an unmapped named role.
+
+Narrator fallback selection and force-live routing are independent controls.
+Selecting Centurion as the live Narrator voice must not bypass approved
+Centurion pregenerated tracks; it supplies Pocket only when an approved track
+is absent or ineligible. Named roles remain blocked until mapped or explicitly
+included in a Narrator fallback policy. Exact `???` continues to use the
+project's established Narrator rule.
+
+## Historical Character Story coverage evidence (2026-08)
 
 The read-only 2026-08-18 snapshot of workspace
 `resume-395a5e5eec0327a3a793b66d-4b727b4671cb0ba2` has 585 spoken queue items:
@@ -374,262 +644,3 @@ complete Dobharchú variant passes a reusable cohort gate. Leave the seven
 unreviewed outputs pending and preserve the immutable v3 review/v4 binding as
 historical inputs. A successor cohort must compare bounded alternative
 reference/profile/backend renders before reuse in a later story.
-
-## Coverage order
-
-Pregeneration follows a fixed order so a fallback cannot hide recoverable game
-audio or a missed extraction path:
-
-1. Preserve and route exact installed source audio where the game supplies it.
-2. Mine the full story index, playable-character config, portrait/NPC mapping
-   and installed bank index for same-speaker reference candidates.
-3. Import, checksum, score and listen to compact reference clips. Keep distinct
-   portrait/bank voice variants separate until listening proves they are one
-   performer and presentation.
-4. Generate with the selected primary backend and immutable model/profile,
-   reference and text controls.
-5. Apply bounded, cohort-specific repairs to failures.
-6. Pregenerate the remaining eligible cohort with an explicitly configured
-   offline fallback backend when the primary backend still cannot complete.
-7. Use an explicit Narrator fallback only for roles that remain unresolved
-   after the source audit.
-8. Publish only exact source or approved generated artifacts. Retain an
-   explicit live-fallback decision for genuinely unresolved lines rather than
-   pretending a failed render is complete.
-
-## Semi-automatic reference selection
-
-The source-reference review contract is defined in the extractor's
-`docs/reference-audition-automation.md`. Automation should eliminate repetitive
-listening, not guess identity. The extractor can reject non-speech, align local
-ASR to the exact transcript, estimate contamination and speaker count, cluster
-embeddings within exact portrait/bank groups and rank groups by coverage. A
-human still approves the first anchor for every ambiguous group.
-
-VNTTS then consumes checksum-bound decisions, keeps portrait variants separate
-and synthesizes one fixed evaluation corpus per accepted anchor. Blind
-source/result comparison is the second gate. Only candidates passing both the
-source and generated-quality gates may enter a new config-addressed workspace;
-changed WAV or decision hashes invalidate only affected controls.
-
-Human review has two different lifetimes. Voice/reference acceptance is
-reusable across stories only while the exact age/portrait variant, ordered
-reference hashes and model/profile remain unchanged. Generated-WAV authority is
-line-specific, but it does not require listening to every clean line: every
-technical-attention item plus a deterministic short/medium/long sample can
-authorize an explicit cohort decision. That decision must retain the sampled
-queue IDs and WAV hashes and project terminal decisions to each covered item.
-A new story samples its new generated cohort; it does not repeat source-voice
-discovery or a full listen-all pass unless the sample exposes a defect. The
-authoring pipeline now owns this checksum-bound cohort-decision transaction,
-including reusable voice-control gates and line-specific terminal projection.
-Final publication still requires every line to have terminal approved/rejected
-authority; an accepted voice gate alone is never line approval.
-
-## Explicit unknown-role Narrator policy
-
-The default missing-voice policy is `block`. A config-addressed workspace may
-opt into `narrator_roles` for an exact list or
-`narrator_all_unresolved` for every still-unresolved named role. The CLI carries
-those choices as repeated `--narrator-fallback-role` values or the deliberately
-broad `--narrator-fallback-all` flag. Each affected state and manifest record
-retains:
-
-- original `speaker` and requested `voice_character`;
-- effective `synthesis_character=Narrator` and the selected narrator character;
-- the fallback policy/version and reason;
-- exact narrator reference and model/profile provenance; and
-- the original line/text identity.
-
-The workbench must display source role and effective synthesis voice
-separately. This makes `Poacher I -> Narrator -> Centurion` visible instead of
-claiming that Centurion is Poacher I.
-
-The policy document and exact requested-to-effective mapping are included in
-the synthesis-control digest. A changed policy creates a different immutable
-workspace. Generation fails closed if a requested override is not authorized,
-if it targets anything other than Narrator, or if the selected narrator has no
-bound reference. The workbench review table already presents source `Speaker`
-and effective `Character` separately, while its header identifies the selected
-Narrator character. Old workspaces without this field read as `block` and are
-never broadened in place.
-
-Canonical generated speech contains only the story text. Automatically
-prepending phrases such as "Poacher I says" would change the script, duplicate
-the visible nameplate and make ordinary dialogue unnatural. Optional spoken
-speaker identification is therefore a separate, disabled-by-default live route.
-It announces only a changed visible speaker with the configured Narrator voice,
-records independent route/outcome provenance, and stays outside canonical story
-WAVs and review authority. It never creates an auto-advance action, and original
-game-audio routes skip it rather than overlaying speech.
-
-## Failure cohorts and preventive generation
-
-Failure handling must use typed state fields rather than parsing volatile error
-strings. At minimum, persist `missed_eos_audio_limit`, `speech_silence`,
-`reference_unavailable`, `backend_error`, `cancelled` and `interrupted`, plus
-the backend/model/profile, reference digest, attempt/seed, word and punctuation
-features, audio/token limit utilization and measured silence spans.
-
-The current 167 limit and 44 silence failures need separate treatment:
-
-- For missed EOS, compare word count, punctuation, stutters, ellipses, attempt
-  seeds and exact limit utilization. Keep the 20-second safety ceiling. Use a
-  small bounded seed cohort, and stop when its completion yield is poor.
-- For long or punctuation-heavy text, test sentence-boundary segmentation and
-  checksum-bound concatenation with a deliberate pause. Never split inside a
-  phrase or reintroduce token-level duration control; listening already found
-  that forced mid-phrase timing creates bad pauses.
-- For silence failures, distinguish intentional sentence pauses from leading,
-  trailing or hallucinated internal silence. Compare reference choice and seed;
-  trim only safe edge silence and never delete semantic internal timing merely
-  to pass the gate.
-- Revalidate short ellipsis/stutter normalization and pure-SFX classification
-  before synthesis so non-speech or incomplete text does not consume retries.
-- When bounded MOSS repairs still fail, render the exact cohort offline with
-  Pocket TTS using the chosen role or Narrator reference. Record the different
-  provider/model and provider-specific seed semantics per item. A Pocket
-  artifact must pass the same WAV, silence, checksum and manual-review gates as
-  a MOSS artifact.
-
-Current VNTTS generation writes a versioned `failure` record for every new
-failed attempt. It includes the stable kind, exact text-shape features and, when
-available, typed completion limits/utilization or measured silence spans. The
-read-only report also projects historical string-only states into the same
-taxonomy without rewriting their authoritative bytes:
-
-```bash
-uv run vntts-pregenerate failure-report \
-  --state WORKSPACE/generated-audio/generation-state.json \
-  --queue WORKSPACE/queue.jsonl > failure-report.json
-```
-
-The report groups records by kind, source/effective role, backend/model/profile,
-synthesis-control digest, attempt/seed, text shape, limit utilization and
-silence measurements. Against the current Character Story snapshot it
-reconciles all 211 failures exactly as 167 `missed_eos_audio_limit` and 44
-`speech_silence`: 186 Narrator, 16 Rhiannon and nine unattributed-source lines
-whose established effective voice is Narrator. This classification is a retry
-planning input, not permission to regenerate a whole low-yield cohort.
-
-Before changing state, derive an exact-ID repair plan:
-
-```bash
-uv run vntts-pregenerate failure-repair-plan \
-  --state WORKSPACE/generated-audio/generation-state.json \
-  --queue WORKSPACE/queue.jsonl > failure-repair-plan.json
-```
-
-The read-only versioned plan never starts synthesis. It separates
-multiple-sentence limit failures for sentence-boundary segmentation, low-attempt
-limit failures for a bounded seed retry, exhausted limits for the offline
-fallback backend, edge-only measured silence for trim-and-listen review, other
-silence for reference comparison, unavailable references for source discovery,
-cancelled/interrupted work for safe resume and remaining backend failures for
-manual diagnosis. Every recommendation carries the exact queue ID and current
-state/queue hashes, so later execution can require a fresh authority snapshot
-instead of mass retrying a stale cohort.
-
-Four conservative actions now have an executable, config-addressed path. Create
-a new workspace with repeated `--sentence-segment-failed QUEUE_ID` and/or
-`--trim-edge-silence-failed QUEUE_ID`, or
-`--bounded-seed-failed QUEUE_ID`. An exhausted exact failure instead creates a
-Pocket workspace with `--carry-forward-from MOSS_WORKSPACE` and
-`--offline-fallback-failed QUEUE_ID`. The generated child command carries the
-same exact queue IDs. Before any render, bulk generation requires the selected ID
-set to equal the repair policy, reloads authoritative state, requires a current
-typed `failed` outcome and verifies that its failure kind and metrics still
-match the requested strategy. Historical string-only failures remain planning
-evidence and must first produce a typed current failure; they are not silently
-authorized.
-
-The offline fallback path also requires a carried source item from a different
-backend and a Pocket target. It preserves the MOSS workspace byte-for-byte,
-binds source state/item/reference hashes, and retains cumulative attempts while
-starting Pocket's provider-local seed sequence at the requested base seed.
-Terminal non-Narrator decisions may be copied explicitly with their original
-provider provenance; no pending or failed item becomes approved through
-carry-forward.
-
-Sentence repair uses only complete, substantial sentence boundaries. Each
-segment is an independent typed render with a deterministic successive seed;
-complete results are concatenated with a bounded 180 ms pause. The original
-queue text, every segment and segment text SHA-256, planned segment seeds,
-pause, provider controls and outer attempt/seed remain in state and the approved manifest. Edge repair is
-available only for a typed speech-silence failure whose excessive silence is
-strictly leading and/or trailing, never internal. It retains 80 ms boundary
-padding, then runs the ordinary WAV and speech-quality gates. All three paths refuse
-an obsolete cohort and never publish a limited, cancelled or still-invalid
-result.
-
-Bounded seed repair is available only for a typed missed-EOS/audio-limit
-failure with fewer than three cumulative attempts. It uses the existing
-deterministic cumulative seed rule and clamps the run to at most three total
-attempts even if a caller supplies a larger `--retries` value. Reopening the
-policy after the third failed attempt is rejected without changing state.
-
-Reference comparison and selection are implemented as a separate immutable
-manifest workflow, documented in
-[`authoring-reference-selection.md`](authoring-reference-selection.md).
-`reference-report` checksum-binds objective metrics for every candidate;
-`select-reference` publishes a new no-overwrite manifest only after a human
-chooses the candidate number. Workspace creation verifies the selection
-extension against its copied WAV bytes. Because a reference change affects the
-whole character, generation still requires an explicit queue-ID cohort and all
-new WAVs remain pending review.
-
-Example workspace creation for one sentence repair:
-
-```bash
-uv run vntts-pregenerate create-workspace IMPORT_DIRECTORY \
-  --story-index STORY_INDEX.jsonl \
-  --voice-manifest VOICES/manifest.json \
-  --narrator-character Centurion \
-  --backend moss-tts --model MODEL_DIRECTORY \
-  --generation-profile stable \
-  --sentence-segment-failed QUEUE_ID
-```
-
-The read-only 2026-08-18 plan for the Character Story snapshot reconciles all
-211 failures into 58 conservative sentence-boundary segmentation candidates,
-26 bounded seed retries, 83 exhausted primary items for an offline fallback backend and 44
-reference-comparison cases. Its state SHA-256 is the same
-`10ad11119a57fda8ffccf37f31e1a949ee03d4bbd1092c99d867c36be866b875` as the
-source failure report. These counts are selection evidence only; no generation
-state or WAV was changed.
-
-A fallback backend chain is part of immutable workspace configuration. It must
-not mutate an existing MOSS-only workspace in place. Either create a new
-config-addressed workspace that can safely carry forward exact terminal
-decisions or add a versioned multi-provider control contract before mixed
-artifacts are generated.
-
-## Review and terminal routing
-
-Automated checks run for every generated artifact. Human review is mandatory
-for every technical flag and for a stratified sample of clean output across
-roles, text lengths, punctuation and backend/profile/reference combinations.
-If a sample reveals a substantive defect, expand review to that complete
-cohort. Unchanged WAV hashes retain their decisions; regeneration invalidates
-the old decision.
-
-The final hybrid route distinguishes approved generated audio from a deliberate
-live fallback. Pending review and raw failure remain nonterminal. The
-`live-fallback` authoring command records the exact queue/text/speaker, prior
-result hash, reason and fixed Pocket model/profile only after source/reference
-discovery and offline fallback generation were exhausted. Final publication
-ships that decision in a checksum-bound metadata ledger; runtime accepts it
-only with the matching Pocket backend. Runtime routing then becomes:
-
-1. verified original game audio when policy permits;
-2. approved pregenerated audio;
-3. Pocket live synthesis with the explicitly selected role voice or Centurion
-   Narrator fallback; and
-4. fail-closed voice preflight for an unmapped named role.
-
-Narrator fallback selection and force-live routing are independent controls.
-Selecting Centurion as the live Narrator voice must not bypass approved
-Centurion pregenerated tracks; it supplies Pocket only when an approved track
-is absent or ineligible. Named roles remain blocked until mapped or explicitly
-included in a Narrator fallback policy. Exact `???` continues to use the
-project's established Narrator rule.

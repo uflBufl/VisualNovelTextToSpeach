@@ -1,5 +1,10 @@
 # Reader experience
 
+**Status: product design and acceptance criteria.** This describes the intended
+reader journey, not a release checklist or a guarantee that every scenario has
+passed native-platform acceptance. Use [Playing](playing.md) for operating
+instructions and [Onboarding runtime](onboarding-runtime.md) for setup behavior.
+
 Desktop reading design. A player opens a scene in a visual novel, turns on
 narration, and returns to the game. Success is hearing the right line, keeping
 control of the pace, and knowing how to stop. The window is a companion to the

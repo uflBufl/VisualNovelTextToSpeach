@@ -1,5 +1,8 @@
 # Authoring authority reconciliation
 
+**Status:** Current reconciliation reference with a separate historical Character Story
+report archive.
+
 `vntts-authoring-reconcile` publishes a deterministic read-only handoff over one
 explicit primary workspace, the current checksum-bound cohort bundles in one
 contained bundle directory, and only the source-quality reviews named by the
@@ -40,10 +43,10 @@ presence and an old `completed_count` cannot establish current product scope.
 
 Every workspace is loaded by the authoring workbench validation path. Queue and
 state semantics are parsed from captured bytes, while workspace, selected voice
-manifest, voice controls, generated manifest and every in-scope generated WAV
+manifest, voice controls, state snapshot and every in-scope generated WAV
 are hash-bound. Cohort publications, mutable progress and quality reviews are
 also parsed from captured documents through their public validators. Missing
-state, manifest and progress paths are bound as absences, and the bundle
+state and progress paths are bound as absences, and the bundle
 directory inventory is checked again in directory-wide mode. Explicit-selection
 mode instead rehashes the named publication/progress snapshots without making
 unselected siblings part of authority. All observed files are rehashed before
@@ -115,7 +118,41 @@ actions. Terminal decisions that disagree across parallel workspace histories
 are reported as conflicts; reconciliation never chooses one history as the
 merge winner.
 
-## Current Character Story evidence
+## Apply selected terminal outcomes
+
+The reusable apply boundary is
+`vntts-pregenerate merge-reconciled-outcomes PRIMARY_WORKSPACE REPORT`. It
+accepts only `terminal_merge_required` actions for the report's exact primary
+workspace and copies only their named approved/rejected state items. The
+successor's schema-v2 outcome ledger binds the reconciliation ID and every
+source state/item/WAV digest. Source workspaces can contain other terminal
+items without making them eligible. Primary or source config, queue, state,
+item, authority or WAV drift fails before atomic no-replace publication, and
+the same report is idempotent.
+## Lease and terminal-publication invariants
+
+Generation, publication and terminal-review progress use a persistent
+cross-process advisory guard around lease creation, stale recovery and cleanup.
+The guard file is never renamed or deleted, so every process locks the same
+inode. A process may archive a stale lease only while it owns that guard and
+only if the exact lease bytes still match the snapshot it classified as stale.
+Acquisition is non-blocking and reports the current owner; cleanup waits for a
+short concurrent transition so a committed operation cannot leave its own
+still-live lease behind. PID, host and process-start identity remain the
+operator-readable ownership record, while the advisory guard supplies the
+compare-and-swap boundary.
+
+Any generation-state item carrying `terminal_conflict_resolution` is
+publishable only from its canonical config-addressed workspace. Package projection and the final game-pack publisher load and
+validate that complete workspace, bind the exact canonical queue/state snapshot,
+and require the item-level provenance to equal the workspace merge ledger.
+An orphaned state, a shape-valid fabricated record, or a minimal replacement
+`workspace.json` is rejected before manifest entries or a destination pack are
+published. The terminal review wire format and supported UI deliberately
+require exactly two distinct candidates; no-replace filesystem errors are
+translated at each review, resolution and successor domain boundary.
+
+## Historical Character Story reconciliation reports (2026-08)
 
 The original-publication-scope rebuild from clean commit `7ce861d` is
 `authoring/reconciliations/current-character-story-20260825-8e49fc5171f4.json`:
@@ -218,15 +255,7 @@ preflight reported `selected=47`, `pending=47`, `ready=47`,
 or generation ran: both remain downstream of the two outstanding human review
 authorities.
 
-The reusable apply boundary is now
-`vntts-pregenerate merge-reconciled-outcomes PRIMARY_WORKSPACE REPORT`. It
-accepts only `terminal_merge_required` actions for the report's exact primary
-workspace and copies only their named approved/rejected state items. The
-successor's schema-v2 outcome ledger binds the reconciliation ID and every
-source state/item/WAV digest. Source workspaces can contain other terminal
-items without making them eligible. Primary or source config, queue, state,
-item, authority or WAV drift fails before atomic no-replace publication, and
-the same report is idempotent. The real report above has not been applied: its
+The real report above has not been applied: its
 nine-item merge was deliberately gated on the unfinished Dobharchú cohort and
 the sixth terminal-conflict decision and is now historical evidence only.
 
@@ -282,27 +311,3 @@ newly bound failures. The latter classify as 29 missed-EOS limits and seven
 speech-silence failures; their deterministic next-action partition is 18
 sentence-boundary segmentation, two inline-pause comparison, 15 bounded seed
 and one reference comparison. Classification does not authorize execution.
-
-## Lease and terminal-publication invariants
-
-Generation, publication and terminal-review progress use a persistent
-cross-process advisory guard around lease creation, stale recovery and cleanup.
-The guard file is never renamed or deleted, so every process locks the same
-inode. A process may archive a stale lease only while it owns that guard and
-only if the exact lease bytes still match the snapshot it classified as stale.
-Acquisition is non-blocking and reports the current owner; cleanup waits for a
-short concurrent transition so a committed operation cannot leave its own
-still-live lease behind. PID, host and process-start identity remain the
-operator-readable ownership record, while the advisory guard supplies the
-compare-and-swap boundary.
-
-Any generation-state item carrying `terminal_conflict_resolution` is
-publishable only from its canonical config-addressed workspace. Both the
-approved-only generated manifest and final game-pack publisher load and
-validate that complete workspace, bind the exact canonical queue/state bytes,
-and require the item-level provenance to equal the workspace merge ledger.
-An orphaned state, a shape-valid fabricated record, or a minimal replacement
-`workspace.json` is rejected before manifest entries or a destination pack are
-published. The terminal review wire format and supported UI deliberately
-require exactly two distinct candidates; no-replace filesystem errors are
-translated at each review, resolution and successor domain boundary.

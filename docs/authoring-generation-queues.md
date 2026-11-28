@@ -1,9 +1,12 @@
 # Collection-driven generation queues
 
+**Status:** Current queue API and CLI reference.
+
 VNTTS owns the game-independent boundary that turns a validated story index and
 voice manifest into a `vntts.voice-generation-queue` v1 document. It requires
 the lossless public `StoryIndexDocument` and `StoryIndexRecord` APIs introduced
-in `vntts-artifacts` v0.6.1 and available through the pinned v0.6.2 release.
+in `vntts-artifacts` v0.6.1 and retained by the pinned dependency in
+`pyproject.toml`.
 The builder never parses raw
 producer JSON, imports an extractor, interprets a game-specific line ID, or
 performs chapter arithmetic.

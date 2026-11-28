@@ -1,13 +1,13 @@
 # Offline voice-model comparison
 
-VNTTS compares offline renderers on one checksum-bound corpus before a model is
-allowed into bulk pregeneration. The comparison does not open an audio device,
-change the authoring default, mutate a workspace, review a line, or regenerate
-an approved WAV.
+Use this comparison recipe to evaluate model candidates on the same
+checksum-bound corpus. It renders without an audio device and leaves the
+workspace and review decisions intact. The dated runs below are experimental
+evidence.
 
-The first supported three-way bake-off is:
+The original comparison used:
 
-- `moss-tts`: MOSS Local 4B v1.5 MLX int8, the current authoring baseline;
+- `moss-tts`: MOSS Local 4B v1.5 MLX int8, the comparison baseline;
 - `moss-tts-delay`: MOSS Delay 8B v1.5 through its upstream
   PyTorch/Transformers API;
 - `coqui-xtts`: Coqui XTTS v2 through the existing typed VNTTS renderer.
@@ -20,21 +20,20 @@ seeded generation, so its request uses `seed=null` and its report records both
 
 ## Install the runtimes
 
-The existing MOSS Local runtime remains:
+On Apple Silicon, install the locked MOSS Local runtime:
 
 ```sh
-uv sync --project backends/moss-tts
+uv sync --project backends/moss-tts --locked
 ```
 
-Install the new Delay runtime separately:
+Install the locked Delay runtime separately:
 
 ```sh
-uv sync --project backends/moss-tts-delay
+uv sync --project backends/moss-tts-delay --locked
 ```
 
-This isolated runtime follows the pinned upstream v1.5 stack: PyTorch 2.9.1,
-CUDA 12.8, TorchCodec 0.8.1 and Transformers 5.0. It does not change the main
-application's dependency versions.
+The [Delay dependency recipe](../backends/moss-tts-delay/pyproject.toml) owns
+its Torch, Transformers and wheel-index selection independently of the app.
 
 Before model download or loading, verify the isolated runtime and retain its
 hardware report:
@@ -44,13 +43,9 @@ uv run --project backends/moss-tts-delay --no-sync \
   python -m vntts.cuda_probe --output /absolute/new/cuda-preflight.json
 ```
 
-Upstream currently selects CUDA when available and otherwise CPU. It does not
-advertise an MPS path. The 8B model is therefore intended for a sufficiently
-large CUDA host; a CPU-only Apple Silicon run is a compatibility path, not a
-practical throughput claim. Keep `require_cuda: true` on the Delay variant: the
-isolated backend then rejects a non-CUDA host before downloading or loading the
-8B weights. Model weights are downloaded only when the backend is first
-constructed on a qualifying host.
+Use a CUDA host for the intended 8B comparison. Keep `require_cuda: true` on
+the Delay variant so it rejects other hosts before downloading or loading
+the weights.
 
 XTTS is installed with the main project. XTTS v2 is distributed under the
 Coqui Public Model License (CPML). Read and accept those terms yourself before
@@ -66,7 +61,7 @@ Use the immutable queue and authoritative state from the current workspace:
 ```sh
 uv run vntts-benchmark-models \
   --queue /absolute/workspace/queue.jsonl \
-  --state /absolute/workspace/generated-audio/generation-state.json \
+  --state /absolute/workspace/generated-audio/generation-state.sqlite3 \
   --manifest /absolute/workspace/inputs/voice/manifest.json \
   --narrator-character Centurion \
   --models /absolute/private/model-variants.json \
@@ -123,6 +118,8 @@ The upstream architecture and API rationale are documented in the official
 [MOSS-TTS model card](https://github.com/OpenMOSS/MOSS-TTS/blob/main/docs/moss_tts_model_card.md).
 
 ## Initial local smoke evidence
+
+The following sections record the August 2026 experiments.
 
 On 2026-08-23, both installed local candidates rendered the same exact failed
 Rhiannon identity `reverse1999:314605:9:1d0f968d85af2125` ("That's ... That's

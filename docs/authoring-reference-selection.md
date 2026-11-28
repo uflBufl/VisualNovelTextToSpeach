@@ -1,5 +1,7 @@
 # Immutable voice-reference comparison and selection
 
+**Status:** Current expert reference-selection procedure.
+
 Voice-reference order changes synthesis and therefore belongs to immutable
 authoring configuration. Do not edit an active workspace manifest in place.
 Inspect a character's current candidates first:

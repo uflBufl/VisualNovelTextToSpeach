@@ -1,5 +1,7 @@
 # Deprecated speech facade audit
 
+> Historical compatibility audit. [Synthesis rendering](synthesis-rendering.md#play-or-preview-speech) owns the current migration contract.
+
 The concrete speech backends still expose payload-oriented `prepare()`, `play()`,
 `speak()` and mutable `last_*` values as a deprecated external compatibility
 facade. The package is currently version `0.1.0`; there has been no major-release
