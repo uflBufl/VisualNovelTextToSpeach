@@ -5,8 +5,6 @@
 - [ ] Validate the [Reading journey](docs/reader-experience.md) with first-time
       and returning players. Ask them to choose a window, hear a line, switch
       games, stop, and find the page-turn setting without guidance.
-- [ ] On macOS, qualify native output recovery after removing and reconnecting
-      headphones during Reading, voice preview and CLI playback.
 
 ## Active - Support 31 Reading and recorder defects
 
