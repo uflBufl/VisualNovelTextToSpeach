@@ -40,7 +40,12 @@ class ModelDownloadUITest(unittest.TestCase):
             self.assertEqual(len(pool.tasks), 1)
             pool.tasks.pop().run()
             self.app.processEvents()
-            inspect.assert_called_once()
+            inspect.assert_called_once_with(
+                setup.source,
+                revision=setup.revision,
+                cache_dir=setup.cache_dir,
+                token=False,
+            )
 
         panel = dialog.findChild(ModelDownloadPanel)
         self.assertEqual(
@@ -53,9 +58,59 @@ class ModelDownloadUITest(unittest.TestCase):
         )
         self.addCleanup(activity.close)
         setup._refresh_activity()
-        self.assertEqual(panel.progress.value(), 67)
+        self.assertEqual(panel.progress.maximum(), 0)
         self.assertIn("6 of 9 files", panel.detail.text())
+        activity.report(
+            AssetProgress(
+                "downloading", "Model", completed_bytes=1024, total_bytes=4096
+            )
+        )
+        setup._refresh_activity()
+        self.assertEqual(panel.progress.value(), 25)
+        self.assertIn("1 KiB of 4 KiB", panel.detail.text())
         activity.report(AssetProgress("loading", "Model"))
         setup._refresh_activity()
         self.assertEqual(panel.progress.maximum(), 0)
         self.assertIn("memory", panel.phase_label.text())
+
+    def test_stalled_download_refreshes_saved_files_and_allows_retry(self):
+        setup = QwenModelSetup()
+        self.addCleanup(setup.deleteLater)
+        self.addCleanup(setup.shutdown)
+        pool = ManualThreadPool()
+        setup.runner.thread_pool = pool
+
+        def finish_task():
+            pool.tasks.pop().run()
+            self.app.processEvents()
+
+        with (
+            patch(
+                "vntts.model_download_ui.inspect_snapshot",
+                side_effect=[
+                    SnapshotSize(setup.revision, 4096, 0, 4096, 2, 0),
+                    SnapshotSize(setup.revision, 4096, 1024, 3072, 2, 1),
+                    SnapshotSize(setup.revision, 4096, 4096, 0, 2, 2),
+                ],
+            ),
+            patch(
+                "vntts.model_download_ui.download_model_snapshot",
+                side_effect=[TimeoutError(), None],
+            ) as download,
+        ):
+            setup.open_dialog()
+            finish_task()
+            setup.action()
+            finish_task()
+            finish_task()
+            state = setup.state()
+            self.assertIn("Download stalled", state.detail)
+            self.assertIn("1 KiB on disk", state.detail)
+            self.assertEqual(state.action, "Download model")
+
+            setup.action()
+            finish_task()
+            self.assertTrue(setup.is_ready_for_use(QWEN_BACKEND))
+            self.assertEqual(setup.state().detail, "4 KiB on disk.")
+            for call in download.call_args_list:
+                self.assertEqual(call.kwargs["cache_dir"], setup.cache_dir)

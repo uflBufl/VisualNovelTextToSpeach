@@ -40,6 +40,7 @@ class HuggingFaceAssetsTest(unittest.TestCase):
                     revision=self.revision,
                     allow_patterns=["*.json", "*.safetensors"],
                     cache_dir=cache,
+                    token=False,
                 )
             self.assertEqual(size.total_bytes, 104)
             self.assertEqual(size.cached_bytes, 4)
@@ -52,7 +53,11 @@ class HuggingFaceAssetsTest(unittest.TestCase):
             for call in lookup.call_args_list:
                 self.assertEqual(call.kwargs["revision"], self.revision)
             api.repo_info.assert_called_once_with(
-                "owner/model", revision=self.revision, files_metadata=True, timeout=5.0
+                "owner/model",
+                revision=self.revision,
+                files_metadata=True,
+                timeout=5.0,
+                token=False,
             )
 
     def test_pinned_metadata_is_reused_offline_and_cache_is_rechecked(self):
@@ -191,6 +196,14 @@ class HuggingFaceAssetsTest(unittest.TestCase):
                         transfer.close()
                         # Closing a terminal bar twice must not send stale events.
                         transfer.close()
+                        reconstruction = tqdm_class(
+                            unit="B",
+                            total=100,
+                            disable=True,
+                            name="huggingface_hub.snapshot_download",
+                        )
+                        reconstruction.update(60)
+                        reconstruction.close()
                     files.update(2)
                     files.close()
                     return "snapshot"
@@ -223,6 +236,7 @@ class HuggingFaceAssetsTest(unittest.TestCase):
                     self.assertEqual(bytes_events[-1].completed_bytes, 25)
                     self.assertIsNone(bytes_events[-1].total_bytes)
                     self.assertEqual(events[-1].completed_bytes, 25)
+                    self.assertEqual(events[-1].reconstructed_bytes, 60)
                     self.assertEqual(bytes_events[-1].completed_files, 3)
                 else:
                     self.assertEqual(bytes_events, [])

@@ -206,6 +206,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 model_path = download_snapshot(
                     QWEN_MODEL,
                     revision=QWEN_REVISION,
+                    token=False,
                     asset="Qwen3-TTS model",
                     report=asset_progress,
                     progress=model_progress,
@@ -221,6 +222,7 @@ class QwenTTSVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 model_path = download_snapshot(
                     QWEN_CUDA_MODEL,
                     revision=QWEN_CUDA_REVISION,
+                    token=False,
                     asset="Qwen3-TTS model",
                     report=asset_progress,
                     progress=model_progress,

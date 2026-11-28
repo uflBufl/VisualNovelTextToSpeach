@@ -19,11 +19,11 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.huggingface_assets import (
     AssetProgress,
     SnapshotSize,
-    download_snapshot,
     inspect_snapshot,
 )
 from vntts.model_activity import begin_model_activity, get_model_activity
 from vntts.model_assets import ModelAssetManager
+from vntts.model_download_worker import download_model_snapshot
 from vntts.qwen_backend import (
     QWEN_CUDA_MODEL,
     QWEN_CUDA_REVISION,
@@ -32,10 +32,6 @@ from vntts.qwen_backend import (
 )
 
 QWEN_BACKEND = "qwen-tts"
-
-
-class ModelDownloadCancelled(RuntimeError):
-    """Download was cancelled at a transfer boundary."""
 
 
 @dataclass(frozen=True)
@@ -126,6 +122,7 @@ class QwenModelSetup(QObject):
             self.source,
             revision=self.revision,
             cache_dir=self.cache_dir,
+            token=False,
         )
         self.changed.emit()
 
@@ -186,23 +183,25 @@ class QwenModelSetup(QObject):
         if self._dialog is not None:
             self._dialog.close()
 
-    def _download(self, cancelled: Event) -> str:
+    def _download(self, cancelled: Event) -> SnapshotSize:
         owner = begin_model_activity(
             QWEN_BACKEND, AssetProgress("downloading", "Qwen3-TTS model")
         )
 
-        def progress(value: AssetProgress) -> None:
-            if cancelled.is_set():
-                raise ModelDownloadCancelled("Download stopped")
-            owner.report(value)
-
         try:
-            return download_snapshot(
+            download_model_snapshot(
                 self.source,
                 revision=self.revision,
                 cache_dir=self.cache_dir,
-                asset="Qwen3-TTS model",
-                progress=progress,
+                cancelled=cancelled,
+                progress=owner.report,
+            )
+            owner.report(AssetProgress("verifying", "Qwen3-TTS model"))
+            return inspect_snapshot(
+                self.source,
+                revision=self.revision,
+                cache_dir=self.cache_dir,
+                token=False,
             )
         finally:
             owner.close()
@@ -210,24 +209,24 @@ class QwenModelSetup(QObject):
     def _finished(self, result: object, error: Exception | None) -> None:
         operation = self._operation
         self._operation = None
+        if isinstance(result, SnapshotSize):
+            self._snapshot = result
+            self._ready = result.cached_files == result.total_files > 0
         if operation == "check":
             self._checked = True
-            if isinstance(result, SnapshotSize):
-                self._snapshot = result
-                self._ready = result.cached_files == result.total_files > 0
-            else:
+            if not isinstance(result, SnapshotSize) and not self._issue:
                 self._issue = "Download size is unavailable."
-        elif operation == "download":
-            self._ready = error is None and isinstance(result, str)
-            if not self._ready:
+        elif operation == "download" and not self._ready:
+            if not isinstance(result, SnapshotSize):
                 self._checked = False
                 self._snapshot = None
                 self.check()
-                self._issue = (
-                    "Download stopped. Saved files can be reused."
-                    if self._cancel.is_set()
-                    else "Download failed. Check your connection and try again."
-                )
+            if self._cancel.is_set():
+                self._issue = "Download stopped. Saved files can be reused."
+            elif isinstance(error, TimeoutError):
+                self._issue = "Download stalled. Check your connection and try again."
+            else:
+                self._issue = "Download failed. Check your connection and try again."
         self.changed.emit()
 
     def state(self) -> ModelDownloadState:
@@ -238,7 +237,13 @@ class QwenModelSetup(QObject):
             state = self._activity_state(activity)
             if self._operation == "download":
                 return ModelDownloadState(
-                    state.title, state.detail, state.percent, True, "Stop download"
+                    "Downloading Qwen3-TTS"
+                    if activity.phase == "resolving"
+                    else state.title,
+                    state.detail,
+                    state.percent,
+                    True,
+                    "Stop download",
                 )
             return state
         if self._operation == "download":
@@ -286,21 +291,24 @@ class QwenModelSetup(QObject):
             return ModelDownloadState("Checking downloaded Qwen3-TTS files", busy=True)
         if activity.phase != "downloading":
             return ModelDownloadState("Checking Qwen3-TTS model files", busy=True)
-        received = ""
         if activity.completed_bytes is not None and activity.total_bytes:
             done, total = activity.completed_bytes, activity.total_bytes
             detail = f"{_format_bytes(done)} of {_format_bytes(total)} transferred"
-        else:
-            if activity.completed_bytes is not None:
-                received = f"{_format_bytes(activity.completed_bytes)} transferred"
-            if activity.completed_files is None or not activity.total_files:
-                return ModelDownloadState("Downloading Qwen3-TTS", received, busy=True)
-            done, total = activity.completed_files, activity.total_files
-            detail = f"{done} of {total} files available"
-            if received:
-                detail = f"{detail} · {received}"
+            return ModelDownloadState(
+                "Downloading Qwen3-TTS",
+                detail,
+                min(100, round(done * 100 / total)),
+                True,
+            )
+        details = []
+        if activity.completed_files is not None and activity.total_files:
+            details.append(
+                f"{activity.completed_files} of {activity.total_files} files available"
+            )
+        if activity.completed_bytes is not None:
+            details.append(f"{_format_bytes(activity.completed_bytes)} transferred")
         return ModelDownloadState(
-            "Downloading Qwen3-TTS", detail, min(100, round(done * 100 / total)), True
+            "Downloading Qwen3-TTS", " · ".join(details), busy=True
         )
 
 

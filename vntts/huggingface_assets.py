@@ -33,6 +33,7 @@ class AssetProgress:
     total_bytes: int | None = None
     completed_files: int | None = None
     total_files: int | None = None
+    reconstructed_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,11 @@ class _SnapshotFile:
 
 
 def _metadata(
-    source: str, revision: str, metadata_dir: Path, timeout: float
+    source: str,
+    revision: str,
+    metadata_dir: Path,
+    timeout: float,
+    token: str | bool | None,
 ) -> tuple[str, list[_SnapshotFile]]:
     from huggingface_hub import HfApi
 
@@ -81,7 +86,7 @@ def _metadata(
             pass
 
     info = HfApi().repo_info(
-        source, revision=revision, files_metadata=True, timeout=timeout
+        source, revision=revision, files_metadata=True, timeout=timeout, token=token
     )
     siblings = getattr(info, "siblings", None)
     if not info.sha or siblings is None:
@@ -118,6 +123,7 @@ def inspect_snapshot(
     cache_dir: str | Path | None = None,
     metadata_cache_dir: str | Path | None = None,
     timeout: float = 5.0,
+    token: str | bool | None = None,
 ) -> SnapshotSize:
     """Read metadata without downloading weights or changing existing model files.
 
@@ -135,6 +141,7 @@ def inspect_snapshot(
         if metadata_cache_dir is not None
         else Path(cache_dir or HF_HUB_CACHE) / ".vntts-metadata",
         timeout,
+        token,
     )
     files = list(
         filter_repo_objects(
@@ -203,6 +210,7 @@ def download_snapshot(
         progress(AssetProgress("resolving", asset))
     reported = False
     network_bytes: int | None = None
+    reconstructed_bytes: int | None = None
     completed_files: int | None = None
     total_files: int | None = None
     lock = Lock()
@@ -221,6 +229,7 @@ def download_snapshot(
                             completed_bytes=network_bytes,
                             completed_files=completed_files,
                             total_files=total_files,
+                            reconstructed_bytes=reconstructed_bytes,
                         )
                     )
                 reported = True
@@ -238,10 +247,11 @@ def download_snapshot(
             super().__init__(*args, **kwargs)
 
         def emit_progress(self) -> None:
-            nonlocal network_bytes, completed_files, total_files
+            nonlocal network_bytes, reconstructed_bytes, completed_files, total_files
             # The Hub assigns a byte total only when a file needs fetching.
-            if self.byte_progress and not self.reconstruction and self.total:
-                downloading()
+            if self.byte_progress and self.total:
+                if not self.reconstruction:
+                    downloading()
                 if progress is not None:
                     with lock:
                         completed = int(
@@ -249,19 +259,24 @@ def download_snapshot(
                             if getattr(self, "disable", False)
                             else getattr(self, "n", self.completed)
                         )
-                        if self.network_progress:
+                        if self.reconstruction:
+                            reconstructed_bytes = completed
+                        elif self.network_progress:
                             network_bytes = completed
                         progress(
                             AssetProgress(
-                                "downloading",
+                                "downloading" if reported else "resolving",
                                 asset,
-                                completed_bytes=completed,
+                                completed_bytes=network_bytes
+                                if self.reconstruction
+                                else completed,
                                 # Xet network totals are estimates affected by deduplication.
                                 total_bytes=None
-                                if self.network_progress
+                                if self.network_progress or self.reconstruction
                                 else int(self.total),
                                 completed_files=completed_files,
                                 total_files=total_files,
+                                reconstructed_bytes=reconstructed_bytes,
                             )
                         )
             elif not self.byte_progress and progress is not None:
@@ -281,6 +296,7 @@ def download_snapshot(
                             completed_bytes=network_bytes,
                             completed_files=completed_files,
                             total_files=total_files,
+                            reconstructed_bytes=reconstructed_bytes,
                         )
                     )
 

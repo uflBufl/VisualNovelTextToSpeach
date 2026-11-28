@@ -62,9 +62,10 @@ class QwenBackendTest(unittest.TestCase):
                         generate=lambda **_options: iter(()),
                     )
 
-                    def snapshot(source, *, revision, tqdm_class):
+                    def snapshot(source, *, revision, token, tqdm_class):
                         self.assertEqual(source, repository)
                         self.assertEqual(revision, expected_revision)
+                        self.assertIs(token, False)
                         self.assertEqual(statuses, ["Resolving Qwen3-TTS model..."])
                         tqdm_class(unit="files", total=10).refresh()
                         if byte_total is not None:
